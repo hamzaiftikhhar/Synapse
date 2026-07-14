@@ -1,0 +1,385 @@
+// Synapse Healthcare AI Chatbot — Phase 1 Database Schema (v1.1)
+// Import at https://dbdiagram.io
+// PostgreSQL 16 + pgvector
+
+Project Synapse {
+  database_type: 'PostgreSQL'
+  Note: '''
+    Multi-tenant Healthcare AI Chatbot SaaS (v1.1 review revisions).
+    Soft delete on catalog entities. Doctor↔Service and Doctor↔Insurance M2M.
+    Embeddings inline on knowledge_chunks (vector 1536).
+  '''
+}
+
+// ─── Clinic Management ─────────────────────────────────────────────────────
+
+Table clinics {
+  id uuid [pk, default: `gen_random_uuid()`]
+  slug varchar(64) [unique, not null]
+  name varchar(255) [not null]
+  email varchar(255) [not null]
+  phone varchar(20)
+  address jsonb [note: '{street, city, state, zip, country}']
+  timezone varchar(50) [not null, default: 'America/New_York']
+  status varchar(20) [not null, default: 'active', note: 'active | suspended | onboarding']
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    slug [unique]
+    status
+  }
+}
+
+Table widget_settings {
+  id uuid [pk, default: `gen_random_uuid()`]
+  clinic_id uuid [unique, not null, ref: > clinics.id]
+  configuration jsonb [not null, default: '{}', note: 'Single JSON: widget, ai, booking, feature_flags']
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+}
+
+Table clinic_business_hours {
+  id uuid [pk, default: `gen_random_uuid()`]
+  clinic_id uuid [not null, ref: > clinics.id]
+  day_of_week smallint [not null, note: '0=Monday through 6=Sunday']
+  open_time time
+  close_time time
+  is_closed boolean [not null, default: false]
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (clinic_id, day_of_week) [unique]
+  }
+
+  Note: 'Clinic open hours. Doctor schedules must fall within these windows.'
+}
+
+// ─── Medical Information ─────────────────────────────────────────────────────
+
+Table specialties {
+  id uuid [pk, default: `gen_random_uuid()`]
+  clinic_id uuid [not null, ref: > clinics.id]
+  name varchar(100) [not null]
+  slug varchar(100) [not null]
+  description text
+  is_active boolean [not null, default: true]
+  is_deleted boolean [not null, default: false]
+  deleted_at timestamptz
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (clinic_id, slug) [unique]
+  }
+}
+
+Table doctors {
+  id uuid [pk, default: `gen_random_uuid()`]
+  clinic_id uuid [not null, ref: > clinics.id]
+  full_name varchar(255) [not null]
+  title varchar(50)
+  bio text
+  photo_url varchar(500)
+  languages varchar[] [default: '{en}']
+  is_active boolean [not null, default: true]
+  is_accepting_patients boolean [not null, default: true]
+  metadata jsonb [not null, default: '{}']
+  is_deleted boolean [not null, default: false]
+  deleted_at timestamptz
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (clinic_id, is_active)
+  }
+}
+
+Table doctor_specialties {
+  doctor_id uuid [pk, not null, ref: > doctors.id]
+  specialty_id uuid [pk, not null, ref: > specialties.id]
+  clinic_id uuid [not null, ref: > clinics.id]
+
+  indexes {
+    (clinic_id, specialty_id)
+    (clinic_id, doctor_id)
+  }
+}
+
+Table services {
+  id uuid [pk, default: `gen_random_uuid()`]
+  clinic_id uuid [not null, ref: > clinics.id]
+  name varchar(255) [not null]
+  description text
+  duration_min smallint [not null, default: 30]
+  price_cents integer
+  is_active boolean [not null, default: true]
+  is_deleted boolean [not null, default: false]
+  deleted_at timestamptz
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (clinic_id, is_active)
+  }
+}
+
+Table doctor_services {
+  doctor_id uuid [pk, not null, ref: > doctors.id]
+  service_id uuid [pk, not null, ref: > services.id]
+  clinic_id uuid [not null, ref: > clinics.id]
+
+  indexes {
+    (clinic_id, service_id)
+    (clinic_id, doctor_id)
+  }
+
+  Note: 'Which services each doctor performs. Required for "Does Dr. X do MRI?".'
+}
+
+Table insurance_plans {
+  id uuid [pk, default: `gen_random_uuid()`]
+  clinic_id uuid [not null, ref: > clinics.id]
+  provider_name varchar(255) [not null]
+  plan_name varchar(255)
+  plan_type varchar(50)
+  is_accepted boolean [not null, default: true]
+  notes text
+  metadata jsonb [not null, default: '{}']
+  is_deleted boolean [not null, default: false]
+  deleted_at timestamptz
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (clinic_id, is_accepted)
+  }
+}
+
+Table doctor_insurance {
+  doctor_id uuid [pk, not null, ref: > doctors.id]
+  insurance_plan_id uuid [pk, not null, ref: > insurance_plans.id]
+  clinic_id uuid [not null, ref: > clinics.id]
+
+  indexes {
+    (clinic_id, insurance_plan_id)
+    (clinic_id, doctor_id)
+  }
+
+  Note: 'Per-doctor accepted plans. Clinic may accept BlueCross but Doctor A may not.'
+}
+
+Table doctor_schedules {
+  id uuid [pk, default: `gen_random_uuid()`]
+  clinic_id uuid [not null, ref: > clinics.id]
+  doctor_id uuid [not null, ref: > doctors.id]
+  day_of_week smallint [not null]
+  start_time time [not null]
+  end_time time [not null]
+  slot_duration_min smallint [not null, default: 30]
+  is_active boolean [not null, default: true]
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (clinic_id, doctor_id, day_of_week)
+  }
+}
+
+Table doctor_leaves {
+  id uuid [pk, default: `gen_random_uuid()`]
+  clinic_id uuid [not null, ref: > clinics.id]
+  doctor_id uuid [not null, ref: > doctors.id]
+  start_at timestamptz [not null]
+  end_at timestamptz [not null]
+  reason varchar(255)
+  is_active boolean [not null, default: true]
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (clinic_id, doctor_id, start_at, end_at)
+  }
+}
+
+// ─── Patient System ──────────────────────────────────────────────────────────
+
+Table patients {
+  id uuid [pk, default: `gen_random_uuid()`]
+  clinic_id uuid [not null, ref: > clinics.id]
+  phone varchar(20) [not null, note: 'E.164 — required for OTP']
+  email varchar(255)
+  first_name varchar(100) [not null]
+  last_name varchar(100) [not null]
+  date_of_birth date
+  preferred_language varchar(10) [not null, default: 'en']
+  is_verified boolean [not null, default: false]
+  metadata jsonb [not null, default: '{}']
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (clinic_id, phone) [unique]
+    (clinic_id, first_name)
+    (clinic_id, last_name)
+  }
+}
+
+Table appointments {
+  id uuid [pk, default: `gen_random_uuid()`]
+  clinic_id uuid [not null, ref: > clinics.id]
+  doctor_id uuid [not null, ref: > doctors.id]
+  patient_id uuid [not null, ref: > patients.id]
+  service_id uuid [ref: > services.id]
+  insurance_plan_id uuid [ref: > insurance_plans.id]
+  start_time timestamptz [not null]
+  end_time timestamptz [not null]
+  status varchar(20) [not null, default: 'pending', note: 'pending | confirmed | cancelled | completed | no_show | rescheduled']
+  confirmation_code varchar(10) [unique]
+  notes text
+  source varchar(20) [not null, default: 'chatbot', note: 'chatbot | admin | phone | walk_in | import']
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (clinic_id, doctor_id, start_time)
+    (clinic_id, patient_id)
+    (clinic_id, status, start_time)
+    confirmation_code [unique]
+  }
+}
+
+// ─── AI Knowledge (RAG) ──────────────────────────────────────────────────────
+
+Table documents {
+  id uuid [pk, default: `gen_random_uuid()`]
+  clinic_id uuid [not null, ref: > clinics.id]
+  title varchar(255) [not null]
+  file_name varchar(255) [not null]
+  file_type varchar(50) [not null]
+  storage_path varchar(500) [not null]
+  file_size_bytes integer
+  status varchar(20) [not null, default: 'pending']
+  chunk_count integer [not null, default: 0]
+  uploaded_by uuid [note: 'Nullable until clinic admin users (Phase 4/8)']
+  metadata jsonb [not null, default: '{}']
+  error_message text
+  is_deleted boolean [not null, default: false]
+  deleted_at timestamptz
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (clinic_id, status)
+  }
+}
+
+Table knowledge_chunks {
+  id uuid [pk, default: `gen_random_uuid()`]
+  clinic_id uuid [not null, ref: > clinics.id]
+  document_id uuid [not null, ref: > documents.id]
+  chunk_number integer [not null]
+  page_number integer [note: 'Source PDF page for debugging / citations']
+  content text [not null]
+  token_count integer
+  embedding vector(1536)
+  embedding_model varchar(50) [default: 'text-embedding-3-small']
+  metadata jsonb [not null, default: '{}']
+  created_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (clinic_id, document_id)
+    (document_id, chunk_number) [unique]
+  }
+}
+
+// ─── Chat System ─────────────────────────────────────────────────────────────
+
+Table chat_sessions {
+  id uuid [pk, default: `gen_random_uuid()`]
+  clinic_id uuid [not null, ref: > clinics.id]
+  patient_id uuid [ref: > patients.id]
+  session_token varchar(64) [unique, not null]
+  ip_hash varchar(64)
+  user_agent varchar(500)
+  locale varchar(10) [not null, default: 'en']
+  conversation_context jsonb [not null, default: '{}', note: 'Booking flow state, current intent']
+  is_authenticated boolean [not null, default: false]
+  status varchar(20) [not null, default: 'active']
+  created_at timestamptz [not null, default: `now()`]
+  last_active_at timestamptz [not null, default: `now()`]
+  closed_at timestamptz
+
+  indexes {
+    session_token [unique]
+    (clinic_id, status)
+    (clinic_id, patient_id)
+  }
+}
+
+Table chat_messages {
+  id uuid [pk, default: `gen_random_uuid()`]
+  clinic_id uuid [not null, ref: > clinics.id]
+  session_id uuid [not null, ref: > chat_sessions.id]
+  role varchar(20) [not null, note: 'user | assistant | system | tool']
+  message_type varchar(20) [not null, default: 'text', note: 'text | tool_call | tool_result | system | error']
+  content text [not null]
+  metadata jsonb [not null, default: '{}', note: 'intent, entities, latency, tool_called']
+  token_count integer
+  sequence_number integer [not null]
+  created_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (session_id, sequence_number) [unique]
+    (session_id, created_at)
+    (session_id, message_type)
+  }
+}
+
+// ─── Authentication ──────────────────────────────────────────────────────────
+
+Table otp_verifications {
+  id uuid [pk, default: `gen_random_uuid()`]
+  clinic_id uuid [not null, ref: > clinics.id]
+  session_id uuid [not null, ref: > chat_sessions.id]
+  patient_id uuid [ref: > patients.id]
+  phone varchar(20) [not null]
+  code_hash varchar(128) [not null]
+  attempts smallint [not null, default: 0]
+  max_attempts smallint [not null, default: 3]
+  expires_at timestamptz [not null]
+  verified_at timestamptz
+  created_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (session_id, created_at)
+    (clinic_id, phone, expires_at)
+  }
+}
+
+// ─── Analytics ───────────────────────────────────────────────────────────────
+
+Table ai_usage_logs {
+  id uuid [pk, default: `gen_random_uuid()`]
+  clinic_id uuid [not null, ref: > clinics.id]
+  session_id uuid [ref: > chat_sessions.id]
+  message_id uuid [ref: > chat_messages.id]
+  provider varchar(50) [not null, default: 'openai', note: 'openai | anthropic | gemini | cache']
+  operation varchar(50) [not null]
+  model varchar(50) [not null]
+  prompt_tokens integer [not null, default: 0]
+  completion_tokens integer [not null, default: 0]
+  total_tokens integer [not null, default: 0]
+  latency_ms integer [not null, default: 0]
+  cost_microcents bigint [not null, default: 0]
+  cached_response boolean [not null, default: false]
+  metadata jsonb [not null, default: '{}']
+  created_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (clinic_id, created_at)
+    (clinic_id, operation, created_at)
+    (clinic_id, cached_response, created_at)
+  }
+}
