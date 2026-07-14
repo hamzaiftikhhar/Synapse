@@ -1,0 +1,2 @@
+# Convenience alias — production-ready default set
+-r requirements/base.txt

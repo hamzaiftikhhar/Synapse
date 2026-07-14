@@ -1,0 +1,25 @@
+# Local PostgreSQL 16 + pgvector for development.
+# Usage: docker compose up -d
+# Then: ./scripts/bootstrap_db.sh  OR  python manage.py migrate
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: synapse-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: synapse
+      POSTGRES_USER: synapse
+      POSTGRES_PASSWORD: synapse
+    ports:
+      - "5432:5432"
+    volumes:
+      - synapse_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U synapse -d synapse"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  synapse_pgdata:

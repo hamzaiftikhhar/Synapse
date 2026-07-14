@@ -1,0 +1,1 @@
+# Core migrations — Phase 2 only enables PostgreSQL extensions.

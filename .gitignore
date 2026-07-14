@@ -1,0 +1,41 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+*.pem
+
+# Django
+staticfiles/
+media/*
+!media/.gitkeep
+*.log
+db.sqlite3
+local_settings.py
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# uv / tooling
+.python-version

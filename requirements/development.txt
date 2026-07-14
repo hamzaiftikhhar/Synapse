@@ -1,0 +1,5 @@
+# Development extras
+-r base.txt
+
+django-extensions>=3.2,<4.0
+ipython>=8.0
