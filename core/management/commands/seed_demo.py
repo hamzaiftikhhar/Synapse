@@ -73,7 +73,7 @@ class Command(BaseCommand):
                 "state": "NY",
                 "zip": "10001",
                 "country": "US",
-            },
+            },# {"street": "Bahria", "city": "Lahore", "state": "Punjab", "zip": "55180", "country": "PK"}
             timezone="America/New_York",
             status=ClinicStatus.ACTIVE,
         )
