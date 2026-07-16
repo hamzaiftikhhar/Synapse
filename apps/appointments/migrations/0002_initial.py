@@ -4,13 +4,13 @@ import django.db.models.deletion
 from django.db import migrations, models
 
 
-class Migration(migrations.Migration):
+class Migration(migrations.Migration): #what migrations.Migration is doing and why we are passing it as an argument? 
 
     initial = True
 
     dependencies = [
-        ('appointments', '0001_initial'),
-        ('doctors', '0001_initial'),
+        ('appointments', '0001_initial'), 
+        ('doctors', '0001_initial'), #"Before running this migration, make sure doctors/0001_initial.py has already been executed."
         ('insurance', '0001_initial'),
         ('patients', '0001_initial'),
         ('services', '0001_initial'),
