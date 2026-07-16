@@ -1,6 +1,7 @@
 """Insurance plans accepted by clinics."""
 
 from django.db import models
+from django.db.models import Q
 
 from core.models import SoftDeleteModel, TenantModel, TimestampedModel
 
@@ -16,7 +17,11 @@ class InsurancePlan(TenantModel, TimestampedModel, SoftDeleteModel):
     class Meta:
         db_table = "insurance_plans"
         indexes = [
-            models.Index(fields=["clinic", "is_accepted"]),
+            models.Index(
+                fields=["clinic", "is_accepted"],
+                name="idx_ins_accepted_live",
+                condition=Q(is_deleted=False),
+            ),
         ]
 
     def __str__(self) -> str:

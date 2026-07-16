@@ -42,7 +42,12 @@ class Doctor(TenantModel, TimestampedModel, SoftDeleteModel):
     class Meta:
         db_table = "doctors"
         indexes = [
-            models.Index(fields=["clinic", "is_active"]),
+            # Active doctor lists: exclude soft-deleted rows from the index
+            models.Index(
+                fields=["clinic", "is_active"],
+                name="idx_doctors_active_live",
+                condition=Q(is_deleted=False),
+            ),
         ]
 
     def __str__(self) -> str:

@@ -1,6 +1,7 @@
 """Documents and knowledge chunks with pgvector embeddings."""
 
 from django.db import models
+from django.db.models import Q
 from pgvector.django import HnswIndex, VectorField
 
 from core.models import SoftDeleteModel, TenantModel, TimestampedModel
@@ -33,8 +34,16 @@ class Document(TenantModel, TimestampedModel, SoftDeleteModel):
     class Meta:
         db_table = "documents"
         indexes = [
-            models.Index(fields=["clinic", "status"]),
-            models.Index(fields=["clinic", "created_at"]),
+            models.Index(
+                fields=["clinic", "status"],
+                name="idx_docs_status_live",
+                condition=Q(is_deleted=False),
+            ),
+            models.Index(
+                fields=["clinic", "created_at"],
+                name="idx_docs_created_live",
+                condition=Q(is_deleted=False),
+            ),
         ]
 
     def __str__(self) -> str:

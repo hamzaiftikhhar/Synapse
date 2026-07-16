@@ -36,9 +36,14 @@ class TimestampedModel(models.Model):
 
 
 class SoftDeleteModel(models.Model):
-    """Soft delete for catalog entities (doctors, services, etc.)."""
+    """
+    Soft delete for catalog entities (doctors, services, etc.).
 
-    is_deleted = models.BooleanField(default=False, db_index=True)
+    No standalone index on is_deleted — feature apps use partial indexes
+    (… WHERE is_deleted = false) for active-row lookups.
+    """
+
+    is_deleted = models.BooleanField(default=False)
     deleted_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
@@ -51,7 +56,7 @@ class TenantModel(UUIDModel):
     clinic = models.ForeignKey(
         "clinics.Clinic",
         on_delete=models.CASCADE,
-        related_name="%(class)ss",# this is a string interpolation. It is used to dynamically generate the related name for the clinic foreign key field.
+        related_name="%(class)ss",
     )
 
     class Meta:
