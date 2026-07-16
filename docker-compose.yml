@@ -1,12 +1,15 @@
-# Local PostgreSQL 16 + pgvector for development.
-# Usage: docker compose up -d
-# Then: ./scripts/bootstrap_db.sh  OR  python manage.py migrate
+# Optional Docker Postgres — prefer local Homebrew PostgreSQL 18 + pgvector.
+# Usage (if Docker is installed): docker compose up -d
+#
+# Note: pgvector publishes tagged images for supported majors.
+# Local Synapse development is validated against PostgreSQL 18.x.
 
 services:
   db:
-    image: pgvector/pgvector:pg16
+    image: pgvector/pgvector:pg17
     container_name: synapse-db
     restart: unless-stopped
+    profiles: ["docker-db"]
     environment:
       POSTGRES_DB: synapse
       POSTGRES_USER: synapse

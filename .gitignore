@@ -16,6 +16,9 @@ build/
 .coverage
 htmlcov/
 
+#Docs
+docs/
+
 # Environment & secrets
 .env
 .env.local

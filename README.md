@@ -7,14 +7,17 @@ Multi-tenant Healthcare AI Chatbot SaaS.
 | Phase | Status |
 |---|---|
 | 1 — Database design | Complete (`docs/database/`) |
-| 2 — Project foundation | **Current** |
-| 3 — Django models + migrations | Next |
+| 2 — Project foundation | Complete |
+| 3 — Django models + migrations | Complete (PostgreSQL 18) |
+| 4 — Authentication | Next |
+
+**Human-readable walkthrough:** [`docs/PROJECT-GUIDE.md`](docs/PROJECT-GUIDE.md)
 
 ## Stack
 
 - Python 3.13 + uv
 - Django 5.x + Django Ninja
-- PostgreSQL 16 + pgvector
+- PostgreSQL 18 + pgvector
 - psycopg3
 
 ## Project layout
@@ -41,11 +44,10 @@ uv pip install -r requirements/development.txt
 # 3. Environment
 cp .env.example .env   # edit Postgres credentials if needed
 
-# 4. Database — PostgreSQL 16 + pgvector
-# Option A (Docker):
-docker compose up -d
-# Option B (local Postgres):
+# 4. Database — PostgreSQL 18 + pgvector (Homebrew local recommended)
 ./scripts/bootstrap_db.sh
+# Optional Docker profile (pg17 image fallback):
+# docker compose --profile docker-db up -d
 
 # 5. Migrate + run
 python manage.py migrate   # enables pgcrypto, vector, btree_gist via core

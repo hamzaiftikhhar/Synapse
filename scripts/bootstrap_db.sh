@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Bootstrap local Postgres database + extensions (macOS / Linux).
-# Requires: psql, a running PostgreSQL 16 instance.
+# Requires: psql, a running PostgreSQL 18 instance with pgvector installed.
 #
 # Usage:
 #   ./scripts/bootstrap_db.sh

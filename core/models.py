@@ -1,19 +1,27 @@
 """
-Shared abstract base models for Synapse.
-
-Domain models are implemented in Phase 3. These bases establish UUID PKs,
-timestamps, tenant scoping, and soft-delete conventions.
+Shared abstract base models for Synapse domain tables.
 """
-
-import uuid
 
 from django.db import models
 
+from core.uuid import UuidV7, uuid7
+
 
 class UUIDModel(models.Model):
-    """UUID primary key for all domain tables."""
+    """
+    UUID primary key for all domain tables.
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    Uses UUIDv7 (time-ordered):
+    - Python default: core.uuid.uuid7 for ORM creates
+    - DB default: PostgreSQL 18 uuidv7() for SQL/raw inserts
+    """
+
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid7,
+        db_default=UuidV7(),
+        editable=False,
+    )
 
     class Meta:
         abstract = True
@@ -37,13 +45,14 @@ class SoftDeleteModel(models.Model):
         abstract = True
 
 
-class TenantModel(UUIDModel, TimestampedModel):
-    """
-    Tenant-scoped model with clinic FK.
+class TenantModel(UUIDModel):
+    """Tenant-scoped model with clinic FK for multi-tenancy."""
 
-    clinic FK is wired in Phase 3 once apps.clinics.Clinic exists.
-    Subclasses override / declare clinic explicitly until then.
-    """
+    clinic = models.ForeignKey(
+        "clinics.Clinic",
+        on_delete=models.CASCADE,
+        related_name="%(class)ss",# this is a string interpolation. It is used to dynamically generate the related name for the clinic foreign key field.
+    )
 
     class Meta:
         abstract = True
