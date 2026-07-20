@@ -10,6 +10,8 @@ from django.contrib import admin
 from django.http import JsonResponse
 from django.urls import path
 
+from apps.api.api import api
+
 
 def healthcheck(_request):
     """Lightweight liveness probe — no DB dependency."""
@@ -19,6 +21,7 @@ def healthcheck(_request):
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("health/", healthcheck, name="healthcheck"),
+    path("api/v1/", api.urls),
 ]
 
 if settings.DEBUG:

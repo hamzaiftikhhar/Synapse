@@ -11,10 +11,12 @@ from __future__ import annotations
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
+from django.contrib.auth.models import User
 from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.utils import timezone
 
+from apps.accounts.models import ClinicStaff
 from apps.appointments.models import Appointment, AppointmentSource, AppointmentStatus
 from apps.chatbot.models import ChatMessage, ChatSession, MessageRole, MessageType
 from apps.clinics.models import Clinic, ClinicBusinessHours, ClinicStatus
@@ -47,6 +49,24 @@ class Command(BaseCommand):
             help=f"Delete clinic '{DEMO_SLUG}' and recreate it.",
         )
 
+    def _ensure_staff(self, clinic: Clinic) -> None:
+        staff_user, created = User.objects.get_or_create(
+            username="clinic_admin",
+            defaults={
+                "email": "admin@acme-cardiology.example",
+                "first_name": "Clinic",
+                "last_name": "Admin",
+            },
+        )
+        if created:
+            staff_user.set_password("admin123")
+            staff_user.save()
+        ClinicStaff.objects.get_or_create(
+            user=staff_user,
+            clinic=clinic,
+            defaults={"is_active": True},
+        )
+
     @transaction.atomic
     def handle(self, *args, **options):
         if options["reset"]:
@@ -54,6 +74,8 @@ class Command(BaseCommand):
             self.stdout.write(f"Removed previous demo data ({deleted} objects).")
 
         if Clinic.objects.filter(slug=DEMO_SLUG).exists():
+            clinic = Clinic.objects.get(slug=DEMO_SLUG)
+            self._ensure_staff(clinic)
             self.stdout.write(
                 self.style.WARNING(
                     f"Demo clinic '{DEMO_SLUG}' already exists. "
@@ -300,9 +322,11 @@ class Command(BaseCommand):
         self.stdout.write(f"  Clinic slug : {clinic.slug}")
         self.stdout.write(f"  Clinic id   : {clinic.id}")
         self.stdout.write(f"  UUID version: {clinic.id.version}  (expect 7)")
+
+        # Clinic staff for API login
+        self._ensure_staff(clinic)
+        self.stdout.write("  API login   : POST /api/v1/auth/login")
+        self.stdout.write("                username=clinic_admin  password=admin123")
+        self.stdout.write(f"                clinic_slug={clinic.slug}")
+        self.stdout.write("  API docs    : http://127.0.0.1:8000/api/v1/docs")
         self.stdout.write("  Open Admin  : http://127.0.0.1:8000/admin/")
-        self.stdout.write(
-            "  Or shell    : python manage.py shell\n"
-            "                from apps.clinics.models import Clinic\n"
-            "                Clinic.objects.get(slug='acme-cardiology')"
-        )

@@ -41,6 +41,8 @@ THIRD_PARTY_APPS = [
 
 LOCAL_APPS = [
     "core.apps.CoreConfig",
+    "apps.accounts.apps.AccountsConfig",
+    "apps.api.apps.ApiConfig",
     "apps.clinics.apps.ClinicsConfig",
     "apps.doctors.apps.DoctorsConfig",
     "apps.patients.apps.PatientsConfig",
@@ -149,3 +151,9 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[])
+
+# ─── JWT (clinic staff API) ───────────────────────────────────────────────────
+
+JWT_SECRET_KEY = env("JWT_SECRET_KEY", default=SECRET_KEY)
+JWT_ALGORITHM = "HS256"
+JWT_ACCESS_TOKEN_EXPIRE_MINUTES = env.int("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", default=480)

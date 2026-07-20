@@ -9,7 +9,8 @@ Multi-tenant Healthcare AI Chatbot SaaS.
 | 1 — Database design | Complete (`docs/database/`) |
 | 2 — Project foundation | Complete |
 | 3 — Django models + migrations | Complete (PostgreSQL 18) |
-| 4 — Authentication | Next |
+| 4 — Django Ninja APIs | **Current** (auth, patients, doctors, services, appointments) |
+| 5 — Widget auth / chat / AI | Next |
 
 **Human-readable walkthrough:** [`docs/PROJECT-GUIDE.md`](docs/PROJECT-GUIDE.md)
 
@@ -55,7 +56,20 @@ python manage.py runserver
 ```
 
 Health check: [http://127.0.0.1:8000/health/](http://127.0.0.1:8000/health/)  
-Admin: [http://127.0.0.1:8000/admin/](http://127.0.0.1:8000/admin/)
+Admin: [http://127.0.0.1:8000/admin/](http://127.0.0.1:8000/admin/)  
+API docs: [http://127.0.0.1:8000/api/v1/docs](http://127.0.0.1:8000/api/v1/docs)
+
+### Try the API
+
+```bash
+# Login (demo clinic staff)
+curl -X POST http://127.0.0.1:8000/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"clinic_admin","password":"admin123","clinic_slug":"acme-cardiology"}'
+
+# Use the access_token on all other requests:
+# Authorization: Bearer <token>
+```
 
 ## Settings
 
