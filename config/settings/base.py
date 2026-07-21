@@ -145,15 +145,39 @@ MEDIA_ROOT = BASE_DIR / "media"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # UUID primary keys are defined explicitly on domain models (Phase 3).
-# Django's default AutoField remains for auth.User / contrib tables.
+# Staff identity uses custom User (accounts.User); patients never use it.
+
+AUTH_USER_MODEL = "accounts.User"
 
 # ─── CORS (widget embed — tighten in production) ────────────────────────────
 
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[])
 
-# ─── JWT (clinic staff API) ───────────────────────────────────────────────────
+# ─── JWT — dual auth (staff portal vs patient widget) ─────────────────────────
 
 JWT_SECRET_KEY = env("JWT_SECRET_KEY", default=SECRET_KEY)
 JWT_ALGORITHM = "HS256"
-JWT_ACCESS_TOKEN_EXPIRE_MINUTES = env.int("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", default=480)
+
+# Staff / admin portal (email + password)
+JWT_STAFF_ACCESS_TOKEN_EXPIRE_MINUTES = env.int(
+    "JWT_STAFF_ACCESS_TOKEN_EXPIRE_MINUTES",
+    default=env.int("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", default=480),
+)
+JWT_STAFF_REFRESH_TOKEN_EXPIRE_DAYS = env.int(
+    "JWT_STAFF_REFRESH_TOKEN_EXPIRE_DAYS",
+    default=14,
+)
+
+# Patient widget (phone OTP) — short-lived, no password account
+JWT_PATIENT_ACCESS_TOKEN_EXPIRE_MINUTES = env.int(
+    "JWT_PATIENT_ACCESS_TOKEN_EXPIRE_MINUTES",
+    default=120,
+)
+
+# OTP delivery (Twilio in production; console log in DEBUG when unset)
+TWILIO_ACCOUNT_SID = env("TWILIO_ACCOUNT_SID", default="")
+TWILIO_AUTH_TOKEN = env("TWILIO_AUTH_TOKEN", default="")
+TWILIO_FROM_NUMBER = env("TWILIO_FROM_NUMBER", default="")
+OTP_CODE_LENGTH = env.int("OTP_CODE_LENGTH", default=6)
+OTP_EXPIRE_MINUTES = env.int("OTP_EXPIRE_MINUTES", default=10)

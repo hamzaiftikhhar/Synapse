@@ -77,8 +77,8 @@ class KnowledgeChunk(TenantModel):
             ),
         ]
         indexes = [
-            models.Index(fields=["clinic", "document"]),
-            models.Index(fields=["document", "page_number"]),
+            models.Index(fields=["clinic", "document"]), #This index is used to speed up queries that filter by clinic and document.
+            models.Index(fields=["document", "page_number"]), #This index is used to speed up queries that filter by document and page number.
             HnswIndex(
                 name="idx_kc_embedding_hnsw",
                 fields=["embedding"],

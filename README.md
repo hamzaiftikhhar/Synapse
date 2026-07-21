@@ -9,10 +9,11 @@ Multi-tenant Healthcare AI Chatbot SaaS.
 | 1 — Database design | Complete (`docs/database/`) |
 | 2 — Project foundation | Complete |
 | 3 — Django models + migrations | Complete (PostgreSQL 18) |
-| 4 — Django Ninja APIs | **Current** (auth, patients, doctors, services, appointments) |
-| 5 — Widget auth / chat / AI | Next |
+| 4 — Dual auth + clinic dashboard APIs | **Current** (staff JWT, patient OTP JWT, CRUD) |
+| 5 — Widget chat / AI / booking | Next |
 
-**Human-readable walkthrough:** [`docs/PROJECT-GUIDE.md`](docs/PROJECT-GUIDE.md)
+**Human-readable walkthrough:** [`docs/PROJECT-GUIDE.md`](docs/PROJECT-GUIDE.md)  
+**Auth deep-dive:** [`docs/API-AUTH-FLOW.md`](docs/API-AUTH-FLOW.md)
 
 ## Stack
 
@@ -62,14 +63,21 @@ API docs: [http://127.0.0.1:8000/api/v1/docs](http://127.0.0.1:8000/api/v1/docs)
 ### Try the API
 
 ```bash
-# Login (demo clinic staff)
+# Staff login (email + password → access + refresh JWT)
 curl -X POST http://127.0.0.1:8000/api/v1/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"username":"clinic_admin","password":"admin123","clinic_slug":"acme-cardiology"}'
+  -d '{"email":"admin@acme-cardiology.example","password":"admin123","clinic_slug":"acme-cardiology"}'
 
-# Use the access_token on all other requests:
+# Use the access_token on portal routes:
 # Authorization: Bearer <token>
+
+# Patient OTP (widget) — independent auth system
+curl -X POST http://127.0.0.1:8000/api/v1/widget/otp/send \
+  -H "Content-Type: application/json" \
+  -d '{"clinic_slug":"acme-cardiology","phone":"+12125550999"}'
 ```
+
+Seed demo data: `python manage.py seed_demo` (or `--reset`).
 
 ## Settings
 
@@ -78,8 +86,8 @@ curl -X POST http://127.0.0.1:8000/api/v1/auth/login \
 | `config.settings.development` | Local (default in `manage.py`) |
 | `config.settings.production` | Deploy / WSGI |
 
-Timezone is **UTC**. Domain models use **UUID** primary keys (Phase 3).
+Timezone is **UTC**. Domain models use **UUIDv7** primary keys. Staff identity uses custom `accounts.User` (`AUTH_USER_MODEL`).
 
 ## What is intentionally not built yet
 
-APIs, auth, OpenAI, RAG, chat, booking, Redis, Celery — later phases.
+OpenAI / RAG chat streaming, Redis, Celery, widget frontend, Twilio production wiring (local OTP returns `debug_code`).

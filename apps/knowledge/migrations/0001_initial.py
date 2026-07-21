@@ -12,6 +12,7 @@ class Migration(migrations.Migration):
     initial = True
 
     dependencies = [
+        ('core', '0001_enable_extensions'),
         ('clinics', '0001_initial'),
     ]
 

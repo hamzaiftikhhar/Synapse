@@ -35,7 +35,7 @@ CREATE TABLE clinics (
 CREATE INDEX idx_clinics_status ON clinics (status);
 
 CREATE TABLE widget_settings (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(), 
     clinic_id       UUID NOT NULL UNIQUE REFERENCES clinics (id) ON DELETE CASCADE,
     configuration   JSONB NOT NULL DEFAULT '{}',
     -- Expected keys: widget, ai, booking, feature_flags
