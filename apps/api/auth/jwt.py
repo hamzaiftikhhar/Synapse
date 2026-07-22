@@ -121,7 +121,7 @@ def create_staff_refresh_token(
 
 
 def create_patient_access_token(
-    *,
+    *, #why star is used it is used to indicate that the function takes a variable number of arguments
     patient_id: UUID,
     clinic_id: UUID,
     session_id: UUID | None = None,

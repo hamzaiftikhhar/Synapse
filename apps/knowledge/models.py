@@ -56,7 +56,7 @@ class Document(TenantModel, TimestampedModel, SoftDeleteModel):
         return self.title
 
 
-class KnowledgeChunk(TenantModel):
+class KnowledgeChunk(TenantModel): #why tenant model is passed in here? because we want to store the knowledge chunks for each tenant. 
     document = models.ForeignKey(
         Document,
         on_delete=models.CASCADE,

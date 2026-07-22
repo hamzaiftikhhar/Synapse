@@ -3,7 +3,7 @@
 from django.db import migrations, models
 
 
-class Migration(migrations.Migration):
+class Migration(migrations.Migration): #why Migration(migrations.Migration) what's the difference between this and the other migrations? this is the migration file for the patient model. why we are adding the verified_at field? because we want to store the date and time when the patient is verified. a
 
     dependencies = [
         ('patients', '0002_alter_patient_id'),
