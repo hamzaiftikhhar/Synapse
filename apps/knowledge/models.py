@@ -1,5 +1,6 @@
 """Documents and knowledge chunks with pgvector embeddings."""
 
+from django.conf import settings
 from django.db import models
 from django.db.models import Q
 from pgvector.django import HnswIndex, VectorField
@@ -26,8 +27,13 @@ class Document(TenantModel, TimestampedModel, SoftDeleteModel):
         default=DocumentStatus.PENDING,
     )
     chunk_count = models.PositiveIntegerField(default=0)
-    # Nullable until clinic admin users exist (Phase 4/8)
-    uploaded_by = models.UUIDField(null=True, blank=True)
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="uploaded_documents",
+    )
     metadata = models.JSONField(default=dict, blank=True)
     error_message = models.TextField(blank=True, default="")
 

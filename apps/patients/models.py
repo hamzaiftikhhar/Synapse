@@ -14,9 +14,14 @@ class Patient(TenantModel, TimestampedModel):
     date_of_birth = models.DateField(null=True, blank=True)
     preferred_language = models.CharField(max_length=10, default="en")
     is_verified = models.BooleanField(default=False)
+    verified_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Set when phone OTP verification succeeds.",
+    )
     metadata = models.JSONField(default=dict, blank=True)
 
-    class Meta:
+    class Meta: #Meta is used to define the database table name and constraints and indexes
         db_table = "patients"
         constraints = [
             models.UniqueConstraint(
@@ -34,7 +39,7 @@ class Patient(TenantModel, TimestampedModel):
             models.Index(fields=["clinic", "last_name"]),
         ]
 
-    @property
+    @property #what it is called in Django @property? getter method
     def full_name(self) -> str:
         return f"{self.first_name} {self.last_name}".strip()
 

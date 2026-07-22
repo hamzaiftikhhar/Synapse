@@ -1,5 +1,6 @@
 """Authentication request/response schemas — staff portal + patient widget."""
 
+from datetime import datetime
 from uuid import UUID
 
 from ninja import Schema
@@ -65,10 +66,14 @@ class OTPSendIn(Schema):
     clinic_slug: str
     phone: str
     session_token: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
 
 
 class OTPSendOut(Schema):
     message: str
+    session_token: str
+    patient_id: UUID
     expires_in_minutes: int
     # Only populated in DEBUG / when Twilio is not configured (dev convenience)
     debug_code: str | None = None
@@ -89,6 +94,7 @@ class PatientAuthOut(Schema):
     first_name: str
     last_name: str
     is_verified: bool
+    verified_at: datetime | None = None
 
 
 class PatientTokenOut(Schema):

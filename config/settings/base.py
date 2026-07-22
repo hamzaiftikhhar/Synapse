@@ -181,3 +181,17 @@ TWILIO_AUTH_TOKEN = env("TWILIO_AUTH_TOKEN", default="")
 TWILIO_FROM_NUMBER = env("TWILIO_FROM_NUMBER", default="")
 OTP_CODE_LENGTH = env.int("OTP_CODE_LENGTH", default=6)
 OTP_EXPIRE_MINUTES = env.int("OTP_EXPIRE_MINUTES", default=10)
+
+# ─── OpenAI (embeddings + chat) ───────────────────────────────────────────────
+
+OPENAI_API_KEY = env("OPENAI_API_KEY", default="")
+OPENAI_EMBEDDING_MODEL = env(
+    "OPENAI_EMBEDDING_MODEL",
+    default="text-embedding-3-small",
+)
+OPENAI_EMBEDDING_DIMENSIONS = 1536
+
+# ─── Knowledge ingestion ──────────────────────────────────────────────────────
+
+KNOWLEDGE_CHUNK_SIZE = env.int("KNOWLEDGE_CHUNK_SIZE", default=1000)
+KNOWLEDGE_CHUNK_OVERLAP = env.int("KNOWLEDGE_CHUNK_OVERLAP", default=150)

@@ -6,6 +6,7 @@ from apps.api.appointments.router import router as appointments_router
 from apps.api.auth.patient_router import router as patient_auth_router
 from apps.api.auth.router import router as auth_router
 from apps.api.doctors.router import router as doctors_router
+from apps.api.knowledge.router import router as knowledge_router
 from apps.api.patients.router import router as patients_router
 from apps.api.services.router import router as services_router
 
@@ -26,6 +27,7 @@ api = NinjaAPI(
 
 api.add_router("/auth", auth_router)
 api.add_router("/widget", patient_auth_router)
+api.add_router("/documents", knowledge_router)
 api.add_router("/patients", patients_router)
 api.add_router("/doctors", doctors_router)
 api.add_router("/services", services_router)
