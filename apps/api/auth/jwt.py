@@ -122,7 +122,7 @@ def create_staff_refresh_token(
 
 
 def create_patient_access_token(
-    *, #why star is used it is used to indicate that the function takes a variable number of arguments, does the * is required? yes, it is required. does it mean that the arguments are only patient_id, clinic_id and session_id? yes, it does. and the other arguments are optional. what are other arguments? other arguments are user_id, role, exp, iat and type.
+    *, #why star is used? Everything after * must be passed by name (keyword arguments).
     patient_id: UUID,
     clinic_id: UUID,
     session_id: UUID | None = None,
