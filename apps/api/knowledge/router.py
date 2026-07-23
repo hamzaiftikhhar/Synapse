@@ -42,7 +42,7 @@ def list_documents(request):
     return [_serialize(d) for d in docs.list_documents(clinic=clinic)]
 
 
-@router.post("", response={201: DocumentOut}, auth=jwt_auth)
+@router.post("", response={201: DocumentOut}, auth=jwt_auth) 
 def upload_document(
     request,
     title: str = Form(""),
