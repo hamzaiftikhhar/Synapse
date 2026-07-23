@@ -5,7 +5,6 @@ Why this file exists
 Django Ninja entrypoint. It must NOT contain business logic.
 Flow: validate auth → call document_service → return JSON.
 """
-# give me 3 lines exmaplaination what this whole file is doing and what is the purpose of the file.
 """
 This file is the entry point for the knowledge API. It is used to validate the authentication and then call the document service and return the JSON.
 """
