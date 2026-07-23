@@ -47,10 +47,10 @@ class SoftDeleteModel(models.Model):
     deleted_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
-        abstract = True
+        abstract = True #why we are using abstract = True? because we want to use this model in other models.
 
 
-class TenantModel(UUIDModel):
+class TenantModel(UUIDModel): #what are the attributes of the TenantModel?
     """Tenant-scoped model with clinic FK for multi-tenancy."""
 
     clinic = models.ForeignKey(

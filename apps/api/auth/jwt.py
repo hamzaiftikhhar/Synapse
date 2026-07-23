@@ -15,12 +15,13 @@ import jwt
 from django.conf import settings
 from ninja.errors import HttpError
 
+#what is the Literal["staff_access", "staff_refresh"]? it is a type that is used to specify the type of the staff token.
 StaffTokenType = Literal["staff_access", "staff_refresh"]
 PatientTokenType = Literal["patient_access"]
 
 
-@dataclass(frozen=True)
-class StaffTokenPayload:
+@dataclass(frozen=True) #why we are using frozen=True? because we want to make the class immutable.
+class StaffTokenPayload: #why @dataclass is used? because we want to create a class that can be used to store the payload of the staff token. without having to write the __init__ method.Dataclass automatically writes that constructor.
     user_id: int
     clinic_id: UUID | None
     role: str
@@ -46,8 +47,8 @@ class PatientTokenPayload:
     session_id: UUID | None
     exp: datetime
 
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> PatientTokenPayload:
+    @classmethod #why we are using classmethod? because we want to create a class method that is used to create a PatientTokenPayload object from a dictionary.
+    def from_dict(cls, data: dict[str, Any]) -> PatientTokenPayload: 
         session_raw = data.get("session_id")
         return cls(
             patient_id=UUID(str(data["sub"])),
@@ -83,7 +84,7 @@ def create_staff_access_token(
     user_id: int,
     clinic_id: UUID | None,
     role: str,
-) -> str:
+) -> str: #WHY WE use hte -> str? because we want to return a string.
     expire = datetime.now(UTC) + timedelta(
         minutes=settings.JWT_STAFF_ACCESS_TOKEN_EXPIRE_MINUTES
     )
@@ -121,7 +122,7 @@ def create_staff_refresh_token(
 
 
 def create_patient_access_token(
-    *, #why star is used it is used to indicate that the function takes a variable number of arguments
+    *, #why star is used it is used to indicate that the function takes a variable number of arguments, does the * is required? yes, it is required. does it mean that the arguments are only patient_id, clinic_id and session_id? yes, it does. and the other arguments are optional. what are other arguments? other arguments are user_id, role, exp, iat and type.
     patient_id: UUID,
     clinic_id: UUID,
     session_id: UUID | None = None,

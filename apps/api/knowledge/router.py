@@ -1,5 +1,14 @@
-"""Clinic knowledge documents — upload + list (staff JWT)."""
+"""Clinic knowledge documents — HTTP layer only (staff JWT).
 
+Why this file exists
+--------------------
+Django Ninja entrypoint. It must NOT contain business logic.
+Flow: validate auth → call document_service → return JSON.
+"""
+# give me 3 lines exmaplaination what this whole file is doing and what is the purpose of the file.
+"""
+This file is the entry point for the knowledge API. It is used to validate the authentication and then call the document service and return the JSON.
+"""
 from uuid import UUID
 
 from ninja import File, Form, Router, UploadedFile
@@ -41,9 +50,11 @@ def upload_document(
     file: UploadedFile = File(...),  # noqa: B008
 ):
     """
-    Upload a PDF and run the ingestion pipeline synchronously.
+    Upload a PDF for this clinic and start the ingestion pipeline.
 
-    Pipeline: store → extract → clean → chunk → embed → persist chunks.
+    Returns the Document row:
+      - status=indexed → pipeline finished
+      - status=failed  → file stored; see error_message (e.g. missing OPENAI_API_KEY)
     """
     clinic = clinic_from(request)
     try:
@@ -71,13 +82,15 @@ def get_document(request, document_id: UUID):
 
 @router.post("/{document_id}/reindex", response=DocumentOut, auth=jwt_auth)
 def reindex_document(request, document_id: UUID):
-    """Re-run extract → chunk → embed for an existing document."""
+    """Re-run the ingestion pipeline for an existing document."""
     clinic = clinic_from(request)
     document = docs.get_document(clinic=clinic, document_id=document_id)
     if document is None:
         raise HttpError(404, "Document not found")
+
     try:
         document = docs.reindex_document(document)
-    except Exception as exc:
-        raise HttpError(500, str(exc)) from exc
+    except docs.DocumentServiceError as exc:
+        raise HttpError(400, str(exc)) from exc
+
     return _serialize(document)

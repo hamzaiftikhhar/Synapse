@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
 from django.conf import settings
 from django.db import transaction
 
 from apps.knowledge.models import Document, DocumentStatus, KnowledgeChunk
 from apps.knowledge.pipeline import chunk, clean, embed, extract
+from apps.knowledge.services import storage
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ def ingest_document(document: Document) -> Document:
 
     Updates status transitions: pending/processing → indexed | failed.
     """
-    file_path = Path(settings.MEDIA_ROOT) / document.storage_path
+    file_path = storage.absolute_path(document.storage_path)
     if not file_path.is_file():
         _fail(document, f"File not found: {document.storage_path}")
         raise IngestionError(document.error_message)
