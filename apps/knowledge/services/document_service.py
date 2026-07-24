@@ -2,6 +2,12 @@
 
 Why this file exists
 --------------------
+This file is the brain of the document upload process.
+
+It coordinates everything but doesn't actually save files or process AI itself.
+
+Think of it as a project manager.
+
 Routers must stay thin. This service owns:
   1. Validate file type
   2. Save bytes via storage.py
@@ -25,15 +31,10 @@ from apps.knowledge.models import Document, DocumentStatus
 from apps.knowledge.pipeline.ingest import IngestionError, ingest_document
 from apps.knowledge.services import storage
 
-logger = logging.getLogger(__name__)
-
-
+logger = logging.getLogger(__name__) #why we are using logger? because we want to log the messages to the console. wny  using __name__? because we want to log the messages to the console.
 class DocumentServiceError(Exception):
     """User-facing upload error (bad file type, storage failure, …)."""
-
-
 ALLOWED_FILE_TYPES = {"pdf"}
-
 
 def upload_document(
     *,
