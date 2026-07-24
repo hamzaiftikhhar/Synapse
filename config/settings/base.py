@@ -195,3 +195,10 @@ OPENAI_EMBEDDING_DIMENSIONS = 1536
 
 KNOWLEDGE_CHUNK_SIZE = env.int("KNOWLEDGE_CHUNK_SIZE", default=1000)
 KNOWLEDGE_CHUNK_OVERLAP = env.int("KNOWLEDGE_CHUNK_OVERLAP", default=150)
+# Phase 2 default: persist text chunks without embeddings
+KNOWLEDGE_RUN_EMBEDDINGS = env.bool("KNOWLEDGE_RUN_EMBEDDINGS", default=False)
+
+# Embedding provider (Phase 3+) — see docs/rag/EMBEDDING-PROVIDER-SWITCH.md
+EMBEDDING_PROVIDER = env("EMBEDDING_PROVIDER", default="local")
+EMBEDDING_MODEL = env("EMBEDDING_MODEL", default="BAAI/bge-base-en-v1.5")
+EMBEDDING_DIMENSIONS = env.int("EMBEDDING_DIMENSIONS", default=768)

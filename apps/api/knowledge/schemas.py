@@ -23,3 +23,14 @@ class DocumentOut(Schema):
 
 class DocumentUploadOut(DocumentOut):
     pass
+
+
+class ChunkOut(Schema):
+    id: UUID
+    chunk_number: int
+    page_number: int | None
+    content: str
+    token_count: int | None
+    has_embedding: bool
+    embedding_model: str
+    created_at: datetime

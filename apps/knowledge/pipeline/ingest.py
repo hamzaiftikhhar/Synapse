@@ -1,4 +1,10 @@
-"""Orchestrate document ingestion: extract → clean → chunk → embed → persist."""
+"""Orchestrate document ingestion: extract → clean → chunk → (optional embed) → persist.
+
+Why this file exists
+--------------------
+Each pipeline step lives in its own module. This file only wires them
+in order and updates Document status.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +15,7 @@ from django.db import transaction
 
 from apps.knowledge.models import Document, DocumentStatus, KnowledgeChunk
 from apps.knowledge.pipeline import chunk, clean, embed, extract
+from apps.knowledge.pipeline.extract import PageText
 from apps.knowledge.services import storage
 
 logger = logging.getLogger(__name__)
@@ -18,12 +25,24 @@ class IngestionError(Exception):
     pass
 
 
-def ingest_document(document: Document) -> Document:
+def ingest_document(
+    document: Document,
+    *,
+    run_embeddings: bool | None = None,
+) -> Document:
     """
-    Run the full pipeline for one Document row.
+    Run the pipeline for one Document row.
 
-    Updates status transitions: pending/processing → indexed | failed.
+    Phase 2 default (KNOWLEDGE_RUN_EMBEDDINGS=False):
+      extract → clean → chunk → save KnowledgeChunk rows (embedding=NULL)
+      status → chunked
+
+    Phase 3+ (KNOWLEDGE_RUN_EMBEDDINGS=True):
+      … → embed → save vectors → status → indexed
     """
+    if run_embeddings is None:
+        run_embeddings = settings.KNOWLEDGE_RUN_EMBEDDINGS
+
     file_path = storage.absolute_path(document.storage_path)
     if not file_path.is_file():
         _fail(document, f"File not found: {document.storage_path}")
@@ -34,17 +53,34 @@ def ingest_document(document: Document) -> Document:
     document.save(update_fields=["status", "error_message", "updated_at"])
 
     try:
-        raw = extract.extract_text(file_path=file_path, file_type=document.file_type)
-        normalized = clean.clean_text(raw)
-        text_chunks = chunk.chunk_text(normalized)
+        raw_pages = extract.extract_pages(
+            file_path=file_path, file_type=document.file_type
+        )
+        cleaned_pages: list[PageText] = []
+        for page in raw_pages:
+            cleaned = clean.clean_text(page.text)
+            if cleaned:
+                cleaned_pages.append(
+                    PageText(page_number=page.page_number, text=cleaned)
+                )
+        if not cleaned_pages:
+            raise IngestionError("No text remained after cleaning")
+
+        text_chunks = chunk.chunk_pages(cleaned_pages)
         if not text_chunks:
             raise IngestionError("No chunks produced after cleaning")
 
-        vectors = embed.embed_texts([c.content for c in text_chunks])
+        vectors: list[list[float]] | None = None
+        model_name = ""
+        if run_embeddings:
+            vectors = embed.embed_texts([c.content for c in text_chunks])
+            if len(vectors) != len(text_chunks):
+                raise IngestionError("Embedding count does not match chunk count")
+            model_name = settings.EMBEDDING_MODEL
 
         with transaction.atomic():
             document.chunks.all().delete()
-            for text_chunk, vector in zip(text_chunks, vectors, strict=True):
+            for index, text_chunk in enumerate(text_chunks):
                 KnowledgeChunk.objects.create(
                     clinic=document.clinic,
                     document=document,
@@ -52,19 +88,20 @@ def ingest_document(document: Document) -> Document:
                     page_number=text_chunk.page_number,
                     content=text_chunk.content,
                     token_count=text_chunk.token_count,
-                    embedding=vector,
-                    embedding_model=settings.OPENAI_EMBEDDING_MODEL,
+                    embedding=vectors[index] if vectors else None,
+                    embedding_model=model_name if vectors else "",
                 )
             document.chunk_count = len(text_chunks)
-            document.status = DocumentStatus.INDEXED
-            document.save(
-                update_fields=["chunk_count", "status", "updated_at"]
+            document.status = (
+                DocumentStatus.INDEXED if vectors else DocumentStatus.CHUNKED
             )
+            document.save(update_fields=["chunk_count", "status", "updated_at"])
 
         logger.info(
-            "Ingested document %s — %s chunks",
+            "Ingested document %s — %s chunks (embeddings=%s)",
             document.id,
             document.chunk_count,
+            bool(vectors),
         )
         return document
 

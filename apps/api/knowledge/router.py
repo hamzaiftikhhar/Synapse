@@ -14,8 +14,8 @@ from ninja import File, Form, Router, UploadedFile
 from ninja.errors import HttpError
 
 from apps.api.auth.deps import clinic_from, jwt_auth
-from apps.api.knowledge.schemas import DocumentOut
-from apps.knowledge.models import Document
+from apps.api.knowledge.schemas import ChunkOut, DocumentOut
+from apps.knowledge.models import Document, KnowledgeChunk
 from apps.knowledge.services import document_service as docs
 
 router = Router(tags=["Knowledge"])
@@ -33,6 +33,19 @@ def _serialize(doc: Document) -> DocumentOut:
         error_message=doc.error_message,
         created_at=doc.created_at,
         updated_at=doc.updated_at,
+    )
+
+
+def _serialize_chunk(row: KnowledgeChunk) -> ChunkOut:
+    return ChunkOut(
+        id=row.id,
+        chunk_number=row.chunk_number,
+        page_number=row.page_number,
+        content=row.content,
+        token_count=row.token_count,
+        has_embedding=row.embedding is not None,
+        embedding_model=row.embedding_model,
+        created_at=row.created_at,
     )
 
 
@@ -77,6 +90,19 @@ def get_document(request, document_id: UUID):
     if document is None:
         raise HttpError(404, "Document not found")
     return _serialize(document)
+
+
+@router.get("/{document_id}/chunks", response=list[ChunkOut], auth=jwt_auth)
+def list_chunks(request, document_id: UUID):
+    """List text chunks for a document (Phase 2 — embeddings may be null)."""
+    clinic = clinic_from(request)
+    document = docs.get_document(clinic=clinic, document_id=document_id)
+    if document is None:
+        raise HttpError(404, "Document not found")
+    rows = KnowledgeChunk.objects.filter(
+        clinic=clinic, document=document
+    ).order_by("chunk_number")
+    return [_serialize_chunk(row) for row in rows]
 
 
 @router.post("/{document_id}/reindex", response=DocumentOut, auth=jwt_auth)

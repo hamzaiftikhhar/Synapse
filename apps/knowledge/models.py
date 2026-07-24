@@ -11,6 +11,7 @@ from core.models import SoftDeleteModel, TenantModel, TimestampedModel
 class DocumentStatus(models.TextChoices):
     PENDING = "pending", "Pending"
     PROCESSING = "processing", "Processing"
+    CHUNKED = "chunked", "Chunked"  # text chunks saved; embeddings not yet
     INDEXED = "indexed", "Indexed"
     FAILED = "failed", "Failed"
 
