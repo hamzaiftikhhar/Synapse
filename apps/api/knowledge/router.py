@@ -58,7 +58,7 @@ def upload_document(
     title: str = Form(""),
     file: UploadedFile = File(...),  # noqa: B008
 ):
-    """Upload a PDF and run extract → clean → chunk (embeddings optional)."""
+    """Upload a PDF and run extract → clean → chunk → embed → index."""
     clinic = clinic_from(request)
     try:
         document = docs.upload_document(

@@ -92,6 +92,11 @@ def ingest_document(
         with transaction.atomic():
             document.chunks.all().delete()
             for index, text_chunk in enumerate(text_chunks):
+                vector = vectors[index] if vectors else None
+                if run_embeddings and vector is None:
+                    raise IngestionError(
+                        f"Missing embedding for chunk {text_chunk.chunk_number}"
+                    )
                 KnowledgeChunk.objects.create(
                     clinic=document.clinic,
                     document=document,
@@ -103,7 +108,7 @@ def ingest_document(
                     chunk_type=text_chunk.chunk_type,
                     content=text_chunk.content,
                     token_count=text_chunk.token_count,
-                    embedding=vectors[index] if vectors else None,
+                    embedding=vector,
                     embedding_model=model_name if vectors else "",
                     metadata={
                         "estimated_token_count": text_chunk.token_count,
