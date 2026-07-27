@@ -85,11 +85,19 @@ def ingest_document(
                     clinic=document.clinic,
                     document=document,
                     chunk_number=text_chunk.chunk_number,
-                    page_number=text_chunk.page_number,
+                    page_number=text_chunk.page_start,
+                    page_start=text_chunk.page_start,
+                    page_end=text_chunk.page_end,
+                    heading=text_chunk.heading or "",
+                    chunk_type=text_chunk.chunk_type,
                     content=text_chunk.content,
                     token_count=text_chunk.token_count,
                     embedding=vectors[index] if vectors else None,
                     embedding_model=model_name if vectors else "",
+                    metadata={
+                        "estimated_token_count": text_chunk.token_count,
+                        "chunk_type": text_chunk.chunk_type,
+                    },
                 )
             document.chunk_count = len(text_chunks)
             document.status = (

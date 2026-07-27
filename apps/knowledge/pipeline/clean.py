@@ -32,4 +32,6 @@ def clean_text(text: str) -> str:
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r" *\n *", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
+    # Soft hyphen / form feed leftovers from PDFs
+    text = text.replace("\u00ad", "").replace("\x0c", "\n")
     return text.strip()

@@ -5,7 +5,7 @@ from uuid import UUID
 
 from ninja import Schema
 
-from apps.knowledge.models import DocumentStatus
+from apps.knowledge.models import ChunkType, DocumentStatus
 
 
 class DocumentOut(Schema):
@@ -28,9 +28,13 @@ class DocumentUploadOut(DocumentOut):
 class ChunkOut(Schema):
     id: UUID
     chunk_number: int
-    page_number: int | None
     content: str
-    token_count: int | None
+    heading: str
+    page_start: int | None
+    page_end: int | None
+    page_number: int | None  # alias of page_start
+    estimated_token_count: int | None
+    chunk_type: ChunkType
     has_embedding: bool
     embedding_model: str
     created_at: datetime

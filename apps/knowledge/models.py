@@ -16,6 +16,13 @@ class DocumentStatus(models.TextChoices):
     FAILED = "failed", "Failed"
 
 
+class ChunkType(models.TextChoices):
+    PARAGRAPH = "paragraph", "Paragraph"
+    LIST = "list", "List"
+    HEADING = "heading", "Heading"
+    MIXED = "mixed", "Mixed"
+
+
 class Document(TenantModel, TimestampedModel, SoftDeleteModel):
     title = models.CharField(max_length=255)
     file_name = models.CharField(max_length=255)
@@ -57,20 +64,30 @@ class Document(TenantModel, TimestampedModel, SoftDeleteModel):
         return self.title
 
 
-class KnowledgeChunk(TenantModel): #why tenant model is passed in here? because we want to store the knowledge chunks for each tenant. 
+class KnowledgeChunk(TenantModel):
     document = models.ForeignKey(
         Document,
         on_delete=models.CASCADE,
         related_name="chunks",
     )
     chunk_number = models.PositiveIntegerField()
+    # Legacy single-page field — kept in sync with page_start for older callers
     page_number = models.PositiveIntegerField(null=True, blank=True)
+    page_start = models.PositiveIntegerField(null=True, blank=True)
+    page_end = models.PositiveIntegerField(null=True, blank=True)
+    heading = models.CharField(max_length=500, blank=True, default="")
+    chunk_type = models.CharField(
+        max_length=20,
+        choices=ChunkType.choices,
+        default=ChunkType.PARAGRAPH,
+    )
     content = models.TextField()
     token_count = models.PositiveIntegerField(null=True, blank=True)
     embedding = VectorField(dimensions=1536, null=True, blank=True)
     embedding_model = models.CharField(
-        max_length=50,
-        default="text-embedding-3-small",
+        max_length=100,
+        blank=True,
+        default="",
     )
     metadata = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -84,8 +101,9 @@ class KnowledgeChunk(TenantModel): #why tenant model is passed in here? because 
             ),
         ]
         indexes = [
-            models.Index(fields=["clinic", "document"]), #This index is used to speed up queries that filter by clinic and document.
-            models.Index(fields=["document", "page_number"]), #This index is used to speed up queries that filter by document and page number.
+            models.Index(fields=["clinic", "document"]),
+            models.Index(fields=["document", "page_number"]),
+            models.Index(fields=["document", "page_start"]),
             HnswIndex(
                 name="idx_kc_embedding_hnsw",
                 fields=["embedding"],

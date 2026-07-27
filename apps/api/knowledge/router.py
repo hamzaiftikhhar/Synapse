@@ -1,13 +1,5 @@
-"""Clinic knowledge documents — HTTP layer only (staff JWT).
+"""Clinic knowledge documents — HTTP layer only (staff JWT)."""
 
-Why this file exists
---------------------
-Django Ninja entrypoint. It must NOT contain business logic.
-Flow: validate auth → call document_service → return JSON.
-"""
-"""
-This file is the entry point for the knowledge API. It is used to validate the authentication and then call the document service and return the JSON.
-"""
 from uuid import UUID
 
 from ninja import File, Form, Router, UploadedFile
@@ -37,12 +29,17 @@ def _serialize(doc: Document) -> DocumentOut:
 
 
 def _serialize_chunk(row: KnowledgeChunk) -> ChunkOut:
+    page_start = row.page_start if row.page_start is not None else row.page_number
     return ChunkOut(
         id=row.id,
         chunk_number=row.chunk_number,
-        page_number=row.page_number,
         content=row.content,
-        token_count=row.token_count,
+        heading=row.heading or "",
+        page_start=page_start,
+        page_end=row.page_end if row.page_end is not None else page_start,
+        page_number=page_start,
+        estimated_token_count=row.token_count,
+        chunk_type=row.chunk_type,
         has_embedding=row.embedding is not None,
         embedding_model=row.embedding_model,
         created_at=row.created_at,
@@ -55,19 +52,13 @@ def list_documents(request):
     return [_serialize(d) for d in docs.list_documents(clinic=clinic)]
 
 
-@router.post("", response={201: DocumentOut}, auth=jwt_auth) 
+@router.post("", response={201: DocumentOut}, auth=jwt_auth)
 def upload_document(
     request,
     title: str = Form(""),
     file: UploadedFile = File(...),  # noqa: B008
 ):
-    """
-    Upload a PDF for this clinic and start the ingestion pipeline.
-
-    Returns the Document row:
-      - status=indexed → pipeline finished
-      - status=failed  → file stored; see error_message (e.g. missing OPENAI_API_KEY)
-    """
+    """Upload a PDF and run extract → clean → chunk (embeddings optional)."""
     clinic = clinic_from(request)
     try:
         document = docs.upload_document(
@@ -94,7 +85,7 @@ def get_document(request, document_id: UUID):
 
 @router.get("/{document_id}/chunks", response=list[ChunkOut], auth=jwt_auth)
 def list_chunks(request, document_id: UUID):
-    """List text chunks for a document (Phase 2 — embeddings may be null)."""
+    """List structured text chunks for a document."""
     clinic = clinic_from(request)
     document = docs.get_document(clinic=clinic, document_id=document_id)
     if document is None:
