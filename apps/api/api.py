@@ -1,5 +1,6 @@
 """Django Ninja API entrypoint — mounts all v1 routers."""
 
+from django.conf import settings
 from ninja import NinjaAPI
 
 from apps.api.appointments.router import router as appointments_router
@@ -32,3 +33,8 @@ api.add_router("/patients", patients_router)
 api.add_router("/doctors", doctors_router)
 api.add_router("/services", services_router)
 api.add_router("/appointments", appointments_router)
+
+if settings.DEBUG:
+    from apps.api.debug.router import router as debug_router
+
+    api.add_router("/debug", debug_router)

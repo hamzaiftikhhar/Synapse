@@ -14,7 +14,7 @@ from django.conf import settings
 from django.db import transaction
 
 from apps.knowledge.models import Document, DocumentStatus, KnowledgeChunk
-from apps.knowledge.pipeline import chunk, clean, embed, extract
+from apps.knowledge.pipeline import chunk, clean, extract
 from apps.knowledge.pipeline.extract import PageText
 from apps.knowledge.services import storage
 
@@ -73,10 +73,21 @@ def ingest_document(
         vectors: list[list[float]] | None = None
         model_name = ""
         if run_embeddings:
-            vectors = embed.embed_texts([c.content for c in text_chunks])
+            from apps.knowledge.embeddings import EmbeddingError, get_embedding_service
+
+            service = get_embedding_service()
+            try:
+                vectors = service.embed_many([c.content for c in text_chunks])
+            except EmbeddingError as exc:
+                raise IngestionError(str(exc)) from exc
             if len(vectors) != len(text_chunks):
                 raise IngestionError("Embedding count does not match chunk count")
-            model_name = settings.EMBEDDING_MODEL
+            model_name = service.model_name
+            if model_name != settings.EMBEDDING_MODEL:
+                raise IngestionError(
+                    f"Embedding model mismatch: got {model_name!r}, "
+                    f"expected {settings.EMBEDDING_MODEL!r}"
+                )
 
         with transaction.atomic():
             document.chunks.all().delete()

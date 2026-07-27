@@ -185,21 +185,23 @@ OTP_EXPIRE_MINUTES = env.int("OTP_EXPIRE_MINUTES", default=10)
 # ─── OpenAI (embeddings + chat) ───────────────────────────────────────────────
 
 OPENAI_API_KEY = env("OPENAI_API_KEY", default="")
+# Legacy aliases — prefer EMBEDDING_MODEL / EMBEDDING_DIMENSIONS for both providers
 OPENAI_EMBEDDING_MODEL = env(
     "OPENAI_EMBEDDING_MODEL",
     default="text-embedding-3-small",
 )
-OPENAI_EMBEDDING_DIMENSIONS = 1536
+OPENAI_EMBEDDING_DIMENSIONS = env.int("OPENAI_EMBEDDING_DIMENSIONS", default=1536)
 
 # ─── Knowledge ingestion ──────────────────────────────────────────────────────
 
 KNOWLEDGE_CHUNK_SIZE = env.int("KNOWLEDGE_CHUNK_SIZE", default=1000)
 KNOWLEDGE_CHUNK_OVERLAP = env.int("KNOWLEDGE_CHUNK_OVERLAP", default=150)
 KNOWLEDGE_CHUNK_MIN_CHARS = env.int("KNOWLEDGE_CHUNK_MIN_CHARS", default=40)
-# Phase 2 default: persist text chunks without embeddings
-KNOWLEDGE_RUN_EMBEDDINGS = env.bool("KNOWLEDGE_RUN_EMBEDDINGS", default=False)
+# Phase 3: embed + index on upload (set False to chunk-only for debugging)
+KNOWLEDGE_RUN_EMBEDDINGS = env.bool("KNOWLEDGE_RUN_EMBEDDINGS", default=True)
 
-# Embedding provider (Phase 3+) — see docs/rag/EMBEDDING-PROVIDER-SWITCH.md
+# Embedding provider — see docs/rag/EMBEDDING-PROVIDER-SWITCH.md
+# Switch provider by changing only these three settings (+ OPENAI_API_KEY for openai):
 EMBEDDING_PROVIDER = env("EMBEDDING_PROVIDER", default="local")
 EMBEDDING_MODEL = env("EMBEDDING_MODEL", default="BAAI/bge-base-en-v1.5")
 EMBEDDING_DIMENSIONS = env.int("EMBEDDING_DIMENSIONS", default=768)
