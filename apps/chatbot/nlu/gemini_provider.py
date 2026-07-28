@@ -88,7 +88,7 @@ class GeminiNLUProvider:
             method="POST",
         )
 
-        request_timeout = timeout or getattr(settings, "NLU_API_TIMEOUT_SECONDS", 8)
+        request_timeout = timeout or getattr(settings, "NLU_API_TIMEOUT_SECONDS", 2.5)
 
         try:
             t0 = time.perf_counter()
@@ -97,6 +97,8 @@ class GeminiNLUProvider:
                 t_read = time.perf_counter()
                 raw_body = response.read().decode("utf-8")
                 timings.response_read_ms = (time.perf_counter() - t_read) * 1000
+        except TimeoutError as exc:
+            raise NLUError(f"Gemini API timed out after {request_timeout}s") from exc
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
             logger.error("Gemini NLU HTTP %s: %s", exc.code, detail[:500])
@@ -108,7 +110,8 @@ class GeminiNLUProvider:
                 ) from exc
             raise NLUError(f"Gemini API error {exc.code}: {detail[:500]}") from exc
         except urllib.error.URLError as exc:
-            if "timed out" in str(exc).lower():
+            reason = str(getattr(exc, "reason", exc)).lower()
+            if "timed out" in reason or "timeout" in reason:
                 raise NLUError(f"Gemini API timed out after {request_timeout}s") from exc
             raise NLUError(f"Gemini API connection failed: {exc}") from exc
 

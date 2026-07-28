@@ -1,4 +1,4 @@
-"""Classifier with rules fast-path, timeout, retry, and provider fallback."""
+"""Classifier with rules fast-path, strict timeout, and fallback."""
 
 from __future__ import annotations
 
@@ -9,12 +9,19 @@ from typing import Any
 from django.conf import settings
 
 from apps.chatbot.nlu.base import NLUError, NLUProvider
+from apps.chatbot.nlu.entity_extract import extract_entities, merge_entities
 from apps.chatbot.nlu.factory import get_nlu_provider
 from apps.chatbot.nlu.openai_provider import OpenAINLUProvider
 from apps.chatbot.nlu.rules import try_rule_classify
 from apps.chatbot.nlu.timings import NLUTimings
 
 logger = logging.getLogger(__name__)
+
+_TIMEOUT_CLARIFY = (
+    "I'm having trouble retrieving that right now. "
+    "Are you looking to book an appointment, check doctor availability, "
+    "or ask about insurance?"
+)
 
 
 def classify_message(
@@ -24,7 +31,10 @@ def classify_message(
     provider: NLUProvider | None = None,
 ) -> dict[str, Any]:
     """
-    Classify a message: rules → LLM (timeout + retry) → OpenAI fallback → rules fallback.
+    Classify a message:
+
+    rules_fast → rules_strong → LLM (strict timeout, single attempt)
+    → OpenAI fallback (optional) → rules_fallback / clarify payload
     """
     started = time.perf_counter()
 
@@ -39,41 +49,42 @@ def classify_message(
                 return _finalize_rules(strong, started)
 
     primary = provider or get_nlu_provider()
-    timeout = getattr(settings, "NLU_API_TIMEOUT_SECONDS", 8)
+    # Hard ceiling — never block the chatbot for more than this.
+    timeout = float(getattr(settings, "NLU_API_TIMEOUT_SECONDS", 2.5))
     last_error: NLUError | None = None
 
-    for attempt in range(2):
-        try:
-            raw = primary.classify(
-                message=message,
-                conversation_context=conversation_context,
-                timeout=timeout,
+    # Single attempt only (retry would double worst-case latency)
+    try:
+        raw = primary.classify(
+            message=message,
+            conversation_context=conversation_context,
+            timeout=timeout,
+        )
+        if isinstance(raw, dict):
+            raw.setdefault("_classifier_source", primary.provider_name)
+            # Enrich LLM entities with local regex gaps
+            raw["entities"] = merge_entities(
+                raw.get("entities") if isinstance(raw.get("entities"), dict) else {},
+                extract_entities(message),
             )
-            if isinstance(raw, dict):
-                raw.setdefault("_classifier_source", primary.provider_name)
-            return raw
-        except NLUError as exc:
-            last_error = exc
-            is_timeout = _is_timeout_error(exc)
-            logger.warning(
-                "NLU provider %s attempt %s failed (timeout=%s): %s",
-                primary.provider_name,
-                attempt + 1,
-                is_timeout,
-                exc,
-            )
-            if not is_timeout and attempt == 0:
-                break
+        return raw
+    except NLUError as exc:
+        last_error = exc
+        logger.warning(
+            "NLU provider %s failed (timeout=%s): %s",
+            primary.provider_name,
+            _is_timeout_error(exc),
+            exc,
+        )
 
-    # OpenAI fallback when primary is Gemini
+    # OpenAI fallback — only when primary is Gemini and key exists
     if (
         primary.provider_name == "gemini"
         and settings.OPENAI_API_KEY
         and getattr(settings, "NLU_FALLBACK_OPENAI", True)
+        and not _is_timeout_error(last_error)  # on timeout prefer instant rules
     ):
-        fallback_model = getattr(
-            settings, "NLU_FALLBACK_MODEL", "gpt-4o-mini"
-        )
+        fallback_model = getattr(settings, "NLU_FALLBACK_MODEL", "gpt-4o-mini")
         logger.info("NLU falling back to OpenAI model=%s", fallback_model)
         try:
             fb = OpenAINLUProvider(
@@ -87,6 +98,10 @@ def classify_message(
             )
             if isinstance(raw, dict):
                 raw["_classifier_source"] = "openai_fallback"
+                raw["entities"] = merge_entities(
+                    raw.get("entities") if isinstance(raw.get("entities"), dict) else {},
+                    extract_entities(message),
+                )
             return raw
         except NLUError as exc:
             last_error = exc
@@ -98,7 +113,27 @@ def classify_message(
             logger.info("NLU using rules fallback after provider failure")
             return _finalize_rules(fallback_rule, started)
 
-    raise last_error or NLUError("NLU classification failed")
+    # Soft clarify — never hang the user
+    logger.info("NLU returning clarify fallback after provider failure")
+    return _finalize_rules(
+        {
+            "intent": "unknown",
+            "secondary_intents": [],
+            "confidence": 0.5,
+            "entities": extract_entities(message),
+            "needs_sql": False,
+            "needs_vector": False,
+            "needs_llm": False,
+            "can_respond_directly": False,
+            "is_emergency": False,
+            "is_off_topic": False,
+            "clarification_needed": True,
+            "clarification_question": _TIMEOUT_CLARIFY,
+            "reasoning_short": "Provider timeout/error — clarification fallback",
+            "_classifier_source": "rules_fallback",
+        },
+        started,
+    )
 
 
 def _finalize_rules(payload: dict[str, Any], started: float) -> dict[str, Any]:
@@ -114,6 +149,8 @@ def _finalize_rules(payload: dict[str, Any], started: float) -> dict[str, Any]:
     return payload
 
 
-def _is_timeout_error(exc: NLUError) -> bool:
+def _is_timeout_error(exc: NLUError | None) -> bool:
+    if exc is None:
+        return False
     msg = str(exc).lower()
     return "timeout" in msg or "timed out" in msg

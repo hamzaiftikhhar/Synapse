@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any
@@ -64,31 +65,43 @@ ENTITY_KEYS = (
     "symptom",
 )
 
+# Fields that may be a single string or a list of strings
+MULTI_ENTITY_KEYS = frozenset(
+    {
+        "doctor_name",
+        "specialty",
+        "insurance_provider",
+        "date",
+        "time",
+        "symptom",
+    }
+)
+
 
 @dataclass
 class ExtractedEntities:
-    doctor_name: str | None = None
-    specialty: str | None = None
+    doctor_name: list[str] | str | None = None
+    specialty: list[str] | str | None = None
     service: str | None = None
-    insurance_provider: str | None = None
-    date: str | None = None
-    time: str | None = None
+    insurance_provider: list[str] | str | None = None
+    date: list[str] | str | None = None
+    time: list[str] | str | None = None
     patient_name: str | None = None
     location: str | None = None
-    symptom: str | None = None
+    symptom: list[str] | str | None = None
 
-    def to_dict(self) -> dict[str, str | None]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
 @dataclass
 class ResolvedIds:
-    doctor_id: str | None = None
-    specialty_id: str | None = None
+    doctor_id: list[str] | str | None = None
+    specialty_id: list[str] | str | None = None
     service_id: str | None = None
-    insurance_plan_id: str | None = None
+    insurance_plan_id: list[str] | str | None = None
 
-    def to_dict(self) -> dict[str, str | None]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
@@ -179,7 +192,7 @@ def parse_nlu_payload(
         entity_data = {}
     entities = ExtractedEntities(
         **{
-            key: _optional_str(entity_data.get(key))
+            key: _normalize_entity_value(entity_data.get(key), multi=(key in MULTI_ENTITY_KEYS))
             for key in ENTITY_KEYS
         }
     )
@@ -216,3 +229,20 @@ def _optional_str(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _normalize_entity_value(value: Any, *, multi: bool) -> list[str] | str | None:
+    """Normalize entity values; multi fields become lists when multiple items present."""
+    if value is None:
+        return None
+    if isinstance(value, list):
+        items = [str(v).strip() for v in value if str(v).strip()]
+        return items or None
+    text = str(value).strip()
+    if not text:
+        return None
+    if multi and ("," in text or " or " in text.lower()):
+        parts = re.split(r"\s*,\s*|\s+or\s+", text, flags=re.IGNORECASE)
+        items = [p.strip() for p in parts if p.strip()]
+        return items or None
+    return text
