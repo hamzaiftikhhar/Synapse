@@ -158,30 +158,24 @@ def _extract_doctors(text: str) -> list[str] | None:
 
 
 def _extract_insurance(lower: str) -> list[str] | None:
+    """Extract insurance brand names only — never trailing context words."""
     found: list[str] = []
+    # Longest-first so "blue cross blue shield" wins over "blue cross"
     for brand in sorted(_INSURANCE_BRANDS, key=len, reverse=True):
-        if brand in lower:
-            # Prefer longer matches; skip if already covered by longer brand
-            if any(brand in existing.lower() for existing in found):
+        if re.search(rf"\b{re.escape(brand)}\b", lower):
+            display = {
+                "bluecross": "Blue Cross",
+                "blue cross": "Blue Cross",
+                "blue cross blue shield": "Blue Cross Blue Shield",
+                "united healthcare": "United Healthcare",
+                "unitedhealthcare": "United Healthcare",
+            }.get(brand, " ".join(w.capitalize() for w in brand.split()))
+            # Skip if a longer brand already covers this
+            if any(display.lower() in existing.lower() for existing in found):
                 continue
-            if any(existing.lower() in brand for existing in found):
-                continue
-            # Title-case display
-            display = " ".join(w.capitalize() for w in brand.split())
-            if brand == "bluecross":
-                display = "Blue Cross"
+            # Remove shorter brands already added that are substrings
+            found = [f for f in found if f.lower() not in display.lower()]
             found.append(display)
-    # Also catch "Blue Cross Origin" style
-    m = re.search(
-        r"\b((?:blue\s*cross(?:\s*blue\s*shield)?|aetna|cigna|humana|kaiser|"
-        r"united\s*healthcare?|medicare|medicaid|anthem|oscar|molina)"
-        r"(?:\s+[a-z0-9]+){0,2})\b",
-        lower,
-    )
-    if m:
-        phrase = " ".join(w.capitalize() for w in m.group(1).split())
-        if not any(phrase.lower() == f.lower() or phrase.lower() in f.lower() for f in found):
-            found.append(phrase)
     return found or None
 
 

@@ -237,7 +237,9 @@ def _normalize_entity_value(value: Any, *, multi: bool) -> list[str] | str | Non
         return None
     if isinstance(value, list):
         items = [str(v).strip() for v in value if str(v).strip()]
-        return items or None
+        if not items:
+            return None
+        return items if multi else items[0]
     text = str(value).strip()
     if not text:
         return None

@@ -286,6 +286,38 @@ def _match_strong(
             _classifier_source="rules_strong",
         )
 
+    if re.search(
+        r"\b(what services|which services|services do you|list (?:of )?services|"
+        r"services (?:do you )?(?:offer|provide|have)|medical spa)\b",
+        text,
+    ):
+        return _base_payload(
+            intent=Intent.SERVICES_OFFERED.value,
+            confidence=0.9,
+            needs_sql=True,
+            needs_vector=True,
+            needs_llm=True,
+            reasoning_short="Services offered (rule)",
+            _classifier_source="rules_strong",
+        )
+
+    if re.search(
+        r"\b(referral|referrals|do i need|policy|policies|how does|"
+        r"what (?:is|are) your)\b",
+        text,
+    ) and re.search(
+        r"\b(specialists?|referral|referrals|insurance|visit|appointment)\b",
+        text,
+    ):
+        return _base_payload(
+            intent=Intent.FAQ.value,
+            confidence=0.85,
+            needs_vector=True,
+            needs_llm=True,
+            reasoning_short="FAQ / policy (rule)",
+            _classifier_source="rules_strong",
+        )
+
     # Insurance: require accept/coverage/take OR explicit brand — avoid pediatric false positives
     has_insurance_word = bool(re.search(r"\binsurance\b", text))
     has_accept_frame = bool(

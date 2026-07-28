@@ -12,6 +12,7 @@ from typing import Any
 from django.conf import settings
 
 from apps.chatbot.nlu.base import NLUError
+from apps.chatbot.nlu.deadline import run_with_deadline
 from apps.chatbot.nlu.json_utils import parse_json_response
 from apps.chatbot.nlu.prompts import get_system_prompt, build_user_prompt
 from apps.chatbot.nlu.timings import NLUTimings
@@ -88,16 +89,22 @@ class GeminiNLUProvider:
             method="POST",
         )
 
-        request_timeout = timeout or getattr(settings, "NLU_API_TIMEOUT_SECONDS", 2.5)
+        request_timeout = float(
+            timeout if timeout is not None else getattr(settings, "NLU_API_TIMEOUT_SECONDS", 2.5)
+        )
+
+        def _do_request() -> str:
+            with urllib.request.urlopen(request, timeout=request_timeout) as response:
+                return response.read().decode("utf-8")
 
         try:
             t0 = time.perf_counter()
-            with urllib.request.urlopen(request, timeout=request_timeout) as response:
-                timings.api_call_ms = (time.perf_counter() - t0) * 1000
-                t_read = time.perf_counter()
-                raw_body = response.read().decode("utf-8")
-                timings.response_read_ms = (time.perf_counter() - t_read) * 1000
+            # Hard wall-clock deadline — urllib alone can hang >20s on slow Gemini streams.
+            raw_body = run_with_deadline(_do_request, seconds=request_timeout)
+            timings.api_call_ms = (time.perf_counter() - t0) * 1000
+            timings.response_read_ms = 0.0
         except TimeoutError as exc:
+            timings.api_call_ms = (time.perf_counter() - t0) * 1000
             raise NLUError(f"Gemini API timed out after {request_timeout}s") from exc
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")

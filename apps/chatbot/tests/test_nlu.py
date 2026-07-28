@@ -153,12 +153,23 @@ class RuleClassifierTests(SimpleTestCase):
         )
         self.assertIsNone(hit)
 
-    def test_pediatric_insurance_not_false_positive(self):
+    def test_services_and_faq_rules(self):
+        hit = try_rule_classify("What services do you provide?", tier="strong")
+        self.assertIsNotNone(hit)
+        self.assertEqual(hit["intent"], "services_offered")
+
+        hit = try_rule_classify("Do I need referrals for specialists?", tier="strong")
+        self.assertIsNotNone(hit)
+        self.assertEqual(hit["intent"], "faq")
+
+    def test_medicaid_entity_clean(self):
         hit = try_rule_classify(
-            "I want to check my 5 years old son, do you have any insurance related to 5 years old?",
+            "Do you accept Medicaid for adult primary care?",
             tier="strong",
         )
-        self.assertIsNone(hit)
+        self.assertIsNotNone(hit)
+        self.assertEqual(hit["entities"]["insurance_provider"], ["Medicaid"])
+
 
     def test_availability_slots_rule(self):
         hit = try_rule_classify(

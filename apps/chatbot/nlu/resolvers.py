@@ -171,36 +171,72 @@ def _match_specialty(clinic: Clinic, name: str | None) -> str | None:
     return best_id if best_score >= 0.7 else None
 
 
-def _match_service(clinic: Clinic, name: str | None) -> str | None:
-    if not name:
-        return None
-    from apps.services.models import Service
-
-    qs = Service.objects.filter(clinic=clinic, is_deleted=False, is_active=True)
-    hit = qs.filter(name__icontains=name.strip()).order_by("name").first()
-    return str(hit.id) if hit else None
-
-
 def _match_insurance(clinic: Clinic, name: str | None) -> str | None:
     if not name:
         return None
     from apps.insurance.models import InsurancePlan
 
+    needle = name.strip()
     qs = InsurancePlan.objects.filter(
         clinic=clinic,
         is_deleted=False,
         is_accepted=True,
-    ).only("id", "provider_name", "plan_name")[:100]
+    )
+
+    # Exact / contains first (Medicaid → provider_name containing Medicaid)
+    hit = (
+        qs.filter(
+            Q(provider_name__icontains=needle) | Q(plan_name__icontains=needle)
+        )
+        .order_by("provider_name")
+        .first()
+    )
+    if hit:
+        return str(hit.id)
+
+    # Brand token fallback: "Blue Cross Origin" → match plans containing "Blue Cross"
+    tokens = [t for t in needle.lower().split() if len(t) > 2]
+    for size in range(min(3, len(tokens)), 0, -1):
+        phrase = " ".join(tokens[:size])
+        hit = (
+            qs.filter(
+                Q(provider_name__icontains=phrase) | Q(plan_name__icontains=phrase)
+            )
+            .order_by("provider_name")
+            .first()
+        )
+        if hit:
+            return str(hit.id)
 
     best_id = None
     best_score = 0.0
-    for plan in qs:
+    for plan in qs.only("id", "provider_name", "plan_name")[:100]:
         score = max(
-            _fuzzy_score(name, plan.provider_name),
-            _fuzzy_score(name, plan.plan_name or ""),
-            _fuzzy_score(name, f"{plan.provider_name} {plan.plan_name}"),
+            _fuzzy_score(needle, plan.provider_name),
+            _fuzzy_score(needle, plan.plan_name or ""),
+            _fuzzy_score(needle, f"{plan.provider_name} {plan.plan_name}"),
         )
         if score > best_score:
             best_score = score
             best_id = str(plan.id)
+    return best_id if best_score >= 0.5 else None
+
+
+def _match_service(clinic: Clinic, name: str | None) -> str | None:
+    if not name:
+        return None
+    from apps.services.models import Service
+
+    needle = name.strip()
+    qs = Service.objects.filter(clinic=clinic, is_deleted=False, is_active=True)
+    hit = qs.filter(name__icontains=needle).order_by("name").first()
+    if hit:
+        return str(hit.id)
+    best_id = None
+    best_score = 0.0
+    for row in qs.only("id", "name")[:100]:
+        score = _fuzzy_score(needle, row.name)
+        if score > best_score:
+            best_score = score
+            best_id = str(row.id)
     return best_id if best_score >= 0.55 else None
