@@ -1,12 +1,13 @@
-"""Unit tests for Decision Engine and NLU parsing (no live LLM)."""
+"""Unit tests for Decision Engine, rules, and NLU parsing (no live LLM)."""
 
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, override_settings
 
 from apps.chatbot.nlu.decision import EMERGENCY_SAFETY_MESSAGE, DecisionEngine
 from apps.chatbot.nlu.json_utils import parse_json_response
+from apps.chatbot.nlu.rules import try_rule_classify
 from apps.chatbot.nlu.schemas import Intent, Route, parse_nlu_payload
 from apps.chatbot.nlu.base import NLUError
-from apps.chatbot.nlu.intent_entity import IntentEntityService
+from apps.chatbot.nlu.intent_entity import IntentEntityService, _apply_confidence_threshold
 
 
 class ParseNLUPayloadTests(SimpleTestCase):
@@ -131,13 +132,41 @@ class DecisionEngineTests(SimpleTestCase):
         self.assertEqual(DecisionEngine.decide(nlu).route, Route.LLM_ONLY)
 
 
+class RuleClassifierTests(SimpleTestCase):
+    def test_greeting_fast_path(self):
+        hit = try_rule_classify("Hi there!", tier="fast")
+        self.assertIsNotNone(hit)
+        self.assertEqual(hit["intent"], "greeting")
+        self.assertTrue(hit["can_respond_directly"])
+
+    def test_book_appointment_strong_rule(self):
+        hit = try_rule_classify(
+            "can you please book an appointment for tomorrow morning?",
+            tier="strong",
+        )
+        self.assertIsNotNone(hit)
+        self.assertEqual(hit["intent"], "book_appointment")
+        self.assertEqual(hit["entities"]["date"], "tomorrow")
+        self.assertEqual(hit["entities"]["time"], "morning")
+
+    def test_low_confidence_triggers_clarify(self):
+        nlu = parse_nlu_payload({"intent": "unknown", "confidence": 0.5})
+        adjusted = _apply_confidence_threshold(nlu)
+        self.assertTrue(adjusted.clarification_needed)
+
+
+@override_settings(
+    NLU_ENABLE_RULES=False,
+    NLU_RULES_BEFORE_LLM=False,
+    NLU_CONFIDENCE_THRESHOLD=0.75,
+)
 class IntentEntityServiceMockedTests(SimpleTestCase):
     def test_analyze_with_fake_provider(self):
         class FakeProvider:
             provider_name = "gemini"
             model_name = "gemini-1.5-flash"
 
-            def classify(self, *, message, conversation_context=None):
+            def classify(self, *, message, conversation_context=None, timeout=None):
                 return {
                     "intent": "clinic_hours",
                     "confidence": 0.9,

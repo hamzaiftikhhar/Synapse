@@ -6,6 +6,8 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any
 
+from apps.chatbot.nlu.timings import NLUTimings
+
 
 class Intent(str, Enum):
     GREETING = "greeting"
@@ -108,6 +110,7 @@ class NLUResult:
     reasoning_short: str = ""
     provider: str = ""
     model: str = ""
+    timings: NLUTimings = field(default_factory=NLUTimings)
     raw: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -128,6 +131,7 @@ class NLUResult:
             "reasoning_short": self.reasoning_short,
             "provider": self.provider,
             "model": self.model,
+            "timings": self.timings.to_dict(),
         }
 
 

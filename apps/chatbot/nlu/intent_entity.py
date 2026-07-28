@@ -6,11 +6,14 @@ import logging
 import time
 from typing import Any
 
+from django.conf import settings
+
 from apps.clinics.models import Clinic
 from apps.chatbot.nlu.base import NLUError, NLUProvider
-from apps.chatbot.nlu.factory import get_nlu_provider
+from apps.chatbot.nlu.classifier import classify_message
 from apps.chatbot.nlu.resolvers import resolve_entities
 from apps.chatbot.nlu.schemas import NLUResult, parse_nlu_payload
+from apps.chatbot.nlu.timings import NLUTimings
 
 logger = logging.getLogger(__name__)
 
@@ -24,10 +27,6 @@ class IntentEntityService:
 
     def __init__(self, provider: NLUProvider | None = None) -> None:
         self._provider = provider
-
-    @property
-    def provider(self) -> NLUProvider:
-        return self._provider or get_nlu_provider()
 
     def analyze(
         self,
@@ -43,12 +42,12 @@ class IntentEntityService:
         if not text:
             raise NLUError("Message is empty")
 
-        provider = self.provider
         started = time.perf_counter()
         try:
-            raw = provider.classify(
+            raw = classify_message(
                 message=text,
                 conversation_context=conversation_context,
+                provider=self._provider,
             )
         except NLUError:
             raise
@@ -57,33 +56,62 @@ class IntentEntityService:
 
         latency_ms = int((time.perf_counter() - started) * 1000)
         usage = raw.pop("_usage", {}) if isinstance(raw, dict) else {}
+        timings_raw = raw.pop("_timings", {}) if isinstance(raw, dict) else {}
+        classifier_source = raw.pop("_classifier_source", "unknown")
+
+        provider_name = classifier_source
+        model_name = getattr(self._provider, "model_name", "") if self._provider else ""
+        if classifier_source in {"rules_fast", "rules_strong", "rules_fallback"}:
+            model_name = classifier_source
+        elif not model_name:
+            from apps.chatbot.nlu.factory import get_nlu_provider
+
+            p = get_nlu_provider()
+            provider_name = p.provider_name
+            model_name = p.model_name
 
         result = parse_nlu_payload(
             raw,
-            provider=provider.provider_name,
-            model=provider.model_name,
+            provider=provider_name,
+            model=model_name,
         )
-        result.resolved_ids = resolve_entities(clinic, result.entities)
+        result = _apply_confidence_threshold(result)
 
-        if log_usage:
+        t0 = time.perf_counter()
+        result.resolved_ids = resolve_entities(clinic, result.entities)
+        entity_ms = (time.perf_counter() - t0) * 1000
+
+        timings = _build_timings(timings_raw, entity_ms, latency_ms)
+        timings.classifier_source = str(classifier_source)
+        result.timings = timings
+
+        if log_usage and classifier_source not in {
+            "rules_fast",
+            "rules_strong",
+            "rules_fallback",
+        }:
             self._log_usage(
                 clinic=clinic,
                 session=session,
                 message_obj=message_obj,
-                provider_name=provider.provider_name,
-                model_name=provider.model_name,
+                provider_name=provider_name,
+                model_name=model_name,
                 usage=usage if isinstance(usage, dict) else {},
                 latency_ms=latency_ms,
                 intent=result.intent.value,
             )
 
         logger.info(
-            "NLU clinic=%s intent=%s confidence=%.2f provider=%s latency_ms=%s",
+            "NLU clinic=%s intent=%s confidence=%.2f source=%s "
+            "total_ms=%.0f api_call_ms=%.0f local_ms=%.0f tokens_in=%s",
             clinic.id,
             result.intent.value,
             result.confidence,
-            provider.provider_name,
-            latency_ms,
+            classifier_source,
+            result.timings.total_ms,
+            result.timings.api_call_ms,
+            result.timings.non_api_ms,
+            result.timings.prompt_tokens,
         )
         return result
 
@@ -105,6 +133,7 @@ class IntentEntityService:
             provider_map = {
                 "gemini": AIProvider.GEMINI,
                 "openai": AIProvider.OPENAI,
+                "openai_fallback": AIProvider.OPENAI,
             }
             prompt_tokens = int(usage.get("prompt_tokens") or 0)
             completion_tokens = int(usage.get("completion_tokens") or 0)
@@ -126,3 +155,44 @@ class IntentEntityService:
             )
         except Exception:
             logger.exception("Failed to write AIUsageLog for intent classification")
+
+
+def _apply_confidence_threshold(result: NLUResult) -> NLUResult:
+    threshold = getattr(settings, "NLU_CONFIDENCE_THRESHOLD", 0.75)
+    if (
+        result.confidence < threshold
+        and not result.is_emergency
+        and not result.can_respond_directly
+        and not result.clarification_needed
+    ):
+        result.clarification_needed = True
+        result.clarification_question = (
+            "I'm not fully sure what you need — could you tell me a bit more?"
+        )
+        result.reasoning_short = (
+            result.reasoning_short or "Low confidence — asking for clarification"
+        )
+    return result
+
+
+def _build_timings(
+    raw: dict[str, Any],
+    entity_ms: float,
+    fallback_total_ms: int,
+) -> NLUTimings:
+    fields = NLUTimings.__dataclass_fields__
+    values: dict[str, Any] = {}
+    for key in fields:
+        default = fields[key].default
+        val = raw.get(key, default)
+        if key == "classifier_source":
+            values[key] = str(val or "")
+        elif isinstance(default, int):
+            values[key] = int(val or 0)
+        else:
+            values[key] = float(val or 0.0)
+    timings = NLUTimings(**values)
+    timings.entity_resolution_ms = entity_ms
+    if not timings.total_ms:
+        timings.total_ms = float(fallback_total_ms)
+    return timings

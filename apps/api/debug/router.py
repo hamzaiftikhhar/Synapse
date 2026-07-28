@@ -1,5 +1,7 @@
 """Development-only debug endpoints — not mounted in production."""
 
+import time
+
 from django.conf import settings
 from ninja import Router
 from ninja.errors import HttpError
@@ -79,15 +81,20 @@ def debug_nlu(request, payload: DebugNLUIn):
     except NLUError as exc:
         raise HttpError(400, str(exc)) from exc
 
+    t0 = time.perf_counter()
     decision = DecisionEngine.decide(nlu)
+    nlu.timings.decision_engine_ms = (time.perf_counter() - t0) * 1000
+
     return DebugNLUOut(
         message=payload.message,
         nlu_provider=nlu.provider,
         nlu_model=nlu.model,
+        classifier_source=nlu.timings.classifier_source,
         route=decision.route.value,
         needs_sql=decision.needs_sql,
         needs_vector=decision.needs_vector,
         needs_llm=decision.needs_llm,
         safety_message=decision.safety_message,
+        timings=nlu.timings.to_dict(),
         nlu=nlu.to_dict(),
     )

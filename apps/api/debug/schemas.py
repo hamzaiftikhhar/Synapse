@@ -35,9 +35,11 @@ class DebugNLUOut(Schema):
     message: str
     nlu_provider: str
     nlu_model: str
+    classifier_source: str = ""
     route: str
     needs_sql: bool
     needs_vector: bool
     needs_llm: bool
     safety_message: str | None = None
+    timings: dict[str, Any]
     nlu: dict[str, Any]

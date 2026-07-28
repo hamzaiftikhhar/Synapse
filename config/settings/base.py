@@ -209,6 +209,12 @@ EMBEDDING_DIMENSIONS = env.int("EMBEDDING_DIMENSIONS", default=768)
 # ─── Intent & Entity NLU (chatbot routing) ────────────────────────────────────
 # Swap provider by changing NLU_PROVIDER + NLU_MODEL (+ API key). Embeddings stay separate.
 NLU_PROVIDER = env("NLU_PROVIDER", default="gemini")
-NLU_MODEL = env("NLU_MODEL", default="gemini-2.5-pro")
+NLU_MODEL = env("NLU_MODEL", default="gemini-2.5-flash")
 GOOGLE_API_KEY = env("GOOGLE_API_KEY", default="")
+NLU_API_TIMEOUT_SECONDS = env.int("NLU_API_TIMEOUT_SECONDS", default=8)
+NLU_CONFIDENCE_THRESHOLD = env.float("NLU_CONFIDENCE_THRESHOLD", default=0.75)
+NLU_ENABLE_RULES = env.bool("NLU_ENABLE_RULES", default=True)
+NLU_RULES_BEFORE_LLM = env.bool("NLU_RULES_BEFORE_LLM", default=True)
+NLU_FALLBACK_OPENAI = env.bool("NLU_FALLBACK_OPENAI", default=True)
+NLU_FALLBACK_MODEL = env("NLU_FALLBACK_MODEL", default="gpt-4o-mini")
 

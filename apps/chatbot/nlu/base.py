@@ -20,6 +20,7 @@ class NLUProvider(Protocol):
         *,
         message: str,
         conversation_context: dict[str, Any] | None = None,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         """
         Return raw structured JSON matching the NLU schema.
