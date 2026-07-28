@@ -5,7 +5,14 @@ from ninja import Router
 from ninja.errors import HttpError
 
 from apps.api.auth.deps import clinic_from, jwt_auth
-from apps.api.debug.schemas import DebugSearchHitOut, DebugSearchIn, DebugSearchOut
+from apps.api.debug.schemas import (
+    DebugNLUIn,
+    DebugNLUOut,
+    DebugSearchHitOut,
+    DebugSearchIn,
+    DebugSearchOut,
+)
+from apps.chatbot.nlu import DecisionEngine, IntentEntityService, NLUError
 from apps.knowledge.embeddings import get_embedding_service
 from apps.knowledge.services.similarity_search import SimilaritySearchService
 
@@ -47,4 +54,40 @@ def debug_search(request, payload: DebugSearchIn):
             )
             for hit in hits
         ],
+    )
+
+
+@router.post("/nlu", response=DebugNLUOut, auth=jwt_auth)
+def debug_nlu(request, payload: DebugNLUIn):
+    """
+    Test Intent & Entity classification + Decision Engine routing.
+
+    Does not run SQL, vector search, or final LLM reply generation.
+    Only available when DEBUG=True.
+    """
+    if not settings.DEBUG:
+        raise HttpError(404, "Not found")
+
+    clinic = clinic_from(request)
+    try:
+        nlu = IntentEntityService().analyze(
+            clinic=clinic,
+            message=payload.message,
+            conversation_context=payload.conversation_context or None,
+            log_usage=True,
+        )
+    except NLUError as exc:
+        raise HttpError(400, str(exc)) from exc
+
+    decision = DecisionEngine.decide(nlu)
+    return DebugNLUOut(
+        message=payload.message,
+        nlu_provider=nlu.provider,
+        nlu_model=nlu.model,
+        route=decision.route.value,
+        needs_sql=decision.needs_sql,
+        needs_vector=decision.needs_vector,
+        needs_llm=decision.needs_llm,
+        safety_message=decision.safety_message,
+        nlu=nlu.to_dict(),
     )

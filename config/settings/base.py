@@ -205,3 +205,10 @@ KNOWLEDGE_RUN_EMBEDDINGS = env.bool("KNOWLEDGE_RUN_EMBEDDINGS", default=True)
 EMBEDDING_PROVIDER = env("EMBEDDING_PROVIDER", default="local")
 EMBEDDING_MODEL = env("EMBEDDING_MODEL", default="BAAI/bge-base-en-v1.5")
 EMBEDDING_DIMENSIONS = env.int("EMBEDDING_DIMENSIONS", default=768)
+
+# ─── Intent & Entity NLU (chatbot routing) ────────────────────────────────────
+# Swap provider by changing NLU_PROVIDER + NLU_MODEL (+ API key). Embeddings stay separate.
+NLU_PROVIDER = env("NLU_PROVIDER", default="gemini")
+NLU_MODEL = env("NLU_MODEL", default="gemini-2.5-pro")
+GOOGLE_API_KEY = env("GOOGLE_API_KEY", default="")
+
