@@ -16,50 +16,100 @@ from apps.chatbot.nlu.schemas import Intent
 
 _GREETING_EXACT = frozenset(
     {
-        "hi",
-        "hello",
-        "hey",
-        "hiya",
-        "howdy",
-        "good morning",
-        "good afternoon",
-        "good evening",
-        "hi there",
-        "hello there",
-        "hey there",
-        "hi how are you",
-        "hi how are you doing",
-        "hello how are you",
-        "hey how are you",
-        "how are you",
-        "how are you doing",
-        "how r you",
-        "whats up",
-        "what's up",
-        "sup",
+        # Standard
+        "hi", "hello", "hey", "hiya", "howdy", "greetings",
+        # With suffix
+        "hi there", "hello there", "hey there", "hi all", "hello all",
+        # Time-based
+        "good morning", "good afternoon", "good evening", "good day",
+        # How are you variants
+        "how are you", "how are you doing", "how are you today",
+        "how r you", "how r u", "how are u", "how are ya",
+        "how you doing", "how you doin", "how you been",
+        "how have you been", "how's it going", "how is it going",
+        "how are things", "how's your day", "how do you do",
+        # Compound
+        "hi how are you", "hi how are you doing",
+        "hello how are you", "hey how are you",
+        # Informal / colloquial
+        "yo", "sup", "whats up", "what's up", "wassup", "wazzup",
+        "waddup", "whassup", "heya", "hey hey", "yoo", "ayy",
+        # Non-english common
+        "hola", "bonjour", "namaste", "salam", "salut",
     }
 )
 
 _GREETING_RE = re.compile(
-    r"^(hi|hello|hey|hiya|howdy)"
-    r"(?:\s*,?\s*(?:there|folks|everyone|all))?"
-    r"(?:\s*[,!]?\s*(?:how\s+are\s+you(?:\s+doing)?(?:\s+today)?)?)?"
+    r"^("
+    r"hi+|hey+|hello+|hiya|howdy|greetings|yo+|"
+    r"good\s+(?:morning|afternoon|evening|day)"
+    r")"
+    r"(?:\s*[,!]?\s*(?:there|folks|everyone|all|doc|friend))?"
+    r"(?:\s*[,!?.]?\s*how\s+(?:are|r|is)\s+(?:you|u|ya)(?:\s+doing|\s+today)?)?"
     r"[!.?]*$",
+    re.IGNORECASE,
+)
+
+_HOW_ARE_YOU_RE = re.compile(
+    r"^how\s+(?:are|r)\s+(?:you|u|ya)(?:\s+doing|\s+today|\s+been)?\?*$",
     re.IGNORECASE,
 )
 
 _FAREWELL_EXACT = frozenset(
     {
-        "bye",
-        "goodbye",
-        "good bye",
-        "see you",
-        "see ya",
-        "take care",
+        "bye", "bye bye", "byee", "byeee",
+        "goodbye", "good bye",
+        "see you", "see ya", "see u", "cya", "cu",
+        "take care", "later", "later!", "laters",
+        "ttyl", "ttyl!", "talk later",
+        "have a good day", "have a great day",
+        "good night", "goodnight",
+        "i'm leaving", "im leaving", "gotta go", "gotta go!",
+        "got to go", "i have to go",
     }
 )
 
-_THANKS_EXACT = frozenset({"thanks", "thank you", "thx", "ty", "thanks!", "thank you!"})
+_THANKS_EXACT = frozenset(
+    {
+        "thanks", "thank you", "thank u", "thankyou", "thank you!",
+        "thanks!", "thx", "ty", "tysm", "tyvm", "thnx", "thanx",
+        "cheers", "appreciated", "appreciate it", "much appreciated",
+        "thanks a lot", "thanks a bunch", "thanks so much",
+        "many thanks", "gracias", "danke",
+    }
+)
+
+# Short off-topic phrases to catch directly without LLM
+_OFF_TOPIC_EXACT = frozenset(
+    {
+        "lol", "lmao", "lmfao", "haha", "hahaha", "😂", "xd",
+        "ok", "okay", "k", "kk", "cool", "nice", "ok cool",
+        "interesting", "wow", "omg", "oh my god", "oh wow",
+        "no worries", "no problem", "np", "nvm", "nevermind",
+    }
+)
+
+# Generic off-topic keyword sets (used in strong rule)
+_OFF_TOPIC_FOOD_RE = re.compile(
+    r"\b(pizza|burger|biryani|sushi|pasta|recipe|cook|restaurant|meal|dinner|lunch|breakfast|food|hungry|eat\b|cafe|menu)\b",
+    re.IGNORECASE,
+)
+_OFF_TOPIC_SPORTS_RE = re.compile(
+    r"\b(fifa|cricket|football|soccer|basketball|nba|nfl|ipl|world cup|tennis|golf|rugby|match|player|messi|ronaldo|lebron)\b",
+    re.IGNORECASE,
+)
+_OFF_TOPIC_TECH_RE = re.compile(
+    r"\b(phone|iphone|android|samsung|laptop|macbook|pc|tablet|ipad|screen|battery|charger|wifi|bluetooth|software|hardware)\b",
+    re.IGNORECASE,
+)
+_OFF_TOPIC_ENTERTAINMENT_RE = re.compile(
+    r"\b(netflix|movie|film|series|anime|spotify|music|song|game|gaming|playstation|xbox|youtube|tiktok)\b",
+    re.IGNORECASE,
+)
+_OFF_TOPIC_TRAVEL_RE = re.compile(
+    r"\b(flight|hotel|vacation|trip|tour|visa|passport|beach|travel|airbnb)\b",
+    re.IGNORECASE,
+)
 
 _EMERGENCY_RE = re.compile(
     r"\b("
@@ -156,7 +206,8 @@ def try_rule_classify(
 
 
 def _match_fast(text: str) -> dict[str, Any] | None:
-    if text in _GREETING_EXACT or _GREETING_RE.fullmatch(text):
+    # Greeting — exact set, regex, or "how are u/you" variants
+    if text in _GREETING_EXACT or _GREETING_RE.fullmatch(text) or _HOW_ARE_YOU_RE.fullmatch(text):
         return _base_payload(
             intent=Intent.GREETING.value,
             confidence=0.99,
@@ -165,7 +216,7 @@ def _match_fast(text: str) -> dict[str, Any] | None:
             _classifier_source="rules_fast",
         )
 
-    if text in _FAREWELL_EXACT:
+    if text in _FAREWELL_EXACT or text.rstrip("!.?") in _FAREWELL_EXACT:
         return _base_payload(
             intent=Intent.FAREWELL.value,
             confidence=0.99,
@@ -174,12 +225,23 @@ def _match_fast(text: str) -> dict[str, Any] | None:
             _classifier_source="rules_fast",
         )
 
-    if text.rstrip("!.?") in _THANKS_EXACT or text in _THANKS_EXACT:
+    if text in _THANKS_EXACT or text.rstrip("!.?") in _THANKS_EXACT:
         return _base_payload(
-            intent=Intent.GREETING.value,
+            intent=Intent.FAREWELL.value,  # close enough — direct response
             confidence=0.99,
             can_respond_directly=True,
             reasoning_short="Thanks (rule)",
+            _classifier_source="rules_fast",
+        )
+
+    # Trivially off-topic short phrases — no LLM needed
+    if text in _OFF_TOPIC_EXACT:
+        return _base_payload(
+            intent=Intent.OFF_TOPIC.value,
+            confidence=0.95,
+            is_off_topic=True,
+            can_respond_directly=True,
+            reasoning_short="Trivial off-topic (rule)",
             _classifier_source="rules_fast",
         )
 
@@ -206,6 +268,32 @@ def _match_strong(
             reasoning_short="Emergency keywords (rule)",
             _classifier_source="rules_strong",
         )
+
+    # Off-topic keyword sets — no LLM needed for pure off-topic messages.
+    # Guard: only fire if no clinic-relevant keyword is also present.
+    _clinic_hint = re.compile(
+        r"\b(doctor|dr\.?|physician|appointment|book|schedule|insurance|"
+        r"clinic|hospital|specialist|symptom|pain|diagnosis|prescription|"
+        r"medication|service|hours|location)\b",
+        re.IGNORECASE,
+    )
+    if not _clinic_hint.search(text):
+        for pattern, label in (
+            (_OFF_TOPIC_FOOD_RE, "food"),
+            (_OFF_TOPIC_SPORTS_RE, "sports"),
+            (_OFF_TOPIC_TECH_RE, "tech"),
+            (_OFF_TOPIC_ENTERTAINMENT_RE, "entertainment"),
+            (_OFF_TOPIC_TRAVEL_RE, "travel"),
+        ):
+            if pattern.search(text):
+                return _base_payload(
+                    intent=Intent.OFF_TOPIC.value,
+                    confidence=0.95,
+                    is_off_topic=True,
+                    can_respond_directly=True,
+                    reasoning_short=f"Off-topic ({label}) (rule)",
+                    _classifier_source="rules_strong",
+                )
 
     if _OFF_TOPIC_RE.search(text) and len(text.split()) <= 6:
         return _base_payload(
