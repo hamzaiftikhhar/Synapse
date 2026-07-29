@@ -22,7 +22,7 @@ import {
   uid,
   userTextMessage,
 } from "@/features/chat/message-parser";
-import { usePatientChat, useStaffChat } from "@/hooks/api";
+import { useStaffChat } from "@/hooks/api";
 import { getApiErrorMessage } from "@/lib/api/client";
 import { useAuth } from "@/providers/auth-provider";
 import type { ChatMessage, MainMenuItem } from "@/types/chat";
@@ -250,8 +250,6 @@ export function ChatWidget({
   const bottomRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
   const staffChat = useStaffChat();
-  const patientChat = usePatientChat();
-
   const staffMode = useStaffApi && isAuthenticated && !demoMode;
 
   useEffect(() => {
@@ -293,20 +291,14 @@ export function ChatWidget({
     setMessages((prev) => [...prev, userTextMessage(trimmed)]);
     setTyping(true);
     try {
-      if (demoMode || !staffMode) {
-        if (!demoMode && !staffMode) {
-          // Patient API needs OTP — fall back to demo UX when not authenticated
-          await new Promise((r) => setTimeout(r, 400));
-          setMessages((prev) => [...prev, ...demoReply(trimmed)]);
-          return;
-        }
+      // Staff portal uses live API; marketing / unauthenticated uses demo replies.
+      // Patient OTP chat needs a verified widget session (embed integration).
+      if (!staffMode) {
         await new Promise((r) => setTimeout(r, 400));
         setMessages((prev) => [...prev, ...demoReply(trimmed)]);
         return;
       }
-      const res = staffMode
-        ? await staffChat.mutateAsync({ message: trimmed })
-        : await patientChat.mutateAsync({ message: trimmed });
+      const res = await staffChat.mutateAsync({ message: trimmed });
       setMessages((prev) => [...prev, ...parseChatResponse(res)]);
     } catch (err) {
       setMessages((prev) => [

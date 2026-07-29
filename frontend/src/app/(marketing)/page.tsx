@@ -191,7 +191,7 @@ export default function LandingPage() {
                       <p className="text-xs text-muted-foreground">Chatbot booking → portal</p>
                     </div>
                   </div>
-                  <div className="min-h-[320px]">
+                  <div className="h-[420px] min-h-[320px]">
                     <ChatWidget
                       mode="embedded"
                       demoMode
