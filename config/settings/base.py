@@ -210,7 +210,7 @@ EMBEDDING_DIMENSIONS = env.int("EMBEDDING_DIMENSIONS", default=768)
 # Swap provider by changing NLU_PROVIDER + NLU_MODEL (+ API key). Embeddings stay separate.
 # OpenAI recommended tier: gpt-4.1-nano (fast/cheap routing) → gpt-4.1-mini (fallback).
 NLU_PROVIDER = env("NLU_PROVIDER", default="gemini")
-NLU_MODEL = env("NLU_MODEL", default="gemini-2.5-flash")
+NLU_MODEL = env("NLU_MODEL", default="gemini-3.1-flash-lite")
 GOOGLE_API_KEY = env("GOOGLE_API_KEY", default="")
 NLU_API_TIMEOUT_SECONDS = env.float("NLU_API_TIMEOUT_SECONDS", default=6.5)
 NLU_CONFIDENCE_THRESHOLD = env.float("NLU_CONFIDENCE_THRESHOLD", default=0.75)
@@ -223,4 +223,5 @@ NLU_FALLBACK_MODEL = env("NLU_FALLBACK_MODEL", default="gpt-4.1-mini")
 # Use a stronger model only when synthesizing answers — not for intent routing.
 CHAT_RESPONSE_MODEL = env("CHAT_RESPONSE_MODEL", default="gpt-4.1-mini")
 CHAT_PREMIUM_MODEL = env("CHAT_PREMIUM_MODEL", default="gpt-4o-mini")
+CHAT_RESPONSE_TIMEOUT_SECONDS = env.float("CHAT_RESPONSE_TIMEOUT_SECONDS", default=15.0)
 
