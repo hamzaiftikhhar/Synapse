@@ -63,6 +63,16 @@ _TEMPLATES: dict[str, str] = {
         "Ha — I'm not a food expert! I can, however, help you find a "
         "doctor or book an appointment. Would you like help with that?"
     ),
+    "OFF_TOPIC_TRAVEL": (
+        "Sounds like a great trip idea! I'm only able to help with "
+        "clinic-related things, though — like appointments, doctors, or "
+        "insurance. Need anything along those lines?"
+    ),
+    "OFF_TOPIC_ENTERTAINMENT": (
+        "Nice taste! Unfortunately I can only help with clinic-related "
+        "questions. Would you like to book an appointment or look up "
+        "a doctor?"
+    ),
     # Abusive / aggressive language
     "ABUSIVE_LANGUAGE": (
         "I understand you may be frustrated. I'm here to help with clinic "
@@ -125,6 +135,70 @@ def get_response(template_id: str, **variables: Any) -> str:
     return template.format_map(safe_vars)
 
 
+_MENTAL_HEALTH_KEYWORDS = (
+    "suicid", "suicidal", "kill myself", "end my life", "harm myself",
+    "self harm", "self-harm", "don't want to live", "want to die",
+    "wish i was dead", "take my life", "hurt myself", "can't go on",
+    "better off dead", "no reason to live", "take my own life",
+    "jump", "overdose", "slit", "cut myself", "shoot myself",
+)
+
+_GREETING_INFORMAL_KEYWORDS = (
+    "sup", "yo ", " yo", "wassup", "wazzup", "waddup", "whassup",
+    "what's up", "whats up", "howdy", "hiya", "heya", "hey there",
+    "ayy", "ay ", "greetings",
+)
+
+_HOW_ARE_YOU_KEYWORDS = (
+    "how are you", "how r you", "how are u", "how do you do",
+    "how have you been", "how's it going", "how is it going",
+    "how are things", "how's your day", "how are ya",
+    "how you doing", "how you doin", "how you been",
+    "how're you",
+)
+
+_THANKS_INFORMAL_KEYWORDS = (
+    "thx", "ty ", " ty", "tysm", "thnx", "tyvm", "thanx", "cheers",
+    "appreciate it", "gracias", "much obliged", "thanks a lot",
+    "thanks a bunch", "danke", "thank u", "thankyou",
+)
+
+_OFFTOPIC_PHONE_KEYWORDS = (
+    "phone", "mobile", "cell phone", "iphone", "android", "samsung",
+    "pixel", "tablet", "ipad", "screen", "battery", "charger",
+    "laptop", "computer", "macbook", "pc", "wifi", "bluetooth",
+    "app ", "software", "hardware", "ios", "windows", "gadget", "device",
+    "smartphone",
+)
+
+_OFFTOPIC_SPORTS_KEYWORDS = (
+    "fifa", "football", "soccer", "basketball", "nba", "nfl",
+    "cricket", "baseball", "mlb", "hockey", "nhl", "tennis", "golf",
+    "rugby", "volleyball", "wwe", "ufc", "boxing", "olympics",
+    "messi", "ronaldo", "lebron", "sports", "match", "tournament",
+    "ipl", "world cup", "champions league", "player",
+)
+
+_OFFTOPIC_FOOD_KEYWORDS = (
+    "recipe", "cook", "cooking", "food", "restaurant", "meal", " eat",
+    "hungry", "pizza", "burger", "sushi", "dinner", "lunch", "breakfast",
+    "snack", "drink", "coffee", "beer", "wine", "baking", "chef",
+    "menu", "cafe", "diet", "vegan", "grocery", "yummy", "delicious",
+    "biryani", "bbq", "dessert", "cuisine", "pasta",
+)
+
+_OFFTOPIC_TRAVEL_KEYWORDS = (
+    "flight", "hotel", "vacation", "trip", "tour", "visa",
+    "passport", "beach", "travel", "airbnb", "booking",
+)
+
+_OFFTOPIC_ENTERTAINMENT_KEYWORDS = (
+    "movie", "film", "series", "netflix", "anime", "music", "song",
+    "spotify", "game", "gaming", "playstation", "xbox", "youtube",
+    "tiktok", "instagram",
+)
+
+
 def resolve_direct_template(intent_value: str, message: str) -> str:
     """
     Map an intent + raw message to the best template ID.
@@ -134,38 +208,41 @@ def resolve_direct_template(intent_value: str, message: str) -> str:
     msg = message.lower().strip()
 
     if intent_value == "emergency":
-        if any(w in msg for w in ("suicid", "kill myself", "end my life", "harm myself")):
+        if any(p in msg for p in _MENTAL_HEALTH_KEYWORDS):
             return "EMERGENCY_MENTAL_HEALTH"
         return "EMERGENCY"
 
     if intent_value == "greeting":
-        if any(w in msg for w in ("sup", "yo ", "wazz", "what's up", "whats up")):
-            return "GREETING_INFORMAL"
-        if "how are you" in msg or "how r you" in msg:
+        if any(p in msg for p in _HOW_ARE_YOU_KEYWORDS):
             return "HOW_ARE_YOU"
+        if any(p in msg for p in _GREETING_INFORMAL_KEYWORDS):
+            return "GREETING_INFORMAL"
         return "GREETING"
 
     if intent_value == "farewell":
         return "FAREWELL"
 
     if intent_value in ("thanks", "thank_you"):
-        if any(w in msg for w in ("thx", "ty ", "tysm", "thnx")):
+        if any(p in msg for p in _THANKS_INFORMAL_KEYWORDS):
             return "THANKS_INFORMAL"
         return "THANKS"
 
     if intent_value == "off_topic":
-        if any(w in msg for w in ("phone", "screen", "iphone", "android", "tablet")):
+        if any(p in msg for p in _OFFTOPIC_PHONE_KEYWORDS):
             return "OFF_TOPIC_PHONE"
-        if any(w in msg for w in ("fifa", "football", "soccer", "basketball", "nba", "nfl", "cricket")):
+        if any(p in msg for p in _OFFTOPIC_SPORTS_KEYWORDS):
             return "OFF_TOPIC_SPORTS"
-        if any(w in msg for w in ("recipe", "cook", "food", "restaurant", "meal", "eat")):
+        if any(p in msg for p in _OFFTOPIC_FOOD_KEYWORDS):
             return "OFF_TOPIC_FOOD"
+        if any(p in msg for p in _OFFTOPIC_TRAVEL_KEYWORDS):
+            return "OFF_TOPIC_TRAVEL"
+        if any(p in msg for p in _OFFTOPIC_ENTERTAINMENT_KEYWORDS):
+            return "OFF_TOPIC_ENTERTAINMENT"
         return "OFF_TOPIC"
 
     if intent_value == "handoff_human":
         return "HANDOFF_HUMAN"
 
-    # abusive content detected by rules
     if intent_value == "abusive":
         return "ABUSIVE_LANGUAGE"
 
