@@ -50,7 +50,7 @@ def classify_message(
 
     primary = provider or get_nlu_provider()
     # Hard ceiling — never block the chatbot for more than this.
-    timeout = float(getattr(settings, "NLU_API_TIMEOUT_SECONDS", 2.5))
+    timeout = float(getattr(settings, "NLU_API_TIMEOUT_SECONDS", 6.5))
     last_error: NLUError | None = None
 
     # Single attempt only (retry would double worst-case latency)
@@ -84,7 +84,7 @@ def classify_message(
         and getattr(settings, "NLU_FALLBACK_OPENAI", True)
         and not _is_timeout_error(last_error)  # on timeout prefer instant rules
     ):
-        fallback_model = getattr(settings, "NLU_FALLBACK_MODEL", "gpt-4o-mini")
+        fallback_model = getattr(settings, "NLU_FALLBACK_MODEL", "gpt-4.1-mini")
         logger.info("NLU falling back to OpenAI model=%s", fallback_model)
         try:
             fb = OpenAINLUProvider(

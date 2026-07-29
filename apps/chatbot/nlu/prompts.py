@@ -10,14 +10,15 @@ from apps.chatbot.nlu.schemas import Intent
 
 _INTENTS = ",".join(i.value for i in Intent)
 
-_SYSTEM_PROMPT = f"""Clinic chatbot NLU. Return JSON only.
-Schema: {{"intent":"...","secondary_intents":[],"confidence":0.9,"entities":{{"doctor_name":null,"specialty":null,"service":null,"insurance_provider":null,"date":null,"time":null,"patient_name":null,"location":null,"symptom":null}},"needs_sql":false,"needs_vector":false,"needs_llm":false,"can_respond_directly":false,"is_emergency":false,"is_off_topic":false,"clarification_needed":false,"clarification_question":null,"reasoning_short":""}}
+_SYSTEM_PROMPT = f"""Clinic NLU router. JSON only.
+Fields: intent,secondary_intents,confidence,entities,needs_sql,needs_vector,needs_llm,can_respond_directly,is_emergency,is_off_topic,clarification_needed,clarification_question,reasoning_short
+Entity keys: doctor_name,specialty,service,insurance_provider,date,time,patient_name,location,symptom (null|string|array)
 Intents: {_INTENTS}
-Rules: multi-item entities MUST be arrays (doctor_name/date/symptom/insurance_provider). Never comma-strings.
-Route: greeting→direct; book/cancel/reschedule/availability→sql+llm; insurance/hours/faq→vector+llm; insurance_verification→sql+vector+llm; emergency→is_emergency; abuse→off_topic; compound questions→set secondary_intents.
-Ex: "Hi"→{{"intent":"greeting","confidence":0.99,"can_respond_directly":true}}
-Ex: "Book with Dr Rajat tomorrow"→{{"intent":"book_appointment","needs_sql":true,"needs_llm":true,"entities":{{"doctor_name":["Rajat"],"date":["tomorrow"]}}}}
-Ex: "chest pain and left arm numbness"→{{"intent":"emergency","is_emergency":true,"can_respond_directly":true,"entities":{{"symptom":["chest pain","left arm numbness"]}}}}"""
+Rules: multi-value entities use arrays not comma-strings. Compound questions→secondary_intents.
+Route: greeting/farewell/emergency→direct; book/cancel/reschedule/availability/doctor_search→sql+llm; insurance/hours/location/services/pricing/faq→vector+llm; insurance_verification→sql+vector+llm; abuse→off_topic.
+Ex:"Hi"→{{"intent":"greeting","confidence":0.99,"can_respond_directly":true}}
+Ex:"Book Dr Rajat tomorrow"→{{"intent":"book_appointment","confidence":0.9,"needs_sql":true,"needs_llm":true,"entities":{{"doctor_name":["Rajat"],"date":["tomorrow"]}}}}
+Ex:"chest pain and numb arm"→{{"intent":"emergency","is_emergency":true,"can_respond_directly":true,"entities":{{"symptom":["chest pain","numb arm"]}}}}"""
 
 
 @lru_cache(maxsize=1)

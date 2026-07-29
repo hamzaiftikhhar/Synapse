@@ -218,7 +218,7 @@ class EntityExtractTests(SimpleTestCase):
     NLU_ENABLE_RULES=False,
     NLU_RULES_BEFORE_LLM=False,
     NLU_CONFIDENCE_THRESHOLD=0.75,
-    NLU_API_TIMEOUT_SECONDS=2.5,
+    NLU_API_TIMEOUT_SECONDS=6.5,
 )
 class IntentEntityServiceMockedTests(SimpleTestCase):
     def test_analyze_with_fake_provider(self):

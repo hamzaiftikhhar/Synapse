@@ -58,7 +58,7 @@ class OpenAINLUProvider:
             response = client.chat.completions.create(
                 model=self.model_name,
                 temperature=0.1,
-                max_tokens=512,
+                max_tokens=384,
                 response_format={"type": "json_object"},
                 messages=[
                     {"role": "system", "content": system_prompt},
