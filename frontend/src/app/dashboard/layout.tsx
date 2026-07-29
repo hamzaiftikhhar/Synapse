@@ -19,7 +19,7 @@ export default function DashboardLayout({
         </div>
         <div className="flex min-w-0 flex-1 flex-col">
           <DashboardTopbar />
-          <main className="flex-1 p-4 lg:p-6">{children}</main>
+          <main className="flex-1 p-4 pb-24 lg:p-6 lg:pb-24">{children}</main>
         </div>
       </div>
     </ProtectedRoute>
