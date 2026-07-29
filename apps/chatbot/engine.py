@@ -1,3 +1,4 @@
+#can you give me the summary of this file? 
 """
 ChatEngine — the main orchestrator.
 
@@ -22,6 +23,7 @@ Execution modes
 All paths persist the user message and assistant reply as ChatMessage rows
 and update `session.last_active_at`.
 """
+
 
 from __future__ import annotations
 
@@ -143,17 +145,29 @@ class ChatEngine:
                 vector_rows = self._run_vector(clinic, message)
                 timings["vector_ms"] = (time.perf_counter() - t0) * 1000
 
-            # LLM response generation
-            t0 = time.perf_counter()
-            response_text = self._generate_response(
-                clinic=clinic,
-                message=message,
-                nlu=nlu_result,
-                sql_rows=sql_rows,
-                vector_rows=vector_rows,
-                session=session,
-            )
-            timings["llm_ms"] = (time.perf_counter() - t0) * 1000
+            # SQL-only: format DB rows directly — no LLM call
+            if route == Route.SQL_ONLY and sql_rows:
+                from apps.chatbot.sql_tool import format_sql_results
+                response_text = format_sql_results(sql_rows)
+            elif decision.needs_llm or vector_rows:
+                t0 = time.perf_counter()
+                response_text = self._generate_response(
+                    clinic=clinic,
+                    message=message,
+                    nlu=nlu_result,
+                    sql_rows=sql_rows,
+                    vector_rows=vector_rows,
+                    session=session,
+                )
+                timings["llm_ms"] = (time.perf_counter() - t0) * 1000
+            elif sql_rows:
+                from apps.chatbot.sql_tool import format_sql_results
+                response_text = format_sql_results(sql_rows)
+            else:
+                response_text = (
+                    "I couldn't find clinic information for that request. "
+                    "Please call the clinic directly for help."
+                )
 
         timings["total_ms"] = (time.perf_counter() - started) * 1000
 
@@ -203,12 +217,8 @@ class ChatEngine:
 
     def _run_sql(self, clinic: Any, nlu: Any, *, patient: Any = None) -> list[dict[str, Any]]:
         from apps.chatbot.sql_tool import SQLTool
-        results = SQLTool.run(clinic, nlu)
-        # Inject patient for auth-required handlers
-        from apps.chatbot.nlu.schemas import Intent
-        if nlu.intent in (Intent.CANCEL_APPOINTMENT, Intent.RESCHEDULE_APPOINTMENT) and patient:
-            from apps.chatbot.sql_tool import SQLTool as ST
-            results = [ST.patient_appointments(clinic, nlu, patient=patient)]
+
+        results = SQLTool.run(clinic, nlu, patient=patient)
         return [r.to_dict() for r in results]
 
     # ── Vector Tool ───────────────────────────────────────────────────────────

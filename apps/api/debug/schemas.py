@@ -43,3 +43,27 @@ class DebugNLUOut(Schema):
     safety_message: str | None = None
     timings: dict[str, Any]
     nlu: dict[str, Any]
+
+
+class DebugSQLIn(Schema):
+    message: str
+    intent: str | None = None
+    conversation_context: dict[str, Any] = {}
+
+
+class DebugSQLBlockOut(Schema):
+    handler: str
+    found: bool
+    summary: str
+    row_count: int
+    rows: list[dict[str, Any]]
+    meta: dict[str, Any] = {}
+
+
+class DebugSQLOut(Schema):
+    message: str
+    intent: str
+    route: str
+    sql_ms: float
+    formatted_response: str
+    results: list[DebugSQLBlockOut]

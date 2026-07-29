@@ -1,0 +1,54 @@
+"""Appointment SQL handlers."""
+
+from __future__ import annotations
+
+from apps.chatbot.sql_tool.base import SQLContext, SQLResult
+from django.utils import timezone
+
+
+def patient_appointments(ctx: SQLContext) -> SQLResult:
+    from apps.appointments.models import Appointment, AppointmentStatus
+
+    if ctx.patient is None:
+        return SQLResult(
+            handler="patient_appointments",
+            found=False,
+            summary="Patient not authenticated — cannot retrieve appointments.",
+            meta={"requires_auth": True},
+        )
+
+    qs = (
+        Appointment.objects.filter(clinic=ctx.clinic, patient=ctx.patient)
+        .select_related("doctor", "service", "insurance_plan")
+        .order_by("start_time")
+    )
+    upcoming = qs.filter(
+        start_time__gte=timezone.now(),
+        status__in=[AppointmentStatus.PENDING, AppointmentStatus.CONFIRMED],
+    )[:10]
+
+    rows = [
+        {
+            "id": str(a.id),
+            "doctor": a.doctor.full_name,
+            "doctor_id": str(a.doctor_id),
+            "service": a.service.name if a.service else "",
+            "insurance": a.insurance_plan.provider_name if a.insurance_plan else "",
+            "start_time": a.start_time.isoformat(),
+            "end_time": a.end_time.isoformat(),
+            "status": a.status,
+            "confirmation_code": a.confirmation_code,
+        }
+        for a in upcoming
+    ]
+    summary = (
+        f"Patient has {len(rows)} upcoming appointment(s)."
+        if rows
+        else "No upcoming appointments found."
+    )
+    return SQLResult(
+        handler="patient_appointments",
+        found=bool(rows),
+        rows=rows,
+        summary=summary,
+    )

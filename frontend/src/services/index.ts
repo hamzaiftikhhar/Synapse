@@ -1,0 +1,247 @@
+import { api, persistStaffTokens, clearStaffTokens, widgetApi, setPatientToken } from "@/lib/api/client";
+import type {
+  Appointment,
+  AppointmentInput,
+  AppointmentUpdateInput,
+  ChatMessageInput,
+  ChatMessageResponse,
+  Doctor,
+  DoctorInput,
+  DoctorUpdateInput,
+  DocumentChunk,
+  KnowledgeDocument,
+  ListParams,
+  MeResponse,
+  MessageOut,
+  OTPSendInput,
+  OTPSendResponse,
+  OTPVerifyInput,
+  Paginated,
+  Patient,
+  PatientInput,
+  PatientTokenResponse,
+  PatientUpdateInput,
+  Service,
+  ServiceInput,
+  ServiceUpdateInput,
+  StaffLoginInput,
+  StaffTokenResponse,
+} from "@/types/api";
+
+function listQuery(params?: ListParams & Record<string, unknown>) {
+  return { params };
+}
+
+/* ─── Auth (Staff) ─────────────────────────────────────────── */
+
+export const authService = {
+  async login(input: StaffLoginInput, remember = true) {
+    const { data } = await api.post<StaffTokenResponse>("/auth/login", input);
+    persistStaffTokens(data.access_token, data.refresh_token, remember);
+    return data;
+  },
+  async me() {
+    const { data } = await api.get<MeResponse>("/auth/me");
+    return data;
+  },
+  async refresh(refresh_token: string) {
+    const { data } = await api.post<StaffTokenResponse>("/auth/refresh", {
+      refresh_token,
+    });
+    return data;
+  },
+  logout() {
+    clearStaffTokens();
+  },
+};
+
+/* ─── Widget / Patient Auth ────────────────────────────────── */
+
+export const widgetAuthService = {
+  async sendOtp(input: OTPSendInput) {
+    const { data } = await widgetApi.post<OTPSendResponse>(
+      "/widget/otp/send",
+      input
+    );
+    return data;
+  },
+  async verifyOtp(input: OTPVerifyInput) {
+    const { data } = await widgetApi.post<PatientTokenResponse>(
+      "/widget/otp/verify",
+      input
+    );
+    setPatientToken(data.access_token);
+    return data;
+  },
+};
+
+/* ─── Chat ─────────────────────────────────────────────────── */
+
+export const chatService = {
+  async sendPatientMessage(input: ChatMessageInput) {
+    const { data } = await widgetApi.post<ChatMessageResponse>(
+      "/chat/message",
+      input
+    );
+    return data;
+  },
+  async sendStaffMessage(input: ChatMessageInput) {
+    const { data } = await api.post<ChatMessageResponse>(
+      "/chat/message/staff",
+      input
+    );
+    return data;
+  },
+};
+
+/* ─── Patients ─────────────────────────────────────────────── */
+
+export const patientsService = {
+  async list(params?: ListParams) {
+    const { data } = await api.get<Paginated<Patient>>(
+      "/patients",
+      listQuery(params)
+    );
+    return data;
+  },
+  async get(id: string) {
+    const { data } = await api.get<Patient>(`/patients/${id}`);
+    return data;
+  },
+  async create(input: PatientInput) {
+    const { data } = await api.post<Patient>("/patients", input);
+    return data;
+  },
+  async update(id: string, input: PatientUpdateInput) {
+    const { data } = await api.patch<Patient>(`/patients/${id}`, input);
+    return data;
+  },
+  async remove(id: string) {
+    const { data } = await api.delete<MessageOut>(`/patients/${id}`);
+    return data;
+  },
+};
+
+/* ─── Doctors ──────────────────────────────────────────────── */
+
+export const doctorsService = {
+  async list(params?: ListParams) {
+    const { data } = await api.get<Paginated<Doctor>>(
+      "/doctors",
+      listQuery(params)
+    );
+    return data;
+  },
+  async get(id: string) {
+    const { data } = await api.get<Doctor>(`/doctors/${id}`);
+    return data;
+  },
+  async create(input: DoctorInput) {
+    const { data } = await api.post<Doctor>("/doctors", input);
+    return data;
+  },
+  async update(id: string, input: DoctorUpdateInput) {
+    const { data } = await api.patch<Doctor>(`/doctors/${id}`, input);
+    return data;
+  },
+  async remove(id: string) {
+    const { data } = await api.delete<MessageOut>(`/doctors/${id}`);
+    return data;
+  },
+};
+
+/* ─── Services ─────────────────────────────────────────────── */
+
+export const servicesService = {
+  async list(params?: ListParams) {
+    const { data } = await api.get<Paginated<Service>>(
+      "/services",
+      listQuery(params)
+    );
+    return data;
+  },
+  async get(id: string) {
+    const { data } = await api.get<Service>(`/services/${id}`);
+    return data;
+  },
+  async create(input: ServiceInput) {
+    const { data } = await api.post<Service>("/services", input);
+    return data;
+  },
+  async update(id: string, input: ServiceUpdateInput) {
+    const { data } = await api.patch<Service>(`/services/${id}`, input);
+    return data;
+  },
+  async remove(id: string) {
+    const { data } = await api.delete<MessageOut>(`/services/${id}`);
+    return data;
+  },
+};
+
+/* ─── Appointments ─────────────────────────────────────────── */
+
+export type AppointmentListParams = ListParams & {
+  status?: string;
+  doctor_id?: string;
+  patient_id?: string;
+  from_date?: string;
+  to_date?: string;
+};
+
+export const appointmentsService = {
+  async list(params?: AppointmentListParams) {
+    const { data } = await api.get<Paginated<Appointment>>(
+      "/appointments",
+      listQuery(params)
+    );
+    return data;
+  },
+  async get(id: string) {
+    const { data } = await api.get<Appointment>(`/appointments/${id}`);
+    return data;
+  },
+  async create(input: AppointmentInput) {
+    const { data } = await api.post<Appointment>("/appointments", input);
+    return data;
+  },
+  async update(id: string, input: AppointmentUpdateInput) {
+    const { data } = await api.patch<Appointment>(`/appointments/${id}`, input);
+    return data;
+  },
+  async remove(id: string) {
+    const { data } = await api.delete<MessageOut>(`/appointments/${id}`);
+    return data;
+  },
+};
+
+/* ─── Knowledge / Documents ────────────────────────────────── */
+
+export const documentsService = {
+  async list() {
+    const { data } = await api.get<KnowledgeDocument[]>("/documents");
+    return data;
+  },
+  async get(id: string) {
+    const { data } = await api.get<KnowledgeDocument>(`/documents/${id}`);
+    return data;
+  },
+  async upload(file: File, title = "") {
+    const form = new FormData();
+    form.append("file", file);
+    if (title) form.append("title", title);
+    const { data } = await api.post<KnowledgeDocument>("/documents", form, {
+      headers: { "Content-Type": "multipart/form-data" },
+    });
+    return data;
+  },
+  async chunks(id: string) {
+    const { data } = await api.get<DocumentChunk[]>(`/documents/${id}/chunks`);
+    return data;
+  },
+  async reindex(id: string) {
+    const { data } = await api.post<KnowledgeDocument>(
+      `/documents/${id}/reindex`
+    );
+    return data;
+  },
+};
