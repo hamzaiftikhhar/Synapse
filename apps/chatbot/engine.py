@@ -397,7 +397,9 @@ class ChatEngine:
     def _run_vector(self, clinic: Any, query: str) -> list[dict[str, Any]]:
         try:
             from apps.knowledge.services.similarity_search import SimilaritySearchService
+
             hits = SimilaritySearchService.search(clinic=clinic, query=query, top_k=5)
+            min_score = float(getattr(settings, "CHAT_VECTOR_MIN_SCORE", 0.25))
             return [
                 {
                     "score": h.score,
@@ -406,11 +408,11 @@ class ChatEngine:
                     "document": h.document.file_name,
                 }
                 for h in hits
+                if (h.score or 0) >= min_score
             ]
         except Exception:
             logger.exception("Vector search failed")
             return []
-
     # ── LLM Response Generator ────────────────────────────────────────────────
 
     def _generate_response(

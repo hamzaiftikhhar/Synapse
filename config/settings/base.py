@@ -227,7 +227,7 @@ CHAT_RESPONSE_PROVIDER = env("CHAT_RESPONSE_PROVIDER", default="gemini")
 CHAT_RESPONSE_MODEL = env("CHAT_RESPONSE_MODEL", default="gemini-3.1-flash-lite")
 CHAT_RESPONSE_FALLBACK_MODELS = env(
     "CHAT_RESPONSE_FALLBACK_MODELS",
-    default="gemini-flash-lite-latest,gemini-2.0-flash-lite,gemini-3.1-flash-lite",
+    default="gemini-2.0-flash-lite,gemini-flash-lite-latest",
 )
 CHAT_PREMIUM_MODEL = env("CHAT_PREMIUM_MODEL", default="gpt-4o-mini")
 CHAT_RESPONSE_TIMEOUT_SECONDS = env.float("CHAT_RESPONSE_TIMEOUT_SECONDS", default=20.0)
