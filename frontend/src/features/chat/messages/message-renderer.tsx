@@ -1,11 +1,13 @@
 "use client";
 
-import { motion } from "framer-motion";
 import type { ChatActionHandler, ChatMessage } from "@/types/chat";
+import { ContextActionChips } from "@/features/chat/components/action-buttons";
+import type { BackendAction } from "@/features/chat/types";
 import { TextMessage } from "./text-message";
 import { TypingIndicator } from "./typing-indicator";
 import { QuickReplies } from "./quick-replies";
 import { ButtonsMessage } from "./buttons-message";
+import { SuggestedQuestions } from "./suggested-questions";
 import { MainMenuMessage } from "./main-menu";
 import { DoctorCards } from "./doctor-card";
 import { InsuranceCards } from "./insurance-card";
@@ -22,9 +24,13 @@ import { ImageMessage } from "./image-message";
 export function MessageRenderer({
   message,
   onAction,
+  onBackendAction,
+  showContextActions,
 }: {
   message: ChatMessage;
   onAction?: ChatActionHandler;
+  onBackendAction?: (action: BackendAction) => void;
+  showContextActions?: boolean;
 }) {
   let body: React.ReactNode = null;
 
@@ -43,7 +49,7 @@ export function MessageRenderer({
       body = <ButtonsMessage message={message} onAction={onAction} />;
       break;
     case "suggested_questions":
-      body = null;
+      body = <SuggestedQuestions message={message} onAction={onAction} />;
       break;
     case "main_menu":
       body = <MainMenuMessage message={message} onAction={onAction} />;
@@ -100,14 +106,22 @@ export function MessageRenderer({
       body = <TextMessage message={{ ...message, type: "text" }} />;
   }
 
+  const payloadActions = Array.isArray(message.payload?.actions)
+    ? (message.payload.actions as BackendAction[])
+    : [];
+
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 6 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.18 }}
-      className="w-full"
-    >
+    <div className="w-full">
       {body}
-    </motion.div>
+      {showContextActions &&
+      payloadActions.length > 0 &&
+      onBackendAction &&
+      message.role === "assistant" ? (
+        <ContextActionChips
+          actions={payloadActions}
+          onAction={onBackendAction}
+        />
+      ) : null}
+    </div>
   );
 }

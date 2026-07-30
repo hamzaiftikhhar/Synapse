@@ -75,6 +75,32 @@ export const widgetAuthService = {
   },
 };
 
+/* ─── Widget (public) ──────────────────────────────────────── */
+
+export const widgetService = {
+  async getConfig(clinicSlug: string) {
+    const { data } = await widgetApi.get<import("@/types/api").WidgetConfig>(
+      "/widget/config",
+      { params: { clinic_slug: clinicSlug } }
+    );
+    return data;
+  },
+  async sendGuestMessage(input: import("@/types/api").WidgetGuestChatInput) {
+    const { data } = await widgetApi.post<ChatMessageResponse>(
+      "/widget/chat/guest",
+      input
+    );
+    return data;
+  },
+  async sendMarketingMessage(input: import("@/types/api").MarketingChatInput) {
+    const { data } = await widgetApi.post<ChatMessageResponse>(
+      "/widget/chat/marketing",
+      input
+    );
+    return data;
+  },
+};
+
 /* ─── Chat ─────────────────────────────────────────────────── */
 
 export const chatService = {

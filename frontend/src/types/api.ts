@@ -239,6 +239,35 @@ export type ChatMessageInput = {
   session_token?: string | null;
 };
 
+export type WidgetConfig = {
+  clinic_slug: string;
+  clinic_name: string;
+  phone: string;
+  configuration: {
+    widget?: {
+      primary_color?: string;
+      position?: string;
+      greeting?: string;
+    };
+    booking?: {
+      require_auth?: boolean;
+      slot_duration_min?: number;
+      mode?: "doctor_first" | "specialty_first" | "general";
+    };
+    feature_flags?: Record<string, boolean>;
+  };
+};
+
+export type WidgetGuestChatInput = {
+  clinic_slug: string;
+  message: string;
+  session_token?: string | null;
+};
+
+export type MarketingChatInput = {
+  message: string;
+};
+
 export type OTPSendInput = {
   clinic_slug: string;
   phone: string;

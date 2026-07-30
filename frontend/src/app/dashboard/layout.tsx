@@ -3,6 +3,7 @@
 import { ProtectedRoute } from "@/components/auth/protected-route";
 import { DashboardSidebar } from "@/components/dashboard/sidebar";
 import { DashboardTopbar } from "@/components/dashboard/topbar";
+import { DashboardWidgetProvider } from "@/components/dashboard/widget-provider-bridge";
 
 export default function DashboardLayout({
   children,
@@ -11,7 +12,8 @@ export default function DashboardLayout({
 }) {
   return (
     <ProtectedRoute>
-      <div className="flex min-h-screen bg-muted/30">
+      <DashboardWidgetProvider>
+        <div className="flex min-h-screen bg-muted/30">
         <div className="hidden lg:block">
           <div className="sticky top-0 h-screen">
             <DashboardSidebar />
@@ -21,7 +23,8 @@ export default function DashboardLayout({
           <DashboardTopbar />
           <main className="flex-1 p-4 pb-24 lg:p-6 lg:pb-24">{children}</main>
         </div>
-      </div>
+        </div>
+      </DashboardWidgetProvider>
     </ProtectedRoute>
   );
 }

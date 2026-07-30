@@ -239,9 +239,9 @@ class ChatEngine:
             return [
                 {
                     "score": h.score,
-                    "heading": h.heading,
-                    "text": h.text,
-                    "document": h.document_filename,
+                    "heading": h.chunk.heading or "",
+                    "text": h.chunk.content,
+                    "document": h.document.file_name,
                 }
                 for h in hits
             ]

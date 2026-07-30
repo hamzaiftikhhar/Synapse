@@ -58,8 +58,8 @@ export default function ChatbotQaPage() {
           </CardHeader>
           <CardContent className="space-y-2 text-sm text-muted-foreground">
             <p>1. Click the chat bubble (bottom right).</p>
-            <p>2. Type a question — responses come from the backend API.</p>
-            <p>3. Scroll up anytime to review earlier messages.</p>
+            <p>2. Tap a suggested starter or type a question.</p>
+            <p>3. Contextual actions appear under each assistant reply.</p>
             <p className="flex items-center gap-1.5">
               4. Use <Maximize2 className="inline size-3.5" /> to expand the
               panel on desktop.

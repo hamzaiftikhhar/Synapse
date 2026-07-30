@@ -32,16 +32,13 @@ export function ChatHeader({
   showExpand?: boolean;
 }) {
   return (
-    <div className="flex shrink-0 items-center justify-between gap-2 bg-gradient-to-r from-[#5b21b6] via-[#6366f1] to-[#4f46e5] px-3.5 py-3 text-white">
+    <div className="flex shrink-0 items-center justify-between gap-2 bg-[#5b8def] px-3.5 py-3 text-white">
       <div className="flex min-w-0 items-center gap-2.5">
-        <RobotAvatar size="md" animate />
+        <RobotAvatar size="md" />
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold tracking-tight">
-            Synapse Assistant
+            {clinicName || "Synapse Assistant"}
           </p>
-          {clinicName ? (
-            <p className="truncate text-[11px] text-white/70">{clinicName}</p>
-          ) : null}
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-0.5">

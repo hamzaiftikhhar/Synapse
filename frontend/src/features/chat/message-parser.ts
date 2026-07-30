@@ -11,7 +11,8 @@ export function uid(prefix = "m") {
 
 export type ParsedChatResponse = {
   messages: ChatMessage[];
-  persistentActions: BackendAction[];
+  /** Contextual chips for the latest assistant turn (Homey-style, under the reply). */
+  contextualActions: BackendAction[];
 };
 
 function mapMetaMessage(
@@ -99,6 +100,39 @@ function appendMetaComponents(
     });
   }
 
+  if (Array.isArray(meta.hours) && meta.hours.length) {
+    messages.push({
+      id: uid("hours"),
+      role,
+      type: "cards",
+      createdAt: now,
+      payload: {
+        cards: (meta.hours as Record<string, unknown>[]).map((h) => ({
+          title: h.day,
+          description: h.is_closed
+            ? "Closed"
+            : `${h.open_time ?? ""} – ${h.close_time ?? ""}`,
+        })),
+      },
+    });
+  }
+
+  if (Array.isArray(meta.specialties) && meta.specialties.length) {
+    messages.push({
+      id: uid("spec"),
+      role,
+      type: "cards",
+      createdAt: now,
+      payload: {
+        cards: (meta.specialties as Record<string, unknown>[]).map((s) => ({
+          title: s.name,
+          description: s.description || `${s.doctor_count ?? 0} doctors`,
+          action: s.select_message,
+        })),
+      },
+    });
+  }
+
   if (Array.isArray(meta.time_slots) && meta.time_slots.length) {
     messages.push({
       id: uid("slots"),
@@ -140,20 +174,34 @@ function appendMetaComponents(
   }
 }
 
+function attachActionsToPrimaryText(
+  messages: ChatMessage[],
+  actions: BackendAction[]
+) {
+  if (!actions.length) return;
+  const target = messages.find(
+    (m) => m.role === "assistant" && m.type === "text"
+  );
+  if (!target) return;
+  target.payload = { ...(target.payload ?? {}), actions };
+}
+
 export function parseChatResponse(
   res: ChatMessageResponse,
   role: "assistant" = "assistant"
 ): ParsedChatResponse {
   const now = new Date().toISOString();
   const meta = res.meta ?? {};
-  const persistentActions = parseActions(
-    meta.persistent_actions ?? meta.actions
+  // Prefer turn-specific `actions`; fall back to `persistent_actions` from backend.
+  const contextualActions = parseActions(
+    meta.actions ?? meta.persistent_actions
   );
 
   if (Array.isArray(meta.messages)) {
     const messages = (meta.messages as Record<string, unknown>[]).map((m, i) =>
       mapMetaMessage(m, i, role)
     );
+    attachActionsToPrimaryText(messages, contextualActions);
     if (res.safety_message) {
       messages.push({
         id: uid("safe"),
@@ -163,7 +211,7 @@ export function parseChatResponse(
         createdAt: now,
       });
     }
-    return { messages, persistentActions };
+    return { messages, contextualActions };
   }
 
   const messages: ChatMessage[] = [];
@@ -179,6 +227,7 @@ export function parseChatResponse(
   }
 
   appendMetaComponents(messages, meta, role, now);
+  attachActionsToPrimaryText(messages, contextualActions);
 
   if (res.safety_message) {
     messages.push({
@@ -190,7 +239,7 @@ export function parseChatResponse(
     });
   }
 
-  return { messages, persistentActions };
+  return { messages, contextualActions };
 }
 
 export function userTextMessage(content: string): ChatMessage {

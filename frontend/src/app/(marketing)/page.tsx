@@ -194,6 +194,7 @@ export default function LandingPage() {
                   <div className="h-[420px] min-h-[320px]">
                     <ChatWidget
                       mode="embedded"
+                      assistantMode="marketing"
                       useStaffApi={false}
                       className="h-full w-full max-w-none shadow-none"
                     />

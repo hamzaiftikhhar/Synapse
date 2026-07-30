@@ -1,14 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowDown, Send, X } from "lucide-react";
-import { AnimatePresence, motion } from "framer-motion";
-import { Button } from "@/components/ui/button";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ArrowDown, MoreVertical, Send, X } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { BackendActionBar } from "@/features/chat/components/action-buttons";
+import { StarterChips } from "@/features/chat/components/action-buttons";
 import { ChatHeader } from "@/features/chat/components/chat-chrome";
-import { RobotLauncherIcon } from "@/features/chat/components/robot-avatar";
+import { RobotAvatar, RobotLauncherIcon } from "@/features/chat/components/robot-avatar";
 import { MessageRenderer } from "@/features/chat/messages";
 import {
   CONNECTION_ERROR,
@@ -17,17 +15,73 @@ import {
   userTextMessage,
 } from "@/features/chat/message-parser";
 import type { BackendAction } from "@/features/chat/types";
-import { usePatientChat, useStaffChat } from "@/hooks/api";
+import {
+  useGuestChat,
+  useMarketingChat,
+  usePatientChat,
+  useStaffChat,
+} from "@/hooks/api";
 import { useAuth } from "@/providers/auth-provider";
+import { useWidget, type AssistantMode } from "@/providers/widget-provider";
 import type { ChatMessage } from "@/types/chat";
 
 export type ChatWidgetProps = {
   mode?: "widget" | "embedded";
   clinicName?: string;
   useStaffApi?: boolean;
+  assistantMode?: AssistantMode;
+  clinicSlug?: string;
   className?: string;
   defaultOpen?: boolean;
 };
+
+const CLINIC_STARTERS = [
+  {
+    id: "book",
+    label: "Book Appointment",
+    message: "I would like to book an appointment",
+    icon: "Calendar",
+  },
+  {
+    id: "doctor",
+    label: "Find a Doctor",
+    message: "Help me find a doctor",
+    icon: "Stethoscope",
+  },
+  {
+    id: "hours",
+    label: "Clinic Hours",
+    message: "What are your clinic hours?",
+    icon: "Clock",
+  },
+  {
+    id: "insurance",
+    label: "Check Insurance",
+    message: "Do you accept my insurance?",
+    icon: "Shield",
+  },
+];
+
+const MARKETING_STARTERS = [
+  {
+    id: "features",
+    label: "Features",
+    message: "What features does Synapse offer?",
+    icon: "Search",
+  },
+  {
+    id: "pricing",
+    label: "Pricing",
+    message: "Tell me about pricing",
+    icon: "Calendar",
+  },
+  {
+    id: "demo",
+    label: "Book a Demo",
+    message: "I want to book a demo",
+    icon: "Phone",
+  },
+];
 
 function runBackendAction(
   action: BackendAction,
@@ -55,40 +109,77 @@ export function ChatWidget({
   mode = "widget",
   clinicName,
   useStaffApi = true,
+  assistantMode,
+  clinicSlug: clinicSlugProp,
   className,
   defaultOpen = false,
 }: ChatWidgetProps) {
   const { clinic, isAuthenticated } = useAuth();
-  const displayName = clinicName || clinic?.name;
+  const widgetCtx = useWidget();
+  const resolvedMode = assistantMode ?? widgetCtx.mode;
+  const clinicSlug = clinicSlugProp ?? widgetCtx.clinicSlug;
+  const widgetConfig = widgetCtx.config;
+
+  const displayName =
+    clinicName ||
+    widgetConfig?.clinic_name ||
+    clinic?.name ||
+    (resolvedMode === "marketing" ? "Synapse" : "Clinic Assistant");
+
+  const greeting =
+    widgetConfig?.configuration?.widget?.greeting ||
+    (resolvedMode === "marketing"
+      ? "Hi! Ask me about Synapse features, pricing, or book a demo."
+      : `Hi! I'm the assistant for ${displayName}. How can I help you today?`);
+
+  const starters =
+    resolvedMode === "marketing" ? MARKETING_STARTERS : CLINIC_STARTERS;
 
   const [open, setOpen] = useState(mode === "embedded" || defaultOpen);
   const [expanded, setExpanded] = useState(false);
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [persistentActions, setPersistentActions] = useState<BackendAction[]>(
-    []
-  );
   const [typing, setTyping] = useState(false);
   const [showJumpDown, setShowJumpDown] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
   const staffChat = useStaffChat();
   const patientChat = usePatientChat();
-  const staffMode = useStaffApi && isAuthenticated;
+  const guestChat = useGuestChat();
+  const marketingChat = useMarketingChat();
+  const staffMode =
+    resolvedMode === "staff" || (useStaffApi && isAuthenticated);
+
+  const lastActionMessageId = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (
+        m?.role === "assistant" &&
+        m.type === "text" &&
+        Array.isArray(m.payload?.actions) &&
+        (m.payload.actions as unknown[]).length > 0
+      ) {
+        return m.id;
+      }
+    }
+    return null;
+  }, [messages]);
 
   const resetChat = useCallback(() => {
     setMessages([]);
-    setPersistentActions([]);
     stickToBottom.current = true;
   }, []);
 
   const scrollToBottom = useCallback((smooth = true) => {
     const el = scrollRef.current;
     if (!el) return;
-    el.scrollTo({ top: el.scrollHeight, behavior: smooth ? "smooth" : "auto" });
+    el.scrollTo({
+      top: el.scrollHeight,
+      behavior: smooth && !expanded ? "smooth" : "auto",
+    });
     stickToBottom.current = true;
     setShowJumpDown(false);
-  }, []);
+  }, [expanded]);
 
   useEffect(() => {
     if (stickToBottom.current) scrollToBottom(messages.length > 0);
@@ -114,20 +205,44 @@ export function ChatWidget({
       setTyping(true);
 
       try {
-        const res = staffMode
-          ? await staffChat.mutateAsync({ message: trimmed })
-          : await patientChat.mutateAsync({ message: trimmed });
+        let res;
+        if (staffMode) {
+          res = await staffChat.mutateAsync({ message: trimmed });
+        } else if (resolvedMode === "marketing") {
+          res = await marketingChat.mutateAsync({ message: trimmed });
+        } else if (resolvedMode === "clinic" && clinicSlug) {
+          res = await guestChat.mutateAsync({
+            clinic_slug: clinicSlug,
+            message: trimmed,
+            session_token: widgetCtx.sessionToken,
+          });
+          const token = res.meta?.session_token;
+          if (typeof token === "string") widgetCtx.setSessionToken(token);
+        } else {
+          res = await patientChat.mutateAsync({
+            message: trimmed,
+            session_token: widgetCtx.sessionToken,
+          });
+        }
         const parsed = parseChatResponse(res);
         setMessages((prev) => [...prev, ...parsed.messages]);
-        setPersistentActions(parsed.persistentActions);
       } catch {
         setMessages((prev) => [...prev, systemErrorMessage(CONNECTION_ERROR)]);
-        setPersistentActions([]);
       } finally {
         setTyping(false);
       }
     },
-    [typing, staffMode, staffChat, patientChat]
+    [
+      typing,
+      staffMode,
+      resolvedMode,
+      clinicSlug,
+      staffChat,
+      patientChat,
+      guestChat,
+      marketingChat,
+      widgetCtx,
+    ]
   );
 
   function handleBackendAction(action: BackendAction) {
@@ -135,7 +250,7 @@ export function ChatWidget({
   }
 
   function handleAction(action: string, data?: unknown) {
-    if (action === "quick_reply") {
+    if (action === "suggested" || action === "quick_reply") {
       if (typeof data === "string") {
         void sendText(data);
         return;
@@ -182,24 +297,45 @@ export function ChatWidget({
     setExpanded(false);
   }
 
+  const emptyState = (
+    <div className="flex flex-col gap-1">
+      <div className="flex gap-2">
+        <RobotAvatar size="sm" className="mt-0.5 shrink-0" />
+        <div className="min-w-0 max-w-[85%]">
+          <div className="rounded-2xl rounded-bl-md bg-[#ececf0] px-3.5 py-2.5 text-sm leading-relaxed text-foreground">
+            {greeting}
+          </div>
+          <p className="mt-1 px-1 text-[10px] text-muted-foreground">Just now</p>
+        </div>
+      </div>
+      <StarterChips
+        items={starters}
+        onSelect={(msg) => void sendText(msg)}
+      />
+    </div>
+  );
+
   const chatBody = (
     <div className="relative flex min-h-0 flex-1 flex-col">
       <div
         ref={scrollRef}
         onScroll={onScroll}
-        className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-[#f8f8fc] px-3 py-4 sm:px-4"
+        className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-[#f3f3f5] px-3 py-4 sm:px-4"
       >
-        <div className="mx-auto flex w-full max-w-xl flex-col gap-4">
-          {messages.length === 0 && !typing ? (
-            <p className="py-8 text-center text-sm text-muted-foreground">
-              Type a message to get started.
-            </p>
-          ) : null}
+        <div
+          className={cn(
+            "mx-auto flex w-full flex-col gap-4",
+            expanded ? "max-w-3xl" : "max-w-xl"
+          )}
+        >
+          {messages.length === 0 && !typing ? emptyState : null}
           {messages.map((m) => (
             <MessageRenderer
               key={m.id}
               message={m}
               onAction={handleAction}
+              onBackendAction={handleBackendAction}
+              showContextActions={m.id === lastActionMessageId && !typing}
             />
           ))}
           {typing ? (
@@ -215,68 +351,71 @@ export function ChatWidget({
         </div>
       </div>
 
-      <AnimatePresence>
-        {showJumpDown ? (
-          <motion.button
-            type="button"
-            initial={{ opacity: 0, y: 6 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 6 }}
-            onClick={() => scrollToBottom(true)}
-            className="absolute bottom-[4.5rem] left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-full border border-border bg-white px-3 py-1.5 text-[11px] font-medium text-navy shadow-md"
-          >
-            <ArrowDown className="size-3" />
-            Latest
-          </motion.button>
-        ) : null}
-      </AnimatePresence>
+      {showJumpDown ? (
+        <button
+          type="button"
+          onClick={() => scrollToBottom(true)}
+          className="absolute bottom-[4.25rem] left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-full border border-border bg-white px-3 py-1.5 text-[11px] font-medium text-navy shadow-sm"
+        >
+          <ArrowDown className="size-3" />
+          Latest
+        </button>
+      ) : null}
 
       <form
-        className="flex shrink-0 items-center gap-2 border-t border-border bg-white px-3 py-2.5"
+        className="flex shrink-0 items-center gap-2 border-t border-border/60 bg-white px-3 py-2.5"
         onSubmit={(e) => {
           e.preventDefault();
           void sendText(input);
         }}
       >
-        <Input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="Enter your question here…"
-          className="h-10 flex-1 rounded-full border-border bg-[#f8f8fc] px-4"
-          disabled={typing}
-          autoComplete="off"
-        />
-        <Button
-          type="submit"
-          size="icon"
-          className="size-10 shrink-0 rounded-full"
-          disabled={typing || !input.trim()}
-          aria-label="Send"
+        <div className="relative flex min-w-0 flex-1 items-center">
+          <Input
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="Enter your question here…"
+            className="h-11 flex-1 rounded-full border-neutral-200 bg-white pr-11 shadow-none"
+            disabled={typing}
+            autoComplete="off"
+          />
+          <button
+            type="submit"
+            disabled={typing || !input.trim()}
+            aria-label="Send"
+            className="absolute right-1.5 flex size-8 items-center justify-center rounded-full text-[#5b8def] transition-opacity disabled:opacity-40"
+          >
+            <Send className="size-4" />
+          </button>
+        </div>
+        <button
+          type="button"
+          aria-label="More options"
+          className="flex size-9 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-neutral-100"
+          onClick={resetChat}
+          title="Restart chat"
         >
-          <Send className="size-4" />
-        </Button>
+          <MoreVertical className="size-4" />
+        </button>
       </form>
-
-      <BackendActionBar
-        actions={persistentActions}
-        onAction={handleBackendAction}
-      />
     </div>
   );
 
   const panel = (
     <div
       className={cn(
-        "relative flex flex-col overflow-hidden border border-border bg-white shadow-[0_20px_60px_-20px_rgba(11,14,46,0.45)]",
-        mode === "embedded" && "h-full min-h-[400px] w-full rounded-[6px]",
+        "relative flex flex-col overflow-hidden border border-border/80 bg-white shadow-[0_16px_48px_-16px_rgba(11,14,46,0.35)]",
+        mode === "embedded" && "h-full min-h-[420px] w-full rounded-[8px]",
+        // Compact default — slightly larger than before
         mode === "widget" &&
           !expanded &&
-          "h-[min(640px,calc(100dvh-5rem))] w-[min(440px,calc(100vw-1.5rem))] rounded-[6px]",
+          "h-[min(700px,calc(100dvh-5.5rem))] w-[min(480px,calc(100vw-1.25rem))] rounded-[8px]",
+        // Expanded — ~75–80% of viewport
         mode === "widget" &&
           expanded &&
-          "h-[min(90dvh,900px)] w-[min(78vw,1100px)] rounded-[6px]",
+          "h-[min(80dvh,900px)] w-[min(78vw,1080px)] rounded-[8px]",
+        // Mobile sheet
         mode === "widget" &&
-          "max-sm:fixed max-sm:inset-x-0 max-sm:bottom-0 max-sm:top-auto max-sm:h-[min(94dvh,800px)] max-sm:w-full max-sm:max-w-none max-sm:rounded-b-none max-sm:rounded-t-[12px]",
+          "max-sm:fixed max-sm:inset-x-0 max-sm:bottom-0 max-sm:top-auto max-sm:h-[min(92dvh,820px)] max-sm:w-full max-sm:max-w-none max-sm:rounded-b-none max-sm:rounded-t-[14px]",
         expanded &&
           mode === "widget" &&
           "max-sm:inset-0 max-sm:h-[100dvh] max-sm:rounded-none",
@@ -299,42 +438,31 @@ export function ChatWidget({
 
   return (
     <>
-      <AnimatePresence>
-        {open && expanded ? (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="pointer-events-auto fixed inset-0 z-[55] bg-black/25 backdrop-blur-[2px]"
-            onClick={() => setExpanded(false)}
-            aria-hidden
-          />
-        ) : null}
-      </AnimatePresence>
+      {open && expanded ? (
+        <div
+          className="pointer-events-auto fixed inset-0 z-[55] bg-black/20"
+          onClick={() => setExpanded(false)}
+          aria-hidden
+        />
+      ) : null}
 
       <div className="pointer-events-none fixed inset-x-0 bottom-0 z-[60] flex flex-col items-end p-3 sm:inset-x-auto sm:right-5 sm:bottom-5 sm:p-0">
-        <AnimatePresence>
-          {open ? (
-            <motion.div
-              initial={{ opacity: 0, y: 20, scale: 0.97 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 12, scale: 0.98 }}
-              transition={{ duration: 0.2 }}
-              className={cn(
-                "pointer-events-auto mb-3 w-full sm:mb-3",
-                expanded &&
-                  "sm:fixed sm:inset-0 sm:z-[60] sm:m-0 sm:flex sm:items-center sm:justify-center sm:p-4"
-              )}
-            >
-              {panel}
-            </motion.div>
-          ) : null}
-        </AnimatePresence>
+        {open ? (
+          <div
+            className={cn(
+              "pointer-events-auto mb-3 w-full sm:mb-3",
+              expanded &&
+                "sm:fixed sm:inset-0 sm:z-[60] sm:m-0 sm:flex sm:items-center sm:justify-center sm:p-5"
+            )}
+          >
+            {panel}
+          </div>
+        ) : null}
 
         <button
           type="button"
           onClick={() => (open ? closeAll() : setOpen(true))}
-          className="pointer-events-auto flex size-14 items-center justify-center rounded-[10px] shadow-lg ring-2 ring-white transition hover:scale-[1.02] active:scale-[0.98]"
+          className="pointer-events-auto flex size-14 items-center justify-center rounded-[10px] shadow-lg ring-2 ring-white"
           aria-label={open ? "Close chat" : "Open Synapse Assistant"}
         >
           {open ? (

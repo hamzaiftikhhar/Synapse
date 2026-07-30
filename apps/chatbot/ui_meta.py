@@ -22,7 +22,8 @@ def build_ui_meta(
 ) -> dict[str, Any]:
     """Map SQL handler output + intent to frontend component payloads."""
     meta: dict[str, Any] = {
-        "persistent_actions": _persistent_actions(intent, clinic, is_emergency),
+        # Contextual chips rendered under the assistant reply (not a fixed footer bar).
+        "actions": _contextual_actions(intent, clinic, is_emergency),
     }
 
     for block in sql_results:
@@ -135,27 +136,32 @@ def build_ui_meta(
     return meta
 
 
-def _persistent_actions(intent: str, clinic: Any, is_emergency: bool) -> list[dict[str, Any]]:
-    """Always-visible action bar items."""
-    actions = [
-        {
-            "id": "book",
-            "label": "Book Appointment",
-            "behavior": "message",
-            "message": "I would like to book an appointment",
-        },
-        {
-            "id": "menu",
-            "label": "Main Menu",
-            "behavior": "message",
-            "message": "Main menu",
-        },
-    ]
+def _contextual_actions(intent: str, clinic: Any, is_emergency: bool) -> list[dict[str, Any]]:
+    """Action chips shown under the latest assistant response."""
+    actions: list[dict[str, Any]] = []
 
     smart = _smart_action(intent, clinic, is_emergency)
     if smart:
-        actions.insert(0, smart)
+        actions.append(smart)
 
+    actions.append(
+        {
+            "id": "book",
+            "label": "Book Appointment",
+            "icon": "Calendar",
+            "behavior": "message",
+            "message": "I would like to book an appointment",
+        }
+    )
+    actions.append(
+        {
+            "id": "menu",
+            "label": "Main Menu",
+            "icon": "Menu",
+            "behavior": "message",
+            "message": "Main menu",
+        }
+    )
     return actions
 
 
@@ -164,13 +170,16 @@ def _smart_action(intent: str, clinic: Any, is_emergency: bool) -> dict[str, Any
         return {
             "id": "emergency",
             "label": "Emergency Call",
+            "icon": "Siren",
+            "variant": "emergency",
             "behavior": "call",
             "phone": "911",
         }
     if intent in (Intent.CLINIC_LOCATION.value,):
         return {
             "id": "maps",
-            "label": "Open Google Maps",
+            "label": "Get Directions",
+            "icon": "MapPin",
             "behavior": "message",
             "message": "Where is the clinic located?",
         }
@@ -178,13 +187,15 @@ def _smart_action(intent: str, clinic: Any, is_emergency: bool) -> dict[str, Any
         return {
             "id": "hours",
             "label": "Clinic Hours",
+            "icon": "Clock",
             "behavior": "message",
             "message": "What are your clinic hours?",
         }
     if intent in (Intent.DOCTOR_SEARCH.value, Intent.DOCTOR_AVAILABILITY.value):
         return {
             "id": "doctors",
-            "label": "Find Doctor",
+            "label": "Find a Doctor",
+            "icon": "Stethoscope",
             "behavior": "message",
             "message": "Help me find a doctor",
         }
@@ -192,6 +203,7 @@ def _smart_action(intent: str, clinic: Any, is_emergency: bool) -> dict[str, Any
         return {
             "id": "insurance",
             "label": "Check Insurance",
+            "icon": "Shield",
             "behavior": "message",
             "message": "Do you accept my insurance?",
         }
@@ -199,10 +211,18 @@ def _smart_action(intent: str, clinic: Any, is_emergency: bool) -> dict[str, Any
         return {
             "id": "services",
             "label": "View Services",
+            "icon": "BriefcaseMedical",
             "behavior": "message",
             "message": "What services do you offer?",
         }
-    return None
+    # Default contextual chip for greetings / general turns
+    return {
+        "id": "find_doctor",
+        "label": "Find a Doctor",
+        "icon": "Search",
+        "behavior": "message",
+        "message": "Help me find a doctor",
+    }
 
 
 def _booking_quick_replies() -> list[dict[str, str]]:

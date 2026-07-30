@@ -10,6 +10,7 @@ import {
   documentsService,
   patientsService,
   servicesService,
+  widgetService,
 } from "@/services";
 import type {
   AppointmentInput,
@@ -18,11 +19,13 @@ import type {
   DoctorInput,
   DoctorUpdateInput,
   ListParams,
+  MarketingChatInput,
   PatientInput,
   PatientUpdateInput,
   ServiceInput,
   ServiceUpdateInput,
   StaffLoginInput,
+  WidgetGuestChatInput,
 } from "@/types/api";
 
 export const queryKeys = {
@@ -235,5 +238,19 @@ export function usePatientChat() {
   return useMutation({
     mutationFn: (input: ChatMessageInput) =>
       chatService.sendPatientMessage(input),
+  });
+}
+
+export function useGuestChat() {
+  return useMutation({
+    mutationFn: (input: WidgetGuestChatInput) =>
+      widgetService.sendGuestMessage(input),
+  });
+}
+
+export function useMarketingChat() {
+  return useMutation({
+    mutationFn: (input: MarketingChatInput) =>
+      widgetService.sendMarketingMessage(input),
   });
 }

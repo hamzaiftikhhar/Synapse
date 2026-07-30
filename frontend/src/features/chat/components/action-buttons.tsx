@@ -7,6 +7,7 @@ import {
   MapPin,
   Menu,
   Phone,
+  Search,
   Shield,
   Siren,
   Stethoscope,
@@ -25,76 +26,75 @@ const ICONS: Record<string, LucideIcon> = {
   Phone,
   Siren,
   BriefcaseMedical,
+  Search,
 };
 
-type BtnProps = {
-  icon: string;
-  label: string;
-  shortLabel?: string;
-  variant: "message" | "action" | "emergency";
-  filled?: boolean;
-  onClick: () => void;
-  className?: string;
-};
-
-export function ActionChip({
-  icon,
-  label,
-  shortLabel,
-  variant,
-  filled,
-  onClick,
-  className,
-}: BtnProps) {
-  const Icon = ICONS[icon] ?? Calendar;
-  const isEmergency = variant === "emergency";
-  const isFilled = filled || variant === "action" || isEmergency;
-
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={label}
-      className={cn(
-        "inline-flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-full px-3 py-2 text-xs font-semibold transition-all",
-        isEmergency && "bg-red-600 text-white shadow-sm hover:bg-red-700",
-        !isEmergency &&
-          isFilled &&
-          "bg-primary text-primary-foreground shadow-sm hover:bg-primary/90",
-        !isEmergency &&
-          !isFilled &&
-          "border border-border bg-white text-navy hover:border-primary/30 hover:bg-accent/50",
-        className
-      )}
-    >
-      <Icon className="size-3.5 shrink-0" />
-      <span className="truncate">{shortLabel ?? label}</span>
-    </button>
-  );
-}
-
-export function BackendActionBar({
+/** Homey-style contextual chips shown under an assistant reply. */
+export function ContextActionChips({
   actions,
   onAction,
+  className,
 }: {
   actions: BackendAction[];
   onAction: (action: BackendAction) => void;
+  className?: string;
 }) {
   if (!actions.length) return null;
 
   return (
-    <div className="flex shrink-0 gap-2 border-t border-border bg-white px-3 py-2.5">
-      {actions.map((a) => (
-        <ActionChip
-          key={a.id}
-          icon={a.icon ?? "Calendar"}
-          label={a.label}
-          shortLabel={a.short_label}
-          variant={a.variant ?? "message"}
-          filled={a.filled}
-          onClick={() => onAction(a)}
-        />
-      ))}
+    <div className={cn("mt-2 flex flex-wrap gap-2 pl-9", className)}>
+      {actions.map((a) => {
+        const Icon = ICONS[a.icon ?? ""] ?? undefined;
+        const isEmergency = a.variant === "emergency";
+
+        return (
+          <button
+            key={a.id}
+            type="button"
+            title={a.label}
+            onClick={() => onAction(a)}
+            className={cn(
+              "inline-flex items-center gap-1.5 rounded-full border bg-white px-3 py-1.5 text-xs font-medium transition-colors",
+              isEmergency
+                ? "border-red-300 text-red-700 hover:bg-red-50"
+                : "border-neutral-300 text-neutral-800 hover:border-neutral-400 hover:bg-neutral-50"
+            )}
+          >
+            {Icon ? <Icon className="size-3.5 shrink-0 opacity-70" /> : null}
+            <span>{a.short_label ?? a.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Empty-state starter chips — send the prompt to the backend on click. */
+export function StarterChips({
+  items,
+  onSelect,
+}: {
+  items: { id: string; label: string; message: string; icon?: string }[];
+  onSelect: (message: string) => void;
+}) {
+  if (!items.length) return null;
+
+  return (
+    <div className="mt-3 flex flex-wrap gap-2 pl-9">
+      {items.map((item) => {
+        const Icon = ICONS[item.icon ?? ""] ?? undefined;
+        return (
+          <button
+            key={item.id}
+            type="button"
+            onClick={() => onSelect(item.message)}
+            className="inline-flex items-center gap-1.5 rounded-full border border-neutral-300 bg-white px-3 py-1.5 text-xs font-medium text-neutral-800 transition-colors hover:border-neutral-400 hover:bg-neutral-50"
+          >
+            {Icon ? <Icon className="size-3.5 shrink-0 opacity-70" /> : null}
+            <span>{item.label}</span>
+          </button>
+        );
+      })}
     </div>
   );
 }
