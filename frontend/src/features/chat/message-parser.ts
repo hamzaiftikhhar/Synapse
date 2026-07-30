@@ -60,14 +60,19 @@ function appendMetaComponents(
     });
   }
 
+  // Booking wizard launch is handled via meta.buttons (behavior: launch_booking).
+  // Do not dump the legacy in-chat appointment form when launch is requested.
   if (meta.booking && typeof meta.booking === "object") {
-    messages.push({
-      id: uid("booking"),
-      role,
-      type: "appointment_form",
-      createdAt: now,
-      payload: meta.booking as Record<string, unknown>,
-    });
+    const booking = meta.booking as Record<string, unknown>;
+    if (!booking.launch) {
+      messages.push({
+        id: uid("booking"),
+        role,
+        type: "appointment_form",
+        createdAt: now,
+        payload: booking,
+      });
+    }
   }
 
   if (Array.isArray(meta.doctors) && meta.doctors.length) {

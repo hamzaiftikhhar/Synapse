@@ -153,7 +153,7 @@ export function BookingSheet({
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side="bottom"
-        className="mx-auto flex h-[min(92dvh,720px)] w-full max-w-lg flex-col gap-0 rounded-t-[16px] p-0 sm:side-right sm:h-full sm:max-w-md sm:rounded-none"
+        className="mx-auto flex h-[min(92dvh,720px)] w-full max-w-lg flex-col gap-0 rounded-t-[16px] p-0 data-[side=bottom]:max-h-[min(92dvh,720px)] sm:data-[side=bottom]:max-w-lg"
       >
         <SheetHeader className="shrink-0 border-b border-border px-4 py-3 text-left">
           <div className="flex items-center justify-between gap-2">
