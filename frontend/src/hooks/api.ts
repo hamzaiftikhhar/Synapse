@@ -254,3 +254,26 @@ export function useMarketingChat() {
       widgetService.sendMarketingMessage(input),
   });
 }
+
+/* ─── Booking wizard ───────────────────────────────────────── */
+
+export function useBookingStart() {
+  return useMutation({
+    mutationFn: (input: import("@/types/api").BookingStartInput) =>
+      bookingService.start(input),
+  });
+}
+
+export function useBookingStep() {
+  return useMutation({
+    mutationFn: (input: import("@/types/api").BookingStepInput) =>
+      bookingService.step(input),
+  });
+}
+
+export function useBookingConfirm() {
+  return useMutation({
+    mutationFn: (input: import("@/types/api").BookingConfirmInput) =>
+      bookingService.confirm(input),
+  });
+}
