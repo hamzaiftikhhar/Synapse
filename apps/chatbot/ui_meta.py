@@ -21,14 +21,65 @@ def build_ui_meta(
     is_emergency: bool = False,
     message: str = "",
     nlu: Any = None,
+    booking_commit: bool = False,
+    last_doctor: dict[str, Any] | None = None,
+    last_specialty: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Map SQL handler output + intent to frontend component payloads."""
     meta: dict[str, Any] = {
-        # Contextual chips rendered under the assistant reply (not a fixed footer bar).
-        "actions": _contextual_actions(intent, clinic, is_emergency),
+        "actions": _contextual_actions(
+            intent,
+            clinic,
+            is_emergency,
+            has_doctors=False,
+            booking_commit=booking_commit,
+        ),
     }
 
-    # Booking intents launch the wizard — never dump slots/doctors here
+    # Explicit booking commit → launch wizard (optionally prefilled)
+    if intent in (
+        Intent.BOOK_APPOINTMENT.value,
+        Intent.RESCHEDULE_APPOINTMENT.value,
+    ) and booking_commit:
+        from apps.chatbot.booking.config import get_booking_config
+        from apps.chatbot.booking.discovery import suggest_specialties
+
+        cfg = get_booking_config(clinic)
+        suggested, guidance = ([], "")
+        if cfg.get("ai_discovery"):
+            suggested, guidance = suggest_specialties(clinic, message=message)
+        booking: dict[str, Any] = {
+            "launch": True,
+            "button_label": "Start Booking",
+            "suggested_specialties": suggested,
+            "guidance": guidance,
+            "reason": message,
+        }
+        if last_doctor:
+            booking["doctor_id"] = last_doctor.get("id")
+            booking["doctor_name"] = last_doctor.get("name")
+        if last_specialty:
+            booking["specialty_id"] = last_specialty.get("id")
+            booking["specialty_name"] = last_specialty.get("name")
+        meta["booking"] = booking
+        meta["buttons"] = [
+            {
+                "id": "start_booking",
+                "label": "Start Booking",
+                "icon": "Calendar",
+                "behavior": "launch_booking",
+                "filled": True,
+                "message": message,
+                "doctor_id": booking.get("doctor_id"),
+                "specialty_id": booking.get("specialty_id"),
+            }
+        ]
+        meta["actions"] = _contextual_actions(
+            intent, clinic, is_emergency, has_doctors=False, booking_commit=True
+        )
+        return meta
+
+    # Exploratory book intent — soft recommend in chat, do NOT auto-open wizard
     if intent in (
         Intent.BOOK_APPOINTMENT.value,
         Intent.RESCHEDULE_APPOINTMENT.value,
@@ -41,58 +92,63 @@ def build_ui_meta(
         if cfg.get("ai_discovery"):
             suggested, guidance = suggest_specialties(clinic, message=message)
         meta["booking"] = {
-            "launch": True,
-            "button_label": "Start Booking",
+            "launch": False,
             "suggested_specialties": suggested,
             "guidance": guidance,
             "reason": message,
         }
+        if suggested:
+            meta["specialties"] = [
+                {
+                    "id": s.get("id"),
+                    "name": s.get("name"),
+                    "description": s.get("description") or s.get("plain_label") or "",
+                    "doctor_count": s.get("doctor_count"),
+                    "recommended": True,
+                    "select_message": f"I need a {s.get('name')} doctor",
+                }
+                for s in suggested[:4]
+            ]
         meta["buttons"] = [
             {
                 "id": "start_booking",
                 "label": "Start Booking",
+                "icon": "Calendar",
                 "behavior": "launch_booking",
-                "message": message,
+                "filled": True,
+                "message": message or "I would like to book an appointment",
             }
         ]
         return meta
 
+    has_doctors = False
     for block in sql_results:
         handler = block.get("handler", "")
         rows = block.get("rows") or []
 
         if handler == "search_doctors" and rows:
-            meta["doctors"] = [_map_doctor(r) for r in rows]
+            doctors = _dedupe_doctors([_map_doctor(r) for r in rows])[:3]
+            meta["doctors"] = doctors
+            has_doctors = bool(doctors)
 
         elif handler == "list_specialties" and rows:
-            meta.setdefault("specialties", [_map_specialty(r) for r in rows])
+            # Soft list only — never dump 20; prefer when intentionally requested
+            mapped = [_map_specialty(r) for r in rows[:6]]
+            meta.setdefault("specialties", mapped)
 
         elif handler == "doctor_availability" and rows:
-            meta["time_slots"] = [_map_slot(r) for r in rows]
-            if block.get("meta", {}).get("target_date"):
-                meta["booking"] = {
-                    "step": "time",
-                    "target_date": block["meta"]["target_date"],
-                }
+            # Prefer not dumping many slots into chat — leave for wizard
+            pass
 
         elif handler == "insurance_accepted" and rows:
-            meta["insurance"] = [_map_insurance(r) for r in rows]
+            meta["insurance"] = [_map_insurance(r) for r in rows[:3]]
 
         elif handler == "services_offered" and rows:
-            meta["services"] = [_map_service(r) for r in rows]
+            meta["services"] = [_map_service(r) for r in rows[:5]]
 
         elif handler == "clinic_hours" and rows:
-            meta["hours"] = rows
-            meta.setdefault("buttons", []).extend(
-                [
-                    {
-                        "id": "book",
-                        "label": "Book Appointment",
-                        "behavior": "message",
-                        "message": "I would like to book an appointment",
-                    }
-                ]
-            )
+            # Prose only — do not emit day cards
+            pass
 
         elif handler == "clinic_location" and rows:
             row = rows[0]
@@ -107,7 +163,9 @@ def build_ui_meta(
             else:
                 query = str(address)
             phone = row.get("phone") or getattr(clinic, "phone", "")
-            maps_url = f"https://www.google.com/maps/search/?api=1&query={query}" if query else ""
+            maps_url = (
+                f"https://www.google.com/maps/search/?api=1&query={query}" if query else ""
+            )
             meta["location"] = {
                 "name": row.get("name") or clinic.name,
                 "street": street if isinstance(address, dict) else "",
@@ -122,6 +180,7 @@ def build_ui_meta(
                     {
                         "id": "maps",
                         "label": "Open in Google Maps",
+                        "icon": "MapPin",
                         "behavior": "open_url",
                         "url": maps_url,
                     }
@@ -131,6 +190,7 @@ def build_ui_meta(
                     {
                         "id": "call",
                         "label": "Call Clinic",
+                        "icon": "Phone",
                         "behavior": "call",
                         "phone": phone,
                     }
@@ -139,12 +199,22 @@ def build_ui_meta(
         elif handler == "patient_appointments" and rows:
             meta["appointments"] = rows
 
+    meta["actions"] = _contextual_actions(
+        intent,
+        clinic,
+        is_emergency,
+        has_doctors=has_doctors,
+        booking_commit=booking_commit,
+    )
+
     if is_emergency:
         phone = getattr(clinic, "phone", "") or "911"
         meta["buttons"] = [
             {
                 "id": "emergency_call",
                 "label": "Call Emergency (911)",
+                "icon": "Siren",
+                "variant": "emergency",
                 "behavior": "call",
                 "phone": "911",
             },
@@ -154,6 +224,7 @@ def build_ui_meta(
                 {
                     "id": "clinic_call",
                     "label": "Call Clinic",
+                    "icon": "Phone",
                     "behavior": "call",
                     "phone": clinic.phone,
                 }
@@ -162,36 +233,78 @@ def build_ui_meta(
     return meta
 
 
-def _contextual_actions(intent: str, clinic: Any, is_emergency: bool) -> list[dict[str, Any]]:
-    """Action chips shown under the latest assistant response."""
+def _dedupe_doctors(doctors: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for d in doctors:
+        key = str(d.get("id") or d.get("name") or "")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(d)
+    return out
+
+
+def _contextual_actions(
+    intent: str,
+    clinic: Any,
+    is_emergency: bool,
+    *,
+    has_doctors: bool = False,
+    booking_commit: bool = False,
+) -> list[dict[str, Any]]:
+    """Action chips under the latest assistant response. Book always; no Main Menu."""
     actions: list[dict[str, Any]] = []
 
-    smart = _smart_action(intent, clinic, is_emergency)
+    smart = _smart_action(intent, clinic, is_emergency, has_doctors=has_doctors)
     if smart:
         actions.append(smart)
 
-    actions.append(
-        {
-            "id": "book",
-            "label": "Book Appointment",
-            "icon": "Calendar",
-            "behavior": "launch_booking",
-            "message": "I would like to book an appointment",
-        }
-    )
-    actions.append(
-        {
-            "id": "menu",
-            "label": "Main Menu",
-            "icon": "Menu",
-            "behavior": "message",
-            "message": "Main menu",
-        }
-    )
-    return actions
+    # Book Appointment always present
+    if booking_commit or intent in (
+        Intent.BOOK_APPOINTMENT.value,
+        Intent.RESCHEDULE_APPOINTMENT.value,
+    ):
+        actions.append(
+            {
+                "id": "book",
+                "label": "Book Appointment",
+                "icon": "Calendar",
+                "behavior": "launch_booking",
+                "filled": True,
+                "message": "I would like to book an appointment",
+            }
+        )
+    else:
+        actions.append(
+            {
+                "id": "book",
+                "label": "Book Appointment",
+                "icon": "Calendar",
+                "behavior": "launch_booking",
+                "message": "I would like to book an appointment",
+            }
+        )
+
+    # Deduplicate by id while preserving order
+    seen: set[str] = set()
+    unique: list[dict[str, Any]] = []
+    for a in actions:
+        aid = a.get("id") or ""
+        if aid in seen:
+            continue
+        seen.add(aid)
+        unique.append(a)
+    return unique
 
 
-def _smart_action(intent: str, clinic: Any, is_emergency: bool) -> dict[str, Any] | None:
+def _smart_action(
+    intent: str,
+    clinic: Any,
+    is_emergency: bool,
+    *,
+    has_doctors: bool = False,
+) -> dict[str, Any] | None:
     if is_emergency or intent == Intent.EMERGENCY.value:
         return {
             "id": "emergency",
@@ -210,14 +323,23 @@ def _smart_action(intent: str, clinic: Any, is_emergency: bool) -> dict[str, Any
             "message": "Where is the clinic located?",
         }
     if intent in (Intent.CLINIC_HOURS.value,):
+        # Hours already answered — offer insurance as situational alternate
         return {
-            "id": "hours",
-            "label": "Clinic Hours",
-            "icon": "Clock",
+            "id": "insurance",
+            "label": "Check Insurance",
+            "icon": "Shield",
             "behavior": "message",
-            "message": "What are your clinic hours?",
+            "message": "Do you accept my insurance?",
         }
     if intent in (Intent.DOCTOR_SEARCH.value, Intent.DOCTOR_AVAILABILITY.value):
+        if has_doctors:
+            return {
+                "id": "insurance",
+                "label": "Check Insurance",
+                "icon": "Shield",
+                "behavior": "message",
+                "message": "Do you accept my insurance?",
+            }
         return {
             "id": "doctors",
             "label": "Find a Doctor",
@@ -241,7 +363,15 @@ def _smart_action(intent: str, clinic: Any, is_emergency: bool) -> dict[str, Any
             "behavior": "message",
             "message": "What services do you offer?",
         }
-    # Default contextual chip for greetings / general turns
+    if intent in (Intent.MEDICAL_QUESTION.value,):
+        return {
+            "id": "doctors",
+            "label": "Find a Doctor",
+            "icon": "Stethoscope",
+            "behavior": "message",
+            "message": "Help me find a doctor",
+        }
+    # Default: Find a Doctor
     return {
         "id": "find_doctor",
         "label": "Find a Doctor",
@@ -249,14 +379,6 @@ def _smart_action(intent: str, clinic: Any, is_emergency: bool) -> dict[str, Any
         "behavior": "message",
         "message": "Help me find a doctor",
     }
-
-
-def _booking_quick_replies() -> list[dict[str, str]]:
-    return [
-        {"label": "Doctor first", "message": "Book with a specific doctor"},
-        {"label": "By specialty", "message": "Book by specialty"},
-        {"label": "General appointment", "message": "Book a general appointment"},
-    ]
 
 
 def _map_doctor(row: dict[str, Any]) -> dict[str, Any]:

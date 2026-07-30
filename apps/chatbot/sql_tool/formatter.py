@@ -17,15 +17,40 @@ def format_sql_results(results: list[dict[str, Any]]) -> str:
         rows = block.get("rows") or []
 
         if handler == "clinic_hours" and rows:
-            lines = []
-            for row in rows:
-                if row.get("is_closed"):
-                    lines.append(f"- {row['day']}: Closed")
-                else:
-                    lines.append(
-                        f"- {row['day']}: {row.get('open_time', '?')} – {row.get('close_time', '?')}"
+            open_days = [
+                r for r in rows if not r.get("is_closed") and r.get("open_time")
+            ]
+            closed = [r for r in rows if r.get("is_closed")]
+            if open_days:
+                # Assume shared hours when identical
+                first = open_days[0]
+                same = all(
+                    r.get("open_time") == first.get("open_time")
+                    and r.get("close_time") == first.get("close_time")
+                    for r in open_days
+                )
+                day_names = [r["day"] for r in open_days]
+                if same and len(open_days) >= 5:
+                    span = f"{day_names[0]} through {day_names[-1]}"
+                    hours = f"{first.get('open_time')} to {first.get('close_time')}"
+                    text = (
+                        f"Our clinic is open {span} from {hours}."
                     )
-            parts.append("Here are our clinic hours:\n" + "\n".join(lines))
+                else:
+                    bits = [
+                        f"{r['day']} {r.get('open_time')}–{r.get('close_time')}"
+                        for r in open_days
+                    ]
+                    text = "Our clinic hours: " + "; ".join(bits) + "."
+                if closed:
+                    text += f" We are closed on {', '.join(r['day'] for r in closed)}."
+                text += (
+                    " If you need to reach us outside these hours, you can leave a "
+                    "message and expect a callback within 24 hours."
+                )
+                parts.append(text)
+            elif summary:
+                parts.append(summary)
             continue
 
         if handler == "clinic_location" and rows:
@@ -57,12 +82,15 @@ def format_sql_results(results: list[dict[str, Any]]) -> str:
             continue
 
         if handler == "search_doctors" and rows:
+            preview = rows[:3]
             lines = [
                 f"- {r['full_name']}"
                 + (f" ({', '.join(r['specialties'])})" if r.get("specialties") else "")
-                for r in rows[:5]
+                for r in preview
             ]
-            parts.append("Here are matching doctors:\n" + "\n".join(lines))
+            parts.append(
+                "Here are a few doctors who may be a good fit:\n" + "\n".join(lines)
+            )
             continue
 
         if handler == "list_specialties" and rows:

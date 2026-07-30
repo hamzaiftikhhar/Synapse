@@ -1,11 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowDown, MoreVertical, Send, X } from "lucide-react";
+import { ArrowDown, Send, X } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { BookingSheet } from "@/features/booking";
-import { StarterChips } from "@/features/chat/components/action-buttons";
+import {
+  SamplePromptChips,
+  StarterChips,
+} from "@/features/chat/components/action-buttons";
 import { ChatHeader } from "@/features/chat/components/chat-chrome";
 import { RobotAvatar, RobotLauncherIcon } from "@/features/chat/components/robot-avatar";
 import { MessageRenderer } from "@/features/chat/messages";
@@ -38,13 +41,17 @@ export type ChatWidgetProps = {
   defaultOpen?: boolean;
 };
 
-const CLINIC_STARTERS = [
+const CLINIC_SAMPLES = [
+  { id: "s1", label: "I have a headache", message: "I have a headache" },
+  { id: "s2", label: "Do you accept Aetna?", message: "Do you accept Aetna insurance?" },
   {
-    id: "book",
-    label: "Book Appointment",
-    message: "I would like to book an appointment",
-    icon: "Calendar",
+    id: "s3",
+    label: "Who are your cardiologists?",
+    message: "Who are your cardiologists?",
   },
+];
+
+const CLINIC_STARTERS = [
   {
     id: "doctor",
     label: "Find a Doctor",
@@ -52,17 +59,22 @@ const CLINIC_STARTERS = [
     icon: "Stethoscope",
   },
   {
+    id: "book",
+    label: "Book Appointment",
+    message: "I would like to book an appointment",
+    icon: "Calendar",
+  },
+  {
     id: "hours",
     label: "Clinic Hours",
     message: "What are your clinic hours?",
     icon: "Clock",
   },
-  {
-    id: "insurance",
-    label: "Check Insurance",
-    message: "Do you accept my insurance?",
-    icon: "Shield",
-  },
+];
+
+const MARKETING_SAMPLES = [
+  { id: "s1", label: "What is Synapse?", message: "What is Synapse?" },
+  { id: "s2", label: "Pricing", message: "Tell me about pricing" },
 ];
 
 const MARKETING_STARTERS = [
@@ -138,11 +150,13 @@ export function ChatWidget({
   const greeting =
     widgetConfig?.configuration?.widget?.greeting ||
     (resolvedMode === "marketing"
-      ? "Hi! Ask me about Synapse features, pricing, or book a demo."
-      : `Hi! I'm the assistant for ${displayName}. How can I help you today?`);
+      ? "Hi! How can Synapse help you today?"
+      : `Hi! How can ${displayName} help you today?`);
 
   const starters =
     resolvedMode === "marketing" ? MARKETING_STARTERS : CLINIC_STARTERS;
+  const samples =
+    resolvedMode === "marketing" ? MARKETING_SAMPLES : CLINIC_SAMPLES;
 
   const [open, setOpen] = useState(mode === "embedded" || defaultOpen);
   const [expanded, setExpanded] = useState(false);
@@ -347,6 +361,7 @@ export function ChatWidget({
   }
 
   function handleStarter(msg: string, id?: string) {
+    // Book chip opens wizard (commit); samples/other chips start conversation.
     if (id === "book" && canBook) {
       openBooking(msg);
       return;
@@ -356,6 +371,10 @@ export function ChatWidget({
 
   const emptyState = (
     <div className="flex flex-col gap-1">
+      <SamplePromptChips
+        items={samples}
+        onSelect={(msg) => void sendText(msg)}
+      />
       <div className="flex gap-2">
         <RobotAvatar size="sm" className="mt-0.5 shrink-0" />
         <div className="min-w-0 max-w-[85%]">
@@ -444,15 +463,6 @@ export function ChatWidget({
             <Send className="size-4" />
           </button>
         </div>
-        <button
-          type="button"
-          aria-label="More options"
-          className="flex size-9 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-neutral-100"
-          onClick={resetChat}
-          title="Restart chat"
-        >
-          <MoreVertical className="size-4" />
-        </button>
       </form>
     </div>
   );
@@ -465,7 +475,7 @@ export function ChatWidget({
         // Compact default — slightly larger than before
         mode === "widget" &&
           !expanded &&
-          "h-[min(700px,calc(100dvh-5.5rem))] w-[min(480px,calc(100vw-1.25rem))] rounded-[8px]",
+          "h-[min(740px,calc(100dvh-5.5rem))] w-[min(560px,calc(100vw-1.25rem))] rounded-[8px]",
         // Expanded — ~75–80% of viewport
         mode === "widget" &&
           expanded &&

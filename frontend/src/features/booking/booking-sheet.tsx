@@ -271,7 +271,7 @@ export function BookingSheet({
           ) : null}
         </div>
 
-        {step && step !== "confirmed" && step !== "details" && step !== "otp" ? (
+        {step && step !== "confirmed" ? (
           <div className="shrink-0 border-t border-border px-4 py-3">
             <Button
               type="button"
