@@ -19,12 +19,43 @@ def build_ui_meta(
     route: str,
     sql_results: list[dict[str, Any]],
     is_emergency: bool = False,
+    message: str = "",
+    nlu: Any = None,
 ) -> dict[str, Any]:
     """Map SQL handler output + intent to frontend component payloads."""
     meta: dict[str, Any] = {
         # Contextual chips rendered under the assistant reply (not a fixed footer bar).
         "actions": _contextual_actions(intent, clinic, is_emergency),
     }
+
+    # Booking intents launch the wizard — never dump slots/doctors here
+    if intent in (
+        Intent.BOOK_APPOINTMENT.value,
+        Intent.RESCHEDULE_APPOINTMENT.value,
+    ):
+        from apps.chatbot.booking.config import get_booking_config
+        from apps.chatbot.booking.discovery import suggest_specialties
+
+        cfg = get_booking_config(clinic)
+        suggested, guidance = ([], "")
+        if cfg.get("ai_discovery"):
+            suggested, guidance = suggest_specialties(clinic, message=message)
+        meta["booking"] = {
+            "launch": True,
+            "button_label": "Start Booking",
+            "suggested_specialties": suggested,
+            "guidance": guidance,
+            "reason": message,
+        }
+        meta["buttons"] = [
+            {
+                "id": "start_booking",
+                "label": "Start Booking",
+                "behavior": "launch_booking",
+                "message": message,
+            }
+        ]
+        return meta
 
     for block in sql_results:
         handler = block.get("handler", "")
@@ -108,11 +139,6 @@ def build_ui_meta(
         elif handler == "patient_appointments" and rows:
             meta["appointments"] = rows
 
-    # Intent-based quick replies when no rich component was produced
-    if intent == Intent.BOOK_APPOINTMENT.value and "booking" not in meta:
-        meta["booking"] = {"step": "start"}
-        meta.setdefault("quick_replies", _booking_quick_replies())
-
     if is_emergency:
         phone = getattr(clinic, "phone", "") or "911"
         meta["buttons"] = [
@@ -149,7 +175,7 @@ def _contextual_actions(intent: str, clinic: Any, is_emergency: bool) -> list[di
             "id": "book",
             "label": "Book Appointment",
             "icon": "Calendar",
-            "behavior": "message",
+            "behavior": "launch_booking",
             "message": "I would like to book an appointment",
         }
     )

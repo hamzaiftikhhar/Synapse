@@ -126,7 +126,43 @@ class ChatEngine:
         vector_rows: list[dict[str, Any]] = []
         response_text = ""
 
-        if route in (Route.DIRECT_RESPONSE, Route.EMERGENCY, Route.CLARIFY):
+        from apps.chatbot.nlu.schemas import Intent
+        is_booking_launch = nlu_result.intent in {
+            Intent.BOOK_APPOINTMENT,
+            Intent.RESCHEDULE_APPOINTMENT,
+        }
+
+        if is_booking_launch:
+            # Launch booking wizard — soft discovery, no slot dump
+            from apps.chatbot.booking.config import get_booking_config
+            from apps.chatbot.booking.discovery import suggest_specialties
+
+            cfg = get_booking_config(clinic)
+            suggested, guidance = ([], "")
+            if cfg.get("ai_discovery"):
+                reason_bits = []
+                if nlu_result.entities.symptom:
+                    s = nlu_result.entities.symptom
+                    reason_bits.append(
+                        ", ".join(s) if isinstance(s, list) else str(s)
+                    )
+                if nlu_result.entities.specialty:
+                    sp = nlu_result.entities.specialty
+                    reason_bits.append(
+                        ", ".join(sp) if isinstance(sp, list) else str(sp)
+                    )
+                suggested, guidance = suggest_specialties(
+                    clinic,
+                    message=message,
+                    reason=" ".join(reason_bits),
+                )
+            response_text = (
+                guidance
+                + " Tap **Start Booking** to continue — one step at a time."
+            )
+            timings["fast_path_ms"] = 0.0
+
+        elif route in (Route.DIRECT_RESPONSE, Route.EMERGENCY, Route.CLARIFY):
             t0 = time.perf_counter()
             response_text = self._fast_path(decision, message, clinic)
             timings["fast_path_ms"] = (time.perf_counter() - t0) * 1000
@@ -177,7 +213,33 @@ class ChatEngine:
             route=route.value,
             sql_results=sql_rows,
             is_emergency=nlu_result.is_emergency or route == Route.EMERGENCY,
+            message=message,
+            nlu=nlu_result,
         )
+
+        if is_booking_launch:
+            # Ensure launch payload even if ui_meta already set it
+            ui_meta.setdefault("booking", {})
+            ui_meta["booking"].update(
+                {
+                    "launch": True,
+                    "button_label": "Start Booking",
+                    "suggested_specialties": suggested,
+                    "guidance": guidance,
+                    "reason": message,
+                }
+            )
+            ui_meta.setdefault("buttons", [])
+            if not any(b.get("id") == "start_booking" for b in ui_meta["buttons"]):
+                ui_meta["buttons"].insert(
+                    0,
+                    {
+                        "id": "start_booking",
+                        "label": "Start Booking",
+                        "behavior": "launch_booking",
+                        "message": message,
+                    },
+                )
 
         # ── 4. Persist messages ───────────────────────────────────────────────
         if session is not None:

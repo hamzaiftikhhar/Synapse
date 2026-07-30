@@ -268,6 +268,86 @@ export type MarketingChatInput = {
   message: string;
 };
 
+export type BookingSpecialty = {
+  id: string;
+  name: string;
+  slug?: string;
+  description?: string;
+  doctor_count?: number;
+  plain_label?: string;
+};
+
+export type BookingDoctor = {
+  id: string;
+  name: string;
+  title?: string;
+  bio?: string;
+  languages?: string[];
+  specialties?: string[];
+  next_available?: {
+    id?: string;
+    label?: string;
+    start?: string;
+    date?: string;
+    time?: string;
+  } | null;
+};
+
+export type BookingSlot = {
+  id: string;
+  label: string;
+  start: string;
+  end?: string;
+  doctor?: string;
+  doctor_id?: string;
+  time?: string;
+  date?: string;
+};
+
+export type BookingStepPayload = {
+  booking_id: string;
+  session_token?: string;
+  mode: string;
+  step: string;
+  progress: { current: number; total: number };
+  reason?: string;
+  guidance?: string;
+  suggested_specialties?: BookingSpecialty[];
+  specialty_chip?: { id: string; name: string } | null;
+  options: Record<string, unknown>;
+  hold?: { expires_at: string } | null;
+  confirmation?: {
+    confirmation_code?: string;
+    appointment_id?: string;
+    slot_summary?: string;
+    doctor_name?: string;
+    date?: string;
+    start?: string;
+  } | null;
+};
+
+export type BookingStartInput = {
+  clinic_slug: string;
+  session_token?: string | null;
+  message?: string;
+  reason?: string;
+};
+
+export type BookingStepInput = {
+  clinic_slug: string;
+  session_token: string;
+  booking_id: string;
+  action: string;
+  value?: Record<string, unknown>;
+};
+
+export type BookingConfirmInput = {
+  clinic_slug: string;
+  session_token: string;
+  booking_id: string;
+  otp_code: string;
+};
+
 export type OTPSendInput = {
   clinic_slug: string;
   phone: string;

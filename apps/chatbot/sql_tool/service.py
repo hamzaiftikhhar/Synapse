@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 _INTENT_HANDLERS: dict[Intent, SQLHandler] = {
     Intent.DOCTOR_SEARCH: search_doctors,
     Intent.DOCTOR_AVAILABILITY: doctor_availability,
-    Intent.BOOK_APPOINTMENT: doctor_availability,
+    # BOOK_APPOINTMENT is handled by the booking wizard — no SQL dump
     Intent.CANCEL_APPOINTMENT: patient_appointments,
     Intent.RESCHEDULE_APPOINTMENT: patient_appointments,
     Intent.INSURANCE_ACCEPTED: insurance_accepted,
@@ -38,7 +38,6 @@ _INTENT_HANDLERS: dict[Intent, SQLHandler] = {
 # Extra handlers for multi-intent / enrichment
 _INTENT_SUPPLEMENTS: dict[Intent, list[SQLHandler]] = {
     Intent.DOCTOR_SEARCH: [list_specialties],
-    Intent.BOOK_APPOINTMENT: [search_doctors],
     Intent.INSURANCE_VERIFICATION: [search_doctors],
 }
 

@@ -6,7 +6,7 @@ export type BackendAction = {
   icon?: string;
   variant?: "message" | "action" | "emergency";
   filled?: boolean;
-  behavior?: "message" | "open_url" | "call";
+  behavior?: "message" | "open_url" | "call" | "launch_booking";
   message?: string;
   url?: string;
   href?: string;

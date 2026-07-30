@@ -6,6 +6,7 @@ from ninja import NinjaAPI
 from apps.api.appointments.router import router as appointments_router
 from apps.api.auth.patient_router import router as patient_auth_router
 from apps.api.widget.router import router as widget_public_router
+from apps.api.widget.booking_router import router as widget_booking_router
 from apps.api.auth.router import router as auth_router
 from apps.api.chat.router import router as chat_router
 from apps.api.doctors.router import router as doctors_router
@@ -31,6 +32,7 @@ api = NinjaAPI(
 api.add_router("/auth", auth_router)
 api.add_router("/widget", patient_auth_router)
 api.add_router("/widget", widget_public_router)
+api.add_router("/widget", widget_booking_router)
 api.add_router("/chat", chat_router)
 api.add_router("/documents", knowledge_router)
 api.add_router("/patients", patients_router)

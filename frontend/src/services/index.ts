@@ -101,6 +101,47 @@ export const widgetService = {
   },
 };
 
+/* ─── Booking wizard ───────────────────────────────────────── */
+
+export const bookingService = {
+  async start(input: import("@/types/api").BookingStartInput) {
+    const { data } = await widgetApi.post<import("@/types/api").BookingStepPayload>(
+      "/widget/booking/start",
+      input
+    );
+    return data;
+  },
+  async step(input: import("@/types/api").BookingStepInput) {
+    const { data } = await widgetApi.post<import("@/types/api").BookingStepPayload>(
+      "/widget/booking/step",
+      input
+    );
+    return data;
+  },
+  async sendOtp(input: {
+    clinic_slug: string;
+    session_token: string;
+    booking_id: string;
+  }) {
+    const { data } = await widgetApi.post<{
+      message: string;
+      session_token: string;
+      booking_id: string;
+      expires_in_minutes: number;
+      debug_code?: string | null;
+      phone: string;
+    }>("/widget/booking/otp/send", input);
+    return data;
+  },
+  async confirm(input: import("@/types/api").BookingConfirmInput) {
+    const { data } = await widgetApi.post<import("@/types/api").BookingStepPayload>(
+      "/widget/booking/confirm",
+      input
+    );
+    return data;
+  },
+};
+
 /* ─── Chat ─────────────────────────────────────────────────── */
 
 export const chatService = {

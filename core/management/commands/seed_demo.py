@@ -128,7 +128,16 @@ class Command(BaseCommand):
                     "greeting": "Hi! How can Acme Cardiology help you today?",
                 },
                 "ai": {"model": "gpt-4o-mini", "temperature": 0.3},
-                "booking": {"require_auth": True, "slot_duration_min": 30},
+                "booking": {
+                    "mode": "specialty_first",
+                    "ai_discovery": True,
+                    "require_auth": True,
+                    "max_slots_preview": 5,
+                    "date_horizon_days": 14,
+                    "slot_hold_minutes": 10,
+                    "show_reason": True,
+                    "slot_duration_min": 30,
+                },
                 "feature_flags": {
                     "booking": True,
                     "insurance": True,
