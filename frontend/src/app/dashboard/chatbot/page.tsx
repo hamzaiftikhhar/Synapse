@@ -58,7 +58,7 @@ export default function ChatbotQaPage() {
           </CardHeader>
           <CardContent className="space-y-2 text-sm text-muted-foreground">
             <p>1. Click the chat bubble (bottom right).</p>
-            <p>2. Pick a starter option or type a question.</p>
+            <p>2. Type a question — responses come from the backend API.</p>
             <p>3. Scroll up anytime to review earlier messages.</p>
             <p className="flex items-center gap-1.5">
               4. Use <Maximize2 className="inline size-3.5" /> to expand the
@@ -71,14 +71,14 @@ export default function ChatbotQaPage() {
           <CardHeader className="pb-2">
             <CardTitle className="flex items-center gap-2 text-sm font-medium">
               <Sparkles className="size-4 text-primary" />
-              Starter options
+              Backend-driven UI
             </CardTitle>
           </CardHeader>
           <CardContent className="text-sm text-muted-foreground">
             <p>
-              Patients see Book Appointment, Find Doctor, Services, Insurance,
-              Hours, Location, Contact, and FAQ as soon as the chat opens —
-              professional, scannable, and consistent across pages.
+              Cards, buttons, menus, and booking flows are rendered only when
+              the backend includes them in the API response. The frontend does
+              not generate clinic answers or decide which actions to show.
             </p>
           </CardContent>
         </Card>
