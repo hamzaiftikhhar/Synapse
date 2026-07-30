@@ -35,10 +35,9 @@ _INTENT_HANDLERS: dict[Intent, SQLHandler] = {
     Intent.PRICING: services_offered,
 }
 
-# Extra handlers for multi-intent / enrichment
+# Extra handlers for multi-intent / enrichment — avoid dumping specialties on every doctor search
 _INTENT_SUPPLEMENTS: dict[Intent, list[SQLHandler]] = {
-    Intent.DOCTOR_SEARCH: [list_specialties],
-    Intent.INSURANCE_VERIFICATION: [search_doctors],
+    Intent.INSURANCE_VERIFICATION: [],
 }
 
 

@@ -52,7 +52,7 @@ def search_doctors(ctx: SQLContext) -> SQLResult:
     elif nlu.entities.service:
         qs = qs.filter(services__name__icontains=nlu.entities.service, services__is_deleted=False).distinct()
 
-    doctors = list(qs[:10])
+    doctors = list(qs[:3])
     rows = [doctor_to_dict(d) for d in doctors]
     if rows:
         names = ", ".join(r["full_name"] for r in rows[:3])
