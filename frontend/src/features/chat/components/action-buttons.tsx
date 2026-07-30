@@ -75,7 +75,10 @@ export function StarterChips({
   onSelect,
 }: {
   items: { id: string; label: string; message: string; icon?: string }[];
-  onSelect: (message: string) => void;
+  onSelect: (
+    message: string,
+    item?: { id: string; label: string; message: string; icon?: string }
+  ) => void;
 }) {
   if (!items.length) return null;
 
@@ -87,7 +90,7 @@ export function StarterChips({
           <button
             key={item.id}
             type="button"
-            onClick={() => onSelect(item.message)}
+            onClick={() => onSelect(item.message, item)}
             className="inline-flex items-center gap-1.5 rounded-full border border-neutral-300 bg-white px-3 py-1.5 text-xs font-medium text-neutral-800 transition-colors hover:border-neutral-400 hover:bg-neutral-50"
           >
             {Icon ? <Icon className="size-3.5 shrink-0 opacity-70" /> : null}

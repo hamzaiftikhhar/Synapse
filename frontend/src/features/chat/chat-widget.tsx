@@ -150,14 +150,20 @@ export function ChatWidget({
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [typing, setTyping] = useState(false);
   const [showJumpDown, setShowJumpDown] = useState(false);
+  const [bookingOpen, setBookingOpen] = useState(false);
+  const [bookingSeed, setBookingSeed] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
+  const lastUserMessageRef = useRef("");
   const staffChat = useStaffChat();
   const patientChat = usePatientChat();
   const guestChat = useGuestChat();
   const marketingChat = useMarketingChat();
   const staffMode =
     resolvedMode === "staff" || (useStaffApi && isAuthenticated);
+  const canBook =
+    resolvedMode !== "marketing" && Boolean(clinicSlug || clinic?.slug);
+  const bookingClinicSlug = clinicSlug || clinic?.slug || "";
 
   const lastActionMessageId = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -204,12 +210,22 @@ export function ChatWidget({
     );
   }
 
+  const openBooking = useCallback((seed?: string) => {
+    if (!canBook) return;
+    setBookingSeed(
+      (seed || lastUserMessageRef.current || "").trim()
+    );
+    setBookingOpen(true);
+    if (!open) setOpen(true);
+  }, [canBook, open]);
+
   const sendText = useCallback(
     async (text: string) => {
       const trimmed = text.trim();
       if (!trimmed || typing) return;
       setInput("");
       stickToBottom.current = true;
+      lastUserMessageRef.current = trimmed;
       setMessages((prev) => [...prev, userTextMessage(trimmed)]);
       setTyping(true);
 
@@ -255,7 +271,30 @@ export function ChatWidget({
   );
 
   function handleBackendAction(action: BackendAction) {
-    runBackendAction(action, (msg) => void sendText(msg));
+    runBackendAction(action, (msg) => void sendText(msg), openBooking);
+  }
+
+  function handleBookingConfirmed(payload: BookingStepPayload) {
+    const conf = payload.confirmation;
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: uid("confirm"),
+        role: "assistant",
+        type: "confirmation",
+        content: "Appointment confirmed",
+        createdAt: new Date().toISOString(),
+        payload: {
+          confirmation_code: conf?.confirmation_code,
+          appointment_id: conf?.appointment_id,
+          slot_summary: conf?.slot_summary,
+          doctor_name: conf?.doctor_name,
+          date: conf?.date,
+          start: conf?.start,
+        },
+      },
+    ]);
+    setBookingOpen(false);
   }
 
   function handleAction(action: string, data?: unknown) {
@@ -282,7 +321,8 @@ export function ChatWidget({
           href: btn.href,
           phone: btn.phone,
         },
-        (msg) => void sendText(msg)
+        (msg) => void sendText(msg),
+        openBooking
       );
       return;
     }
@@ -306,6 +346,14 @@ export function ChatWidget({
     setExpanded(false);
   }
 
+  function handleStarter(msg: string, id?: string) {
+    if (id === "book" && canBook) {
+      openBooking(msg);
+      return;
+    }
+    void sendText(msg);
+  }
+
   const emptyState = (
     <div className="flex flex-col gap-1">
       <div className="flex gap-2">
@@ -319,7 +367,7 @@ export function ChatWidget({
       </div>
       <StarterChips
         items={starters}
-        onSelect={(msg) => void sendText(msg)}
+        onSelect={(msg, item) => handleStarter(msg, item?.id)}
       />
     </div>
   );
@@ -443,7 +491,22 @@ export function ChatWidget({
     </div>
   );
 
-  if (mode === "embedded") return panel;
+  if (mode === "embedded") {
+    return (
+      <>
+        {panel}
+        {canBook ? (
+          <BookingSheet
+            open={bookingOpen}
+            onOpenChange={setBookingOpen}
+            clinicSlug={bookingClinicSlug}
+            initialMessage={bookingSeed}
+            onConfirmed={handleBookingConfirmed}
+          />
+        ) : null}
+      </>
+    );
+  }
 
   return (
     <>
@@ -483,6 +546,16 @@ export function ChatWidget({
           )}
         </button>
       </div>
+
+      {canBook ? (
+        <BookingSheet
+          open={bookingOpen}
+          onOpenChange={setBookingOpen}
+          clinicSlug={bookingClinicSlug}
+          initialMessage={bookingSeed}
+          onConfirmed={handleBookingConfirmed}
+        />
+      ) : null}
     </>
   );
 }
