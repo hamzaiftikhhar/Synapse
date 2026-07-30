@@ -220,8 +220,16 @@ NLU_FALLBACK_OPENAI = env.bool("NLU_FALLBACK_OPENAI", default=True)
 NLU_FALLBACK_MODEL = env("NLU_FALLBACK_MODEL", default="gpt-4.1-mini")
 
 # ─── Chat / RAG response generation (separate from NLU) ───────────────────────
-# Use a stronger model only when synthesizing answers — not for intent routing.
-CHAT_RESPONSE_MODEL = env("CHAT_RESPONSE_MODEL", default="gpt-4.1-mini")
+# Swap provider when moving from Gemini (dev) → OpenAI GPT (prod):
+#   CHAT_RESPONSE_PROVIDER=openai
+#   CHAT_RESPONSE_MODEL=gpt-4.1-mini   (or gpt-4o)
+CHAT_RESPONSE_PROVIDER = env("CHAT_RESPONSE_PROVIDER", default="gemini")
+CHAT_RESPONSE_MODEL = env("CHAT_RESPONSE_MODEL", default="gemini-3.1-flash-lite")
+CHAT_RESPONSE_FALLBACK_MODELS = env(
+    "CHAT_RESPONSE_FALLBACK_MODELS",
+    default="gemini-flash-lite-latest,gemini-2.0-flash-lite,gemini-3.1-flash-lite",
+)
 CHAT_PREMIUM_MODEL = env("CHAT_PREMIUM_MODEL", default="gpt-4o-mini")
-CHAT_RESPONSE_TIMEOUT_SECONDS = env.float("CHAT_RESPONSE_TIMEOUT_SECONDS", default=15.0)
+CHAT_RESPONSE_TIMEOUT_SECONDS = env.float("CHAT_RESPONSE_TIMEOUT_SECONDS", default=20.0)
+CHAT_VECTOR_MIN_SCORE = env.float("CHAT_VECTOR_MIN_SCORE", default=0.25)
 

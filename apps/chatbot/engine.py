@@ -156,143 +156,134 @@ class ChatEngine:
         suggested: list[dict[str, Any]] = []
         guidance = ""
 
-        if doctor_followup and last_doctor:
-            response_text = self._doctor_followup_reply(last_doctor)
-            timings["fast_path_ms"] = 0.0
+        # Fast template paths — no tools / LLM needed
+        if route == Route.EMERGENCY or nlu_result.is_emergency:
+            t0 = time.perf_counter()
+            response_text = self._fast_path(decision, message, clinic)
+            timings["fast_path_ms"] = (time.perf_counter() - t0) * 1000
 
-        elif is_booking_intent and not booking_commit:
-            # Exploratory — soft specialty recommend, wizard not forced open
-            from apps.chatbot.booking.config import get_booking_config
-            from apps.chatbot.booking.discovery import suggest_specialties
+        elif (
+            route == Route.DIRECT_RESPONSE
+            and nlu_result.intent
+            in {
+                Intent.GREETING,
+                Intent.FAREWELL,
+                Intent.OFF_TOPIC,
+            }
+            and not soft_medical
+            and not is_booking_intent
+        ):
+            t0 = time.perf_counter()
+            response_text = self._fast_path(decision, message, clinic)
+            timings["fast_path_ms"] = (time.perf_counter() - t0) * 1000
 
-            cfg = get_booking_config(clinic)
-            if cfg.get("ai_discovery"):
-                suggested, guidance = suggest_specialties(clinic, message=message)
-            response_text = (
-                guidance
-                or "I can help you book an appointment. Based on what you described, "
-                "pick a specialty below if you like — or tap Start Booking when you're ready."
-            )
-            if suggested:
-                names = ", ".join(
-                    s.get("plain_label") or s.get("name") or "" for s in suggested[:3]
-                )
-                response_text = (
-                    f"Based on what you described, {names} seem like a good place to start, "
-                    "but you can choose any specialty you prefer. "
-                    "Tap **Start Booking** when you're ready — or ask me to find a doctor first."
-                )
-            timings["fast_path_ms"] = 0.0
-
-        elif is_booking_intent and booking_commit:
-            from apps.chatbot.booking.config import get_booking_config
-            from apps.chatbot.booking.discovery import suggest_specialties
-
-            cfg = get_booking_config(clinic)
-            if cfg.get("ai_discovery"):
-                suggested, guidance = suggest_specialties(clinic, message=message)
-            # Resolve doctor name from message into last_doctor if present
-            resolved = self._resolve_doctor_from_message(clinic, message)
-            if resolved:
-                last_doctor = resolved
-            response_text = (
-                guidance
-                or "Great — let's finish booking. Tap **Start Booking** to pick a date and time."
-            )
-            if last_doctor and last_doctor.get("name"):
-                response_text = (
-                    f"Great choice. I'll help you book with {last_doctor['name']}. "
-                    "Tap **Start Booking** to choose a date and time."
-                )
-            timings["fast_path_ms"] = 0.0
-
-        elif soft_medical:
-            from apps.chatbot.booking.discovery import suggest_specialties
-
-            suggested, guidance = suggest_specialties(clinic, message=message)
-            if suggested:
-                names = ", ".join(
-                    s.get("plain_label") or s.get("name") or "" for s in suggested[:3]
-                )
-                response_text = (
-                    "I'm sorry you're dealing with that. While I can't diagnose medical "
-                    f"conditions, based on what you described, {names} may be a good place "
-                    "to start — you can also choose another specialty if you prefer. "
-                    "Would you like me to help you find a doctor?"
-                )
-            elif guidance and "Choose a specialty" not in guidance:
-                response_text = (
-                    "I'm sorry you're dealing with that. "
-                    + guidance
-                    + " Would you like me to help you find a doctor?"
-                )
-            else:
-                response_text = (
-                    "I'm sorry you're not feeling well. While I can't diagnose medical "
-                    "conditions, I can help you find the right specialty or doctor at "
-                    f"{clinic.name}. Would you like me to show available doctors?"
-                )
-            timings["fast_path_ms"] = 0.0
-
-        elif route in (Route.DIRECT_RESPONSE, Route.EMERGENCY, Route.CLARIFY):
+        elif route == Route.CLARIFY and not soft_medical and not is_booking_intent:
             t0 = time.perf_counter()
             response_text = self._fast_path(decision, message, clinic)
             timings["fast_path_ms"] = (time.perf_counter() - t0) * 1000
 
         else:
-            # Prefer SQL for insurance/hours even if NLU said vector-only
-            needs_sql = decision.needs_sql
-            needs_vector = decision.needs_vector
+            # ── Full pipeline: SQL + vector → Gemini/OpenAI synthesis ─────────
+            from apps.chatbot.booking.config import get_booking_config
+            from apps.chatbot.booking.discovery import suggest_specialties
+
+            needs_sql = bool(decision.needs_sql)
+            needs_vector = bool(decision.needs_vector)
+
+            # Always pull SQL for structured clinic facts
             if nlu_result.intent in {
                 Intent.INSURANCE_ACCEPTED,
                 Intent.INSURANCE_VERIFICATION,
                 Intent.CLINIC_HOURS,
                 Intent.CLINIC_LOCATION,
                 Intent.SERVICES_OFFERED,
+                Intent.PRICING,
+                Intent.DOCTOR_SEARCH,
+                Intent.DOCTOR_AVAILABILITY,
             }:
                 needs_sql = True
 
-            if needs_sql:
+            # Vector knowledge for FAQs / soft medical / insurance / services
+            if nlu_result.intent in {
+                Intent.FAQ,
+                Intent.MEDICAL_QUESTION,
+                Intent.INSURANCE_ACCEPTED,
+                Intent.INSURANCE_VERIFICATION,
+                Intent.SERVICES_OFFERED,
+                Intent.PRICING,
+                Intent.CLINIC_HOURS,
+                Intent.CLINIC_LOCATION,
+                Intent.DOCTOR_SEARCH,
+            } or soft_medical or doctor_followup:
+                needs_vector = True
+
+            if is_booking_intent or soft_medical:
+                cfg = get_booking_config(clinic)
+                if cfg.get("ai_discovery"):
+                    suggested, guidance = suggest_specialties(clinic, message=message)
+
+            if is_booking_intent and booking_commit:
+                resolved = self._resolve_doctor_from_message(clinic, message)
+                if resolved:
+                    last_doctor = resolved
+
+            if needs_sql and not is_booking_intent:
                 t0 = time.perf_counter()
                 sql_rows = self._run_sql(clinic, nlu_result, patient=patient)
                 timings["sql_ms"] = (time.perf_counter() - t0) * 1000
 
-            if needs_vector and nlu_result.intent not in {
-                Intent.INSURANCE_ACCEPTED,
-                Intent.CLINIC_HOURS,
-            }:
+            if needs_vector:
                 t0 = time.perf_counter()
                 vector_rows = self._run_vector(clinic, message)
                 timings["vector_ms"] = (time.perf_counter() - t0) * 1000
 
-            if route == Route.SQL_ONLY and sql_rows:
-                from apps.chatbot.sql_tool import format_sql_results
-                response_text = format_sql_results(sql_rows)
-            elif nlu_result.intent in {
-                Intent.CLINIC_HOURS,
-                Intent.INSURANCE_ACCEPTED,
-            } and sql_rows:
-                from apps.chatbot.sql_tool import format_sql_results
-                response_text = format_sql_results(sql_rows)
-            elif decision.needs_llm or vector_rows:
-                t0 = time.perf_counter()
-                response_text = self._generate_response(
-                    clinic=clinic,
-                    message=message,
-                    nlu=nlu_result,
-                    sql_rows=sql_rows,
-                    vector_rows=vector_rows,
-                    session=session,
+            extra_bits: list[str] = []
+            if suggested:
+                names = ", ".join(
+                    (s.get("plain_label") or s.get("name") or "") for s in suggested[:4]
                 )
-                timings["llm_ms"] = (time.perf_counter() - t0) * 1000
-            elif sql_rows:
-                from apps.chatbot.sql_tool import format_sql_results
-                response_text = format_sql_results(sql_rows)
-            else:
-                response_text = (
-                    "I couldn't find clinic information for that request. "
-                    "Please call the clinic directly for help."
+                extra_bits.append(
+                    "Soft specialty suggestions (not a diagnosis): " + names
                 )
+            if guidance:
+                extra_bits.append("Discovery guidance: " + guidance)
+            if last_doctor:
+                extra_bits.append(
+                    "Last discussed doctor: "
+                    + json.dumps(last_doctor, default=str)[:400]
+                )
+            if last_specialty:
+                extra_bits.append(
+                    "Last specialty: "
+                    + json.dumps(last_specialty, default=str)[:200]
+                )
+            if is_booking_intent and booking_commit:
+                extra_bits.append(
+                    "User is ready to book. Invite them to tap Start Booking. "
+                    "Do not invent available slots."
+                )
+            elif is_booking_intent:
+                extra_bits.append(
+                    "Exploratory booking. Soft-recommend specialties; invite "
+                    "Find a Doctor or Start Booking. Do not dump all doctors."
+                )
+            if soft_medical:
+                extra_bits.append(
+                    "Symptom / medical question. Empathize, never diagnose, "
+                    "suggest specialty options and offer to find a doctor."
+                )
+
+            t0 = time.perf_counter()
+            response_text = self._generate_response(
+                clinic=clinic,
+                message=message,
+                nlu=nlu_result,
+                sql_rows=sql_rows,
+                vector_rows=vector_rows,
+                session=session,
+                extra_context="\n".join(extra_bits),
+            )
+            timings["llm_ms"] = (time.perf_counter() - t0) * 1000
 
         timings["total_ms"] = (time.perf_counter() - started) * 1000
 
@@ -331,17 +322,19 @@ class ChatEngine:
             last_specialty=last_specialty,
         )
 
-        if soft_medical and suggested and "specialties" not in ui_meta:
-            ui_meta["specialties"] = [
-                {
-                    "id": s.get("id"),
-                    "name": s.get("name"),
-                    "description": s.get("plain_label") or s.get("description") or "",
-                    "recommended": True,
-                    "select_message": f"I need a {s.get('name')} doctor",
-                }
-                for s in suggested[:4]
-            ]
+        if (soft_medical or (is_booking_intent and not booking_commit)) and suggested:
+            ui_meta.setdefault("specialties", [])
+            if not ui_meta["specialties"]:
+                ui_meta["specialties"] = [
+                    {
+                        "id": s.get("id"),
+                        "name": s.get("name"),
+                        "description": s.get("plain_label") or s.get("description") or "",
+                        "recommended": True,
+                        "select_message": f"I need a {s.get('name')} doctor",
+                    }
+                    for s in suggested[:4]
+                ]
 
         if session is not None:
             self._save_messages(session, message, response_text, nlu_result)
@@ -359,7 +352,7 @@ class ChatEngine:
             confidence=nlu_result.confidence,
             needs_sql=decision.needs_sql,
             needs_vector=decision.needs_vector,
-            needs_llm=decision.needs_llm,
+            needs_llm=True,
             safety_message=decision.safety_message,
             sql_results=sql_rows,
             vector_results=vector_rows,
@@ -429,72 +422,40 @@ class ChatEngine:
         sql_rows: list[dict[str, Any]],
         vector_rows: list[dict[str, Any]],
         session: Any | None,
+        extra_context: str = "",
     ) -> str:
+        """Synthesize final reply via Gemini (dev) or OpenAI (prod swap)."""
+        from apps.chatbot.response_llm import ResponseLLMError, synthesize_clinic_reply
+        from apps.chatbot.sql_tool import format_sql_results
+
+        history = self._load_history(session, limit=8)
         try:
-            from openai import OpenAI
-        except ImportError:
-            return "I'm sorry, I can't process that request right now. Please try again later."
+            return synthesize_clinic_reply(
+                clinic=clinic,
+                message=message,
+                nlu=nlu,
+                sql_rows=sql_rows,
+                vector_rows=vector_rows,
+                history=history,
+                extra_context=extra_context,
+            )
+        except ResponseLLMError as exc:
+            logger.warning("Response LLM failed: %s", exc)
+        except Exception:
+            logger.exception("Response LLM unexpected failure")
 
-        api_key = getattr(settings, "OPENAI_API_KEY", "")
-        if not api_key:
-            return "I'm unable to generate a response at this time. Please contact the clinic directly."
-
-        model = getattr(settings, "CHAT_RESPONSE_MODEL", "gpt-4.1-mini")
-        timeout = float(getattr(settings, "CHAT_RESPONSE_TIMEOUT_SECONDS", 15.0))
-
-        # Build context blocks
-        context_parts: list[str] = []
-
+        # Grounded fallbacks — never invent
         if sql_rows:
-            context_parts.append("### Clinic Data\n" + json.dumps(sql_rows, indent=2, default=str)[:3000])
-
+            return format_sql_results(sql_rows)
         if vector_rows:
-            chunks = "\n\n".join(
-                f"[{h['heading'] or 'Info'}] {h['text'][:500]}"
-                for h in vector_rows
-                if h.get("score", 0) >= 0.40
-            )
-            if chunks:
-                context_parts.append("### Knowledge Base\n" + chunks[:2500])
-
-        context_block = "\n\n".join(context_parts)
-
-        # Recent conversation history (last 6 turns)
-        history = self._load_history(session, limit=6)
-
-        system_prompt = (
-            f"You are a friendly, concise clinic assistant for {clinic.name}. "
-            "Answer the patient's question using ONLY the provided clinic data and knowledge base. "
-            "Do not invent appointments, doctors, or policies. "
-            "If you cannot answer from the data, say so politely and suggest calling the clinic. "
-            "Keep responses brief (2–4 sentences) and clinic-focused. "
-            "Never diagnose or give medical advice."
+            top = vector_rows[0]
+            snippet = (top.get("text") or "").strip()
+            if snippet:
+                return snippet[:500]
+        return (
+            "I couldn't find enough clinic information for that. "
+            "Please try again or call the clinic directly."
         )
-
-        messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
-
-        if context_block:
-            messages.append({
-                "role": "system",
-                "content": f"Current clinic context:\n{context_block}",
-            })
-
-        messages.extend(history)
-        messages.append({"role": "user", "content": message})
-
-        try:
-            client = OpenAI(api_key=api_key, timeout=timeout)
-            resp = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=0.3,
-                max_tokens=300,
-            )
-            return resp.choices[0].message.content or "I wasn't able to generate a response. Please call the clinic."
-        except Exception as exc:
-            logger.exception("LLM response generation failed: %s", exc)
-            return "I'm having trouble responding right now. Please try again or call the clinic directly."
-
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _build_context(self, session: Any | None) -> dict[str, Any] | None:
