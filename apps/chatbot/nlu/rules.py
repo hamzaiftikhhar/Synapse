@@ -457,8 +457,8 @@ def _match_strong(
                 needs_llm=True,
                 clarification_needed=True,
                 clarification_question=(
-                    "I'm having trouble retrieving availability right now. "
-                    "Are you looking to book an appointment or check doctor availability?"
+                    "I want to make sure I help correctly. "
+                    "Would you like to book an appointment or find a doctor?"
                 ),
                 reasoning_short="Appointment fallback (rule)",
                 _classifier_source="rules_fallback",

@@ -18,9 +18,9 @@ from apps.chatbot.nlu.timings import NLUTimings
 logger = logging.getLogger(__name__)
 
 _TIMEOUT_CLARIFY = (
-    "I'm having trouble retrieving that right now. "
-    "Are you looking to book an appointment, check doctor availability, "
-    "or ask about insurance?"
+    "I want to make sure I help with the right thing. "
+    "Would you like to find a doctor, book an appointment, "
+    "check clinic hours, or ask about insurance?"
 )
 
 

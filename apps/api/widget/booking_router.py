@@ -23,6 +23,10 @@ class BookingStartIn(Schema):
     session_token: str | None = None
     message: str = ""
     reason: str = ""
+    specialty_id: str | None = None
+    specialty_name: str | None = None
+    doctor_id: str | None = None
+    doctor_name: str | None = None
 
 
 class BookingStepIn(Schema):
@@ -103,6 +107,10 @@ def booking_start(request, payload: BookingStartIn):
             chat_session=session,
             message=payload.message or "",
             reason=payload.reason or payload.message or "",
+            specialty_id=payload.specialty_id,
+            specialty_name=payload.specialty_name,
+            doctor_id=payload.doctor_id,
+            doctor_name=payload.doctor_name,
         )
     except BookingError as exc:
         raise HttpError(exc.status_code, str(exc)) from exc

@@ -99,14 +99,32 @@ const MARKETING_STARTERS = [
 ];
 
 function runBackendAction(
-  action: BackendAction,
+  action: BackendAction & {
+    doctor_id?: string;
+    doctor_name?: string;
+    specialty_id?: string;
+    specialty_name?: string;
+  },
   sendText: (text: string) => void,
-  launchBooking?: (seed?: string) => void
+  launchBooking?: (
+    seed?: string,
+    prefill?: {
+      specialtyId?: string | null;
+      specialtyName?: string | null;
+      doctorId?: string | null;
+      doctorName?: string | null;
+    }
+  ) => void
 ) {
   const behavior = action.behavior ?? "message";
 
   if (behavior === "launch_booking") {
-    launchBooking?.(action.message || undefined);
+    launchBooking?.(action.message || undefined, {
+      doctorId: action.doctor_id,
+      doctorName: action.doctor_name,
+      specialtyId: action.specialty_id,
+      specialtyName: action.specialty_name,
+    });
     return;
   }
 
@@ -166,9 +184,16 @@ export function ChatWidget({
   const [showJumpDown, setShowJumpDown] = useState(false);
   const [bookingOpen, setBookingOpen] = useState(false);
   const [bookingSeed, setBookingSeed] = useState("");
+  const [bookingPrefill, setBookingPrefill] = useState<{
+    specialtyId?: string | null;
+    specialtyName?: string | null;
+    doctorId?: string | null;
+    doctorName?: string | null;
+  }>({});
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
   const lastUserMessageRef = useRef("");
+  const lastBookingMetaRef = useRef<Record<string, unknown> | null>(null);
   const staffChat = useStaffChat();
   const patientChat = usePatientChat();
   const guestChat = useGuestChat();
@@ -224,14 +249,40 @@ export function ChatWidget({
     );
   }
 
-  const openBooking = useCallback((seed?: string) => {
-    if (!canBook) return;
-    setBookingSeed(
-      (seed || lastUserMessageRef.current || "").trim()
-    );
-    setBookingOpen(true);
-    if (!open) setOpen(true);
-  }, [canBook, open]);
+  const openBooking = useCallback(
+    (
+      seed?: string,
+      prefill?: {
+        specialtyId?: string | null;
+        specialtyName?: string | null;
+        doctorId?: string | null;
+        doctorName?: string | null;
+      }
+    ) => {
+      if (!canBook) return;
+      const meta = lastBookingMetaRef.current || {};
+      setBookingSeed((seed || lastUserMessageRef.current || "").trim());
+      setBookingPrefill({
+        specialtyId:
+          prefill?.specialtyId ??
+          (meta.specialty_id as string | undefined) ??
+          null,
+        specialtyName:
+          prefill?.specialtyName ??
+          (meta.specialty_name as string | undefined) ??
+          null,
+        doctorId:
+          prefill?.doctorId ?? (meta.doctor_id as string | undefined) ?? null,
+        doctorName:
+          prefill?.doctorName ??
+          (meta.doctor_name as string | undefined) ??
+          null,
+      });
+      setBookingOpen(true);
+      if (!open) setOpen(true);
+    },
+    [canBook, open]
+  );
 
   const sendText = useCallback(
     async (text: string) => {
@@ -264,6 +315,10 @@ export function ChatWidget({
           });
         }
         const parsed = parseChatResponse(res);
+        const bookingMeta = res.meta?.booking;
+        if (bookingMeta && typeof bookingMeta === "object") {
+          lastBookingMetaRef.current = bookingMeta as Record<string, unknown>;
+        }
         setMessages((prev) => [...prev, ...parsed.messages]);
       } catch {
         setMessages((prev) => [...prev, systemErrorMessage(CONNECTION_ERROR)]);
@@ -324,7 +379,13 @@ export function ChatWidget({
     }
 
     if (action === "button") {
-      const btn = data as BackendAction & { label?: string };
+      const btn = data as BackendAction & {
+        label?: string;
+        doctor_id?: string;
+        doctor_name?: string;
+        specialty_id?: string;
+        specialty_name?: string;
+      };
       runBackendAction(
         {
           id: btn.id,
@@ -334,6 +395,12 @@ export function ChatWidget({
           url: btn.url,
           href: btn.href,
           phone: btn.phone,
+          filled: btn.filled,
+          icon: btn.icon,
+          doctor_id: btn.doctor_id,
+          doctor_name: btn.doctor_name,
+          specialty_id: btn.specialty_id,
+          specialty_name: btn.specialty_name,
         },
         (msg) => void sendText(msg),
         openBooking
@@ -349,9 +416,21 @@ export function ChatWidget({
     }
 
     if (action === "select_doctor") {
-      const doctor = data as { select_message?: string; message?: string };
-      const text = doctor.select_message ?? doctor.message;
+      const doctor = data as {
+        id?: string;
+        name?: string;
+        select_message?: string;
+        message?: string;
+      };
+      if (canBook && doctor.id) {
+        openBooking(doctor.select_message || `Book with ${doctor.name}`, {
+          doctorId: doctor.id,
+          doctorName: doctor.name,
+        });
+        return;
+      }
       if (text) void sendText(text);
+      return;
     }
   }
 
@@ -511,6 +590,10 @@ export function ChatWidget({
             onOpenChange={setBookingOpen}
             clinicSlug={bookingClinicSlug}
             initialMessage={bookingSeed}
+            specialtyId={bookingPrefill.specialtyId}
+            specialtyName={bookingPrefill.specialtyName}
+            doctorId={bookingPrefill.doctorId}
+            doctorName={bookingPrefill.doctorName}
             onConfirmed={handleBookingConfirmed}
           />
         ) : null}
@@ -563,6 +646,10 @@ export function ChatWidget({
           onOpenChange={setBookingOpen}
           clinicSlug={bookingClinicSlug}
           initialMessage={bookingSeed}
+          specialtyId={bookingPrefill.specialtyId}
+          specialtyName={bookingPrefill.specialtyName}
+          doctorId={bookingPrefill.doctorId}
+          doctorName={bookingPrefill.doctorName}
           onConfirmed={handleBookingConfirmed}
         />
       ) : null}

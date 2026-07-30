@@ -133,6 +133,7 @@ function appendMetaComponents(
           title: s.name,
           description: s.description || `${s.doctor_count ?? 0} doctors`,
           action: s.select_message,
+          id: s.id,
         })),
       },
     });

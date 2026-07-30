@@ -15,7 +15,7 @@ Fields: intent,secondary_intents,confidence,entities,needs_sql,needs_vector,need
 Entity keys: doctor_name,specialty,service,insurance_provider,date,time,patient_name,location,symptom (null|string|array)
 Intents: {_INTENTS}
 Rules: multi-value entities use arrays not comma-strings. Compound questions→secondary_intents.
-Route: greeting/farewell/emergency→direct; book/cancel/reschedule/availability/doctor_search→sql+llm; insurance/hours/location/services/pricing/faq→vector+llm; insurance_verification→sql+vector+llm; abuse→off_topic.
+Route: greeting/farewell/emergency→direct; book/cancel/reschedule/availability/doctor_search→sql+llm; insurance_accepted/clinic_hours/clinic_location/services_offered/pricing→sql+llm; insurance_verification→sql+llm; faq→vector+llm; abuse→off_topic. Prefer needs_sql=true for insurance and hours.
 Ex:"Hi"→{{"intent":"greeting","confidence":0.99,"can_respond_directly":true}}
 Ex:"Book Dr Rajat tomorrow"→{{"intent":"book_appointment","confidence":0.9,"needs_sql":true,"needs_llm":true,"entities":{{"doctor_name":["Rajat"],"date":["tomorrow"]}}}}
 Ex:"chest pain and numb arm"→{{"intent":"emergency","is_emergency":true,"can_respond_directly":true,"entities":{{"symptom":["chest pain","numb arm"]}}}}"""

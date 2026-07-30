@@ -24,8 +24,8 @@ _SYMPTOM_MAP: list[tuple[tuple[str, ...], tuple[str, ...]]] = [
         ("gastroenterology", "primary care", "general practice", "internal medicine"),
     ),
     (
-        ("skin", "rash", "acne", "eczema", "mole"),
-        ("dermatology", "dermatologist", "primary care"),
+        ("skin", "rash", "acne", "eczema", "mole", "itch", "itching", "scalp"),
+        ("dermatology", "dermatologist", "primary care", "general practice"),
     ),
     (
         ("anxiety", "depression", "sleep", "insomnia", "mental"),
@@ -36,8 +36,8 @@ _SYMPTOM_MAP: list[tuple[tuple[str, ...], tuple[str, ...]]] = [
         ("ob-gyn", "obstetrics", "gynecology", "women"),
     ),
     (
-        ("joint", "back pain", "knee", "shoulder", "fracture", "sports"),
-        ("orthopedic", "orthopedics", "sports medicine", "primary care"),
+        ("joint", "back pain", "knee", "shoulder", "fracture", "sports", "leg pain", "leg", "hip"),
+        ("orthopedic", "orthopedics", "sports medicine", "primary care", "general practice"),
     ),
     (
         ("ear", "nose", "throat", "sinus", "hearing"),
@@ -48,7 +48,7 @@ _SYMPTOM_MAP: list[tuple[tuple[str, ...], tuple[str, ...]]] = [
         ("ophthalmology", "optometry", "eye"),
     ),
     (
-        ("checkup", "check-up", "general", "fever", "cold", "flu", "cough"),
+        ("checkup", "check-up", "general", "fever", "cold", "flu", "cough", "pain"),
         ("primary care", "general practice", "internal medicine", "family"),
     ),
 ]

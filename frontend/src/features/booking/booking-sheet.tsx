@@ -27,6 +27,10 @@ export type BookingSheetProps = {
   onOpenChange: (open: boolean) => void;
   clinicSlug: string;
   initialMessage?: string;
+  specialtyId?: string | null;
+  specialtyName?: string | null;
+  doctorId?: string | null;
+  doctorName?: string | null;
   onConfirmed?: (payload: BookingStepPayload) => void;
 };
 
@@ -35,6 +39,10 @@ export function BookingSheet({
   onOpenChange,
   clinicSlug,
   initialMessage = "",
+  specialtyId = null,
+  specialtyName = null,
+  doctorId = null,
+  doctorName = null,
   onConfirmed,
 }: BookingSheetProps) {
   const { sessionToken, setSessionToken } = useWidget();
@@ -70,6 +78,10 @@ export function BookingSheet({
         session_token: sessionToken,
         message: initialMessage,
         reason: initialMessage,
+        specialty_id: specialtyId,
+        specialty_name: specialtyName,
+        doctor_id: doctorId,
+        doctor_name: doctorName,
       });
       syncToken(payload);
       setState(payload);
@@ -78,7 +90,16 @@ export function BookingSheet({
     } finally {
       setLoading(false);
     }
-  }, [clinicSlug, sessionToken, initialMessage, syncToken]);
+  }, [
+    clinicSlug,
+    sessionToken,
+    initialMessage,
+    specialtyId,
+    specialtyName,
+    doctorId,
+    doctorName,
+    syncToken,
+  ]);
 
   useEffect(() => {
     if (open && clinicSlug) {
@@ -159,9 +180,32 @@ export function BookingSheet({
           <div className="flex items-center justify-between gap-2">
             <div>
               <SheetTitle className="text-base text-navy">Book Appointment</SheetTitle>
-              {progress && step !== "confirmed" ? (
+              {state?.options?.doctor_name || state?.specialty_chip ? (
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  {[
+                    state.specialty_chip?.name,
+                    (state.options as { doctor_name?: string })?.doctor_name,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </p>
+              ) : progress && step !== "confirmed" ? (
                 <p className="mt-0.5 text-xs text-muted-foreground">
                   Step {progress.current} of {progress.total}
+                </p>
+              ) : null}
+              {state?.specialty_chip ||
+              (state?.options as { doctor_name?: string })?.doctor_name ? (
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  {[
+                    state.specialty_chip ? "Specialty selected" : null,
+                    (state?.options as { doctor_name?: string })?.doctor_name
+                      ? "Doctor selected"
+                      : null,
+                  ]
+                    .filter(Boolean)
+                    .map((t) => `✓ ${t}`)
+                    .join("  ")}
                 </p>
               ) : null}
             </div>

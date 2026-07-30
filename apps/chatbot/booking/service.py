@@ -38,6 +38,10 @@ class BookingService:
         chat_session: Any,
         message: str = "",
         reason: str = "",
+        specialty_id: str | None = None,
+        specialty_name: str | None = None,
+        doctor_id: str | None = None,
+        doctor_name: str | None = None,
     ) -> dict[str, Any]:
         cfg = get_booking_config(clinic)
         text = (reason or message or "").strip()
@@ -51,12 +55,27 @@ class BookingService:
             mode=cfg["mode"],
             reason=text,
         )
-        session.step = first_step(cfg["mode"]).value
         session.suggested_specialty_ids = [s["id"] for s in suggested]
 
-        # first_available: specialty optional — still start on specialty if discovery has suggestions
-        if cfg["mode"] == "first_available" and not suggested:
+        # Prefill from conversation
+        if specialty_id:
+            session.specialty_id = str(specialty_id)
+            session.specialty_name = specialty_name or cls._specialty_name(
+                clinic, str(specialty_id)
+            )
+        if doctor_id:
+            session.doctor_id = str(doctor_id)
+            session.doctor_name = doctor_name or cls._doctor_name(clinic, str(doctor_id))
+
+        # Skip ahead when context is known
+        if session.doctor_id:
             session.step = BookingStep.DATE.value
+        elif session.specialty_id:
+            session.step = BookingStep.DOCTOR.value
+        else:
+            session.step = first_step(cfg["mode"]).value
+            if cfg["mode"] == "first_available" and not suggested:
+                session.step = BookingStep.DATE.value
 
         cls._save(chat_session, session)
         payload = serialize_step(clinic, session)

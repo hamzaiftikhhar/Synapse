@@ -18,7 +18,12 @@ export function CardsMessage({
         <button
           key={c.id || i}
           type="button"
-          onClick={() => onAction?.(c.action || "card", c)}
+          onClick={() => {
+            const msg =
+              (typeof c.action === "string" && c.action) ||
+              (c as { select_message?: string }).select_message;
+            if (msg) onAction?.("suggested", msg);
+          }}
           className="rounded-[6px] border border-border bg-white p-3 text-left hover:bg-accent/40"
         >
           <p className="text-sm font-semibold text-navy">{c.title}</p>

@@ -11,4 +11,8 @@ export type BackendAction = {
   url?: string;
   href?: string;
   phone?: string;
+  doctor_id?: string;
+  doctor_name?: string;
+  specialty_id?: string;
+  specialty_name?: string;
 };

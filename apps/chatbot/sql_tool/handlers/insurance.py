@@ -30,7 +30,7 @@ def insurance_accepted(ctx: SQLContext) -> SQLResult:
     if doctor_ids:
         qs = qs.filter(doctor_insurances__doctor_id__in=doctor_ids).distinct()
 
-    plans = list(qs[:20])
+    plans = list(qs[:3])
     rows = [
         {
             "id": str(p.id),
@@ -44,12 +44,23 @@ def insurance_accepted(ctx: SQLContext) -> SQLResult:
     ]
 
     if rows:
-        names = ", ".join(r["provider_name"] for r in rows[:3])
-        summary = f"Accepted insurance plan(s): {names}."
+        names = ", ".join(
+            r["provider_name"] + (f" ({r['plan_name']})" if r.get("plan_name") else "")
+            for r in rows
+        )
+        providers = entity_list(nlu.entities.insurance_provider)
+        if providers:
+            summary = f"Yes — we accept {names}."
+        else:
+            summary = f"We accept plans including: {names}."
     else:
         provider_hint = ""
-        if nlu.entities.insurance_provider:
-            provider_hint = f" for '{nlu.entities.insurance_provider}'"
-        summary = f"No accepted insurance plans found{provider_hint}."
+        providers = entity_list(nlu.entities.insurance_provider)
+        if providers:
+            provider_hint = f" for {providers[0]}"
+        summary = (
+            f"I don't see a matching accepted plan{provider_hint} in our records. "
+            "Please call the clinic to verify coverage."
+        )
 
     return SQLResult(handler="insurance_accepted", found=bool(rows), rows=rows, summary=summary)

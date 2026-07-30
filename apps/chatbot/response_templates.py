@@ -23,8 +23,8 @@ from typing import Any
 _TEMPLATES: dict[str, str] = {
     # Greetings / small talk
     "GREETING": (
-        "Hello! I'm the clinic assistant. I can help you with appointments, "
-        "doctors, services, insurance, and more. How can I help you today?"
+        "Hi! How can I help you today? I can help with appointments, "
+        "doctors, clinic hours, and insurance."
     ),
     "GREETING_RETURNING": (
         "Welcome back! How can I help you today?"

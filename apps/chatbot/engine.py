@@ -127,39 +127,111 @@ class ChatEngine:
         response_text = ""
 
         from apps.chatbot.nlu.schemas import Intent
-        is_booking_launch = nlu_result.intent in {
+        ctx = conversation_context or self._build_context(session) or {}
+        last_doctor = ctx.get("last_doctor") if isinstance(ctx.get("last_doctor"), dict) else None
+        last_specialty = (
+            ctx.get("last_specialty") if isinstance(ctx.get("last_specialty"), dict) else None
+        )
+
+        # Explicit booking commit vs exploratory book intent
+        booking_commit = self._is_booking_commit(message, nlu_result)
+        is_booking_intent = nlu_result.intent in {
             Intent.BOOK_APPOINTMENT,
             Intent.RESCHEDULE_APPOINTMENT,
         }
 
-        if is_booking_launch:
-            # Launch booking wizard — soft discovery, no slot dump
+        # Soft medical / symptom path — recommend, don't dump or fail
+        soft_medical = (
+            (
+                nlu_result.intent == Intent.MEDICAL_QUESTION
+                or bool(getattr(nlu_result.entities, "symptom", None))
+                or self._looks_like_symptom(message)
+            )
+            and not is_booking_intent
+        )
+
+        # Follow-up about last doctor ("is he a good doctor?")
+        doctor_followup = self._is_doctor_quality_followup(message) and last_doctor
+
+        suggested: list[dict[str, Any]] = []
+        guidance = ""
+
+        if doctor_followup and last_doctor:
+            response_text = self._doctor_followup_reply(last_doctor)
+            timings["fast_path_ms"] = 0.0
+
+        elif is_booking_intent and not booking_commit:
+            # Exploratory — soft specialty recommend, wizard not forced open
             from apps.chatbot.booking.config import get_booking_config
             from apps.chatbot.booking.discovery import suggest_specialties
 
             cfg = get_booking_config(clinic)
-            suggested, guidance = ([], "")
             if cfg.get("ai_discovery"):
-                reason_bits = []
-                if nlu_result.entities.symptom:
-                    s = nlu_result.entities.symptom
-                    reason_bits.append(
-                        ", ".join(s) if isinstance(s, list) else str(s)
-                    )
-                if nlu_result.entities.specialty:
-                    sp = nlu_result.entities.specialty
-                    reason_bits.append(
-                        ", ".join(sp) if isinstance(sp, list) else str(sp)
-                    )
-                suggested, guidance = suggest_specialties(
-                    clinic,
-                    message=message,
-                    reason=" ".join(reason_bits),
-                )
+                suggested, guidance = suggest_specialties(clinic, message=message)
             response_text = (
                 guidance
-                + " Tap **Start Booking** to continue — one step at a time."
+                or "I can help you book an appointment. Based on what you described, "
+                "pick a specialty below if you like — or tap Start Booking when you're ready."
             )
+            if suggested:
+                names = ", ".join(
+                    s.get("plain_label") or s.get("name") or "" for s in suggested[:3]
+                )
+                response_text = (
+                    f"Based on what you described, {names} seem like a good place to start, "
+                    "but you can choose any specialty you prefer. "
+                    "Tap **Start Booking** when you're ready — or ask me to find a doctor first."
+                )
+            timings["fast_path_ms"] = 0.0
+
+        elif is_booking_intent and booking_commit:
+            from apps.chatbot.booking.config import get_booking_config
+            from apps.chatbot.booking.discovery import suggest_specialties
+
+            cfg = get_booking_config(clinic)
+            if cfg.get("ai_discovery"):
+                suggested, guidance = suggest_specialties(clinic, message=message)
+            # Resolve doctor name from message into last_doctor if present
+            resolved = self._resolve_doctor_from_message(clinic, message)
+            if resolved:
+                last_doctor = resolved
+            response_text = (
+                guidance
+                or "Great — let's finish booking. Tap **Start Booking** to pick a date and time."
+            )
+            if last_doctor and last_doctor.get("name"):
+                response_text = (
+                    f"Great choice. I'll help you book with {last_doctor['name']}. "
+                    "Tap **Start Booking** to choose a date and time."
+                )
+            timings["fast_path_ms"] = 0.0
+
+        elif soft_medical:
+            from apps.chatbot.booking.discovery import suggest_specialties
+
+            suggested, guidance = suggest_specialties(clinic, message=message)
+            if suggested:
+                names = ", ".join(
+                    s.get("plain_label") or s.get("name") or "" for s in suggested[:3]
+                )
+                response_text = (
+                    "I'm sorry you're dealing with that. While I can't diagnose medical "
+                    f"conditions, based on what you described, {names} may be a good place "
+                    "to start — you can also choose another specialty if you prefer. "
+                    "Would you like me to help you find a doctor?"
+                )
+            elif guidance and "Choose a specialty" not in guidance:
+                response_text = (
+                    "I'm sorry you're dealing with that. "
+                    + guidance
+                    + " Would you like me to help you find a doctor?"
+                )
+            else:
+                response_text = (
+                    "I'm sorry you're not feeling well. While I can't diagnose medical "
+                    "conditions, I can help you find the right specialty or doctor at "
+                    f"{clinic.name}. Would you like me to show available doctors?"
+                )
             timings["fast_path_ms"] = 0.0
 
         elif route in (Route.DIRECT_RESPONSE, Route.EMERGENCY, Route.CLARIFY):
@@ -168,20 +240,38 @@ class ChatEngine:
             timings["fast_path_ms"] = (time.perf_counter() - t0) * 1000
 
         else:
-            # SQL tool
-            if decision.needs_sql:
+            # Prefer SQL for insurance/hours even if NLU said vector-only
+            needs_sql = decision.needs_sql
+            needs_vector = decision.needs_vector
+            if nlu_result.intent in {
+                Intent.INSURANCE_ACCEPTED,
+                Intent.INSURANCE_VERIFICATION,
+                Intent.CLINIC_HOURS,
+                Intent.CLINIC_LOCATION,
+                Intent.SERVICES_OFFERED,
+            }:
+                needs_sql = True
+
+            if needs_sql:
                 t0 = time.perf_counter()
                 sql_rows = self._run_sql(clinic, nlu_result, patient=patient)
                 timings["sql_ms"] = (time.perf_counter() - t0) * 1000
 
-            # Vector tool
-            if decision.needs_vector:
+            if needs_vector and nlu_result.intent not in {
+                Intent.INSURANCE_ACCEPTED,
+                Intent.CLINIC_HOURS,
+            }:
                 t0 = time.perf_counter()
                 vector_rows = self._run_vector(clinic, message)
                 timings["vector_ms"] = (time.perf_counter() - t0) * 1000
 
-            # SQL-only: format DB rows directly — no LLM call
             if route == Route.SQL_ONLY and sql_rows:
+                from apps.chatbot.sql_tool import format_sql_results
+                response_text = format_sql_results(sql_rows)
+            elif nlu_result.intent in {
+                Intent.CLINIC_HOURS,
+                Intent.INSURANCE_ACCEPTED,
+            } and sql_rows:
                 from apps.chatbot.sql_tool import format_sql_results
                 response_text = format_sql_results(sql_rows)
             elif decision.needs_llm or vector_rows:
@@ -206,6 +296,27 @@ class ChatEngine:
 
         timings["total_ms"] = (time.perf_counter() - started) * 1000
 
+        # Remember doctors shown this turn
+        shown_doctors = []
+        for block in sql_rows:
+            if block.get("handler") == "search_doctors":
+                for r in (block.get("rows") or [])[:3]:
+                    shown_doctors.append(
+                        {
+                            "id": str(r.get("id") or ""),
+                            "name": r.get("full_name") or r.get("name") or "",
+                            "title": r.get("title") or "",
+                            "bio": (r.get("bio") or "")[:240],
+                        }
+                    )
+        if shown_doctors and not last_doctor:
+            last_doctor = shown_doctors[0]
+        if suggested and not last_specialty:
+            last_specialty = {
+                "id": suggested[0].get("id"),
+                "name": suggested[0].get("name"),
+            }
+
         from apps.chatbot.ui_meta import build_ui_meta
         ui_meta = build_ui_meta(
             clinic=clinic,
@@ -215,35 +326,31 @@ class ChatEngine:
             is_emergency=nlu_result.is_emergency or route == Route.EMERGENCY,
             message=message,
             nlu=nlu_result,
+            booking_commit=booking_commit and is_booking_intent,
+            last_doctor=last_doctor,
+            last_specialty=last_specialty,
         )
 
-        if is_booking_launch:
-            # Ensure launch payload even if ui_meta already set it
-            ui_meta.setdefault("booking", {})
-            ui_meta["booking"].update(
+        if soft_medical and suggested and "specialties" not in ui_meta:
+            ui_meta["specialties"] = [
                 {
-                    "launch": True,
-                    "button_label": "Start Booking",
-                    "suggested_specialties": suggested,
-                    "guidance": guidance,
-                    "reason": message,
+                    "id": s.get("id"),
+                    "name": s.get("name"),
+                    "description": s.get("plain_label") or s.get("description") or "",
+                    "recommended": True,
+                    "select_message": f"I need a {s.get('name')} doctor",
                 }
-            )
-            ui_meta.setdefault("buttons", [])
-            if not any(b.get("id") == "start_booking" for b in ui_meta["buttons"]):
-                ui_meta["buttons"].insert(
-                    0,
-                    {
-                        "id": "start_booking",
-                        "label": "Start Booking",
-                        "behavior": "launch_booking",
-                        "message": message,
-                    },
-                )
+                for s in suggested[:4]
+            ]
 
-        # ── 4. Persist messages ───────────────────────────────────────────────
         if session is not None:
             self._save_messages(session, message, response_text, nlu_result)
+            self._update_memory(
+                session,
+                last_doctor=last_doctor,
+                last_specialty=last_specialty,
+                intent=nlu_result.intent.value,
+            )
 
         return EngineResult(
             response=response_text,
@@ -464,3 +571,150 @@ class ChatEngine:
 
         except Exception:
             logger.exception("Failed to save chat messages")
+
+    def _looks_like_symptom(self, message: str) -> bool:
+        text = (message or "").lower()
+        cues = (
+            "pain",
+            "ache",
+            "itch",
+            "fever",
+            "cough",
+            "dizzy",
+            "nausea",
+            "headache",
+            "rash",
+            "swelling",
+            "feeling",
+            "hurt",
+            "sore",
+            "symptom",
+            "sick",
+            "bleeding",
+        )
+        return any(c in text for c in cues)
+
+    def _is_booking_commit(self, message: str, nlu: Any) -> bool:
+        """True when user is ready to open the booking wizard."""
+        import re
+
+        text = (message or "").lower().strip()
+        if text in {
+            "start booking",
+            "book appointment",
+            "book an appointment",
+            "i would like to book an appointment",
+        }:
+            return True
+        if "start booking" in text:
+            return True
+
+        doctor_names = getattr(getattr(nlu, "entities", None), "doctor_name", None)
+        if doctor_names and any(
+            k in text for k in ("book", "schedule", "appointment")
+        ):
+            return True
+
+        # "book with Dr X" — not vague "good doctor"
+        generic = (
+            "good doctor",
+            "best doctor",
+            "a doctor",
+            "the doctor",
+            "some doctor",
+        )
+        if any(g in text for g in generic):
+            return False
+
+        if re.search(r"(book|schedule).{0,40}(with\s+dr\.?|with\s+[a-z])", text):
+            return True
+        return False
+
+    def _is_doctor_quality_followup(self, message: str) -> bool:
+        text = (message or "").lower()
+        return any(
+            p in text
+            for p in (
+                "good doctor",
+                "is he",
+                "is she",
+                "are they",
+                "experience",
+                "qualified",
+                "recommend him",
+                "recommend her",
+                "is ali",
+                "about the doctor",
+            )
+        )
+
+    def _doctor_followup_reply(self, doctor: dict[str, Any]) -> str:
+        name = doctor.get("name") or "This doctor"
+        title = doctor.get("title") or ""
+        bio = (doctor.get("bio") or "").strip()
+        bits = [f"{name}"]
+        if title:
+            bits.append(f"({title})")
+        lead = " ".join(bits)
+        if bio:
+            return (
+                f"Yes — {lead} specializes in care described as: {bio} "
+                "Would you like to keep your appointment with them, or compare other doctors?"
+            )
+        return (
+            f"Yes — {lead} is on our clinic team and accepting patients. "
+            "Would you like to book or compare other doctors?"
+        )
+
+    def _resolve_doctor_from_message(
+        self, clinic: Any, message: str
+    ) -> dict[str, Any] | None:
+        text = (message or "").strip()
+        if not text:
+            return None
+        try:
+            from apps.doctors.models import Doctor
+
+            qs = Doctor.objects.filter(
+                clinic=clinic, is_deleted=False, is_active=True
+            )
+            for d in qs[:25]:
+                if d.full_name and d.full_name.lower() in text.lower():
+                    return {
+                        "id": str(d.id),
+                        "name": d.full_name,
+                        "title": d.title or "",
+                        "bio": (d.bio or "")[:240],
+                    }
+                # Match last name tokens
+                parts = d.full_name.replace("Dr.", "").strip().split()
+                if parts and parts[-1].lower() in text.lower() and len(parts[-1]) > 3:
+                    return {
+                        "id": str(d.id),
+                        "name": d.full_name,
+                        "title": d.title or "",
+                        "bio": (d.bio or "")[:240],
+                    }
+        except Exception:
+            logger.exception("Doctor resolve from message failed")
+        return None
+
+    def _update_memory(
+        self,
+        session: Any,
+        *,
+        last_doctor: dict[str, Any] | None,
+        last_specialty: dict[str, Any] | None,
+        intent: str,
+    ) -> None:
+        try:
+            ctx = dict(session.conversation_context or {})
+            if last_doctor and last_doctor.get("id"):
+                ctx["last_doctor"] = last_doctor
+            if last_specialty and last_specialty.get("id"):
+                ctx["last_specialty"] = last_specialty
+            ctx["current_intent"] = intent
+            session.conversation_context = ctx
+            session.save(update_fields=["conversation_context", "last_active_at"])
+        except Exception:
+            logger.exception("Failed to update conversation memory")

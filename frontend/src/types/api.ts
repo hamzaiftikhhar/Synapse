@@ -331,6 +331,10 @@ export type BookingStartInput = {
   session_token?: string | null;
   message?: string;
   reason?: string;
+  specialty_id?: string | null;
+  specialty_name?: string | null;
+  doctor_id?: string | null;
+  doctor_name?: string | null;
 };
 
 export type BookingStepInput = {
