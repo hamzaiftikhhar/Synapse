@@ -5,6 +5,7 @@ import {
   appointmentsService,
   type AppointmentListParams,
   authService,
+  bookingService,
   chatService,
   doctorsService,
   documentsService,

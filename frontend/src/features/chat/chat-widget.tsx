@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowDown, MoreVertical, Send, X } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import { BookingSheet } from "@/features/booking";
 import { StarterChips } from "@/features/chat/components/action-buttons";
 import { ChatHeader } from "@/features/chat/components/chat-chrome";
 import { RobotAvatar, RobotLauncherIcon } from "@/features/chat/components/robot-avatar";
@@ -12,6 +13,7 @@ import {
   CONNECTION_ERROR,
   parseChatResponse,
   systemErrorMessage,
+  uid,
   userTextMessage,
 } from "@/features/chat/message-parser";
 import type { BackendAction } from "@/features/chat/types";
@@ -23,6 +25,7 @@ import {
 } from "@/hooks/api";
 import { useAuth } from "@/providers/auth-provider";
 import { useWidget, type AssistantMode } from "@/providers/widget-provider";
+import type { BookingStepPayload } from "@/types/api";
 import type { ChatMessage } from "@/types/chat";
 
 export type ChatWidgetProps = {
@@ -85,9 +88,15 @@ const MARKETING_STARTERS = [
 
 function runBackendAction(
   action: BackendAction,
-  sendText: (text: string) => void
+  sendText: (text: string) => void,
+  launchBooking?: (seed?: string) => void
 ) {
   const behavior = action.behavior ?? "message";
+
+  if (behavior === "launch_booking") {
+    launchBooking?.(action.message || undefined);
+    return;
+  }
 
   if (behavior === "open_url") {
     const url = action.url ?? action.href;
