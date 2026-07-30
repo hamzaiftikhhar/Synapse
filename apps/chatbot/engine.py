@@ -1,4 +1,3 @@
-#can you give me the summary of this file? 
 """
 ChatEngine — the main orchestrator.
 
@@ -171,6 +170,15 @@ class ChatEngine:
 
         timings["total_ms"] = (time.perf_counter() - started) * 1000
 
+        from apps.chatbot.ui_meta import build_ui_meta
+        ui_meta = build_ui_meta(
+            clinic=clinic,
+            intent=nlu_result.intent.value,
+            route=route.value,
+            sql_results=sql_rows,
+            is_emergency=nlu_result.is_emergency or route == Route.EMERGENCY,
+        )
+
         # ── 4. Persist messages ───────────────────────────────────────────────
         if session is not None:
             self._save_messages(session, message, response_text, nlu_result)
@@ -187,6 +195,7 @@ class ChatEngine:
             sql_results=sql_rows,
             vector_results=vector_rows,
             timings=timings,
+            meta=ui_meta,
         )
 
     # ── Fast Path ─────────────────────────────────────────────────────────────
