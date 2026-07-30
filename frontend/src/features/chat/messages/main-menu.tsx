@@ -12,7 +12,6 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type { ChatActionHandler, ChatMessage, MainMenuItem } from "@/types/chat";
-import { MAIN_MENU_ITEMS } from "@/features/chat/message-parser";
 
 const ICONS: Record<string, LucideIcon> = {
   Calendar,
@@ -32,17 +31,14 @@ export function MainMenuMessage({
   message: ChatMessage;
   onAction?: ChatActionHandler;
 }) {
-  const items =
-    (message.payload?.items as MainMenuItem[]) || MAIN_MENU_ITEMS;
+  const items = (message.payload?.items as MainMenuItem[]) || [];
+  if (!items.length) return null;
 
   return (
     <div className="w-full overflow-hidden rounded-[6px] border border-border bg-white">
       <div className="border-b border-border px-3 py-2.5">
         <p className="text-xs font-semibold tracking-tight text-navy">
           How can we help?
-        </p>
-        <p className="mt-0.5 text-[11px] text-muted-foreground">
-          Choose an option to get started
         </p>
       </div>
       <div className="grid grid-cols-1 gap-px bg-border sm:grid-cols-2">

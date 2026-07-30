@@ -1,121 +1,73 @@
 import type { ChatMessageResponse } from "@/types/api";
-import type { ChatMessage, MainMenuItem } from "@/types/chat";
+import type { ChatMessage } from "@/types/chat";
+import type { BackendAction } from "./types";
+
+export const CONNECTION_ERROR =
+  "Unable to connect to the clinic assistant. Please try again.";
 
 export function uid(prefix = "m") {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
-export const MAIN_MENU_ITEMS: MainMenuItem[] = [
-  {
-    id: "book",
-    label: "Book Appointment",
-    description: "Pick a doctor, date & time",
-    prompt: "I want to book an appointment",
-    icon: "Calendar",
-  },
-  {
-    id: "doctor",
-    label: "Find a Doctor",
-    description: "Browse providers & specialties",
-    prompt: "Help me find a doctor",
-    icon: "Stethoscope",
-  },
-  {
-    id: "services",
-    label: "Services",
-    description: "What we offer & visit types",
-    prompt: "What services do you offer?",
-    icon: "BriefcaseMedical",
-  },
-  {
-    id: "insurance",
-    label: "Insurance",
-    description: "Accepted plans & coverage",
-    prompt: "What insurance do you accept?",
-    icon: "Shield",
-  },
-  {
-    id: "hours",
-    label: "Clinic Hours",
-    description: "Open days and times",
-    prompt: "What are your clinic hours?",
-    icon: "Clock",
-  },
-  {
-    id: "location",
-    label: "Location",
-    description: "Address & directions",
-    prompt: "Where is the clinic located?",
-    icon: "MapPin",
-  },
-  {
-    id: "contact",
-    label: "Contact",
-    description: "Phone, email & front desk",
-    prompt: "How can I contact the clinic?",
-    icon: "Phone",
-  },
-  {
-    id: "faq",
-    label: "FAQ",
-    description: "Common patient questions",
-    prompt: "What are frequently asked questions?",
-    icon: "CircleHelp",
-  },
-];
+export type ParsedChatResponse = {
+  messages: ChatMessage[];
+  persistentActions: BackendAction[];
+};
 
-export function createWelcomeMessages(clinicName = "our clinic"): ChatMessage[] {
-  const now = new Date().toISOString();
-  return [
-    {
-      id: uid("welcome"),
-      role: "assistant",
-      type: "text",
-      content: `Hi — welcome to ${clinicName}. How can I help you today?`,
-      createdAt: now,
-    },
-    {
-      id: uid("menu"),
-      role: "assistant",
-      type: "main_menu",
-      createdAt: now,
-      payload: { items: MAIN_MENU_ITEMS },
-    },
-  ];
+function mapMetaMessage(
+  m: Record<string, unknown>,
+  index: number,
+  role: ChatMessage["role"]
+): ChatMessage {
+  return {
+    id: typeof m.id === "string" ? m.id : uid(`meta_${index}`),
+    role: (m.role as ChatMessage["role"]) || role,
+    type: (m.type as ChatMessage["type"]) || "text",
+    content: typeof m.content === "string" ? m.content : undefined,
+    createdAt:
+      typeof m.createdAt === "string"
+        ? m.createdAt
+        : new Date().toISOString(),
+    payload: (m.payload as Record<string, unknown>) || undefined,
+  };
 }
 
-export function parseChatResponse(
-  res: ChatMessageResponse,
-  role: "assistant" = "assistant"
-): ChatMessage[] {
-  const now = new Date().toISOString();
-  const meta = res.meta ?? {};
+function parseActions(value: unknown): BackendAction[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (a): a is BackendAction =>
+      Boolean(a) &&
+      typeof a === "object" &&
+      typeof (a as BackendAction).id === "string" &&
+      typeof (a as BackendAction).label === "string"
+  );
+}
 
-  if (Array.isArray(meta.messages)) {
-    return (meta.messages as Record<string, unknown>[]).map((m, i) => ({
-      id: uid(`meta_${i}`),
-      role: (m.role as ChatMessage["role"]) || role,
-      type: (m.type as ChatMessage["type"]) || "text",
-      content: typeof m.content === "string" ? m.content : undefined,
+function appendMetaComponents(
+  messages: ChatMessage[],
+  meta: Record<string, unknown>,
+  role: ChatMessage["role"],
+  now: string
+) {
+  if (Array.isArray(meta.cards) && meta.cards.length) {
+    messages.push({
+      id: uid("cards"),
+      role,
+      type: "cards",
       createdAt: now,
-      payload: (m.payload as Record<string, unknown>) || undefined,
-    }));
+      payload: { cards: meta.cards },
+    });
   }
 
-  const messages: ChatMessage[] = [
-    {
-      id: uid("text"),
+  if (meta.booking && typeof meta.booking === "object") {
+    messages.push({
+      id: uid("booking"),
       role,
-      type: "text",
-      content: res.response,
+      type: "appointment_form",
       createdAt: now,
-      payload: {
-        intent: res.intent,
-        route: res.route,
-        confidence: res.confidence,
-      },
-    },
-  ];
+      payload: meta.booking as Record<string, unknown>,
+    });
+  }
 
   if (Array.isArray(meta.doctors) && meta.doctors.length) {
     messages.push({
@@ -126,6 +78,7 @@ export function parseChatResponse(
       payload: { doctors: meta.doctors },
     });
   }
+
   if (Array.isArray(meta.services) && meta.services.length) {
     messages.push({
       id: uid("svc"),
@@ -135,6 +88,7 @@ export function parseChatResponse(
       payload: { services: meta.services },
     });
   }
+
   if (Array.isArray(meta.insurance) && meta.insurance.length) {
     messages.push({
       id: uid("ins"),
@@ -144,6 +98,7 @@ export function parseChatResponse(
       payload: { plans: meta.insurance },
     });
   }
+
   if (Array.isArray(meta.time_slots) && meta.time_slots.length) {
     messages.push({
       id: uid("slots"),
@@ -153,6 +108,7 @@ export function parseChatResponse(
       payload: { slots: meta.time_slots },
     });
   }
+
   if (meta.location && typeof meta.location === "object") {
     messages.push({
       id: uid("loc"),
@@ -162,6 +118,17 @@ export function parseChatResponse(
       payload: meta.location as Record<string, unknown>,
     });
   }
+
+  if (Array.isArray(meta.buttons) && meta.buttons.length) {
+    messages.push({
+      id: uid("btn"),
+      role,
+      type: "buttons",
+      createdAt: now,
+      payload: { buttons: meta.buttons },
+    });
+  }
+
   if (Array.isArray(meta.quick_replies) && meta.quick_replies.length) {
     messages.push({
       id: uid("qr"),
@@ -171,6 +138,47 @@ export function parseChatResponse(
       payload: { replies: meta.quick_replies },
     });
   }
+}
+
+export function parseChatResponse(
+  res: ChatMessageResponse,
+  role: "assistant" = "assistant"
+): ParsedChatResponse {
+  const now = new Date().toISOString();
+  const meta = res.meta ?? {};
+  const persistentActions = parseActions(
+    meta.persistent_actions ?? meta.actions
+  );
+
+  if (Array.isArray(meta.messages)) {
+    const messages = (meta.messages as Record<string, unknown>[]).map((m, i) =>
+      mapMetaMessage(m, i, role)
+    );
+    if (res.safety_message) {
+      messages.push({
+        id: uid("safe"),
+        role: "system",
+        type: "system",
+        content: res.safety_message,
+        createdAt: now,
+      });
+    }
+    return { messages, persistentActions };
+  }
+
+  const messages: ChatMessage[] = [];
+
+  if (res.response) {
+    messages.push({
+      id: uid("text"),
+      role,
+      type: "text",
+      content: res.response,
+      createdAt: now,
+    });
+  }
+
+  appendMetaComponents(messages, meta, role, now);
 
   if (res.safety_message) {
     messages.push({
@@ -182,7 +190,7 @@ export function parseChatResponse(
     });
   }
 
-  return messages;
+  return { messages, persistentActions };
 }
 
 export function userTextMessage(content: string): ChatMessage {
@@ -190,6 +198,16 @@ export function userTextMessage(content: string): ChatMessage {
     id: uid("user"),
     role: "user",
     type: "text",
+    content,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+export function systemErrorMessage(content: string): ChatMessage {
+  return {
+    id: uid("err"),
+    role: "system",
+    type: "system",
     content,
     createdAt: new Date().toISOString(),
   };

@@ -38,6 +38,9 @@ export type DoctorCardData = {
   bio?: string;
   languages?: string[];
   accepting?: boolean;
+  /** Message to send when the user selects this doctor (from backend). */
+  select_message?: string;
+  message?: string;
 };
 
 export type InsuranceCardData = {

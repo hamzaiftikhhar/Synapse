@@ -2,8 +2,12 @@
 
 import { Button } from "@/components/ui/button";
 import type { ChatActionHandler, ChatMessage } from "@/types/chat";
+import type { BackendAction } from "@/features/chat/types";
 
-type Btn = { id: string; label: string; variant?: "default" | "outline" };
+type Btn = BackendAction & {
+  label: string;
+  variant?: "default" | "outline";
+};
 
 export function ButtonsMessage({
   message,
@@ -13,6 +17,7 @@ export function ButtonsMessage({
   onAction?: ChatActionHandler;
 }) {
   const buttons = (message.payload?.buttons as Btn[]) || [];
+
   return (
     <div className="flex flex-wrap gap-2">
       {buttons.map((b) => (

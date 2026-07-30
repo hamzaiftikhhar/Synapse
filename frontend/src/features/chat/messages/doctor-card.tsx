@@ -23,13 +23,15 @@ export function DoctorCard({
         <p className="text-[11px] text-muted-foreground">
           {doctor.languages?.join(", ") || "Languages vary"}
         </p>
-        <Button
-          size="xs"
-          className="rounded-[6px]"
-          onClick={() => onAction?.("select_doctor", doctor)}
-        >
-          Select
-        </Button>
+        {doctor.select_message || doctor.message ? (
+          <Button
+            size="xs"
+            className="rounded-[6px]"
+            onClick={() => onAction?.("select_doctor", doctor)}
+          >
+            Select
+          </Button>
+        ) : null}
       </div>
     </div>
   );

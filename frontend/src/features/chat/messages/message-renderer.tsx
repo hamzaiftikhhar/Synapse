@@ -6,7 +6,6 @@ import { TextMessage } from "./text-message";
 import { TypingIndicator } from "./typing-indicator";
 import { QuickReplies } from "./quick-replies";
 import { ButtonsMessage } from "./buttons-message";
-import { SuggestedQuestions } from "./suggested-questions";
 import { MainMenuMessage } from "./main-menu";
 import { DoctorCards } from "./doctor-card";
 import { InsuranceCards } from "./insurance-card";
@@ -44,7 +43,7 @@ export function MessageRenderer({
       body = <ButtonsMessage message={message} onAction={onAction} />;
       break;
     case "suggested_questions":
-      body = <SuggestedQuestions message={message} onAction={onAction} />;
+      body = null;
       break;
     case "main_menu":
       body = <MainMenuMessage message={message} onAction={onAction} />;
