@@ -499,6 +499,7 @@ export function ChatWidget({
                   createdAt: new Date().toISOString(),
                 }}
                 assistantName={`${displayName} Assistant`}
+                typingHint={lastUserMessageRef.current}
               />
             ) : null}
           </div>

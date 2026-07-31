@@ -6,8 +6,8 @@
  */
 
 const FAST_THRESHOLD_MS = 300;
-const MIN_VISIBLE_MS = 320;
-const MAX_VISIBLE_MS = 480;
+const MIN_VISIBLE_MS = 700;
+const MAX_VISIBLE_MS = 1000;
 
 export function naturalReplyDelayMs(elapsedMs: number): number {
   if (elapsedMs >= FAST_THRESHOLD_MS) return 0;

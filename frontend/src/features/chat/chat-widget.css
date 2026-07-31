@@ -152,6 +152,17 @@
   }
 }
 
+@keyframes synapse-status-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 @keyframes synapse-input-glow {
   0% {
     background-position: 100% 0;
@@ -188,7 +199,8 @@
   .synapse-chat-composer--typing::before,
   .synapse-thinking-dots::after,
   .synapse-stream-cursor::after,
-  .synapse-chat-skeleton {
+  .synapse-chat-skeleton,
+  .motion-safe\:animate-\[synapse-status-in_220ms_ease-out\] {
     animation: none !important;
   }
 

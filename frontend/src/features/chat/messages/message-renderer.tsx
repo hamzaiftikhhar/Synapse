@@ -33,6 +33,7 @@ export function MessageRenderer({
   bookingWizardActive,
   onBookingConfirmed,
   onBookingDismiss,
+  typingHint,
 }: {
   message: ChatMessage;
   onAction?: ChatActionHandler;
@@ -43,6 +44,8 @@ export function MessageRenderer({
   bookingWizardActive?: boolean;
   onBookingConfirmed?: (payload: BookingStepPayload) => void;
   onBookingDismiss?: (messageId: string) => void;
+  /** Last user message — used for calm typing status copy. */
+  typingHint?: string;
 }) {
   let body: React.ReactNode = null;
 
@@ -52,7 +55,12 @@ export function MessageRenderer({
       body = <TextMessage message={message} assistantName={assistantName} />;
       break;
     case "typing":
-      body = <TypingIndicator assistantName={assistantName} />;
+      body = (
+        <TypingIndicator
+          assistantName={assistantName}
+          userHint={typingHint}
+        />
+      );
       break;
     case "quick_replies":
       body = <QuickReplies message={message} onAction={onAction} />;
