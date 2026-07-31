@@ -35,19 +35,19 @@ export function MarketingFooter() {
       <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6">
         <div className="rounded-[6px] border border-white/10 bg-white/5 p-8 text-center sm:p-10">
           <h2 className="text-2xl font-semibold tracking-tight text-white sm:text-3xl">
-            Ready to see Synapse in{" "}
-            <span className="text-gradient">your clinic</span>?
+            Questions about fitting Synapse into{" "}
+            <span className="text-gradient">your workflow</span>?
           </h2>
           <p className="mx-auto mt-3 max-w-lg text-sm text-white/60">
-            A 30-minute demo mapped to how your practice actually runs —
-            chatbot, scheduling context, and knowledge in one platform.
+            Reach the team for implementation details, security reviews, or a
+            clinic-specific walkthrough.
           </p>
           <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
             <Link
               href="/contact"
               className="inline-flex h-9 items-center rounded-[6px] bg-primary px-4 text-sm font-medium text-primary-foreground"
             >
-              Book a Demo
+              Contact us
             </Link>
             <Link
               href="/pricing"

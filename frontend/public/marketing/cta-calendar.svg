@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="474" height="382" viewBox="0 0 474 382" fill="none" aria-hidden="true">
+  <defs>
+    <filter id="softShadow" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#1e1b4b" flood-opacity="0.22"/>
+    </filter>
+    <filter id="cursorShadow" x="-50%" y="-50%" width="200%" height="200%">
+      <feDropShadow dx="2" dy="8" stdDeviation="6" flood-color="#1e1b4b" flood-opacity="0.28"/>
+    </filter>
+    <linearGradient id="calBody" x1="120" y1="90" x2="320" y2="300" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#f4f3ff"/>
+    </linearGradient>
+  </defs>
+
+  <!-- scribble -->
+  <path d="M118 210c28-42 78-54 118-34 34 17 42 52 18 78-26 28-78 22-98-8-14-22 4-48 34-52 22-3 42 12 48 30"
+        stroke="#312e81" stroke-width="3.2" stroke-linecap="round" fill="none" opacity="0.85"
+        transform="rotate(-8 190 200)"/>
+
+  <!-- sparkles -->
+  <g fill="#ffffff">
+    <path d="M78 148l4.2 10.8L93 163l-10.8 4.2L78 178l-4.2-10.8L63 163l10.8-4.2L78 148z" opacity="0.95"/>
+    <path d="M348 118l3.2 8.2L360 129.4l-8.8 3.2L348 141l-3.2-8.4L336 129.4l8.8-3.2L348 118z" opacity="0.9"/>
+    <path d="M332 268l2.6 6.6L341 277.2l-6.4 2.4L332 286l-2.6-6.4L323 277.2l6.4-2.4L332 268z" opacity="0.85"/>
+    <circle cx="96" cy="236" r="3.2" opacity="0.8"/>
+    <circle cx="360" cy="188" r="2.4" opacity="0.7"/>
+  </g>
+
+  <!-- calendar -->
+  <g transform="translate(237 195) rotate(14) translate(-110 -120)" filter="url(#softShadow)">
+    <rect x="0" y="0" width="220" height="240" rx="28" fill="url(#calBody)"/>
+    <rect x="0" y="0" width="220" height="54" rx="28" fill="#312e81"/>
+    <rect x="0" y="28" width="220" height="26" fill="#312e81"/>
+    <!-- rings -->
+    <g fill="#e0e7ff">
+      <rect x="48" y="-8" width="14" height="28" rx="7"/>
+      <rect x="103" y="-8" width="14" height="28" rx="7"/>
+      <rect x="158" y="-8" width="14" height="28" rx="7"/>
+    </g>
+    <g fill="#1e1b4b" opacity="0.35">
+      <circle cx="55" cy="14" r="4.5"/>
+      <circle cx="110" cy="14" r="4.5"/>
+      <circle cx="165" cy="14" r="4.5"/>
+    </g>
+    <!-- grid -->
+    <g fill="#c7d2fe">
+      <rect x="28" y="78" width="36" height="28" rx="8"/>
+      <rect x="74" y="78" width="36" height="28" rx="8"/>
+      <rect x="120" y="78" width="36" height="28" rx="8"/>
+      <rect x="166" y="78" width="36" height="28" rx="8"/>
+      <rect x="28" y="118" width="36" height="28" rx="8"/>
+      <rect x="74" y="118" width="36" height="28" rx="8"/>
+      <rect x="120" y="118" width="36" height="28" rx="8"/>
+      <rect x="166" y="118" width="36" height="28" rx="8"/>
+      <rect x="28" y="158" width="36" height="28" rx="8"/>
+      <rect x="74" y="158" width="36" height="28" rx="8"/>
+      <rect x="166" y="158" width="36" height="28" rx="8"/>
+      <rect x="28" y="198" width="36" height="28" rx="8"/>
+      <rect x="74" y="198" width="36" height="28" rx="8"/>
+      <rect x="120" y="198" width="36" height="28" rx="8"/>
+      <rect x="166" y="198" width="36" height="28" rx="8"/>
+    </g>
+    <!-- selected day -->
+    <rect x="120" y="158" width="36" height="28" rx="8" fill="#312e81"/>
+    <path d="M130.5 172.2l5.2 5.2 10.6-10.6" stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  </g>
+
+  <!-- cursor -->
+  <g transform="translate(292 248) rotate(-8)" filter="url(#cursorShadow)">
+    <path d="M8 4l2 54 14-12 12 28 12-5-12-27 20-2L8 4z" fill="#ffffff" stroke="#e2e8f0" stroke-width="1.5" stroke-linejoin="round"/>
+  </g>
+</svg>

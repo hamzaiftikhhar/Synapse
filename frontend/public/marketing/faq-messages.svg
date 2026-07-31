@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="338" height="345" viewBox="0 0 338 345" fill="none" aria-hidden="true">
+  <defs>
+    <linearGradient id="bubblePrimary" x1="40" y1="30" x2="210" y2="190" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#c026d3"/>
+      <stop offset="0.45" stop-color="#7c3aed"/>
+      <stop offset="1" stop-color="#5b21b6"/>
+    </linearGradient>
+    <linearGradient id="bubbleCyan" x1="200" y1="40" x2="300" y2="140" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#e0f2fe"/>
+      <stop offset="1" stop-color="#93c5fd"/>
+    </linearGradient>
+    <linearGradient id="bubbleLavender" x1="150" y1="180" x2="290" y2="300" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#f5f3ff"/>
+      <stop offset="1" stop-color="#c4b5fd"/>
+    </linearGradient>
+    <filter id="bShadow" x="-30%" y="-30%" width="160%" height="170%">
+      <feDropShadow dx="0" dy="14" stdDeviation="14" flood-color="#020617" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <!-- decorative swirl -->
+  <path d="M168 236c42 8 78 36 86 78" stroke="#ffffff" stroke-width="1.6" stroke-linecap="round" fill="none" opacity="0.55"/>
+  <path d="M246 292c18 22 8 42-12 48" stroke="#ffffff" stroke-width="1.6" stroke-linecap="round" fill="none" opacity="0.45"/>
+
+  <!-- sparkles -->
+  <g fill="#ffffff">
+    <path d="M52 86l3.4 8.6L64 98l-8.6 3.4L52 110l-3.4-8.6L40 98l8.6-3.4L52 86z" opacity="0.9"/>
+    <path d="M292 168l2.8 7L302 178l-7.2 2.8L292 188l-2.8-7.2L282 178l7.2-3L292 168z" opacity="0.85"/>
+    <path d="M118 268l2.2 5.6L126 276l-5.8 2.2L118 284l-2.2-5.8L110 276l5.8-2.2L118 268z" opacity="0.75"/>
+    <circle cx="304" cy="96" r="2.5" opacity="0.7"/>
+    <circle cx="78" cy="214" r="2" opacity="0.65"/>
+  </g>
+
+  <!-- primary bubble (sparkle) -->
+  <g transform="translate(36 54) rotate(-14)" filter="url(#bShadow)">
+    <path d="M24 18h148c16 0 28 12 28 28v72c0 16-12 28-28 28H86l-22 22v-22H24c-16 0-28-12-28-28V46c0-16 12-28 28-28z" fill="url(#bubblePrimary)"/>
+    <path d="M98 62l7.5 19.2L125 88.7l-19.5 7.5L98 115.5l-7.5-19.3L71 88.7l19.5-7.5L98 62z" fill="#ffffff"/>
+  </g>
+
+  <!-- cyan bubble (question) -->
+  <g transform="translate(198 42) rotate(12)" filter="url(#bShadow)">
+    <path d="M16 10h92c12 0 22 10 22 22v48c0 12-10 22-22 22H52l-14 14v-14H16c-12 0-22-10-22-22V32c0-12 10-22 22-22z" fill="url(#bubbleCyan)"/>
+    <text x="54" y="62" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="34" font-weight="700" fill="#1e1b4b">?</text>
+  </g>
+
+  <!-- lavender bubble (sparkle) -->
+  <g transform="translate(148 168) rotate(8)" filter="url(#bShadow)">
+    <path d="M18 12h118c14 0 26 12 26 26v60c0 14-12 26-26 26H72l-18 18v-18H18c-14 0-26-12-26-26V38c0-14 12-26 26-26z" fill="url(#bubbleLavender)"/>
+    <path d="M77 46l6.2 15.8L99 68l-15.8 6.2L77 90l-6.2-15.8L55 68l15.8-6.2L77 46z" fill="#4338ca"/>
+  </g>
+</svg>

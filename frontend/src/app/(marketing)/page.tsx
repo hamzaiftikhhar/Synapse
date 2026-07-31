@@ -7,6 +7,8 @@ import {
   Stethoscope,
   BookOpen,
 } from "lucide-react";
+import { DemoCtaBanner } from "@/components/marketing/demo-cta-banner";
+import { MarketingFaq } from "@/components/marketing/marketing-faq";
 import { ChatWidget } from "@/features/chat";
 
 const STATS = [
@@ -91,6 +93,34 @@ const STEPS = [
   {
     title: "Embed the widget",
     body: "Drop Synapse on your clinic website. Patients never access the dashboard.",
+  },
+];
+
+const FAQS = [
+  {
+    question: "Do patients log into Synapse?",
+    answer:
+      "No. Patients only use the chatbot widget on your clinic website. Staff use the portal for operations, knowledge, and QA.",
+  },
+  {
+    question: "What APIs power the product?",
+    answer:
+      "Django Ninja endpoints for staff JWT auth, patient OTP, chat, doctors, services, appointments, patients, and knowledge documents.",
+  },
+  {
+    question: "Can the chatbot show more than text?",
+    answer:
+      "Yes. Synapse ships message components for cards, doctors, insurance, services, calendars, time slots, forms, and confirmations.",
+  },
+  {
+    question: "Is registration self-serve today?",
+    answer:
+      "Staff login exists today. Self-serve register / reset / verify flows are stubbed until those backend endpoints ship.",
+  },
+  {
+    question: "How does knowledge grounding work?",
+    answer:
+      "Clinic PDFs are extracted, chunked, embedded, and stored. The chatbot retrieves relevant passages so answers stay tied to your documents.",
   },
 ];
 
@@ -270,7 +300,7 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* Dark feature grid — Raven style */}
+      {/* Dark feature grid */}
       <section className="relative mt-12 overflow-hidden section-navy py-20 sm:py-24">
         <div className="glow-navy pointer-events-none absolute inset-0" />
         <div className="relative mx-auto max-w-6xl px-4 sm:px-6">
@@ -397,47 +427,11 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* FAQ */}
-      <section className="py-20 sm:py-24">
-        <div className="mx-auto max-w-3xl px-4 sm:px-6">
-          <h2 className="text-center text-3xl font-semibold tracking-tight text-navy">
-            Frequently asked <span className="text-gradient">questions</span>
-          </h2>
-          <div className="mt-10 divide-y divide-border border-y border-border">
-            {[
-              {
-                q: "Do patients log into Synapse?",
-                a: "No. Patients only use the chatbot widget on your clinic website. Staff use the portal.",
-              },
-              {
-                q: "What APIs power the product?",
-                a: "Django Ninja endpoints for staff JWT auth, patient OTP, chat, doctors, services, appointments, patients, and knowledge documents.",
-              },
-              {
-                q: "Can the chatbot show more than text?",
-                a: "Yes. Synapse ships message components for cards, doctors, insurance, services, calendars, time slots, forms, and confirmations.",
-              },
-              {
-                q: "Is registration self-serve today?",
-                a: "Staff login exists today. Self-serve register / reset / verify flows are stubbed until those backend endpoints ship.",
-              },
-            ].map((item) => (
-              <details key={item.q} className="group py-4">
-                <summary className="cursor-pointer list-none text-sm font-medium text-navy marker:content-none">
-                  <div className="flex items-center justify-between gap-4">
-                    {item.q}
-                    <span className="text-muted-foreground group-open:hidden">+</span>
-                    <span className="hidden text-muted-foreground group-open:inline">−</span>
-                  </div>
-                </summary>
-                <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-                  {item.a}
-                </p>
-              </details>
-            ))}
-          </div>
-        </div>
-      </section>
+      <div className="py-16 sm:py-20">
+        <DemoCtaBanner />
+      </div>
+
+      <MarketingFaq items={FAQS} />
     </>
   );
 }
