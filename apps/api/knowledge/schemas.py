@@ -5,7 +5,7 @@ from uuid import UUID
 
 from ninja import Schema
 
-from apps.knowledge.models import ChunkType, DocumentStatus
+from apps.knowledge.models import ChunkType, DocumentStatus, ProcessingStage
 
 
 class DocumentOut(Schema):
@@ -15,14 +15,23 @@ class DocumentOut(Schema):
     file_type: str
     file_size_bytes: int | None
     status: DocumentStatus
+    processing_stage: ProcessingStage | str
     chunk_count: int
     error_message: str
+    routing_summary: str = ""
+    routing_keywords: list[str] = []
+    uploaded_by_name: str | None = None
+    uploaded_by_email: str | None = None
+    processing_started_at: datetime | None = None
+    processing_finished_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 
 
-class DocumentUploadOut(DocumentOut):
-    pass
+class DocumentUpdateIn(Schema):
+    title: str | None = None
+    routing_summary: str | None = None
+    routing_keywords: list[str] | None = None
 
 
 class ChunkOut(Schema):
@@ -32,7 +41,7 @@ class ChunkOut(Schema):
     heading: str
     page_start: int | None
     page_end: int | None
-    page_number: int | None  # alias of page_start
+    page_number: int | None
     estimated_token_count: int | None
     chunk_type: ChunkType
     has_embedding: bool

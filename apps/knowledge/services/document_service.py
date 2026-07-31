@@ -1,40 +1,31 @@
-"""Document upload / list / reindex — thin orchestration over storage + pipeline.
-
-Why this file exists
---------------------
-This file is the brain of the document upload process.
-
-It coordinates everything but doesn't actually save files or process AI itself.
-
-Think of it as a project manager.
-
-Routers must stay thin. This service owns:
-  1. Validate file type
-  2. Save bytes via storage.py
-  3. Create the Document DB row (clinic-scoped)
-  4. Start the ingestion pipeline
-
-It does NOT extract text, chunk, or call OpenAI — that lives in pipeline/.
-"""
+"""Document upload / list / reindex / mutate — orchestration over storage + pipeline."""
 
 from __future__ import annotations
 
 import logging
+import threading
 import uuid
 from pathlib import Path
 
 from django.core.files.uploadedfile import UploadedFile
+from django.db import close_old_connections
+from django.utils import timezone
 
 from apps.accounts.models import User
 from apps.clinics.models import Clinic
-from apps.knowledge.models import Document, DocumentStatus
+from apps.knowledge.models import Document, DocumentStatus, ProcessingStage
 from apps.knowledge.pipeline.ingest import IngestionError, ingest_document
 from apps.knowledge.services import storage
 
-logger = logging.getLogger(__name__) #why we are using logger? because we want to log the messages to the console. wny  using __name__? because we want to log the messages to the console.
+logger = logging.getLogger(__name__)
+
+
 class DocumentServiceError(Exception):
     """User-facing upload error (bad file type, storage failure, …)."""
+
+
 ALLOWED_FILE_TYPES = {"pdf"}
+
 
 def upload_document(
     *,
@@ -43,25 +34,8 @@ def upload_document(
     title: str = "",
     uploaded_by: User | None = None,
     run_ingestion: bool = True,
+    async_ingest: bool = True,
 ) -> Document:
-    """
-    Store the PDF and create a Document row, then optionally start ingestion.
-
-    Data in
-    -------
-    clinic          : from staff JWT (clinic_from)
-    uploaded_file   : multipart PDF
-    title           : optional human label
-    uploaded_by     : staff User from JWT
-
-    Data out
-    --------
-    Document with status:
-      - pending     → saved, ingest not started
-      - processing  → ingest running (transient)
-      - indexed     → pipeline succeeded
-      - failed      → pipeline failed (error_message set)
-    """
     ext = Path(uploaded_file.name or "").suffix.lower().lstrip(".")
     if ext not in ALLOWED_FILE_TYPES:
         raise DocumentServiceError(
@@ -84,7 +58,9 @@ def upload_document(
         storage_path=relative_path,
         file_size_bytes=size_bytes,
         status=DocumentStatus.PENDING,
+        processing_stage=ProcessingStage.QUEUED,
         uploaded_by=uploaded_by,
+        metadata={"processing_started_at": timezone.now().isoformat()},
     )
 
     logger.info(
@@ -95,23 +71,52 @@ def upload_document(
     )
 
     if run_ingestion:
-        try:
-            start_ingestion(document)
-        except IngestionError:
-            document.refresh_from_db()
-            # File is on disk and Document exists — caller still gets the row
-            # with status=failed and error_message filled in.
+        if async_ingest:
+            enqueue_ingestion(document.id)
+        else:
+            try:
+                start_ingestion(document)
+            except IngestionError:
+                document.refresh_from_db()
 
     return document
 
 
-def start_ingestion(document: Document) -> Document:
-    """
-    Kick off the pipeline for an existing Document.
+def enqueue_ingestion(document_id: uuid.UUID) -> None:
+    """Run ingest in a background thread so upload returns immediately for polling."""
 
-    On failure, Document.status is set to failed (inside ingest) and
-    IngestionError is raised after refresh.
-    """
+    def _run() -> None:
+        close_old_connections()
+        try:
+            document = Document.objects.filter(pk=document_id, is_deleted=False).first()
+            if document is None:
+                return
+            start_ingestion(document)
+        except Exception:
+            logger.exception("Background ingestion failed for %s", document_id)
+        finally:
+            close_old_connections()
+
+    threading.Thread(
+        target=_run,
+        name=f"ingest-{document_id}",
+        daemon=True,
+    ).start()
+
+
+def start_ingestion(document: Document) -> Document:
+    document.refresh_from_db()
+    meta = document.metadata if isinstance(document.metadata, dict) else {}
+    if (
+        document.status == DocumentStatus.CANCELLED
+        or meta.get("cancel_requested")
+    ):
+        document.status = DocumentStatus.CANCELLED
+        document.processing_stage = ProcessingStage.CANCELLED
+        document.save(
+            update_fields=["status", "processing_stage", "updated_at"]
+        )
+        return document
     try:
         return ingest_document(document)
     except IngestionError:
@@ -119,14 +124,29 @@ def start_ingestion(document: Document) -> Document:
         raise
 
 
-def reindex_document(document: Document) -> Document:
-    """Reset status and re-run the full pipeline."""
+def reindex_document(document: Document, *, async_ingest: bool = True) -> Document:
     document.status = DocumentStatus.PENDING
+    document.processing_stage = ProcessingStage.QUEUED
     document.error_message = ""
     document.chunk_count = 0
+    meta = dict(document.metadata or {})
+    meta.pop("cancel_requested", None)
+    meta["processing_started_at"] = timezone.now().isoformat()
+    document.metadata = meta
     document.save(
-        update_fields=["status", "error_message", "chunk_count", "updated_at"]
+        update_fields=[
+            "status",
+            "processing_stage",
+            "error_message",
+            "chunk_count",
+            "metadata",
+            "updated_at",
+        ]
     )
+    if async_ingest:
+        enqueue_ingestion(document.id)
+        document.refresh_from_db()
+        return document
     try:
         return start_ingestion(document)
     except IngestionError:
@@ -134,15 +154,82 @@ def reindex_document(document: Document) -> Document:
         return document
 
 
+def update_document(
+    document: Document,
+    *,
+    title: str | None = None,
+    routing_summary: str | None = None,
+    routing_keywords: list[str] | None = None,
+) -> Document:
+    fields: list[str] = ["updated_at"]
+    if title is not None:
+        cleaned = title.strip()
+        if not cleaned:
+            raise DocumentServiceError("Title cannot be empty")
+        document.title = cleaned[:255]
+        fields.append("title")
+    if routing_summary is not None:
+        document.routing_summary = routing_summary.strip()[:2000]
+        fields.append("routing_summary")
+    if routing_keywords is not None:
+        document.routing_keywords = [
+            str(k).strip()[:40] for k in routing_keywords if str(k).strip()
+        ][:20]
+        fields.append("routing_keywords")
+    document.save(update_fields=fields)
+    return document
+
+
+def soft_delete_document(document: Document) -> Document:
+    document.is_deleted = True
+    document.deleted_at = timezone.now()
+    document.save(update_fields=["is_deleted", "deleted_at", "updated_at"])
+    return document
+
+
+def request_cancel(document: Document) -> Document:
+    if document.status not in {
+        DocumentStatus.PENDING,
+        DocumentStatus.PROCESSING,
+    }:
+        raise DocumentServiceError("Only queued or processing documents can be cancelled")
+    meta = dict(document.metadata or {})
+    meta["cancel_requested"] = True
+    document.metadata = meta
+    # Pending jobs that haven't started yet flip immediately
+    if document.status == DocumentStatus.PENDING:
+        document.status = DocumentStatus.CANCELLED
+        document.processing_stage = ProcessingStage.CANCELLED
+        document.error_message = "Cancelled before processing started"
+        document.save(
+            update_fields=[
+                "metadata",
+                "status",
+                "processing_stage",
+                "error_message",
+                "updated_at",
+            ]
+        )
+    else:
+        document.save(update_fields=["metadata", "updated_at"])
+    return document
+
+
 def get_document(*, clinic: Clinic, document_id: uuid.UUID) -> Document | None:
-    return Document.objects.filter(
-        clinic=clinic,
-        pk=document_id,
-        is_deleted=False,
-    ).first()
+    return (
+        Document.objects.filter(
+            clinic=clinic,
+            pk=document_id,
+            is_deleted=False,
+        )
+        .select_related("uploaded_by")
+        .first()
+    )
 
 
 def list_documents(*, clinic: Clinic) -> list[Document]:
     return list(
-        Document.objects.filter(clinic=clinic, is_deleted=False).order_by("-created_at")
+        Document.objects.filter(clinic=clinic, is_deleted=False)
+        .select_related("uploaded_by")
+        .order_by("-created_at")
     )

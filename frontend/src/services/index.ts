@@ -9,6 +9,7 @@ import type {
   DoctorInput,
   DoctorUpdateInput,
   DocumentChunk,
+  DocumentUpdateInput,
   KnowledgeDocument,
   ListParams,
   MeResponse,
@@ -292,13 +293,37 @@ export const documentsService = {
     const { data } = await api.get<KnowledgeDocument>(`/documents/${id}`);
     return data;
   },
-  async upload(file: File, title = "") {
+  async upload(
+    file: File,
+    title = "",
+    onProgress?: (percent: number) => void
+  ) {
     const form = new FormData();
     form.append("file", file);
     if (title) form.append("title", title);
     const { data } = await api.post<KnowledgeDocument>("/documents", form, {
       headers: { "Content-Type": "multipart/form-data" },
+      onUploadProgress: (event) => {
+        if (!onProgress || !event.total) return;
+        onProgress(Math.min(100, Math.round((event.loaded / event.total) * 100)));
+      },
     });
+    return data;
+  },
+  async update(id: string, input: DocumentUpdateInput) {
+    const { data } = await api.patch<KnowledgeDocument>(
+      `/documents/${id}`,
+      input
+    );
+    return data;
+  },
+  async remove(id: string) {
+    await api.delete(`/documents/${id}`);
+  },
+  async cancel(id: string) {
+    const { data } = await api.post<KnowledgeDocument>(
+      `/documents/${id}/cancel`
+    );
     return data;
   },
   async chunks(id: string) {
@@ -309,6 +334,13 @@ export const documentsService = {
     const { data } = await api.post<KnowledgeDocument>(
       `/documents/${id}/reindex`
     );
+    return data;
+  },
+  async downloadBlob(id: string, inline = false) {
+    const { data } = await api.get<Blob>(`/documents/${id}/download`, {
+      params: inline ? { inline: true } : undefined,
+      responseType: "blob",
+    });
     return data;
   },
 };

@@ -17,8 +17,10 @@ import type {
   AppointmentInput,
   AppointmentUpdateInput,
   ChatMessageInput,
+  DocumentUpdateInput,
   DoctorInput,
   DoctorUpdateInput,
+  KnowledgeDocument,
   ListParams,
   MarketingChatInput,
   PatientInput,
@@ -28,6 +30,10 @@ import type {
   StaffLoginInput,
   WidgetGuestChatInput,
 } from "@/types/api";
+
+function documentIsActive(doc: KnowledgeDocument) {
+  return doc.status === "pending" || doc.status === "processing";
+}
 
 export const queryKeys = {
   me: ["me"] as const,
@@ -209,15 +215,79 @@ export function useDocuments() {
   return useQuery({
     queryKey: queryKeys.documents,
     queryFn: () => documentsService.list(),
+    refetchInterval: (query) => {
+      const rows = query.state.data;
+      if (!rows?.length) return false;
+      return rows.some(documentIsActive) ? 1500 : false;
+    },
+  });
+}
+
+export function useDocument(id: string | null) {
+  return useQuery({
+    queryKey: queryKeys.document(id ?? ""),
+    queryFn: () => documentsService.get(id!),
+    enabled: Boolean(id),
+    refetchInterval: (query) => {
+      const doc = query.state.data;
+      if (!doc) return false;
+      return documentIsActive(doc) ? 1500 : false;
+    },
+  });
+}
+
+export function useDocumentChunks(id: string | null) {
+  return useQuery({
+    queryKey: queryKeys.chunks(id ?? ""),
+    queryFn: () => documentsService.chunks(id!),
+    enabled: Boolean(id),
   });
 }
 
 export function useUploadDocument() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ file, title }: { file: File; title?: string }) =>
-      documentsService.upload(file, title),
+    mutationFn: ({
+      file,
+      title,
+      onProgress,
+    }: {
+      file: File;
+      title?: string;
+      onProgress?: (percent: number) => void;
+    }) => documentsService.upload(file, title, onProgress),
     onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.documents }),
+  });
+}
+
+export function useUpdateDocument() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: DocumentUpdateInput }) =>
+      documentsService.update(id, input),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: queryKeys.documents });
+      qc.invalidateQueries({ queryKey: queryKeys.document(vars.id) });
+    },
+  });
+}
+
+export function useDeleteDocument() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => documentsService.remove(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.documents }),
+  });
+}
+
+export function useCancelDocument() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => documentsService.cancel(id),
+    onSuccess: (_data, id) => {
+      qc.invalidateQueries({ queryKey: queryKeys.documents });
+      qc.invalidateQueries({ queryKey: queryKeys.document(id) });
+    },
   });
 }
 
@@ -225,7 +295,10 @@ export function useReindexDocument() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => documentsService.reindex(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.documents }),
+    onSuccess: (_data, id) => {
+      qc.invalidateQueries({ queryKey: queryKeys.documents });
+      qc.invalidateQueries({ queryKey: queryKeys.document(id) });
+    },
   });
 }
 

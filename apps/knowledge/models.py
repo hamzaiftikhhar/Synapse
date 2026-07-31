@@ -14,6 +14,19 @@ class DocumentStatus(models.TextChoices):
     CHUNKED = "chunked", "Chunked"  # text chunks saved; embeddings not yet
     INDEXED = "indexed", "Indexed"
     FAILED = "failed", "Failed"
+    CANCELLED = "cancelled", "Cancelled"
+
+
+class ProcessingStage(models.TextChoices):
+    QUEUED = "queued", "Queued"
+    UPLOADING = "uploading", "Uploading"
+    EXTRACTING = "extracting", "Extracting text"
+    CHUNKING = "chunking", "Chunking document"
+    EMBEDDING = "embedding", "Generating embeddings"
+    STORING = "storing", "Storing knowledge"
+    COMPLETED = "completed", "Completed"
+    FAILED = "failed", "Failed"
+    CANCELLED = "cancelled", "Cancelled"
 
 
 class ChunkType(models.TextChoices):
@@ -33,6 +46,12 @@ class Document(TenantModel, TimestampedModel, SoftDeleteModel):
         max_length=20,
         choices=DocumentStatus.choices,
         default=DocumentStatus.PENDING,
+    )
+    processing_stage = models.CharField(
+        max_length=32,
+        choices=ProcessingStage.choices,
+        default=ProcessingStage.QUEUED,
+        blank=True,
     )
     chunk_count = models.PositiveIntegerField(default=0)
     uploaded_by = models.ForeignKey(

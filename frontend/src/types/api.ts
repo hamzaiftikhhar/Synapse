@@ -181,7 +181,19 @@ export type DocumentStatus =
   | "processing"
   | "chunked"
   | "indexed"
-  | "failed";
+  | "failed"
+  | "cancelled";
+
+export type ProcessingStage =
+  | "queued"
+  | "uploading"
+  | "extracting"
+  | "chunking"
+  | "embedding"
+  | "storing"
+  | "completed"
+  | "failed"
+  | "cancelled";
 
 export type KnowledgeDocument = {
   id: string;
@@ -190,10 +202,23 @@ export type KnowledgeDocument = {
   file_type: string;
   file_size_bytes: number | null;
   status: DocumentStatus;
+  processing_stage: ProcessingStage | string;
   chunk_count: number;
   error_message: string;
+  routing_summary?: string;
+  routing_keywords?: string[];
+  uploaded_by_name?: string | null;
+  uploaded_by_email?: string | null;
+  processing_started_at?: string | null;
+  processing_finished_at?: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type DocumentUpdateInput = {
+  title?: string;
+  routing_summary?: string;
+  routing_keywords?: string[];
 };
 
 export type DocumentChunk = {
