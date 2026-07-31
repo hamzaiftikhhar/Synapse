@@ -26,21 +26,23 @@ export function MessageRenderer({
   onAction,
   onBackendAction,
   showContextActions,
+  assistantName,
 }: {
   message: ChatMessage;
   onAction?: ChatActionHandler;
   onBackendAction?: (action: BackendAction) => void;
   showContextActions?: boolean;
+  assistantName?: string;
 }) {
   let body: React.ReactNode = null;
 
   switch (message.type) {
     case "text":
     case "system":
-      body = <TextMessage message={message} />;
+      body = <TextMessage message={message} assistantName={assistantName} />;
       break;
     case "typing":
-      body = <TypingIndicator />;
+      body = <TypingIndicator assistantName={assistantName} />;
       break;
     case "quick_replies":
       body = <QuickReplies message={message} onAction={onAction} />;
@@ -103,7 +105,12 @@ export function MessageRenderer({
       body = <ImageMessage message={message} />;
       break;
     default:
-      body = <TextMessage message={{ ...message, type: "text" }} />;
+      body = (
+        <TextMessage
+          message={{ ...message, type: "text" }}
+          assistantName={assistantName}
+        />
+      );
   }
 
   const payloadActions = Array.isArray(message.payload?.actions)

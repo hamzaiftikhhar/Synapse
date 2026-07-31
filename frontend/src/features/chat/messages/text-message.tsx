@@ -2,17 +2,27 @@
 
 import { cn } from "@/lib/utils";
 import { RobotAvatar } from "@/features/chat/components/robot-avatar";
-import { formatMessageTime } from "@/features/chat/components/chat-chrome";
+import {
+  BotMetaRow,
+  formatMessageTime,
+} from "@/features/chat/components/chat-chrome";
 import type { ChatMessage } from "@/types/chat";
 
-export function TextMessage({ message }: { message: ChatMessage }) {
+export function TextMessage({
+  message,
+  assistantName,
+}: {
+  message: ChatMessage;
+  assistantName?: string;
+}) {
   const isUser = message.role === "user";
   const isSystem = message.role === "system" || message.type === "system";
+  const streaming = Boolean(message.payload?.streaming);
 
   if (isSystem) {
     return (
-      <div className="flex justify-center py-1">
-        <p className="max-w-[95%] rounded-[8px] border border-amber-200/80 bg-amber-50 px-3 py-2 text-center text-xs text-amber-900">
+      <div className="synapse-chat-msg flex justify-center py-1">
+        <p className="max-w-[95%] rounded-xl border border-amber-200/80 bg-amber-50 px-3 py-2 text-center text-xs text-amber-900">
           {message.content}
         </p>
       </div>
@@ -21,28 +31,40 @@ export function TextMessage({ message }: { message: ChatMessage }) {
 
   return (
     <div
-      className={cn("flex gap-2", isUser ? "flex-row-reverse" : "flex-row")}
+      className={cn(
+        "synapse-chat-msg flex gap-2.5",
+        isUser ? "flex-row-reverse" : "flex-row"
+      )}
     >
-      {!isUser ? <RobotAvatar size="sm" className="mt-0.5 shrink-0" /> : null}
+      {!isUser ? (
+        <RobotAvatar
+          size="sm"
+          className="mt-5 shrink-0 rounded-full bg-primary"
+        />
+      ) : null}
       <div className={cn("min-w-0 max-w-[85%]", isUser && "items-end")}>
+        {!isUser ? (
+          <BotMetaRow
+            name={assistantName}
+            time={formatMessageTime(message.createdAt)}
+          />
+        ) : null}
         <div
           className={cn(
             "px-3.5 py-2.5 text-sm leading-relaxed",
             isUser
-              ? "rounded-2xl rounded-br-md bg-white text-foreground shadow-sm ring-1 ring-black/5"
-              : "rounded-2xl rounded-bl-md bg-[#ececf0] text-foreground"
+              ? "rounded-[18px] rounded-br-md bg-primary text-primary-foreground shadow-sm"
+              : "rounded-[18px] rounded-bl-md border border-border/80 bg-white text-foreground shadow-[0_1px_3px_rgb(11_14_46/0.06)]",
+            streaming && !isUser && "synapse-stream-cursor"
           )}
         >
           {message.content}
         </div>
-        <p
-          className={cn(
-            "mt-1 px-1 text-[10px] text-muted-foreground",
-            isUser ? "text-right" : "text-left"
-          )}
-        >
-          {formatMessageTime(message.createdAt)}
-        </p>
+        {isUser ? (
+          <p className="mt-1 px-1 text-right text-[10px] text-muted-foreground">
+            {formatMessageTime(message.createdAt)}
+          </p>
+        ) : null}
       </div>
     </div>
   );

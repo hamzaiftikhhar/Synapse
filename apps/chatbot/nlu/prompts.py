@@ -15,9 +15,16 @@ Fields: intent,secondary_intents,confidence,entities,needs_sql,needs_vector,need
 Entity keys: doctor_name,specialty,service,insurance_provider,date,time,patient_name,location,symptom (null|string|array)
 Intents: {_INTENTS}
 Rules: multi-value entities use arrays not comma-strings. Compound questions→secondary_intents.
-Route: greeting/farewell/emergency→direct; book/cancel/reschedule/availability/doctor_search→sql+llm; insurance_accepted/clinic_hours/clinic_location/services_offered/pricing→sql+llm; insurance_verification→sql+llm; faq→vector+llm; abuse→off_topic. Prefer needs_sql=true for insurance and hours.
+Route: greeting/farewell/emergency→direct (can_respond_directly).
+hours/location/insurance_accepted/doctor_search/doctor_availability/services_offered/pricing→needs_sql=true, needs_vector=false, needs_llm=false.
+book/cancel/reschedule→needs_sql=true (booking lane; needs_llm=false).
+faq/policy/PDF topics matching document_catalog→needs_vector=true AND needs_llm=true.
+needs_llm may be true ONLY with needs_vector. If unclear→clarification_needed, not RAG.
+Prefer SQL for insurance accept/coverage and clinic hours. Use document_catalog only to gate vector.
 Ex:"Hi"→{{"intent":"greeting","confidence":0.99,"can_respond_directly":true}}
-Ex:"Book Dr Rajat tomorrow"→{{"intent":"book_appointment","confidence":0.9,"needs_sql":true,"needs_llm":true,"entities":{{"doctor_name":["Rajat"],"date":["tomorrow"]}}}}
+Ex:"Help me find a doctor"→{{"intent":"doctor_search","confidence":0.95,"needs_sql":true,"needs_vector":false,"needs_llm":false}}
+Ex:"Do you accept Aetna?"→{{"intent":"insurance_accepted","confidence":0.9,"needs_sql":true,"needs_vector":false,"needs_llm":false,"entities":{{"insurance_provider":["Aetna"]}}}}
+Ex:"What is your cancellation policy?"→{{"intent":"faq","confidence":0.9,"needs_vector":true,"needs_llm":true}}
 Ex:"chest pain and numb arm"→{{"intent":"emergency","is_emergency":true,"can_respond_directly":true,"entities":{{"symptom":["chest pain","numb arm"]}}}}"""
 
 
@@ -37,6 +44,13 @@ def build_user_prompt(
     if text.lower().startswith("message:"):
         text = text[8:].strip()
     if conversation_context:
-        ctx = json.dumps(conversation_context, separators=(",", ":"))[:400]
-        return f"Ctx:{ctx}\n{text}"
+        catalog = conversation_context.get("document_catalog")
+        ctx = {k: v for k, v in conversation_context.items() if k != "document_catalog"}
+        parts = []
+        if catalog:
+            parts.append(f"Docs:\n{str(catalog)[:900]}")
+        if ctx:
+            parts.append("Ctx:" + json.dumps(ctx, separators=(",", ":"))[:400])
+        parts.append(text)
+        return "\n".join(parts)
     return text

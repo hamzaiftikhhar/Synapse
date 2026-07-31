@@ -56,30 +56,38 @@ def resolve_lane(
     if is_booking_intent:
         return Lane.BOOKING
 
-    # Document / FAQ / medical-with-docs → RAG
-    if needs_vector or doc_match or nlu.intent == Intent.FAQ:
+    # Structured clinic facts always prefer SQL — never Large LLM
+    if nlu.intent in _SQL_INTENTS and not needs_vector:
+        return Lane.SQL_FAST
+
+    # FAQ / policy / PDF-matched / medical-with-docs → RAG
+    if needs_vector or nlu.intent == Intent.FAQ or (doc_match and soft_medical):
         return Lane.VECTOR_RAG
 
     if soft_medical:
         # Soft specialty recommend without Large LLM when no doc match
         return Lane.SQL_FAST if nlu.needs_sql else Lane.DIRECT
 
-    if route == Route.CLARIFY or nlu.clarification_needed or nlu.intent == Intent.UNKNOWN:
-        # Prefer SQL if heuristics/flags already set
-        if nlu.needs_sql and nlu.intent in _SQL_INTENTS:
-            return Lane.SQL_FAST
-        return Lane.CLARIFY
-
     if nlu.intent in _DIRECT_INTENTS or (
         route == Route.DIRECT_RESPONSE and not nlu.needs_sql and not needs_vector
     ):
         return Lane.DIRECT
 
-    if nlu.needs_sql or nlu.intent in _SQL_INTENTS:
+    if route == Route.CLARIFY or nlu.clarification_needed or nlu.intent == Intent.UNKNOWN:
+        if nlu.needs_sql:
+            return Lane.SQL_FAST
+        if doc_match:
+            return Lane.VECTOR_RAG
+        return Lane.CLARIFY
+
+    if nlu.needs_sql:
         return Lane.SQL_FAST
 
+    if doc_match:
+        return Lane.VECTOR_RAG
+
+    # Contract: never Large LLM without vector
     if nlu.needs_llm and not needs_vector:
-        # Contract: never Large LLM without vector — treat as SQL or clarify
         if nlu.needs_sql:
             return Lane.SQL_FAST
         return Lane.CLARIFY

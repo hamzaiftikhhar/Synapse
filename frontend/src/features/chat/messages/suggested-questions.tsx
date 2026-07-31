@@ -19,7 +19,7 @@ export function SuggestedQuestions({
           key={q}
           type="button"
           onClick={() => onAction?.("suggested", q)}
-          className="rounded-full border border-neutral-300 bg-white px-3 py-1.5 text-xs font-medium text-neutral-800 transition-colors hover:border-neutral-400 hover:bg-neutral-50"
+          className="synapse-chat-chip rounded-full border border-neutral-300 bg-white px-3 py-1.5 text-xs font-medium text-neutral-800"
         >
           {q}
         </button>

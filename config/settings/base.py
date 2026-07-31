@@ -227,9 +227,10 @@ CHAT_RESPONSE_PROVIDER = env("CHAT_RESPONSE_PROVIDER", default="gemini")
 CHAT_RESPONSE_MODEL = env("CHAT_RESPONSE_MODEL", default="gemini-3.1-flash-lite")
 CHAT_RESPONSE_FALLBACK_MODELS = env(
     "CHAT_RESPONSE_FALLBACK_MODELS",
-    default="gemini-2.0-flash-lite,gemini-flash-lite-latest",
+    # At most one fallback is used by response_llm (avoid stacked timeouts)
+    default="gemini-2.0-flash-lite",
 )
 CHAT_PREMIUM_MODEL = env("CHAT_PREMIUM_MODEL", default="gpt-4o-mini")
-CHAT_RESPONSE_TIMEOUT_SECONDS = env.float("CHAT_RESPONSE_TIMEOUT_SECONDS", default=20.0)
+CHAT_RESPONSE_TIMEOUT_SECONDS = env.float("CHAT_RESPONSE_TIMEOUT_SECONDS", default=12.0)
 CHAT_VECTOR_MIN_SCORE = env.float("CHAT_VECTOR_MIN_SCORE", default=0.25)
 

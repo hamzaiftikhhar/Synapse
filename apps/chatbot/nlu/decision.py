@@ -39,6 +39,10 @@ class DecisionEngine:
         needs_vector = bool(nlu.needs_vector)
         needs_llm = bool(nlu.needs_llm)
 
+        # Contract: Large LLM only with vector — drop contradictory needs_llm
+        if needs_llm and not needs_vector:
+            needs_llm = False
+
         # High-confidence direct paths
         if nlu.can_respond_directly and not (needs_sql or needs_vector or needs_llm):
             return RouteDecision(

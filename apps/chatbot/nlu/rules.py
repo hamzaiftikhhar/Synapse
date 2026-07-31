@@ -315,12 +315,13 @@ def _match_strong(
         re.search(r"\b(cancel|cancellation)\b", text)
         and re.search(r"\b(appointment|visit|meeting)\b", text)
         and not has_negation_near(text, "cancel")
+        and not re.search(r"\b(policy|policies|fee|fees|how (?:far|much)|what (?:is|are) your)\b", text)
     ):
         return _base_payload(
             intent=Intent.CANCEL_APPOINTMENT.value,
             confidence=0.9,
             needs_sql=True,
-            needs_llm=True,
+            needs_llm=False,
             reasoning_short="Cancel appointment (rule)",
             _classifier_source="rules_strong",
         )
@@ -332,7 +333,7 @@ def _match_strong(
             intent=Intent.RESCHEDULE_APPOINTMENT.value,
             confidence=0.9,
             needs_sql=True,
-            needs_llm=True,
+            needs_llm=False,
             reasoning_short="Reschedule (rule)",
             _classifier_source="rules_strong",
         )
@@ -344,7 +345,7 @@ def _match_strong(
             intent=Intent.BOOK_APPOINTMENT.value,
             confidence=0.92,
             needs_sql=True,
-            needs_llm=True,
+            needs_llm=False,
             reasoning_short="Book appointment (rule)",
             _classifier_source="rules_strong",
         )
@@ -358,8 +359,26 @@ def _match_strong(
             intent=Intent.DOCTOR_AVAILABILITY.value,
             confidence=0.9,
             needs_sql=True,
-            needs_llm=True,
+            needs_vector=False,
+            needs_llm=False,
             reasoning_short="Availability (rule)",
+            _classifier_source="rules_strong",
+        )
+
+    # Find a doctor / list doctors — SQL only, never vector/LLM
+    if re.search(
+        r"\b(find (a |the )?doctor|help me find (a )?doctor|list (of )?doctors|"
+        r"show (me )?(the )?doctors|who (are|is) (your|the) doctors?|"
+        r"looking for a doctor|need a doctor|doctors? (do you )?have)\b",
+        text,
+    ) and not re.search(r"\b(book|schedule|appointment)\b", text):
+        return _base_payload(
+            intent=Intent.DOCTOR_SEARCH.value,
+            confidence=0.93,
+            needs_sql=True,
+            needs_vector=False,
+            needs_llm=False,
+            reasoning_short="Doctor search (rule)",
             _classifier_source="rules_strong",
         )
 
@@ -368,9 +387,23 @@ def _match_strong(
             intent=Intent.CLINIC_HOURS.value,
             confidence=0.88,
             needs_sql=True,
-            needs_vector=True,
-            needs_llm=True,
+            needs_vector=False,
+            needs_llm=False,
             reasoning_short="Clinic hours (rule)",
+            _classifier_source="rules_strong",
+        )
+
+    if re.search(
+        r"\b(where (are you|is the clinic)|address|location|directions|parking)\b",
+        text,
+    ):
+        return _base_payload(
+            intent=Intent.CLINIC_LOCATION.value,
+            confidence=0.9,
+            needs_sql=True,
+            needs_vector=False,
+            needs_llm=False,
+            reasoning_short="Clinic location (rule)",
             _classifier_source="rules_strong",
         )
 
@@ -383,18 +416,19 @@ def _match_strong(
             intent=Intent.SERVICES_OFFERED.value,
             confidence=0.9,
             needs_sql=True,
-            needs_vector=True,
-            needs_llm=True,
+            needs_vector=False,
+            needs_llm=False,
             reasoning_short="Services offered (rule)",
             _classifier_source="rules_strong",
         )
 
     if re.search(
         r"\b(referral|referrals|do i need|policy|policies|how does|"
-        r"what (?:is|are) your)\b",
+        r"what (?:is|are) your|cancellation policy|cancel(?:lation)? (?:fee|policy))\b",
         text,
     ) and re.search(
-        r"\b(specialists?|referral|referrals|insurance|visit|appointment)\b",
+        r"\b(specialists?|referral|referrals|insurance|visit|appointment|"
+        r"cancel|cancellation|booking|policy)\b",
         text,
     ):
         return _base_payload(
@@ -433,8 +467,8 @@ def _match_strong(
             intent=intent,
             confidence=0.88 if not broad else 0.75,
             needs_sql=True,
-            needs_vector=True,
-            needs_llm=True,
+            needs_vector=False,
+            needs_llm=False,
             reasoning_short="Insurance query (rule)",
             _classifier_source="rules_strong" if not broad else "rules_fallback",
         )
@@ -445,7 +479,8 @@ def _match_strong(
                 intent=Intent.DOCTOR_SEARCH.value,
                 confidence=0.75,
                 needs_sql=True,
-                needs_llm=True,
+                needs_vector=False,
+                needs_llm=False,
                 reasoning_short="Doctor query fallback (rule)",
                 _classifier_source="rules_fallback",
             )

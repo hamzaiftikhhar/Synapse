@@ -32,11 +32,13 @@ class SimilaritySearchService:
         clinic: Clinic,
         query: str,
         top_k: int = 5,
+        document_ids: list[str] | None = None,
     ) -> list[SimilaritySearchResult]:
         """
         Embed the query, search pgvector, return top-k chunks by cosine similarity.
 
         Only searches chunks from indexed documents with non-null embeddings.
+        Optionally scope to matching document_ids from the routing catalog.
         """
         query = query.strip()
         if not query:
@@ -45,14 +47,17 @@ class SimilaritySearchService:
         service = get_embedding_service()
         query_vector = service.embed_query(query)
 
+        qs = KnowledgeChunk.objects.filter(
+            clinic=clinic,
+            embedding__isnull=False,
+            document__status=DocumentStatus.INDEXED,
+            document__is_deleted=False,
+        )
+        if document_ids:
+            qs = qs.filter(document_id__in=document_ids)
+
         rows = (
-            KnowledgeChunk.objects.filter(
-                clinic=clinic,
-                embedding__isnull=False,
-                document__status=DocumentStatus.INDEXED,
-                document__is_deleted=False,
-            )
-            .select_related("document")
+            qs.select_related("document")
             .annotate(distance=CosineDistance("embedding", query_vector))
             .order_by("distance")[:top_k]
         )

@@ -435,6 +435,10 @@ class Command(BaseCommand):
             file_size_bytes=12000,
             status=DocumentStatus.INDEXED,
             chunk_count=2,
+            routing_summary=(
+                "Clinic hours and accepted insurance plans for Acme Cardiology patients."
+            ),
+            routing_keywords=["hours", "insurance", "aetna", "blue cross", "open"],
         )
         KnowledgeChunk.objects.create(
             clinic=clinic,

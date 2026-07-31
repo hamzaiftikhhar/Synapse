@@ -119,7 +119,25 @@ def ingest_document(
             document.status = (
                 DocumentStatus.INDEXED if vectors else DocumentStatus.CHUNKED
             )
-            document.save(update_fields=["chunk_count", "status", "updated_at"])
+            # Cheap routing signals for Small NLU (editable later in admin)
+            if not (document.routing_summary or "").strip():
+                document.routing_summary = _routing_summary_from_chunks(
+                    document.title, text_chunks
+                )
+            if not document.routing_keywords:
+                document.routing_keywords = _routing_keywords_from_text(
+                    document.title,
+                    " ".join(c.content for c in text_chunks[:3]),
+                )
+            document.save(
+                update_fields=[
+                    "chunk_count",
+                    "status",
+                    "routing_summary",
+                    "routing_keywords",
+                    "updated_at",
+                ]
+            )
 
         logger.info(
             "Ingested document %s — %s chunks (embeddings=%s)",
@@ -139,3 +157,30 @@ def _fail(document: Document, message: str) -> None:
     document.status = DocumentStatus.FAILED
     document.error_message = message[:2000]
     document.save(update_fields=["status", "error_message", "updated_at"])
+
+
+def _routing_summary_from_chunks(title: str, text_chunks: list) -> str:
+    """2–3 sentence stub from title + first chunk — no LLM required."""
+    first = ""
+    if text_chunks:
+        first = " ".join((text_chunks[0].content or "").split())[:240]
+    if first:
+        return f"{title}. {first}"
+    return f"Clinic document: {title}."
+
+
+def _routing_keywords_from_text(title: str, text: str) -> list[str]:
+    import re
+
+    blob = f"{title} {text}".lower()
+    candidates = (
+        "insurance", "coverage", "copay", "cancel", "cancellation", "booking",
+        "policy", "hours", "vaccination", "pediatric", "child", "membership",
+        "pricing", "refund", "referral", "appointment",
+    )
+    found = [k for k in candidates if k in blob]
+    # Also keep significant title tokens
+    for token in re.findall(r"[a-z]{4,}", title.lower()):
+        if token not in found and token not in {"patient", "document", "clinic"}:
+            found.append(token)
+    return found[:12]

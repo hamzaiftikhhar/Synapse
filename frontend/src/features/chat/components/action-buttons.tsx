@@ -28,7 +28,7 @@ const ICONS: Record<string, LucideIcon> = {
 };
 
 const chipBase =
-  "inline-flex items-center gap-2 rounded-full border bg-white px-3.5 py-2.5 text-sm font-medium transition-colors";
+  "synapse-chat-chip inline-flex items-center gap-2 rounded-full border bg-white px-3.5 py-2.5 text-sm font-medium";
 
 function ActionChipButton({
   action,
@@ -54,8 +54,8 @@ function ActionChipButton({
         isEmergency
           ? "border-red-300 text-red-700 hover:bg-red-50"
           : filled
-            ? "border-navy/20 bg-navy text-white hover:bg-navy/90"
-            : "border-neutral-300 text-neutral-800 hover:border-neutral-400 hover:bg-neutral-50"
+            ? "synapse-chat-chip--filled border-primary/20 bg-primary text-primary-foreground"
+            : "border-neutral-300 text-neutral-800"
       )}
     >
       {Icon ? (
@@ -113,7 +113,7 @@ export function SamplePromptChips({
           key={item.id}
           type="button"
           onClick={() => onSelect(item.message)}
-          className="rounded-full border border-dashed border-neutral-300 bg-white/80 px-2.5 py-1 text-[11px] font-medium text-neutral-600 transition-colors hover:border-neutral-400 hover:bg-white hover:text-navy"
+          className="synapse-chat-chip rounded-full border border-dashed border-neutral-300 bg-white/80 px-2.5 py-1 text-[11px] font-medium text-neutral-600"
         >
           {item.label}
         </button>
@@ -148,8 +148,8 @@ export function StarterChips({
             className={cn(
               chipBase,
               filled
-                ? "border-navy/20 bg-navy text-white hover:bg-navy/90"
-                : "border-neutral-300 text-neutral-800 hover:border-neutral-400 hover:bg-neutral-50"
+                ? "synapse-chat-chip--filled border-primary/20 bg-primary text-primary-foreground"
+                : "border-neutral-300 text-neutral-800"
             )}
           >
             {Icon ? (

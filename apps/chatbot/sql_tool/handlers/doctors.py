@@ -203,7 +203,10 @@ def doctor_availability(ctx: SQLContext) -> SQLResult:
     summary = (
         f"Found {len(slots)} available slot(s) on {target_date.strftime('%A, %B %d')}."
         if found
-        else f"No available slots found on {target_date.strftime('%A, %B %d')}."
+        else (
+            f"No available slots found on {target_date.strftime('%A, %B %d')}. "
+            "Try another day, or tap Start Booking to pick a time."
+        )
     )
     return SQLResult(
         handler="doctor_availability",

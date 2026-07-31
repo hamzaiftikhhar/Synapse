@@ -1,16 +1,22 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowDown, Send, X } from "lucide-react";
-import { Input } from "@/components/ui/input";
+import { ArrowDown, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { BookingSheet } from "@/features/booking";
 import {
   SamplePromptChips,
   StarterChips,
 } from "@/features/chat/components/action-buttons";
-import { ChatHeader } from "@/features/chat/components/chat-chrome";
-import { RobotAvatar, RobotLauncherIcon } from "@/features/chat/components/robot-avatar";
+import { ChatComposer } from "@/features/chat/components/chat-composer";
+import {
+  BotMetaRow,
+  ChatHeader,
+} from "@/features/chat/components/chat-chrome";
+import {
+  RobotAvatar,
+  RobotLauncherIcon,
+} from "@/features/chat/components/robot-avatar";
 import { MessageRenderer } from "@/features/chat/messages";
 import {
   CONNECTION_ERROR,
@@ -194,6 +200,7 @@ export function ChatWidget({
   const stickToBottom = useRef(true);
   const lastUserMessageRef = useRef("");
   const lastBookingMetaRef = useRef<Record<string, unknown> | null>(null);
+  const requestIdRef = useRef(0);
   const staffChat = useStaffChat();
   const patientChat = usePatientChat();
   const guestChat = useGuestChat();
@@ -220,20 +227,25 @@ export function ChatWidget({
   }, [messages]);
 
   const resetChat = useCallback(() => {
+    requestIdRef.current += 1;
+    setTyping(false);
     setMessages([]);
     stickToBottom.current = true;
   }, []);
 
-  const scrollToBottom = useCallback((smooth = true) => {
-    const el = scrollRef.current;
-    if (!el) return;
-    el.scrollTo({
-      top: el.scrollHeight,
-      behavior: smooth && !expanded ? "smooth" : "auto",
-    });
-    stickToBottom.current = true;
-    setShowJumpDown(false);
-  }, [expanded]);
+  const scrollToBottom = useCallback(
+    (smooth = true) => {
+      const el = scrollRef.current;
+      if (!el) return;
+      el.scrollTo({
+        top: el.scrollHeight,
+        behavior: smooth && !expanded ? "smooth" : "auto",
+      });
+      stickToBottom.current = true;
+      setShowJumpDown(false);
+    },
+    [expanded]
+  );
 
   useEffect(() => {
     if (stickToBottom.current) scrollToBottom(messages.length > 0);
@@ -243,7 +255,7 @@ export function ChatWidget({
     const el = scrollRef.current;
     if (!el) return;
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-    stickToBottom.current = distance < 48;
+    stickToBottom.current = distance < 64;
     setShowJumpDown(
       !stickToBottom.current && el.scrollHeight > el.clientHeight + 80
     );
@@ -284,6 +296,11 @@ export function ChatWidget({
     [canBook, open]
   );
 
+  const stopGenerating = useCallback(() => {
+    requestIdRef.current += 1;
+    setTyping(false);
+  }, []);
+
   const sendText = useCallback(
     async (text: string) => {
       const trimmed = text.trim();
@@ -293,6 +310,7 @@ export function ChatWidget({
       lastUserMessageRef.current = trimmed;
       setMessages((prev) => [...prev, userTextMessage(trimmed)]);
       setTyping(true);
+      const reqId = ++requestIdRef.current;
 
       try {
         let res;
@@ -314,6 +332,9 @@ export function ChatWidget({
             session_token: widgetCtx.sessionToken,
           });
         }
+
+        if (reqId !== requestIdRef.current) return;
+
         const parsed = parseChatResponse(res);
         const bookingMeta = res.meta?.booking;
         if (bookingMeta && typeof bookingMeta === "object") {
@@ -321,9 +342,10 @@ export function ChatWidget({
         }
         setMessages((prev) => [...prev, ...parsed.messages]);
       } catch {
+        if (reqId !== requestIdRef.current) return;
         setMessages((prev) => [...prev, systemErrorMessage(CONNECTION_ERROR)]);
       } finally {
-        setTyping(false);
+        if (reqId === requestIdRef.current) setTyping(false);
       }
     },
     [
@@ -429,7 +451,9 @@ export function ChatWidget({
         });
         return;
       }
-      if (text) void sendText(text);
+      const fallback =
+        doctor.select_message || doctor.message || doctor.name || "";
+      if (fallback) void sendText(fallback);
       return;
     }
   }
@@ -440,7 +464,6 @@ export function ChatWidget({
   }
 
   function handleStarter(msg: string, id?: string) {
-    // Book chip opens wizard (commit); samples/other chips start conversation.
     if (id === "book" && canBook) {
       openBooking(msg);
       return;
@@ -454,13 +477,16 @@ export function ChatWidget({
         items={samples}
         onSelect={(msg) => void sendText(msg)}
       />
-      <div className="flex gap-2">
-        <RobotAvatar size="sm" className="mt-0.5 shrink-0" />
+      <div className="synapse-chat-msg flex gap-2.5">
+        <RobotAvatar
+          size="sm"
+          className="mt-5 shrink-0 rounded-full bg-primary"
+        />
         <div className="min-w-0 max-w-[85%]">
-          <div className="rounded-2xl rounded-bl-md bg-[#ececf0] px-3.5 py-2.5 text-sm leading-relaxed text-foreground">
+          <BotMetaRow name={`${displayName} Assistant`} time="Just now" />
+          <div className="rounded-[18px] rounded-bl-md border border-border/80 bg-white px-3.5 py-2.5 text-sm leading-relaxed text-foreground shadow-[0_1px_3px_rgb(11_14_46/0.06)]">
             {greeting}
           </div>
-          <p className="mt-1 px-1 text-[10px] text-muted-foreground">Just now</p>
         </div>
       </div>
       <StarterChips
@@ -471,97 +497,80 @@ export function ChatWidget({
   );
 
   const chatBody = (
-    <div className="relative flex min-h-0 flex-1 flex-col">
-      <div
-        ref={scrollRef}
-        onScroll={onScroll}
-        className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-[#f3f3f5] px-3 py-4 sm:px-4"
-      >
+    <div className="relative flex min-h-0 flex-1 flex-col bg-[#f7f6fb]">
+      <div className="relative min-h-0 flex-1">
         <div
-          className={cn(
-            "mx-auto flex w-full flex-col gap-4",
-            expanded ? "max-w-3xl" : "max-w-xl"
-          )}
+          ref={scrollRef}
+          onScroll={onScroll}
+          className="h-full overflow-y-auto overscroll-contain scroll-smooth px-3 py-4 sm:px-4"
         >
-          {messages.length === 0 && !typing ? emptyState : null}
-          {messages.map((m) => (
-            <MessageRenderer
-              key={m.id}
-              message={m}
-              onAction={handleAction}
-              onBackendAction={handleBackendAction}
-              showContextActions={m.id === lastActionMessageId && !typing}
-            />
-          ))}
-          {typing ? (
-            <MessageRenderer
-              message={{
-                id: "typing",
-                role: "assistant",
-                type: "typing",
-                createdAt: new Date().toISOString(),
-              }}
-            />
-          ) : null}
+          <div
+            className={cn(
+              "mx-auto flex w-full flex-col gap-4",
+              expanded ? "max-w-3xl" : "max-w-xl"
+            )}
+          >
+            {messages.length === 0 && !typing ? emptyState : null}
+            {messages.map((m) => (
+              <MessageRenderer
+                key={m.id}
+                message={m}
+                onAction={handleAction}
+                onBackendAction={handleBackendAction}
+                showContextActions={m.id === lastActionMessageId && !typing}
+                assistantName={`${displayName} Assistant`}
+              />
+            ))}
+            {typing ? (
+              <MessageRenderer
+                message={{
+                  id: "typing",
+                  role: "assistant",
+                  type: "typing",
+                  createdAt: new Date().toISOString(),
+                }}
+                assistantName={`${displayName} Assistant`}
+              />
+            ) : null}
+          </div>
         </div>
+
+        {showJumpDown ? (
+          <button
+            type="button"
+            onClick={() => scrollToBottom(true)}
+            className="absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-full border border-border bg-white px-3 py-1.5 text-[11px] font-medium text-foreground shadow-sm transition-[background-color,box-shadow,transform] duration-150 hover:-translate-y-px hover:bg-accent"
+          >
+            <ArrowDown className="size-3" />
+            Latest
+          </button>
+        ) : null}
       </div>
 
-      {showJumpDown ? (
-        <button
-          type="button"
-          onClick={() => scrollToBottom(true)}
-          className="absolute bottom-[4.25rem] left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-full border border-border bg-white px-3 py-1.5 text-[11px] font-medium text-navy shadow-sm"
-        >
-          <ArrowDown className="size-3" />
-          Latest
-        </button>
-      ) : null}
-
-      <form
-        className="flex shrink-0 items-center gap-2 border-t border-border/60 bg-white px-3 py-2.5"
-        onSubmit={(e) => {
-          e.preventDefault();
-          void sendText(input);
-        }}
-      >
-        <div className="relative flex min-w-0 flex-1 items-center">
-          <Input
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="Enter your question here…"
-            className="h-11 flex-1 rounded-full border-neutral-200 bg-white pr-11 shadow-none"
-            disabled={typing}
-            autoComplete="off"
-          />
-          <button
-            type="submit"
-            disabled={typing || !input.trim()}
-            aria-label="Send"
-            className="absolute right-1.5 flex size-8 items-center justify-center rounded-full text-[#5b8def] transition-opacity disabled:opacity-40"
-          >
-            <Send className="size-4" />
-          </button>
-        </div>
-      </form>
+      <ChatComposer
+        value={input}
+        onChange={setInput}
+        onSubmit={() => void sendText(input)}
+        onStop={stopGenerating}
+        generating={typing}
+        placeholder="Write a message"
+      />
     </div>
   );
 
   const panel = (
     <div
       className={cn(
-        "relative flex flex-col overflow-hidden border border-border/80 bg-white shadow-[0_16px_48px_-16px_rgba(11,14,46,0.35)]",
-        mode === "embedded" && "h-full min-h-[420px] w-full rounded-[8px]",
-        // Compact default — slightly larger than before
+        "synapse-chat-panel relative flex flex-col overflow-hidden border border-border/70 bg-white shadow-[0_18px_50px_-18px_rgba(11,14,46,0.28)]",
+        mode === "embedded" && "h-full min-h-[420px] w-full rounded-[18px]",
         mode === "widget" &&
           !expanded &&
-          "h-[min(740px,calc(100dvh-5.5rem))] w-[min(560px,calc(100vw-1.25rem))] rounded-[8px]",
-        // Expanded — ~75–80% of viewport
+          "h-[min(740px,calc(100dvh-5.5rem))] w-[min(560px,calc(100vw-1.25rem))] rounded-[18px]",
         mode === "widget" &&
           expanded &&
-          "h-[min(80dvh,900px)] w-[min(78vw,1080px)] rounded-[8px]",
-        // Mobile sheet
+          "h-[min(80dvh,900px)] w-[min(78vw,1080px)] rounded-[18px]",
         mode === "widget" &&
-          "max-sm:fixed max-sm:inset-x-0 max-sm:bottom-0 max-sm:top-auto max-sm:h-[min(92dvh,820px)] max-sm:w-full max-sm:max-w-none max-sm:rounded-b-none max-sm:rounded-t-[14px]",
+          "max-sm:fixed max-sm:inset-x-0 max-sm:bottom-0 max-sm:top-auto max-sm:h-[min(92dvh,820px)] max-sm:w-full max-sm:max-w-none max-sm:rounded-b-none max-sm:rounded-t-[18px]",
         expanded &&
           mode === "widget" &&
           "max-sm:inset-0 max-sm:h-[100dvh] max-sm:rounded-none",
@@ -627,15 +636,15 @@ export function ChatWidget({
         <button
           type="button"
           onClick={() => (open ? closeAll() : setOpen(true))}
-          className="pointer-events-auto flex size-14 items-center justify-center rounded-[10px] shadow-lg ring-2 ring-white"
+          className="pointer-events-auto flex size-14 items-center justify-center rounded-full shadow-lg ring-2 ring-white transition-[transform,box-shadow] duration-150 hover:-translate-y-px"
           aria-label={open ? "Close chat" : "Open Synapse Assistant"}
         >
           {open ? (
-            <span className="flex size-full items-center justify-center rounded-[10px] bg-navy text-white">
+            <span className="flex size-full items-center justify-center rounded-full bg-primary text-primary-foreground">
               <X className="size-5" />
             </span>
           ) : (
-            <RobotLauncherIcon />
+            <RobotLauncherIcon className="rounded-full bg-primary" />
           )}
         </button>
       </div>

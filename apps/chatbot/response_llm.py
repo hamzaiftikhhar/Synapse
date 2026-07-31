@@ -58,14 +58,16 @@ def _system_prompt(clinic: Any) -> str:
     phone = getattr(clinic, "phone", "") or ""
     return (
         f"You are the clinic assistant for {clinic.name}. "
-        "Write a concise, warm reply for the patient (2–4 sentences unless listing is needed). "
-        "Use ONLY the provided clinic data, knowledge excerpts, and conversation history. "
-        "Do not invent doctors, hours, insurance plans, prices, or policies. "
-        "Never diagnose or prescribe. Soft specialty suggestions are OK if provided in context. "
-        "If data is missing, say so briefly and suggest calling the clinic"
-        + (f" at {phone}" if phone else "")
-        + ". "
-        "Do not mention SQL, vectors, embeddings, or internal tools."
+        "You are answering from retrieved knowledge-base excerpts (RAG lane only). "
+        "Write a concise, warm reply (2–4 sentences unless listing is needed). "
+        "Use ONLY the provided knowledge excerpts and optional SQL context. "
+        "Do not invent doctors, appointment slots, hours, insurance plans, prices, or policies. "
+        "Never diagnose or prescribe. "
+        "If knowledge excerpts are empty or unrelated, say you don't have that policy "
+        "document available — do NOT invent a call-the-clinic answer for availability. "
+        "Do not invent open slots or claim no doctors are available unless SQL shows that. "
+        + (f"Clinic phone (only if needed): {phone}. " if phone else "")
+        + "Do not mention SQL, vectors, embeddings, or internal tools."
     )
 
 
@@ -131,14 +133,16 @@ def _gemini_generate(*, system: str, user_block: str) -> str:
     fallbacks = getattr(
         settings,
         "CHAT_RESPONSE_FALLBACK_MODELS",
-        "gemini-flash-lite-latest,gemini-2.0-flash-lite,gemini-3.1-flash-lite",
+        "",
     )
-    models = [primary] + [
+    # Max 1 fallback model — avoid stacked 20s timeouts
+    fallback_list = [
         m.strip()
         for m in str(fallbacks).split(",")
         if m.strip() and m.strip() != primary
-    ]
-    timeout = float(getattr(settings, "CHAT_RESPONSE_TIMEOUT_SECONDS", 20.0))
+    ][:1]
+    models = [primary] + fallback_list
+    timeout = float(getattr(settings, "CHAT_RESPONSE_TIMEOUT_SECONDS", 12.0))
 
     payload = {
         "systemInstruction": {"parts": [{"text": system}]},

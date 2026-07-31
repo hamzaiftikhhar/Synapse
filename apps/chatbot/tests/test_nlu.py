@@ -87,11 +87,15 @@ class DecisionEngineTests(SimpleTestCase):
         )
         self.assertEqual(DecisionEngine.decide(nlu).route, Route.DIRECT_RESPONSE)
 
-    def test_sql_llm_booking(self):
+    def test_sql_only_booking_flags(self):
+        # needs_llm without needs_vector is dropped — booking uses SQL_ONLY at decision;
+        # ChatEngine maps book intents to the booking lane separately.
         nlu = parse_nlu_payload(
             {"intent": "book_appointment", "needs_sql": True, "needs_llm": True}
         )
-        self.assertEqual(DecisionEngine.decide(nlu).route, Route.SQL_LLM)
+        decision = DecisionEngine.decide(nlu)
+        self.assertEqual(decision.route, Route.SQL_ONLY)
+        self.assertFalse(decision.needs_llm)
 
 
 class RuleClassifierTests(SimpleTestCase):

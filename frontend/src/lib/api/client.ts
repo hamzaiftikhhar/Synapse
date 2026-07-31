@@ -114,7 +114,8 @@ export function getApiErrorMessage(error: unknown): string {
 export const widgetApi = axios.create({
   baseURL: API_BASE,
   headers: { "Content-Type": "application/json" },
-  timeout: 30_000,
+  // Safety net for rare RAG turns; SQL/direct lanes should finish well under this.
+  timeout: 60_000,
 });
 
 export function setPatientToken(token: string | null) {

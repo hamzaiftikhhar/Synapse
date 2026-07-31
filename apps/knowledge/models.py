@@ -43,6 +43,9 @@ class Document(TenantModel, TimestampedModel, SoftDeleteModel):
         related_name="uploaded_documents",
     )
     metadata = models.JSONField(default=dict, blank=True)
+    # Compact signals for Small NLU vector gating (2–3 sentences + keywords)
+    routing_summary = models.TextField(blank=True, default="")
+    routing_keywords = models.JSONField(default=list, blank=True)
     error_message = models.TextField(blank=True, default="")
 
     class Meta:
