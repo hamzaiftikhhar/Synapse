@@ -34,6 +34,7 @@ import { useAuth } from "@/providers/auth-provider";
 import { useWidget, type AssistantMode } from "@/providers/widget-provider";
 import type { BookingStepPayload } from "@/types/api";
 import type { ChatMessage } from "@/types/chat";
+import { waitForNaturalReplyPace } from "@/features/chat/natural-pace";
 
 export type ChatWidgetProps = {
   mode?: "widget" | "embedded";
@@ -275,6 +276,7 @@ export function ChatWidget({
       setMessages((prev) => [...prev, userTextMessage(trimmed)]);
       setTyping(true);
       const reqId = ++requestIdRef.current;
+      const startedAt = performance.now();
 
       try {
         let res;
@@ -299,6 +301,11 @@ export function ChatWidget({
 
         if (reqId !== requestIdRef.current) return;
 
+        // Pad only ultra-fast rule replies so they feel intentional, not robotic.
+        // Slow NLU/SQL/RAG paths get zero extra wait.
+        await waitForNaturalReplyPace(startedAt);
+        if (reqId !== requestIdRef.current) return;
+
         const parsed = parseChatResponse(res);
         const bookingMeta = res.meta?.booking;
         if (bookingMeta && typeof bookingMeta === "object") {
@@ -306,6 +313,8 @@ export function ChatWidget({
         }
         setMessages((prev) => [...prev, ...parsed.messages]);
       } catch {
+        if (reqId !== requestIdRef.current) return;
+        await waitForNaturalReplyPace(startedAt);
         if (reqId !== requestIdRef.current) return;
         setMessages((prev) => [...prev, systemErrorMessage(CONNECTION_ERROR)]);
       } finally {
