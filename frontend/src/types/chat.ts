@@ -10,6 +10,7 @@ export type ChatMessageType =
   | "date_picker"
   | "time_slots"
   | "appointment_form"
+  | "booking_wizard"
   | "confirmation"
   | "clinic_location"
   | "image"

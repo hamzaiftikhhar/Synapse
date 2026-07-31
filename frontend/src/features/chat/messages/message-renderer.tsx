@@ -3,6 +3,8 @@
 import type { ChatActionHandler, ChatMessage } from "@/types/chat";
 import { ContextActionChips } from "@/features/chat/components/action-buttons";
 import type { BackendAction } from "@/features/chat/types";
+import { BookingInlineCard } from "@/features/booking";
+import type { BookingStepPayload } from "@/types/api";
 import { TextMessage } from "./text-message";
 import { TypingIndicator } from "./typing-indicator";
 import { QuickReplies } from "./quick-replies";
@@ -27,12 +29,20 @@ export function MessageRenderer({
   onBackendAction,
   showContextActions,
   assistantName,
+  clinicSlug,
+  bookingWizardActive,
+  onBookingConfirmed,
+  onBookingDismiss,
 }: {
   message: ChatMessage;
   onAction?: ChatActionHandler;
   onBackendAction?: (action: BackendAction) => void;
   showContextActions?: boolean;
   assistantName?: string;
+  clinicSlug?: string;
+  bookingWizardActive?: boolean;
+  onBookingConfirmed?: (payload: BookingStepPayload) => void;
+  onBookingDismiss?: (messageId: string) => void;
 }) {
   let body: React.ReactNode = null;
 
@@ -94,6 +104,17 @@ export function MessageRenderer({
       break;
     case "appointment_form":
       body = <AppointmentFormMessage message={message} onAction={onAction} />;
+      break;
+    case "booking_wizard":
+      body = clinicSlug ? (
+        <BookingInlineCard
+          clinicSlug={clinicSlug}
+          payload={message.payload}
+          active={bookingWizardActive !== false}
+          onConfirmed={onBookingConfirmed}
+          onDismiss={() => onBookingDismiss?.(message.id)}
+        />
+      ) : null;
       break;
     case "confirmation":
       body = <ConfirmationCard message={message} />;

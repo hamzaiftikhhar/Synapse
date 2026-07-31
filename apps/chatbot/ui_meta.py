@@ -36,50 +36,7 @@ def build_ui_meta(
         ),
     }
 
-    # Explicit booking commit → launch wizard (optionally prefilled)
-    if intent in (
-        Intent.BOOK_APPOINTMENT.value,
-        Intent.RESCHEDULE_APPOINTMENT.value,
-    ) and booking_commit:
-        from apps.chatbot.booking.config import get_booking_config
-        from apps.chatbot.booking.discovery import suggest_specialties
-
-        cfg = get_booking_config(clinic)
-        suggested, guidance = ([], "")
-        if cfg.get("ai_discovery"):
-            suggested, guidance = suggest_specialties(clinic, message=message)
-        booking: dict[str, Any] = {
-            "launch": True,
-            "button_label": "Start Booking",
-            "suggested_specialties": suggested,
-            "guidance": guidance,
-            "reason": message,
-        }
-        if last_doctor:
-            booking["doctor_id"] = last_doctor.get("id")
-            booking["doctor_name"] = last_doctor.get("name")
-        if last_specialty:
-            booking["specialty_id"] = last_specialty.get("id")
-            booking["specialty_name"] = last_specialty.get("name")
-        meta["booking"] = booking
-        meta["buttons"] = [
-            {
-                "id": "start_booking",
-                "label": "Start Booking",
-                "icon": "Calendar",
-                "behavior": "launch_booking",
-                "filled": True,
-                "message": message,
-                "doctor_id": booking.get("doctor_id"),
-                "specialty_id": booking.get("specialty_id"),
-            }
-        ]
-        meta["actions"] = _contextual_actions(
-            intent, clinic, is_emergency, has_doctors=False, booking_commit=True
-        )
-        return meta
-
-    # Exploratory book intent — soft recommend in chat, do NOT auto-open wizard
+    # Book appointment / reschedule → embed wizard in chat (Homey-style)
     if intent in (
         Intent.BOOK_APPOINTMENT.value,
         Intent.RESCHEDULE_APPOINTMENT.value,
@@ -91,13 +48,21 @@ def build_ui_meta(
         suggested, guidance = ([], "")
         if cfg.get("ai_discovery"):
             suggested, guidance = suggest_specialties(clinic, message=message)
-        meta["booking"] = {
-            "launch": False,
+        booking: dict[str, Any] = {
+            "launch": True,
             "suggested_specialties": suggested,
             "guidance": guidance,
             "reason": message,
         }
-        if suggested:
+        if last_doctor:
+            booking["doctor_id"] = last_doctor.get("id")
+            booking["doctor_name"] = last_doctor.get("name")
+        if last_specialty:
+            booking["specialty_id"] = last_specialty.get("id")
+            booking["specialty_name"] = last_specialty.get("name")
+        meta["booking"] = booking
+        # Soft specialty chips still useful; wizard embeds via booking.launch
+        if suggested and not booking_commit:
             meta["specialties"] = [
                 {
                     "id": s.get("id"),
@@ -109,16 +74,14 @@ def build_ui_meta(
                 }
                 for s in suggested[:4]
             ]
-        meta["buttons"] = [
-            {
-                "id": "start_booking",
-                "label": "Start Booking",
-                "icon": "Calendar",
-                "behavior": "launch_booking",
-                "filled": True,
-                "message": message or "I would like to book an appointment",
-            }
-        ]
+        meta["actions"] = _contextual_actions(
+            intent,
+            clinic,
+            is_emergency,
+            has_doctors=False,
+            booking_commit=True,
+            omit_book=True,
+        )
         return meta
 
     has_doctors = False
@@ -252,6 +215,7 @@ def _contextual_actions(
     *,
     has_doctors: bool = False,
     booking_commit: bool = False,
+    omit_book: bool = False,
 ) -> list[dict[str, Any]]:
     """Action chips under the latest assistant response. Book always; no Main Menu."""
     actions: list[dict[str, Any]] = []
@@ -260,28 +224,19 @@ def _contextual_actions(
     if smart:
         actions.append(smart)
 
-    # Book Appointment always present
-    if booking_commit or intent in (
-        Intent.BOOK_APPOINTMENT.value,
-        Intent.RESCHEDULE_APPOINTMENT.value,
-    ):
-        actions.append(
-            {
-                "id": "book",
-                "label": "Book Appointment",
-                "icon": "Calendar",
-                "behavior": "launch_booking",
-                "filled": True,
-                "message": "I would like to book an appointment",
-            }
+    # Book Appointment → chat message (never open wizard client-side)
+    if not omit_book:
+        filled = booking_commit or intent in (
+            Intent.BOOK_APPOINTMENT.value,
+            Intent.RESCHEDULE_APPOINTMENT.value,
         )
-    else:
         actions.append(
             {
                 "id": "book",
                 "label": "Book Appointment",
                 "icon": "Calendar",
-                "behavior": "launch_booking",
+                "behavior": "message",
+                "filled": filled,
                 "message": "I would like to book an appointment",
             }
         )

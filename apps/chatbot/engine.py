@@ -5,7 +5,7 @@ Lanes
 ─────
   direct      greeting / farewell / off_topic / emergency → templates
   sql_fast    hours / insurance / doctors / location → SQL + formatter (no Large LLM)
-  booking     book explore/commit → discovery + Start Booking
+  booking     book explore/commit → discovery + inline wizard meta
   vector_rag  FAQ / policy / PDF-matched → vector + Large LLM only here
   clarify     unknown / low confidence → polite clarify
 
@@ -228,8 +228,8 @@ class ChatEngine:
                 if resolved:
                     last_doctor = resolved
                 response_text = (
-                    "Great — tap Start Booking below and I'll walk you through "
-                    "picking a time. I won't list every open slot here."
+                    "Sure — I'll help you schedule. Choose your preferences below "
+                    "and we'll lock in a time."
                 )
             else:
                 bits = []
@@ -244,7 +244,7 @@ class ChatEngine:
                         f"Based on what you shared, these areas may help: {names}."
                     )
                 bits.append(
-                    "When you're ready, tap Start Booking or ask me to find a doctor."
+                    "Use the booking form below to pick a specialty, doctor, and time."
                 )
                 response_text = " ".join(bits)
 

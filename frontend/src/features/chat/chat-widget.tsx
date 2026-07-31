@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowDown, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { BookingSheet } from "@/features/booking";
 import {
   SamplePromptChips,
   StarterChips,
@@ -111,26 +110,18 @@ function runBackendAction(
     specialty_id?: string;
     specialty_name?: string;
   },
-  sendText: (text: string) => void,
-  launchBooking?: (
-    seed?: string,
-    prefill?: {
-      specialtyId?: string | null;
-      specialtyName?: string | null;
-      doctorId?: string | null;
-      doctorName?: string | null;
-    }
-  ) => void
+  sendText: (text: string) => void
 ) {
   const behavior = action.behavior ?? "message";
 
+  // Never open wizard client-side — always go through chat
   if (behavior === "launch_booking") {
-    launchBooking?.(action.message || undefined, {
-      doctorId: action.doctor_id,
-      doctorName: action.doctor_name,
-      specialtyId: action.specialty_id,
-      specialtyName: action.specialty_name,
-    });
+    const msg =
+      action.message?.trim() ||
+      (action.doctor_name
+        ? `I would like to book an appointment with ${action.doctor_name}`
+        : "I would like to book an appointment");
+    sendText(msg);
     return;
   }
 
@@ -188,14 +179,9 @@ export function ChatWidget({
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [typing, setTyping] = useState(false);
   const [showJumpDown, setShowJumpDown] = useState(false);
-  const [bookingOpen, setBookingOpen] = useState(false);
-  const [bookingSeed, setBookingSeed] = useState("");
-  const [bookingPrefill, setBookingPrefill] = useState<{
-    specialtyId?: string | null;
-    specialtyName?: string | null;
-    doctorId?: string | null;
-    doctorName?: string | null;
-  }>({});
+  const [dismissedWizards, setDismissedWizards] = useState<Set<string>>(
+    () => new Set()
+  );
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
   const lastUserMessageRef = useRef("");
@@ -210,6 +196,20 @@ export function ChatWidget({
   const canBook =
     resolvedMode !== "marketing" && Boolean(clinicSlug || clinic?.slug);
   const bookingClinicSlug = clinicSlug || clinic?.slug || "";
+
+  const activeWizardId = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (
+        m?.type === "booking_wizard" &&
+        !dismissedWizards.has(m.id) &&
+        !m.payload?.completed
+      ) {
+        return m.id;
+      }
+    }
+    return null;
+  }, [messages, dismissedWizards]);
 
   const lastActionMessageId = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -230,6 +230,7 @@ export function ChatWidget({
     requestIdRef.current += 1;
     setTyping(false);
     setMessages([]);
+    setDismissedWizards(new Set());
     stickToBottom.current = true;
   }, []);
 
@@ -260,41 +261,6 @@ export function ChatWidget({
       !stickToBottom.current && el.scrollHeight > el.clientHeight + 80
     );
   }
-
-  const openBooking = useCallback(
-    (
-      seed?: string,
-      prefill?: {
-        specialtyId?: string | null;
-        specialtyName?: string | null;
-        doctorId?: string | null;
-        doctorName?: string | null;
-      }
-    ) => {
-      if (!canBook) return;
-      const meta = lastBookingMetaRef.current || {};
-      setBookingSeed((seed || lastUserMessageRef.current || "").trim());
-      setBookingPrefill({
-        specialtyId:
-          prefill?.specialtyId ??
-          (meta.specialty_id as string | undefined) ??
-          null,
-        specialtyName:
-          prefill?.specialtyName ??
-          (meta.specialty_name as string | undefined) ??
-          null,
-        doctorId:
-          prefill?.doctorId ?? (meta.doctor_id as string | undefined) ?? null,
-        doctorName:
-          prefill?.doctorName ??
-          (meta.doctor_name as string | undefined) ??
-          null,
-      });
-      setBookingOpen(true);
-      if (!open) setOpen(true);
-    },
-    [canBook, open]
-  );
 
   const stopGenerating = useCallback(() => {
     requestIdRef.current += 1;
@@ -362,30 +328,43 @@ export function ChatWidget({
   );
 
   function handleBackendAction(action: BackendAction) {
-    runBackendAction(action, (msg) => void sendText(msg), openBooking);
+    runBackendAction(action, (msg) => void sendText(msg));
   }
 
   function handleBookingConfirmed(payload: BookingStepPayload) {
     const conf = payload.confirmation;
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: uid("confirm"),
-        role: "assistant",
-        type: "confirmation",
-        content: "Appointment confirmed",
-        createdAt: new Date().toISOString(),
-        payload: {
-          confirmation_code: conf?.confirmation_code,
-          appointment_id: conf?.appointment_id,
-          slot_summary: conf?.slot_summary,
-          doctor_name: conf?.doctor_name,
-          date: conf?.date,
-          start: conf?.start,
+    setMessages((prev) => {
+      const next = prev.map((m) =>
+        m.type === "booking_wizard" && m.id === activeWizardId
+          ? {
+              ...m,
+              payload: { ...(m.payload ?? {}), completed: true },
+            }
+          : m
+      );
+      return [
+        ...next,
+        {
+          id: uid("confirm"),
+          role: "assistant" as const,
+          type: "confirmation" as const,
+          content: "Appointment confirmed",
+          createdAt: new Date().toISOString(),
+          payload: {
+            confirmation_code: conf?.confirmation_code,
+            appointment_id: conf?.appointment_id,
+            slot_summary: conf?.slot_summary,
+            doctor_name: conf?.doctor_name,
+            date: conf?.date,
+            start: conf?.start,
+          },
         },
-      },
-    ]);
-    setBookingOpen(false);
+      ];
+    });
+  }
+
+  function handleBookingDismiss(messageId: string) {
+    setDismissedWizards((prev) => new Set(prev).add(messageId));
   }
 
   function handleAction(action: string, data?: unknown) {
@@ -424,8 +403,7 @@ export function ChatWidget({
           specialty_id: btn.specialty_id,
           specialty_name: btn.specialty_name,
         },
-        (msg) => void sendText(msg),
-        openBooking
+        (msg) => void sendText(msg)
       );
       return;
     }
@@ -444,15 +422,12 @@ export function ChatWidget({
         select_message?: string;
         message?: string;
       };
-      if (canBook && doctor.id) {
-        openBooking(doctor.select_message || `Book with ${doctor.name}`, {
-          doctorId: doctor.id,
-          doctorName: doctor.name,
-        });
-        return;
-      }
       const fallback =
-        doctor.select_message || doctor.message || doctor.name || "";
+        doctor.select_message ||
+        doctor.message ||
+        (doctor.name
+          ? `I would like to book an appointment with ${doctor.name}`
+          : "");
       if (fallback) void sendText(fallback);
       return;
     }
@@ -463,11 +438,7 @@ export function ChatWidget({
     setExpanded(false);
   }
 
-  function handleStarter(msg: string, id?: string) {
-    if (id === "book" && canBook) {
-      openBooking(msg);
-      return;
-    }
+  function handleStarter(msg: string) {
     void sendText(msg);
   }
 
@@ -491,7 +462,7 @@ export function ChatWidget({
       </div>
       <StarterChips
         items={starters}
-        onSelect={(msg, item) => handleStarter(msg, item?.id)}
+        onSelect={(msg) => handleStarter(msg)}
       />
     </div>
   );
@@ -519,6 +490,15 @@ export function ChatWidget({
                 onBackendAction={handleBackendAction}
                 showContextActions={m.id === lastActionMessageId && !typing}
                 assistantName={`${displayName} Assistant`}
+                clinicSlug={canBook ? bookingClinicSlug : undefined}
+                bookingWizardActive={
+                  m.type === "booking_wizard" &&
+                  m.id === activeWizardId &&
+                  !dismissedWizards.has(m.id) &&
+                  !m.payload?.completed
+                }
+                onBookingConfirmed={handleBookingConfirmed}
+                onBookingDismiss={handleBookingDismiss}
               />
             ))}
             {typing ? (
@@ -590,24 +570,7 @@ export function ChatWidget({
   );
 
   if (mode === "embedded") {
-    return (
-      <>
-        {panel}
-        {canBook ? (
-          <BookingSheet
-            open={bookingOpen}
-            onOpenChange={setBookingOpen}
-            clinicSlug={bookingClinicSlug}
-            initialMessage={bookingSeed}
-            specialtyId={bookingPrefill.specialtyId}
-            specialtyName={bookingPrefill.specialtyName}
-            doctorId={bookingPrefill.doctorId}
-            doctorName={bookingPrefill.doctorName}
-            onConfirmed={handleBookingConfirmed}
-          />
-        ) : null}
-      </>
-    );
+    return panel;
   }
 
   return (
@@ -648,20 +611,6 @@ export function ChatWidget({
           )}
         </button>
       </div>
-
-      {canBook ? (
-        <BookingSheet
-          open={bookingOpen}
-          onOpenChange={setBookingOpen}
-          clinicSlug={bookingClinicSlug}
-          initialMessage={bookingSeed}
-          specialtyId={bookingPrefill.specialtyId}
-          specialtyName={bookingPrefill.specialtyName}
-          doctorId={bookingPrefill.doctorId}
-          doctorName={bookingPrefill.doctorName}
-          onConfirmed={handleBookingConfirmed}
-        />
-      ) : null}
     </>
   );
 }

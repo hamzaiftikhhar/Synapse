@@ -60,11 +60,18 @@ function appendMetaComponents(
     });
   }
 
-  // Booking wizard launch is handled via meta.buttons (behavior: launch_booking).
-  // Do not dump the legacy in-chat appointment form when launch is requested.
+  // Homey-style: embed wizard when backend sets booking.launch
   if (meta.booking && typeof meta.booking === "object") {
     const booking = meta.booking as Record<string, unknown>;
-    if (!booking.launch) {
+    if (booking.launch) {
+      messages.push({
+        id: uid("booking_wizard"),
+        role,
+        type: "booking_wizard",
+        createdAt: now,
+        payload: booking,
+      });
+    } else {
       messages.push({
         id: uid("booking"),
         role,
@@ -123,20 +130,24 @@ function appendMetaComponents(
   }
 
   if (Array.isArray(meta.specialties) && meta.specialties.length) {
-    messages.push({
-      id: uid("spec"),
-      role,
-      type: "cards",
-      createdAt: now,
-      payload: {
-        cards: (meta.specialties as Record<string, unknown>[]).map((s) => ({
-          title: s.name,
-          description: s.description || `${s.doctor_count ?? 0} doctors`,
-          action: s.select_message,
-          id: s.id,
-        })),
-      },
-    });
+    // Prefer inline wizard over duplicating specialty cards when embedding
+    const booking = meta.booking as Record<string, unknown> | undefined;
+    if (!(booking && booking.launch)) {
+      messages.push({
+        id: uid("spec"),
+        role,
+        type: "cards",
+        createdAt: now,
+        payload: {
+          cards: (meta.specialties as Record<string, unknown>[]).map((s) => ({
+            title: s.name,
+            description: s.description || `${s.doctor_count ?? 0} doctors`,
+            action: s.select_message,
+            id: s.id,
+          })),
+        },
+      });
+    }
   }
 
   if (Array.isArray(meta.time_slots) && meta.time_slots.length) {
@@ -160,13 +171,17 @@ function appendMetaComponents(
   }
 
   if (Array.isArray(meta.buttons) && meta.buttons.length) {
-    messages.push({
-      id: uid("btn"),
-      role,
-      type: "buttons",
-      createdAt: now,
-      payload: { buttons: meta.buttons },
-    });
+    const booking = meta.booking as Record<string, unknown> | undefined;
+    // Wizard already embeds — skip redundant Start Booking buttons
+    if (!(booking && booking.launch)) {
+      messages.push({
+        id: uid("btn"),
+        role,
+        type: "buttons",
+        createdAt: now,
+        payload: { buttons: meta.buttons },
+      });
+    }
   }
 
   if (Array.isArray(meta.quick_replies) && meta.quick_replies.length) {
