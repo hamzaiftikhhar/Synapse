@@ -195,16 +195,19 @@ function appendMetaComponents(
   }
 }
 
-function attachActionsToPrimaryText(
+function attachActionsToLastAssistantMessage(
   messages: ChatMessage[],
   actions: BackendAction[]
 ) {
   if (!actions.length) return;
-  const target = messages.find(
-    (m) => m.role === "assistant" && m.type === "text"
-  );
-  if (!target) return;
-  target.payload = { ...(target.payload ?? {}), actions };
+  // Put chips after tool UIs (booking wizard, cards, etc.), not between text and tools
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role === "assistant" && m.type !== "system" && m.type !== "typing") {
+      m.payload = { ...(m.payload ?? {}), actions };
+      return;
+    }
+  }
 }
 
 export function parseChatResponse(
@@ -222,7 +225,7 @@ export function parseChatResponse(
     const messages = (meta.messages as Record<string, unknown>[]).map((m, i) =>
       mapMetaMessage(m, i, role)
     );
-    attachActionsToPrimaryText(messages, contextualActions);
+    attachActionsToLastAssistantMessage(messages, contextualActions);
     if (res.safety_message) {
       messages.push({
         id: uid("safe"),
@@ -248,7 +251,7 @@ export function parseChatResponse(
   }
 
   appendMetaComponents(messages, meta, role, now);
-  attachActionsToPrimaryText(messages, contextualActions);
+  attachActionsToLastAssistantMessage(messages, contextualActions);
 
   if (res.safety_message) {
     messages.push({

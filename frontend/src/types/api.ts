@@ -323,6 +323,8 @@ export type BookingStepPayload = {
     doctor_name?: string;
     date?: string;
     start?: string;
+    first_name?: string;
+    last_name?: string;
   } | null;
 };
 

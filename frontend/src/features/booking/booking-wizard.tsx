@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowLeft, CheckCircle2, Loader2, Search, X } from "lucide-react";
+import { ArrowLeft, Loader2, Search, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -42,7 +42,9 @@ export function BookingWizard({
   onDismiss,
   className,
 }: BookingWizardProps) {
-  const { sessionToken, setSessionToken } = useWidget();
+  const { sessionToken, setSessionToken, config } = useWidget();
+  const brandColor =
+    config?.configuration?.widget?.primary_color?.trim() || undefined;
   const [state, setState] = useState<BookingStepPayload | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -307,7 +309,14 @@ export function BookingWizard({
         ) : null}
 
         {step === "confirmed" && state?.confirmation ? (
-          <ConfirmedStep confirmation={state.confirmation} onClose={onDismiss} />
+          <ConfirmedStep
+            confirmation={state.confirmation}
+            patientFirstName={
+              details.first_name || state.confirmation.first_name || ""
+            }
+            brandColor={brandColor}
+            onClose={onDismiss}
+          />
         ) : null}
 
         {!active && step !== "confirmed" ? (
@@ -717,37 +726,165 @@ function OtpStep({
 
 function ConfirmedStep({
   confirmation,
+  patientFirstName,
+  brandColor,
   onClose,
 }: {
   confirmation: NonNullable<BookingStepPayload["confirmation"]>;
+  patientFirstName?: string;
+  brandColor?: string;
   onClose?: () => void;
 }) {
+  const accent = brandColor || "var(--primary)";
+  const name = (patientFirstName || confirmation.first_name || "").trim();
+  const headline = name
+    ? `${name}, we've got you confirmed for your appointment.`
+    : "We've got you confirmed for your appointment.";
+
+  const timeLabel = formatConfirmTime(confirmation.start);
+  const dateLabel = formatConfirmDate(confirmation.date);
+  const doctor = confirmation.doctor_name?.trim();
+  const primaryLine = [timeLabel, doctor].filter(Boolean).join("  ·  ");
+
   return (
-    <div className="flex flex-col items-center gap-3 py-6 text-center">
-      <CheckCircle2 className="size-10 text-primary" />
-      <div>
-        <p className="text-base font-semibold text-foreground">
-          Appointment confirmed
+    <div className="flex flex-col items-center gap-4 px-1 py-6 text-center">
+      <CalendarCheckIcon color={accent} />
+      <div className="space-y-2">
+        <p className="text-[15px] font-semibold leading-snug text-foreground">
+          {headline}
         </p>
+        {primaryLine ? (
+          <p className="text-base font-semibold tracking-tight text-foreground">
+            {primaryLine}
+          </p>
+        ) : confirmation.slot_summary ? (
+          <p className="text-sm font-medium text-foreground">
+            {confirmation.slot_summary}
+          </p>
+        ) : null}
+        {dateLabel ? (
+          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+            {dateLabel}
+          </p>
+        ) : null}
         {confirmation.confirmation_code ? (
-          <p className="mt-1 text-sm text-muted-foreground">
-            Code:{" "}
-            <span className="font-mono font-medium text-foreground">
+          <p className="pt-1 text-xs text-muted-foreground">
+            Code{" "}
+            <span className="font-mono font-semibold text-foreground">
               {confirmation.confirmation_code}
             </span>
           </p>
         ) : null}
-        {confirmation.slot_summary ? (
-          <p className="mt-2 text-xs text-muted-foreground">
-            {confirmation.slot_summary}
-          </p>
-        ) : null}
       </div>
       {onClose ? (
-        <Button type="button" className="mt-2 rounded-xl" onClick={onClose}>
+        <Button
+          type="button"
+          className="mt-1 w-full rounded-xl text-primary-foreground"
+          style={{ backgroundColor: brandColor || undefined }}
+          onClick={onClose}
+        >
           Done
         </Button>
       ) : null}
     </div>
   );
+}
+
+function CalendarCheckIcon({ color }: { color: string }) {
+  return (
+    <div className="relative flex size-14 items-center justify-center" aria-hidden>
+      <svg viewBox="0 0 48 48" className="size-14">
+        <rect
+          x="6"
+          y="10"
+          width="36"
+          height="32"
+          rx="6"
+          fill="none"
+          stroke={color}
+          strokeWidth="2.25"
+        />
+        <path
+          d="M6 18h36"
+          fill="none"
+          stroke={color}
+          strokeWidth="2.25"
+          strokeLinecap="round"
+        />
+        <path
+          d="M16 6v8M32 6v8"
+          fill="none"
+          stroke={color}
+          strokeWidth="2.25"
+          strokeLinecap="round"
+        />
+        <rect x="10" y="22" width="28" height="16" rx="2" fill={`${cssColorWithAlpha(color, 0.12)}`} />
+      </svg>
+      <span
+        className="absolute bottom-1 right-0 flex size-6 items-center justify-center rounded-full text-white shadow-sm"
+        style={{ backgroundColor: color }}
+      >
+        <svg viewBox="0 0 16 16" className="size-3.5" aria-hidden>
+          <path
+            d="M3.5 8.2 6.4 11l6-7"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </span>
+    </div>
+  );
+}
+
+function cssColorWithAlpha(color: string, alpha: number): string {
+  const c = color.trim();
+  if (c.startsWith("#") && (c.length === 7 || c.length === 4)) {
+    const hex =
+      c.length === 4
+        ? `#${c[1]}${c[1]}${c[2]}${c[2]}${c[3]}${c[3]}`
+        : c;
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
+    if ([r, g, b].every((n) => !Number.isNaN(n))) {
+      return `rgba(${r},${g},${b},${alpha})`;
+    }
+  }
+  return `color-mix(in oklab, ${c} ${Math.round(alpha * 100)}%, transparent)`;
+}
+
+function formatConfirmDate(raw?: string | null): string {
+  if (!raw) return "";
+  const d = new Date(`${raw}T12:00:00`);
+  if (Number.isNaN(d.getTime())) return raw;
+  return d.toLocaleDateString(undefined, {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+function formatConfirmTime(raw?: string | null): string {
+  if (!raw) return "";
+  // ISO or HH:MM
+  const asDate = new Date(raw);
+  if (!Number.isNaN(asDate.getTime()) && raw.includes("T")) {
+    return asDate.toLocaleTimeString(undefined, {
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  }
+  const m = raw.match(/(\d{1,2}):(\d{2})/);
+  if (m) {
+    const h = Number(m[1]);
+    const min = m[2];
+    const ampm = h >= 12 ? "PM" : "AM";
+    const h12 = ((h + 11) % 12) + 1;
+    return `${h12}:${min} ${ampm}`;
+  }
+  return raw;
 }

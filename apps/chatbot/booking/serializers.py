@@ -67,6 +67,8 @@ def serialize_step(clinic: Any, session: BookingSession) -> dict[str, Any]:
             "doctor_name": session.doctor_name,
             "date": session.date,
             "start": session.slot_start,
+            "first_name": session.patient_first_name,
+            "last_name": session.patient_last_name,
         }
 
     return payload

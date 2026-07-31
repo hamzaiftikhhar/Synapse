@@ -21,7 +21,6 @@ import {
   CONNECTION_ERROR,
   parseChatResponse,
   systemErrorMessage,
-  uid,
   userTextMessage,
 } from "@/features/chat/message-parser";
 import type { BackendAction } from "@/features/chat/types";
@@ -216,7 +215,6 @@ export function ChatWidget({
       const m = messages[i];
       if (
         m?.role === "assistant" &&
-        m.type === "text" &&
         Array.isArray(m.payload?.actions) &&
         (m.payload.actions as unknown[]).length > 0
       ) {
@@ -331,36 +329,18 @@ export function ChatWidget({
     runBackendAction(action, (msg) => void sendText(msg));
   }
 
-  function handleBookingConfirmed(payload: BookingStepPayload) {
-    const conf = payload.confirmation;
-    setMessages((prev) => {
-      const next = prev.map((m) =>
+  function handleBookingConfirmed(_payload: BookingStepPayload) {
+    // Confirmation stays inside the wizard card only — no duplicate chat message
+    setMessages((prev) =>
+      prev.map((m) =>
         m.type === "booking_wizard" && m.id === activeWizardId
           ? {
               ...m,
               payload: { ...(m.payload ?? {}), completed: true },
             }
           : m
-      );
-      return [
-        ...next,
-        {
-          id: uid("confirm"),
-          role: "assistant" as const,
-          type: "confirmation" as const,
-          content: "Appointment confirmed",
-          createdAt: new Date().toISOString(),
-          payload: {
-            confirmation_code: conf?.confirmation_code,
-            appointment_id: conf?.appointment_id,
-            slot_summary: conf?.slot_summary,
-            doctor_name: conf?.doctor_name,
-            date: conf?.date,
-            start: conf?.start,
-          },
-        },
-      ];
-    });
+      )
+    );
   }
 
   function handleBookingDismiss(messageId: string) {
