@@ -26,7 +26,9 @@ class DecisionEngine:
                 safety_message=EMERGENCY_SAFETY_MESSAGE,
             )
 
-        if nlu.clarification_needed:
+        if nlu.clarification_needed and not (
+            nlu.needs_vector or nlu.needs_sql or nlu.intent == Intent.FAQ
+        ):
             return RouteDecision(
                 route=Route.CLARIFY,
                 needs_sql=False,

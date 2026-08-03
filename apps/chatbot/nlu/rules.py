@@ -338,9 +338,9 @@ def _match_strong(
             _classifier_source="rules_strong",
         )
 
-    if re.search(r"\b(book|schedule|make)\b", text) and re.search(
-        r"\b(appointment|visit)\b", text
-    ):
+    if re.search(r"\b(book|schedule|make|wanna book)\b", text) and re.search(
+        r"\b(appointment|visit|something)\b", text
+    ) or re.search(r"\bbook .{0,40}\bwith\b", text):
         return _base_payload(
             intent=Intent.BOOK_APPOINTMENT.value,
             confidence=0.92,
@@ -367,9 +367,11 @@ def _match_strong(
 
     # Find a doctor / list doctors — SQL only, never vector/LLM
     if re.search(
-        r"\b(find (a |the )?doctor|help me find (a )?doctor|list (of )?doctors|"
-        r"show (me )?(the )?doctors|who (are|is) (your|the) doctors?|"
-        r"looking for a doctor|need a doctor|doctors? (do you )?have)\b",
+        r"\b(find (?:me )?(?:a |the )?(?:doctor|dentist|physician)|"
+        r"help me find (?:a )?(?:doctor|dentist)|list (?:of )?(?:doctors|dentists)|"
+        r"show (me )?(the )?(?:doctors|dentists)|who (are|is) (your|the) (?:doctors?|dentists?)|"
+        r"looking for a (?:doctor|dentist)|need a (?:doctor|dentist)|"
+        r"(?:doctors?|dentists?) (do you )?have)\b",
         text,
     ) and not re.search(r"\b(book|schedule|appointment)\b", text):
         return _base_payload(
@@ -382,7 +384,47 @@ def _match_strong(
             _classifier_source="rules_strong",
         )
 
-    if re.search(r"\b(hours?|open|close|closing)\b", text) and not broad:
+    # Cost / duration of services — MUST run before clinic-hours (human typos like
+    # "how much hours does X take" would otherwise steal into open/close).
+    if (
+        re.search(
+            r"\b(cost|price|pricing|fee|fees|charge|charges|how long|duration|"
+            r"how much time|how much hours?|how many hours?)\b",
+            text,
+        )
+        or re.search(r"\bhow much(?: does| is| for| to)\b", text)
+        or re.search(r"\bhours?\s+does\s+it\s+take\b|\btake[s]?\s+(?:to\s+)?(?:do|for)\b", text)
+    ) and not re.search(r"\b(insurance|copay|deductible|coverage|early|arrive)\b", text):
+        return _base_payload(
+            intent=(
+                Intent.PRICING.value
+                if re.search(
+                    r"\b(cost|price|pricing|fee|fees|charge|how much|how many hours|"
+                    r"how much hours|how long|take)\b",
+                    text,
+                )
+                else Intent.SERVICES_OFFERED.value
+            ),
+            confidence=0.86,
+            needs_sql=True,
+            needs_vector=False,
+            needs_llm=False,
+            reasoning_short="Service price/duration (rule)",
+            _classifier_source="rules_strong",
+        )
+
+    # Business open/close only — not procedure duration
+    if re.search(
+        r"\b((?:clinic |office |your |business )?hours?|open|close|closing|"
+        r"when (?:are you|do you) open|what time (?:do you|are you) (?:open|close))\b",
+        text,
+    ) and not broad and not re.search(
+        r"\b(for how many hours|how many hours|how much hours|how long|"
+        r"hours? (?:after|before|per day|does it take)|"
+        r"take[s]? (?:to )?(?:do|for)|post[- ]?op|gauze|straw|smoking|spitting|"
+        r"arrive|arrival|deposit|fee|treatment|procedure|screening|cleaning)\b",
+        text,
+    ):
         return _base_payload(
             intent=Intent.CLINIC_HOURS.value,
             confidence=0.88,
@@ -423,13 +465,20 @@ def _match_strong(
         )
 
     if re.search(
-        r"\b(referral|referrals|do i need|policy|policies|how does|"
-        r"what (?:is|are) your|cancellation policy|cancel(?:lation)? (?:fee|policy))\b",
+        r"\b(referral|referrals|do i need|policy|protocols?|how does|"
+        r"what (?:is|are) your|cancellation policy|cancel(?:lation)? (?:fee|policy)|"
+        r"arrive|arrival|how (?:early|soon)|deposit|down payment|"
+        r"post[- ]?op|after (?:surgery|procedure|extraction)|"
+        r"replacement (?:fee|tray|cost)|emergency (?:number|line|contact))\b",
         text,
-    ) and re.search(
-        r"\b(specialists?|referral|referrals|insurance|visit|appointment|"
-        r"cancel|cancellation|booking|policy)\b",
-        text,
+    ) and (
+        re.search(
+            r"\b(specialists?|referral|referrals|insurance|visit|appointment|"
+            r"cancel|cancellation|booking|policy|protocols?|early|arrive|"
+            r"deposit|payment|fee|gauze|bleeding|instructions?|restrictions?)\b",
+            text,
+        )
+        or re.search(r"\b(how|what|when|should|tell)\b", text)
     ):
         return _base_payload(
             intent=Intent.FAQ.value,
@@ -448,7 +497,8 @@ def _match_strong(
     has_brand = bool(
         re.search(
             r"\b(blue\s*cross|aetna|cigna|humana|kaiser|medicare|medicaid|"
-            r"united\s*health|anthem|oscar|molina)\b",
+            r"medi[- ]?cal|denti[- ]?cal|united\s*health|anthem|oscar|molina|"
+            r"delta\s*dental|metlife|guardian)\b",
             text,
         )
     )
@@ -484,18 +534,17 @@ def _match_strong(
                 reasoning_short="Doctor query fallback (rule)",
                 _classifier_source="rules_fallback",
             )
-        if re.search(r"\b(appointment|visit|slot|available)\b", text):
+        # Only transactional booking — bare "appointment" in a question is not book
+        if re.search(r"\b(book|schedule|make)\b", text) and re.search(
+            r"\b(appointment|visit|slot)\b", text
+        ):
             return _base_payload(
                 intent=Intent.BOOK_APPOINTMENT.value,
                 confidence=0.7,
                 needs_sql=True,
-                needs_llm=True,
-                clarification_needed=True,
-                clarification_question=(
-                    "I want to make sure I help correctly. "
-                    "Would you like to book an appointment or find a doctor?"
-                ),
-                reasoning_short="Appointment fallback (rule)",
+                needs_llm=False,
+                clarification_needed=False,
+                reasoning_short="Appointment book fallback (rule)",
                 _classifier_source="rules_fallback",
             )
 

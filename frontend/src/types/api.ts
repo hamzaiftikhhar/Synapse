@@ -132,10 +132,13 @@ export type Service = {
   id: string;
   name: string;
   description: string;
+  code?: string;
+  category?: string;
   duration_min: number;
   price_cents: number | null;
   is_active: boolean;
   is_deleted: boolean;
+  metadata?: Record<string, unknown>;
   created_at: string;
   updated_at: string;
 };
@@ -143,9 +146,12 @@ export type Service = {
 export type ServiceInput = {
   name: string;
   description?: string;
+  code?: string;
+  category?: string;
   duration_min?: number;
   price_cents?: number | null;
   is_active?: boolean;
+  metadata?: Record<string, unknown>;
 };
 
 export type ServiceUpdateInput = Partial<ServiceInput>;

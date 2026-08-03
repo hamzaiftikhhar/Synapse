@@ -60,6 +60,10 @@ _INSURANCE_BRANDS = [
     "kaiser",
     "medicaid",
     "medicare",
+    "medi-cal",
+    "medi cal",
+    "denti-cal",
+    "denti cal",
     "tricare",
     "anthem",
     "oscar",
@@ -142,18 +146,31 @@ def extract_emergency_symptoms(text: str) -> list[str]:
     return found
 
 
+_DOCTOR_NAME_STOPWORDS = frozenset(
+    {
+        "available", "is", "are", "the", "a", "an", "please", "here", "there",
+        "near", "for", "me", "my", "our", "your", "today", "tomorrow", "now",
+        "who", "that", "this", "with", "and", "or", "to", "from", "about",
+        "list", "find", "help", "need", "want", "looking", "good", "best",
+    }
+)
+
+
 def _extract_doctors(text: str) -> list[str] | None:
     names: list[str] = []
     for match in _DOCTOR_RE.finditer(text):
         first = match.group(1)
         last = match.group(2)
-        # Skip common non-name tokens after Dr.
-        if first.lower() in {"available", "is", "are", "the", "a", "an"}:
+        # Skip common non-name tokens after Dr./doctor
+        if first.lower() in _DOCTOR_NAME_STOPWORDS:
             continue
+        if last and last.lower() in _DOCTOR_NAME_STOPWORDS:
+            last = None
         name = first if not last else f"{first} {last}"
         cleaned = name.strip(" .,?!")
         if cleaned and cleaned.lower() not in {n.lower() for n in names}:
-            names.append(cleaned)
+            if cleaned.lower() not in _DOCTOR_NAME_STOPWORDS:
+                names.append(cleaned)
     return names or None
 
 

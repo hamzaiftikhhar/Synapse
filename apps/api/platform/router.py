@@ -53,8 +53,70 @@ class PlatformClinicPatchIn(Schema):
     name: str | None = None
 
 
+class PlatformOverviewOut(Schema):
+    clinic_count: int = 0
+    active_clinics: int = 0
+    suspended_clinics: int = 0
+    onboarding_clinics: int = 0
+    appointments_30d: int = 0
+    tokens_30d: int = 0
+    documents: int = 0
+    staff_users: int = 0
+    top_clinics_by_tokens: list[dict] = []
+
+
 def _require_platform(request):
     return require_super_admin(request)
+
+
+@router.get("/overview", response=PlatformOverviewOut, auth=staff_jwt_auth)
+def platform_overview(request):
+    """Aggregate platform metrics for Super Admin overview."""
+    _require_platform(request)
+    from apps.ai.models import AIUsageLog
+    from apps.appointments.models import Appointment
+    from apps.knowledge.models import Document
+
+    since = timezone.now() - timedelta(days=30)
+    clinics = list(Clinic.objects.all())
+    active = sum(1 for c in clinics if c.status == ClinicStatus.ACTIVE)
+    suspended = sum(1 for c in clinics if c.status == ClinicStatus.SUSPENDED)
+    onboarding = sum(1 for c in clinics if c.status == ClinicStatus.ONBOARDING)
+
+    tokens_30d = (
+        AIUsageLog.objects.filter(created_at__gte=since).aggregate(t=Sum("total_tokens"))[
+            "t"
+        ]
+        or 0
+    )
+    appts_30d = Appointment.objects.filter(created_at__gte=since).count()
+    docs = Document.objects.filter(is_deleted=False).count()
+    staff_users = User.objects.filter(
+        role__in=[UserRole.CLINIC_ADMIN, UserRole.STAFF], is_active=True
+    ).count()
+
+    top = []
+    for c in clinics:
+        t = (
+            AIUsageLog.objects.filter(clinic=c, created_at__gte=since).aggregate(
+                t=Sum("total_tokens")
+            )["t"]
+            or 0
+        )
+        top.append({"slug": c.slug, "name": c.name, "tokens_30d": int(t)})
+    top.sort(key=lambda x: x["tokens_30d"], reverse=True)
+
+    return PlatformOverviewOut(
+        clinic_count=len(clinics),
+        active_clinics=active,
+        suspended_clinics=suspended,
+        onboarding_clinics=onboarding,
+        appointments_30d=appts_30d,
+        tokens_30d=int(tokens_30d),
+        documents=docs,
+        staff_users=staff_users,
+        top_clinics_by_tokens=top[:5],
+    )
 
 
 @router.get("/clinics", response=list[PlatformClinicOut], auth=staff_jwt_auth)

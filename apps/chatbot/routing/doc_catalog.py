@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from apps.chatbot.routing.signals import catalog_overlap_score
+
 
 def build_document_catalog(clinic: Any, *, limit: int = 12) -> list[dict[str, Any]]:
     """Load indexed/chunked docs with routing summaries for the Small NLU."""
@@ -64,30 +66,22 @@ def catalog_for_nlu_context(catalog: list[dict[str, Any]]) -> str:
 
 def matching_document_ids(message: str, catalog: list[dict[str, Any]]) -> list[str]:
     """Return document ids whose keywords/summary overlap the message."""
-    text = (message or "").lower()
-    hits: list[str] = []
-    for doc in catalog:
-        matched = False
-        for kw in doc.get("routing_keywords") or []:
-            if isinstance(kw, str) and kw.lower() in text:
-                matched = True
-                break
-        if not matched:
-            summary = (doc.get("routing_summary") or "").lower()
-            for token in (
-                "insurance",
-                "cancel",
-                "cancellation",
-                "policy",
-                "vaccination",
-                "child",
-                "membership",
-                "copay",
-                "booking",
-            ):
-                if token in summary and token in text:
-                    matched = True
-                    break
-        if matched and doc.get("id"):
-            hits.append(str(doc["id"]))
+    _, hits = catalog_overlap_score(message, catalog)
     return hits
+
+
+def build_service_catalog(clinic: Any, *, limit: int = 40) -> list[dict[str, Any]]:
+    """Active services for this clinic — used to match free-text service questions."""
+    try:
+        from apps.services.models import Service
+
+        clinic_id = getattr(clinic, "id", None)
+        if clinic_id is None:
+            return []
+        qs = (
+            Service.objects.filter(clinic_id=clinic_id, is_deleted=False, is_active=True)
+            .order_by("name")[:limit]
+        )
+        return [{"id": str(s.id), "name": s.name} for s in qs]
+    except Exception:
+        return []

@@ -241,13 +241,30 @@ def _routing_keywords_from_text(title: str, text: str) -> list[str]:
     import re
 
     blob = f"{title} {text}".lower()
-    candidates = (
+    # Domain-agnostic seed cues + title tokens + frequent content tokens
+    seed = (
         "insurance", "coverage", "copay", "cancel", "cancellation", "booking",
         "policy", "hours", "vaccination", "pediatric", "child", "membership",
-        "pricing", "refund", "referral", "appointment",
+        "pricing", "refund", "referral", "appointment", "deposit", "arrival",
+        "arrive", "post-op", "postoperative", "extraction", "orthodontic",
+        "protocol", "fee", "emergency", "instructions", "restriction",
     )
-    found = [k for k in candidates if k in blob]
+    found: list[str] = [k for k in seed if k.replace("-", " ") in blob or k in blob]
     for token in re.findall(r"[a-z]{4,}", title.lower()):
-        if token not in found and token not in {"patient", "document", "clinic"}:
+        if token not in found and token not in {"patient", "document", "clinic", "comprehensive"}:
             found.append(token)
+    # Frequent content tokens (dynamic per document)
+    counts: dict[str, int] = {}
+    for token in re.findall(r"[a-z]{5,}", text.lower()):
+        if token in {
+            "patient", "patients", "clinic", "please", "should", "before",
+            "after", "their", "there", "which", "would", "could", "about",
+        }:
+            continue
+        counts[token] = counts.get(token, 0) + 1
+    for token, _n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])):
+        if token not in found:
+            found.append(token)
+        if len(found) >= 12:
+            break
     return found[:12]

@@ -177,24 +177,31 @@ def _match_insurance(clinic: Clinic, name: str | None) -> str | None:
     from apps.insurance.models import InsurancePlan
 
     needle = name.strip()
-    qs = InsurancePlan.objects.filter(
-        clinic=clinic,
-        is_deleted=False,
-        is_accepted=True,
-    )
+    # Include rejected plans — otherwise "Medicaid" fuzzy-matches "Medicare"
+    qs = InsurancePlan.objects.filter(clinic=clinic, is_deleted=False)
 
-    # Exact / contains first (Medicaid → provider_name containing Medicaid)
+    # Exact provider/plan name (case-insensitive) first
+    exact = (
+        qs.filter(Q(provider_name__iexact=needle) | Q(plan_name__iexact=needle))
+        .order_by("-is_accepted", "provider_name")
+        .first()
+    )
+    if exact:
+        return str(exact.id)
+
+    # Contains — prefer longer/closer provider names; still include rejected
     hit = (
         qs.filter(
             Q(provider_name__icontains=needle) | Q(plan_name__icontains=needle)
         )
-        .order_by("provider_name")
+        .order_by("-is_accepted", "provider_name")
         .first()
     )
     if hit:
+        # Guard: don't let "Medicaid" resolve via a looser contains on unrelated rows
         return str(hit.id)
 
-    # Brand token fallback: "Blue Cross Origin" → match plans containing "Blue Cross"
+    # Brand token fallback
     tokens = [t for t in needle.lower().split() if len(t) > 2]
     for size in range(min(3, len(tokens)), 0, -1):
         phrase = " ".join(tokens[:size])
@@ -202,12 +209,13 @@ def _match_insurance(clinic: Clinic, name: str | None) -> str | None:
             qs.filter(
                 Q(provider_name__icontains=phrase) | Q(plan_name__icontains=phrase)
             )
-            .order_by("provider_name")
+            .order_by("-is_accepted", "provider_name")
             .first()
         )
         if hit:
             return str(hit.id)
 
+    # Strict fuzzy only — avoid Medicare↔Medicaid (edit distance 2 ≈ 0.75)
     best_id = None
     best_score = 0.0
     for plan in qs.only("id", "provider_name", "plan_name")[:100]:
@@ -219,7 +227,7 @@ def _match_insurance(clinic: Clinic, name: str | None) -> str | None:
         if score > best_score:
             best_score = score
             best_id = str(plan.id)
-    return best_id if best_score >= 0.5 else None
+    return best_id if best_score >= 0.9 else None
 
 
 def _match_service(clinic: Clinic, name: str | None) -> str | None:

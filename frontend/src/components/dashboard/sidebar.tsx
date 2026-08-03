@@ -21,7 +21,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { APP_NAME, DASHBOARD_NAV } from "@/constants";
+import { APP_NAME, DASHBOARD_NAV, PLATFORM_NAV } from "@/constants";
 import { useAuth } from "@/providers/auth-provider";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
@@ -47,6 +47,10 @@ export function DashboardSidebar({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
   const { clinic, user } = useAuth();
   const isSuper = user?.role === "SUPER_ADMIN";
+  const onPlatformRoute = pathname.startsWith("/dashboard/platform");
+  // Platform portal: Super Admin with no clinic, or browsing platform while switching
+  const showPlatformNav = isSuper && (!clinic || onPlatformRoute);
+  const nav = showPlatformNav ? PLATFORM_NAV : DASHBOARD_NAV;
 
   return (
     <aside className="flex h-full w-60 flex-col border-r border-border bg-sidebar">
@@ -59,32 +63,28 @@ export function DashboardSidebar({ onNavigate }: { onNavigate?: () => void }) {
             {APP_NAME}
           </p>
           <p className="truncate text-[11px] text-muted-foreground">
-            {clinic?.name ?? (isSuper ? "Platform" : "Clinic portal")}
+            {showPlatformNav
+              ? "Platform"
+              : clinic?.name ?? "Clinic portal"}
           </p>
         </div>
       </div>
       <ScrollArea className="flex-1 px-2 py-3">
         <nav className="space-y-0.5">
-          {isSuper ? (
-            <Link
-              href="/dashboard/platform"
-              onClick={onNavigate}
-              className={cn(
-                "flex items-center gap-2.5 rounded-[6px] px-2.5 py-2 text-[13px] font-medium transition-colors",
-                pathname.startsWith("/dashboard/platform")
-                  ? "bg-primary/10 text-primary"
-                  : "text-sidebar-foreground/80 hover:bg-muted hover:text-foreground"
-              )}
-            >
-              <Building2 className="size-4 shrink-0 opacity-70" />
+          {showPlatformNav ? (
+            <p className="mb-2 px-2.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
               Platform
-            </Link>
+            </p>
+          ) : clinic && isSuper ? (
+            <p className="mb-2 px-2.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Clinic portal
+            </p>
           ) : null}
-          {DASHBOARD_NAV.map((item) => {
+          {nav.map((item) => {
             const Icon = ICONS[item.icon] ?? LayoutDashboard;
             const active =
-              item.href === "/dashboard"
-                ? pathname === "/dashboard"
+              item.href === "/dashboard" || item.href === "/dashboard/platform"
+                ? pathname === item.href
                 : pathname.startsWith(item.href);
             return (
               <Link

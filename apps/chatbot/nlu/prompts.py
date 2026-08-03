@@ -15,16 +15,20 @@ Fields: intent,secondary_intents,confidence,entities,needs_sql,needs_vector,need
 Entity keys: doctor_name,specialty,service,insurance_provider,date,time,patient_name,location,symptom (null|string|array)
 Intents: {_INTENTS}
 Rules: multi-value entities use arrays not comma-strings. Compound questions→secondary_intents.
+Speech acts: transactional book/schedule/reschedule → book_appointment/reschedule. Informational questions about appointments/policies/fees/arrival/post-op → faq with needs_vector=true (NOT booking), even if the word appointment appears.
 Route: greeting/farewell/emergency→direct (can_respond_directly).
-hours/location/insurance_accepted/doctor_search/doctor_availability/services_offered/pricing→needs_sql=true, needs_vector=false, needs_llm=false.
-book/cancel/reschedule→needs_sql=true (booking lane; needs_llm=false).
+hours/location/insurance_accepted/doctor_search/doctor_availability→needs_sql=true, needs_vector=false, needs_llm=false.
+services_offered/pricing (cost, price, how long a procedure takes)→needs_sql=true; set needs_vector=true too when Docs suggest a matching policy PDF.
+book/cancel/reschedule (transactional only)→needs_sql=true (booking lane; needs_llm=false).
 faq/policy/PDF topics matching document_catalog→needs_vector=true AND needs_llm=true.
-needs_llm may be true ONLY with needs_vector. If unclear→clarification_needed, not RAG.
-Prefer SQL for insurance accept/coverage and clinic hours. Use document_catalog only to gate vector.
 Ex:"Hi"→{{"intent":"greeting","confidence":0.99,"can_respond_directly":true}}
 Ex:"Help me find a doctor"→{{"intent":"doctor_search","confidence":0.95,"needs_sql":true,"needs_vector":false,"needs_llm":false}}
 Ex:"Do you accept Aetna?"→{{"intent":"insurance_accepted","confidence":0.9,"needs_sql":true,"needs_vector":false,"needs_llm":false,"entities":{{"insurance_provider":["Aetna"]}}}}
 Ex:"What is your cancellation policy?"→{{"intent":"faq","confidence":0.9,"needs_vector":true,"needs_llm":true}}
+Do NOT map procedure duration ("how much hours does X take", "how long does treatment take") to clinic_hours — use pricing/services_offered + entities.service.
+When Ctx includes services list and the user names one → set entities.service and pricing/services_offered.
+Ex:"How much hours does Adult Cleaning take?"→{{"intent":"pricing","confidence":0.9,"needs_sql":true,"entities":{{"service":"Adult Cleaning"}}}}
+Ex:"how many days avoid sun before laser"→{{"intent":"faq","confidence":0.9,"needs_vector":true,"needs_llm":true}}
 Ex:"chest pain and numb arm"→{{"intent":"emergency","is_emergency":true,"can_respond_directly":true,"entities":{{"symptom":["chest pain","numb arm"]}}}}"""
 
 
@@ -45,10 +49,17 @@ def build_user_prompt(
         text = text[8:].strip()
     if conversation_context:
         catalog = conversation_context.get("document_catalog")
-        ctx = {k: v for k, v in conversation_context.items() if k != "document_catalog"}
+        services = conversation_context.get("services")
+        ctx = {
+            k: v
+            for k, v in conversation_context.items()
+            if k not in {"document_catalog", "services"}
+        }
         parts = []
         if catalog:
             parts.append(f"Docs:\n{str(catalog)[:900]}")
+        if services:
+            parts.append(f"Services: {str(services)[:500]}")
         if ctx:
             parts.append("Ctx:" + json.dumps(ctx, separators=(",", ":"))[:400])
         parts.append(text)

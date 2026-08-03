@@ -20,10 +20,13 @@ def _serialize(service: Service) -> ServiceOut:
         id=service.id,
         name=service.name,
         description=service.description,
+        code=service.code or "",
+        category=service.category or "",
         duration_min=service.duration_min,
         price_cents=service.price_cents,
         is_active=service.is_active,
         is_deleted=service.is_deleted,
+        metadata=service.metadata or {},
         created_at=service.created_at,
         updated_at=service.updated_at,
     )
@@ -54,7 +57,12 @@ def list_services(
     if is_active is not None:
         qs = qs.filter(is_active=is_active)
     if search:
-        qs = qs.filter(Q(name__icontains=search) | Q(description__icontains=search))
+        qs = qs.filter(
+            Q(name__icontains=search)
+            | Q(description__icontains=search)
+            | Q(code__icontains=search)
+            | Q(category__icontains=search)
+        )
     qs = qs.order_by("name")
     count = qs.count()
     results = [_serialize(s) for s in qs[offset : offset + limit]]
@@ -63,7 +71,10 @@ def list_services(
 
 @router.post("", response={201: ServiceOut}, auth=jwt_auth)
 def create_service(request, payload: ServiceIn):
-    service = Service.objects.create(clinic=clinic_from(request), **payload.dict())
+    data = payload.dict()
+    if data.get("metadata") is None:
+        data["metadata"] = {}
+    service = Service.objects.create(clinic=clinic_from(request), **data)
     return 201, _serialize(service)
 
 

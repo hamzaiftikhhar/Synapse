@@ -34,6 +34,16 @@ def search_doctors(ctx: SQLContext) -> SQLResult:
         qs = qs.filter(id__in=doctor_ids)
     else:
         names = entity_list(nlu.entities.doctor_name)
+        # Ignore politeness / filler tokens mistaken for names
+        names = [
+            n
+            for n in names
+            if n.lower()
+            not in {
+                "please", "doctor", "doctors", "dentist", "help", "find",
+                "me", "a", "the", "good", "best",
+            }
+        ]
         if names:
             qs = qs.filter(build_name_filter("full_name", names))
 

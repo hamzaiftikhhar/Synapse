@@ -78,14 +78,18 @@ class ChatEngine:
             Lane,
             apply_routing_heuristics,
             build_document_catalog,
+            build_service_catalog,
             catalog_for_nlu_context,
+            is_transactional_booking,
+            looks_like_knowledge_question,
             matching_document_ids,
             resolve_lane,
         )
 
-        # Document catalog for Small NLU + heuristics
+        # Document + service catalogs for Small NLU + heuristics
         t0 = time.perf_counter()
         doc_catalog = build_document_catalog(clinic)
+        service_catalog = build_service_catalog(clinic)
         timings["doc_catalog_ms"] = (time.perf_counter() - t0) * 1000
 
         ctx = conversation_context or self._build_context(session) or {}
@@ -93,6 +97,10 @@ class ChatEngine:
         catalog_text = catalog_for_nlu_context(doc_catalog)
         if catalog_text:
             nlu_ctx["document_catalog"] = catalog_text[:1200]
+        if service_catalog:
+            nlu_ctx["services"] = ", ".join(
+                s.get("name") or "" for s in service_catalog[:20]
+            )[:600]
 
         # ── 1. NLU ──────────────────────────────────────────────────────────
         t0 = time.perf_counter()
@@ -112,6 +120,7 @@ class ChatEngine:
             message=message,
             nlu=nlu_result,
             document_catalog=doc_catalog,
+            service_catalog=service_catalog,
         )
 
         # ── 2. Decision Engine ───────────────────────────────────────────────
@@ -134,10 +143,17 @@ class ChatEngine:
         )
 
         booking_commit = self._is_booking_commit(message, nlu_result)
-        is_booking_intent = nlu_result.intent in {
-            Intent.BOOK_APPOINTMENT,
-            Intent.RESCHEDULE_APPOINTMENT,
-        }
+        knowledge_q = looks_like_knowledge_question(message)
+        # Speech-act: only open booking UI for transactional book/reschedule
+        is_booking_intent = (
+            nlu_result.intent
+            in {
+                Intent.BOOK_APPOINTMENT,
+                Intent.RESCHEDULE_APPOINTMENT,
+            }
+            and (is_transactional_booking(message) or booking_commit)
+            and not knowledge_q
+        )
 
         soft_medical = (
             (
@@ -146,28 +162,22 @@ class ChatEngine:
                 or self._looks_like_symptom(message)
             )
             and not is_booking_intent
+            and not knowledge_q
         )
 
         doctor_followup = self._is_doctor_quality_followup(message) and last_doctor
         matched_docs = matching_document_ids(message, doc_catalog)
-        policy_like = any(
-            k in (message or "").lower()
-            for k in (
-                "policy",
-                "cancel",
-                "cancellation",
-                "what does",
-                "include",
-                "membership",
-            )
-        )
+        has_catalog = bool(doc_catalog)
         needs_vector = bool(nlu_result.needs_vector) or (
-            soft_medical and bool(matched_docs)
+            (soft_medical or knowledge_q) and (bool(matched_docs) or has_catalog)
         )
-        doc_match = bool(matched_docs) and (
-            needs_vector
-            or nlu_result.intent in {Intent.FAQ, Intent.MEDICAL_QUESTION}
-            or policy_like
+        doc_match = bool(matched_docs) or (
+            has_catalog
+            and (
+                needs_vector
+                or knowledge_q
+                or nlu_result.intent in {Intent.FAQ, Intent.MEDICAL_QUESTION, Intent.UNKNOWN}
+            )
         )
 
         lane = resolve_lane(
@@ -177,6 +187,7 @@ class ChatEngine:
             soft_medical=soft_medical,
             needs_vector=needs_vector,
             doc_match=doc_match,
+            has_catalog=has_catalog,
         )
 
         # Doctor quality follow-up: template, no RAG
@@ -199,18 +210,66 @@ class ChatEngine:
             timings["fast_path_ms"] = (time.perf_counter() - t0) * 1000
 
         elif lane == Lane.CLARIFY:
-            t0 = time.perf_counter()
-            response_text = self._fast_path(decision, message, clinic)
-            timings["fast_path_ms"] = (time.perf_counter() - t0) * 1000
+            # Last-chance recovery: clinic has docs → RAG instead of 4-option menu
+            if has_catalog and not is_booking_intent:
+                lane = Lane.VECTOR_RAG
+                timings["lane"] = lane.value
+                t0 = time.perf_counter()
+                vector_rows = self._run_vector(
+                    clinic, message, document_ids=matched_docs or None
+                )
+                timings["vector_ms"] = (time.perf_counter() - t0) * 1000
+                t0 = time.perf_counter()
+                response_text = self._generate_response(
+                    clinic=clinic,
+                    message=message,
+                    nlu=nlu_result,
+                    sql_rows=sql_rows,
+                    vector_rows=vector_rows,
+                    session=session,
+                    extra_context="",
+                )
+                timings["llm_ms"] = (time.perf_counter() - t0) * 1000
+            else:
+                t0 = time.perf_counter()
+                response_text = self._fast_path(decision, message, clinic)
+                timings["fast_path_ms"] = (time.perf_counter() - t0) * 1000
 
         elif lane == Lane.SQL_FAST:
             t0 = time.perf_counter()
-            sql_rows = self._run_sql(clinic, nlu_result, patient=patient)
+            sql_rows = self._run_sql(
+                clinic, nlu_result, patient=patient, message=message
+            )
             timings["sql_ms"] = (time.perf_counter() - t0) * 1000
             from apps.chatbot.sql_tool import format_sql_results
 
             response_text = format_sql_results(sql_rows)
-            if soft_medical and not sql_rows:
+            # Hybrid: empty/thin SQL + clinic docs → escalate to vector RAG (any tenant)
+            if self._should_hybrid_rag(
+                nlu=nlu_result,
+                sql_rows=sql_rows,
+                has_catalog=has_catalog,
+                knowledge_q=knowledge_q,
+            ):
+                lane = Lane.VECTOR_RAG
+                timings["lane"] = lane.value
+                t0 = time.perf_counter()
+                vector_rows = self._run_vector(
+                    clinic, message, document_ids=matched_docs or None
+                )
+                timings["vector_ms"] = (time.perf_counter() - t0) * 1000
+                t0 = time.perf_counter()
+                response_text = self._generate_response(
+                    clinic=clinic,
+                    message=message,
+                    nlu=nlu_result,
+                    sql_rows=sql_rows,
+                    vector_rows=vector_rows,
+                    session=session,
+                    extra_context="",
+                )
+                timings["llm_ms"] = (time.perf_counter() - t0) * 1000
+            elif soft_medical and not self._sql_found(sql_rows):
                 response_text = self._soft_medical_reply(clinic, message)
 
         elif lane == Lane.BOOKING:
@@ -252,7 +311,9 @@ class ChatEngine:
             # Optional SQL if also needed
             if nlu_result.needs_sql:
                 t0 = time.perf_counter()
-                sql_rows = self._run_sql(clinic, nlu_result, patient=patient)
+                sql_rows = self._run_sql(
+                clinic, nlu_result, patient=patient, message=message
+            )
                 timings["sql_ms"] = (time.perf_counter() - t0) * 1000
 
             t0 = time.perf_counter()
@@ -390,10 +451,54 @@ class ChatEngine:
         clinic_phone = getattr(clinic, "phone", "") or ""
         return get_response(template_id, clinic_phone=clinic_phone)
 
-    def _run_sql(self, clinic: Any, nlu: Any, *, patient: Any = None) -> list[dict[str, Any]]:
+    def _sql_found(self, sql_rows: list[dict[str, Any]]) -> bool:
+        if not sql_rows:
+            return False
+        return any(bool(block.get("found")) or bool(block.get("rows")) for block in sql_rows)
+
+    def _should_hybrid_rag(
+        self,
+        *,
+        nlu: Any,
+        sql_rows: list[dict[str, Any]],
+        has_catalog: bool,
+        knowledge_q: bool,
+    ) -> bool:
+        """Escalate SQL → vector when structured lookup misses and docs exist."""
+        from apps.chatbot.routing.lanes import HYBRID_SQL_INTENTS
+        from apps.chatbot.nlu.schemas import Intent
+
+        if not has_catalog:
+            return False
+        if self._sql_found(sql_rows) and not knowledge_q and not nlu.needs_vector:
+            return False
+        intent = nlu.intent
+        if intent in HYBRID_SQL_INTENTS or knowledge_q or bool(nlu.needs_vector):
+            return True
+        if intent == Intent.UNKNOWN:
+            return True
+        # Empty SQL on pricing/services always try docs when present
+        if not self._sql_found(sql_rows) and intent in {
+            Intent.PRICING,
+            Intent.SERVICES_OFFERED,
+            Intent.INSURANCE_ACCEPTED,
+            Intent.INSURANCE_VERIFICATION,
+            Intent.FAQ,
+        }:
+            return True
+        return False
+
+    def _run_sql(
+        self,
+        clinic: Any,
+        nlu: Any,
+        *,
+        patient: Any = None,
+        message: str = "",
+    ) -> list[dict[str, Any]]:
         from apps.chatbot.sql_tool import SQLTool
 
-        results = SQLTool.run(clinic, nlu, patient=patient)
+        results = SQLTool.run(clinic, nlu, patient=patient, message=message)
         return [r.to_dict() for r in results]
 
     def _run_vector(

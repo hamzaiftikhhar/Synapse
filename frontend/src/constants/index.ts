@@ -35,3 +35,38 @@ export const DASHBOARD_NAV = [
   { href: "/dashboard/settings", label: "Settings", icon: "Settings" },
   { href: "/dashboard/profile", label: "Profile", icon: "User" },
 ] as const;
+
+/** Super Admin platform portal — shown when no clinic tenant is active. */
+export const PLATFORM_NAV = [
+  { href: "/dashboard/platform", label: "Overview", icon: "LayoutDashboard" },
+  { href: "/dashboard/platform/clinics", label: "Clinics", icon: "Building2" },
+  { href: "/dashboard/platform/users", label: "Users", icon: "Users" },
+  {
+    href: "/dashboard/platform/subscriptions",
+    label: "Subscriptions",
+    icon: "CreditCard",
+  },
+  { href: "/dashboard/platform/ai-usage", label: "AI Usage", icon: "BarChart3" },
+  {
+    href: "/dashboard/platform/documents",
+    label: "Documents",
+    icon: "BookOpen",
+  },
+  {
+    href: "/dashboard/platform/ai-monitoring",
+    label: "AI Monitoring",
+    icon: "Bot",
+  },
+  {
+    href: "/dashboard/platform/audit",
+    label: "Audit Logs",
+    icon: "Shield",
+  },
+  {
+    href: "/dashboard/platform/settings",
+    label: "Platform Settings",
+    icon: "Settings",
+  },
+  { href: "/dashboard/profile", label: "Profile", icon: "User" },
+] as const;
+

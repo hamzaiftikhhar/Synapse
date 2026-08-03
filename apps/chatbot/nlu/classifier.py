@@ -113,7 +113,8 @@ def classify_message(
             logger.info("NLU using rules fallback after provider failure")
             return _finalize_rules(fallback_rule, started)
 
-    # Soft clarify — never hang the user
+    # Soft clarify — never hang the user. Engine may upgrade to vector_rag
+    # when the clinic has a document catalog (timeout must not ignore docs).
     logger.info("NLU returning clarify fallback after provider failure")
     return _finalize_rules(
         {

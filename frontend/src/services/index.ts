@@ -138,6 +138,24 @@ export const authService = {
 };
 
 export const platformService = {
+  async overview() {
+    const { data } = await api.get<{
+      clinic_count: number;
+      active_clinics: number;
+      suspended_clinics: number;
+      onboarding_clinics: number;
+      appointments_30d: number;
+      tokens_30d: number;
+      documents: number;
+      staff_users: number;
+      top_clinics_by_tokens: Array<{
+        slug: string;
+        name: string;
+        tokens_30d: number;
+      }>;
+    }>("/platform/overview");
+    return data;
+  },
   async listClinics(search = "") {
     const { data } = await api.get<
       Array<{

@@ -15,6 +15,7 @@ class SQLContext:
     clinic: Any
     nlu: NLUResult
     patient: Any | None = None
+    message: str = ""
 
 
 @dataclass

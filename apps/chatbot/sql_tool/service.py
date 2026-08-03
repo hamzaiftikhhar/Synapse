@@ -56,8 +56,9 @@ class SQLTool:
         nlu: NLUResult,
         *,
         patient: object | None = None,
+        message: str = "",
     ) -> list[SQLResult]:
-        ctx = SQLContext(clinic=clinic, nlu=nlu, patient=patient)
+        ctx = SQLContext(clinic=clinic, nlu=nlu, patient=patient, message=message or "")
         handlers = cls._handlers_for(nlu)
         if not handlers:
             return [
