@@ -57,7 +57,9 @@ def build_ui_meta(
         if last_doctor:
             booking["doctor_id"] = last_doctor.get("id")
             booking["doctor_name"] = last_doctor.get("name")
-        if last_specialty:
+        # Only pin specialty when the patient already chose one in this session
+        # (e.g. specialty chip). AI suggestions stay in suggested_specialties only.
+        if last_specialty and last_specialty.get("id"):
             booking["specialty_id"] = last_specialty.get("id")
             booking["specialty_name"] = last_specialty.get("name")
         meta["booking"] = booking

@@ -7,6 +7,7 @@ export type Clinic = {
   slug: string;
   name: string;
   timezone: string;
+  status?: string;
 };
 
 export type User = {
@@ -17,35 +18,58 @@ export type User = {
   last_name: string;
   role: UserRole;
   is_clinic_owner: boolean;
+  email_verified?: boolean;
+  email_verified_at?: string | null;
+};
+
+export type Tenant = {
+  slug: string;
+  name: string;
+  status: string;
+  role?: string;
 };
 
 export type StaffTokenResponse = {
   access_token: string;
   refresh_token: string;
-  token_type: string;
+  token_type?: string;
   expires_in_minutes: number;
   user: User;
   clinic: Clinic | null;
+  tenant?: string | null;
+  tenants?: Tenant[];
 };
 
 export type MeResponse = {
   user: User;
   clinic: Clinic | null;
+  tenant?: string | null;
+  tenants?: Tenant[];
+  can_exit_clinic?: boolean;
 };
 
 export type StaffLoginInput = {
   email: string;
   password: string;
-  clinic_slug: string;
+  clinic_slug?: string | null;
+  remember?: boolean;
+};
+
+export type StaffRegisterInput = {
+  email: string;
+  password: string;
+  first_name?: string;
+  last_name?: string;
+};
+
+export type MessageOut = {
+  message?: string;
+  detail?: string;
 };
 
 export type Paginated<T> = {
   count: number;
   results: T[];
-};
-
-export type MessageOut = {
-  detail: string;
 };
 
 export type Patient = {
@@ -276,6 +300,7 @@ export type WidgetConfig = {
     };
     booking?: {
       require_auth?: boolean;
+      verification_mode?: "sms" | "email" | "sms_or_email" | "none";
       slot_duration_min?: number;
       mode?: "doctor_first" | "specialty_first" | "general";
     };
@@ -381,7 +406,9 @@ export type BookingConfirmInput = {
 
 export type OTPSendInput = {
   clinic_slug: string;
-  phone: string;
+  phone?: string;
+  email?: string;
+  channel?: string | null;
   session_token?: string | null;
   first_name?: string | null;
   last_name?: string | null;
@@ -390,14 +417,16 @@ export type OTPSendInput = {
 export type OTPSendResponse = {
   message: string;
   session_token: string;
-  patient_id: string;
+  patient_id: string | number;
   expires_in_minutes: number;
+  channel?: string;
   debug_code?: string | null;
 };
 
 export type OTPVerifyInput = {
   clinic_slug: string;
-  phone: string;
+  phone?: string;
+  email?: string;
   code: string;
   session_token?: string | null;
   first_name?: string | null;

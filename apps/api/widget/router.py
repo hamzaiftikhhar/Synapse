@@ -51,9 +51,24 @@ def _resolve_clinic(slug: str) -> Clinic:
 @router.get("/config", response=WidgetConfigOut, auth=None)
 def widget_config(request, clinic_slug: str):
     """Public widget configuration for tenant detection and branding."""
+    from apps.clinics.features import (
+        default_widget_configuration,
+        get_feature_flags,
+        get_verification_mode,
+    )
+
     clinic = _resolve_clinic(clinic_slug)
     settings = WidgetSettings.objects.filter(clinic=clinic).first()
-    configuration = settings.configuration if settings else {}
+    configuration = (
+        dict(settings.configuration)
+        if settings and isinstance(settings.configuration, dict)
+        else default_widget_configuration()
+    )
+    booking = dict(configuration.get("booking") or {})
+    booking["verification_mode"] = get_verification_mode(clinic)
+    booking["require_auth"] = booking["verification_mode"] != "none"
+    configuration["booking"] = booking
+    configuration["feature_flags"] = get_feature_flags(clinic)
     return WidgetConfigOut(
         clinic_slug=clinic.slug,
         clinic_name=clinic.name,

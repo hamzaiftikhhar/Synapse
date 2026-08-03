@@ -45,12 +45,31 @@ export function clearStaffTokens() {
   localStorage.removeItem(STORAGE_KEYS.refreshToken);
   sessionStorage.removeItem(STORAGE_KEYS.accessToken);
   sessionStorage.removeItem(STORAGE_KEYS.refreshToken);
+  localStorage.removeItem(STORAGE_KEYS.activeTenant);
+}
+
+export function getActiveTenant(): string | null {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem(STORAGE_KEYS.activeTenant);
+}
+
+export function setActiveTenant(tenant: string | null) {
+  if (typeof window === "undefined") return;
+  if (tenant) {
+    localStorage.setItem(STORAGE_KEYS.activeTenant, tenant);
+  } else {
+    localStorage.removeItem(STORAGE_KEYS.activeTenant);
+  }
 }
 
 api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   const token = getAccessToken();
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
+  }
+  const tenant = getActiveTenant();
+  if (tenant) {
+    config.headers["X-Tenant-ID"] = tenant;
   }
   return config;
 });

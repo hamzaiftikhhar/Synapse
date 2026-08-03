@@ -7,9 +7,10 @@ from core.models import TenantModel, TimestampedModel, UUIDModel
 
 
 class ClinicStatus(models.TextChoices):
+    ONBOARDING = "onboarding", "Onboarding"
     ACTIVE = "active", "Active"
     SUSPENDED = "suspended", "Suspended"
-    ONBOARDING = "onboarding", "Onboarding"
+    CANCELLED = "cancelled", "Cancelled"
 
 
 class Clinic(UUIDModel, TimestampedModel):
@@ -22,7 +23,7 @@ class Clinic(UUIDModel, TimestampedModel):
     status = models.CharField(
         max_length=20,
         choices=ClinicStatus.choices,
-        default=ClinicStatus.ACTIVE,
+        default=ClinicStatus.ONBOARDING,
     )
 
     class Meta:

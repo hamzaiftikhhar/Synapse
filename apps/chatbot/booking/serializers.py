@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from django.utils import timezone
 
 from apps.chatbot.booking.config import get_booking_config
-from apps.chatbot.booking.modes import step_index
+from apps.chatbot.booking.modes import PATH_OPTIONS, step_index
 from apps.chatbot.booking.state import BookingSession, BookingStep
 from apps.chatbot.sql_tool.utils import clinic_timezone, doctor_to_dict, slot_to_dict
 
@@ -37,7 +37,9 @@ def serialize_step(clinic: Any, session: BookingSession) -> dict[str, Any]:
         }
 
     step = session.step
-    if step == BookingStep.SPECIALTY.value:
+    if step == BookingStep.PATH.value:
+        payload["options"] = _path_options(clinic, session)
+    elif step == BookingStep.SPECIALTY.value:
         payload["options"] = _specialty_options(clinic, session)
     elif step == BookingStep.DOCTOR.value:
         payload["options"] = _doctor_options(clinic, session)
@@ -51,10 +53,14 @@ def serialize_step(clinic: Any, session: BookingSession) -> dict[str, Any]:
             "first_name": session.patient_first_name,
             "last_name": session.patient_last_name,
             "phone": session.patient_phone,
+            "email": session.patient_email,
+            "verification_mode": cfg.get("verification_mode") or "sms",
         }
     elif step == BookingStep.OTP.value:
         payload["options"] = {
             "phone": session.patient_phone,
+            "email": session.patient_email,
+            "verification_mode": cfg.get("verification_mode") or "sms",
             "slot_summary": _slot_summary(session),
         }
         if session.hold_expires_at:
@@ -72,6 +78,33 @@ def serialize_step(clinic: Any, session: BookingSession) -> dict[str, Any]:
         }
 
     return payload
+
+
+def _path_options(clinic: Any, session: BookingSession) -> dict[str, Any]:
+    """First screen: who would you like to see?"""
+    from apps.specialties.models import Specialty
+
+    suggested: list[dict[str, Any]] = []
+    for sid in session.suggested_specialty_ids or []:
+        try:
+            spec = Specialty.objects.get(clinic=clinic, id=sid, is_deleted=False)
+            suggested.append(
+                {
+                    "id": str(spec.id),
+                    "name": spec.name,
+                    "description": getattr(spec, "description", "") or "",
+                    "plain_label": getattr(spec, "plain_label", "") or "",
+                }
+            )
+        except Specialty.DoesNotExist:
+            continue
+
+    return {
+        "title": "Who would you like to see?",
+        "subtitle": "Choose how you'd like to book — you can always go back.",
+        "paths": list(PATH_OPTIONS),
+        "suggested": suggested[:3],
+    }
 
 
 def _specialty_options(clinic: Any, session: BookingSession) -> dict[str, Any]:
@@ -163,9 +196,18 @@ def _date_options(clinic: Any, session: BookingSession, cfg: dict[str, Any]) -> 
             }
         )
     return {
-        "title": "Choose a date",
+        "title": (
+            "Choose a date"
+            if session.doctor_id
+            else "When would you like to come in?"
+        ),
         "dates": dates,
         "doctor_name": session.doctor_name,
+        "hint": (
+            None
+            if session.doctor_id
+            else "We'll match you with an available doctor for your chosen time."
+        ),
     }
 
 
@@ -186,13 +228,18 @@ def _time_options(clinic: Any, session: BookingSession, cfg: dict[str, Any]) -> 
     )
     has_more = len(slots) > preview and not show_all
     visible = slots if show_all else slots[:preview]
+    title = "Choose a time"
+    if session.mode in {"general", "first_available"} and not session.doctor_id:
+        title = "First available times"
     return {
-        "title": "Choose a time",
+        "title": title,
         "date": session.date,
         "doctor_name": session.doctor_name,
         "slots": visible,
         "has_more": has_more,
         "total_slots": len(slots),
+        "clinic_assigned": session.mode in {"general", "first_available"}
+        and not session.doctor_id,
     }
 
 
@@ -257,8 +304,9 @@ def _slots_for_day(
             doctor_specialties__specialty_id=specialty_id
         ).distinct()
 
-    # For general mode without doctor: pick any accepting doctor
-    doctors = list(doctor_qs[:5])
+    # For general / first-available without a pinned doctor: scan more providers
+    limit = 12 if mode in {"general", "first_available"} and not doctor_id else 5
+    doctors = list(doctor_qs[:limit])
     if not doctors:
         return []
 

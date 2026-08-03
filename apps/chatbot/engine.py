@@ -292,11 +292,9 @@ class ChatEngine:
                     )
         if shown_doctors and not last_doctor:
             last_doctor = shown_doctors[0]
-        if suggested and not last_specialty:
-            last_specialty = {
-                "id": suggested[0].get("id"),
-                "name": suggested[0].get("name"),
-            }
+        # Do NOT promote AI specialty suggestions into last_specialty —
+        # that would prefill booking.specialty_id and skip the path chooser.
+        # Suggestions stay soft via ui_meta.suggested_specialties / chips.
 
         from apps.chatbot.ui_meta import build_ui_meta
 

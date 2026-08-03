@@ -10,6 +10,7 @@ from typing import Any
 
 
 class BookingStep(str, Enum):
+    PATH = "path"  # Who would you like to see?
     DISCOVERY = "discovery"
     SPECIALTY = "specialty"
     DOCTOR = "doctor"
@@ -38,6 +39,7 @@ class BookingSession:
     patient_first_name: str = ""
     patient_last_name: str = ""
     patient_phone: str = ""
+    patient_email: str = ""
     hold_expires_at: str | None = None
     confirmation_code: str | None = None
     appointment_id: str | None = None
@@ -62,7 +64,7 @@ class BookingSession:
             booking_id=secrets.token_urlsafe(16),
             clinic_id=str(clinic_id),
             mode=mode,
-            step=BookingStep.SPECIALTY.value,
+            step=BookingStep.PATH.value,
             reason=reason or "",
             created_at=now,
             updated_at=now,

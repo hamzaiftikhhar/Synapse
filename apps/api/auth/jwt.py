@@ -1,7 +1,7 @@
 """JWT encode/decode — staff (portal) and patient (widget) token families.
 
-Staff tokens: type staff_access | staff_refresh
-Patient tokens: type patient_access (short-lived, OTP-issued)
+Staff tokens carry optional `tenant` (clinic slug). Legacy `clinic_id` (UUID)
+is still accepted when decoding for backward compatibility.
 """
 
 from __future__ import annotations
@@ -15,15 +15,15 @@ import jwt
 from django.conf import settings
 from ninja.errors import HttpError
 
-#what is the Literal["staff_access", "staff_refresh"]? it is a type that is used to specify the type of the staff token.
 StaffTokenType = Literal["staff_access", "staff_refresh"]
 PatientTokenType = Literal["patient_access"]
 
 
-@dataclass(frozen=True) #why we are using frozen=True? because we want to make the class immutable.
-class StaffTokenPayload: #why @dataclass is used? because we want to create a class that can be used to store the payload of the staff token. without having to write the __init__ method.Dataclass automatically writes that constructor.
+@dataclass(frozen=True)
+class StaffTokenPayload:
     user_id: int
-    clinic_id: UUID | None
+    tenant: str | None  # clinic slug
+    clinic_id: UUID | None  # legacy / resolved
     role: str
     token_type: StaffTokenType
     exp: datetime
@@ -31,8 +31,12 @@ class StaffTokenPayload: #why @dataclass is used? because we want to create a cl
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> StaffTokenPayload:
         clinic_raw = data.get("clinic_id")
+        tenant = data.get("tenant")
+        if tenant is not None:
+            tenant = str(tenant) or None
         return cls(
             user_id=int(data["sub"]),
+            tenant=tenant,
             clinic_id=UUID(str(clinic_raw)) if clinic_raw else None,
             role=str(data["role"]),
             token_type=data["type"],  # type: ignore[arg-type]
@@ -47,8 +51,8 @@ class PatientTokenPayload:
     session_id: UUID | None
     exp: datetime
 
-    @classmethod #why we are using classmethod? because we want to create a class method that is used to create a PatientTokenPayload object from a dictionary.
-    def from_dict(cls, data: dict[str, Any]) -> PatientTokenPayload: 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> PatientTokenPayload:
         session_raw = data.get("session_id")
         return cls(
             patient_id=UUID(str(data["sub"])),
@@ -82,15 +86,18 @@ def _decode_raw(token: str) -> dict[str, Any]:
 def create_staff_access_token(
     *,
     user_id: int,
-    clinic_id: UUID | None,
     role: str,
-) -> str: #WHY WE use hte -> str? because we want to return a string.
+    tenant: str | None = None,
+    clinic_id: UUID | None = None,
+) -> str:
     expire = datetime.now(UTC) + timedelta(
         minutes=settings.JWT_STAFF_ACCESS_TOKEN_EXPIRE_MINUTES
     )
     return _encode(
         {
             "sub": str(user_id),
+            "tenant": tenant,
+            # Keep clinic_id for older clients during transition
             "clinic_id": str(clinic_id) if clinic_id else None,
             "role": role,
             "exp": expire,
@@ -103,8 +110,9 @@ def create_staff_access_token(
 def create_staff_refresh_token(
     *,
     user_id: int,
-    clinic_id: UUID | None,
     role: str,
+    tenant: str | None = None,
+    clinic_id: UUID | None = None,
 ) -> str:
     expire = datetime.now(UTC) + timedelta(
         days=settings.JWT_STAFF_REFRESH_TOKEN_EXPIRE_DAYS
@@ -112,6 +120,7 @@ def create_staff_refresh_token(
     return _encode(
         {
             "sub": str(user_id),
+            "tenant": tenant,
             "clinic_id": str(clinic_id) if clinic_id else None,
             "role": role,
             "exp": expire,
@@ -122,7 +131,7 @@ def create_staff_refresh_token(
 
 
 def create_patient_access_token(
-    *, #why star is used? Everything after * must be passed by name (keyword arguments).
+    *,
     patient_id: UUID,
     clinic_id: UUID,
     session_id: UUID | None = None,

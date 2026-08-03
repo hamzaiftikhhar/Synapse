@@ -1,4 +1,4 @@
-import { api, persistStaffTokens, clearStaffTokens, widgetApi, setPatientToken } from "@/lib/api/client";
+import { api, persistStaffTokens, clearStaffTokens, widgetApi, setPatientToken, setActiveTenant } from "@/lib/api/client";
 import type {
   Appointment,
   AppointmentInput,
@@ -26,7 +26,9 @@ import type {
   ServiceInput,
   ServiceUpdateInput,
   StaffLoginInput,
+  StaffRegisterInput,
   StaffTokenResponse,
+  Tenant,
 } from "@/types/api";
 
 function listQuery(params?: ListParams & Record<string, unknown>) {
@@ -39,10 +41,85 @@ export const authService = {
   async login(input: StaffLoginInput, remember = true) {
     const { data } = await api.post<StaffTokenResponse>("/auth/login", input);
     persistStaffTokens(data.access_token, data.refresh_token, remember);
+    if (data.tenant) setActiveTenant(data.tenant);
+    else if (data.clinic?.slug) setActiveTenant(data.clinic.slug);
+    return data;
+  },
+  async register(input: StaffRegisterInput) {
+    const { data } = await api.post<MessageOut>("/auth/register", input);
+    return data;
+  },
+  async verifyEmail(token: string) {
+    const { data } = await api.post<MessageOut>("/auth/verify-email", { token });
+    return data;
+  },
+  async resendVerification(email: string) {
+    const { data } = await api.post<MessageOut>("/auth/resend-verification", {
+      email,
+    });
+    return data;
+  },
+  async forgotPassword(email: string) {
+    const { data } = await api.post<MessageOut>("/auth/forgot-password", {
+      email,
+    });
+    return data;
+  },
+  async resetPassword(token: string, password: string) {
+    const { data } = await api.post<MessageOut>("/auth/reset-password", {
+      token,
+      password,
+    });
+    return data;
+  },
+  async changePassword(current_password: string, new_password: string) {
+    const { data } = await api.post<MessageOut>("/auth/change-password", {
+      current_password,
+      new_password,
+    });
     return data;
   },
   async me() {
     const { data } = await api.get<MeResponse>("/auth/me");
+    return data;
+  },
+  async tenants() {
+    const { data } = await api.get<Tenant[]>("/auth/tenants");
+    return data;
+  },
+  async selectTenant(tenant: string) {
+    const { data } = await api.post<StaffTokenResponse>("/auth/tenants/select", {
+      tenant,
+    });
+    persistStaffTokens(data.access_token, data.refresh_token, true);
+    setActiveTenant(data.tenant || tenant);
+    return data;
+  },
+  async createClinic(input: {
+    name: string;
+    slug: string;
+    email?: string | null;
+    phone?: string;
+    timezone?: string;
+  }) {
+    const { data } = await api.post<import("@/types/api").Clinic>(
+      "/auth/clinics",
+      input
+    );
+    setActiveTenant(data.slug);
+    return data;
+  },
+  async enterClinic(tenant: string) {
+    const { data } = await api.post<{ tenant: string; clinic: import("@/types/api").Clinic }>(
+      "/auth/enter-clinic",
+      { tenant }
+    );
+    setActiveTenant(data.tenant);
+    return data;
+  },
+  async exitClinic() {
+    const { data } = await api.post<MessageOut>("/auth/exit-clinic", {});
+    setActiveTenant(null);
     return data;
   },
   async refresh(refresh_token: string) {
@@ -53,6 +130,32 @@ export const authService = {
   },
   logout() {
     clearStaffTokens();
+  },
+};
+
+export const platformService = {
+  async listClinics(search = "") {
+    const { data } = await api.get<
+      Array<{
+        id: string;
+        slug: string;
+        name: string;
+        email: string;
+        status: string;
+        timezone: string;
+        doctor_count: number;
+        staff_count: number;
+        document_count: number;
+        appointment_count_30d: number;
+        token_usage_30d: number;
+        created_at: string;
+      }>
+    >("/platform/clinics", { params: search ? { search } : undefined });
+    return data;
+  },
+  async patchClinic(id: string, input: { status?: string; name?: string }) {
+    const { data } = await api.patch(`/platform/clinics/${id}`, input);
+    return data;
   },
 };
 

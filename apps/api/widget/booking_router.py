@@ -151,20 +151,22 @@ def booking_hold(request, payload: BookingHoldIn):
 
 @router.post("/booking/otp/send", auth=None)
 def booking_otp_send(request, payload: BookingOtpSendIn):
-    """Send OTP for the phone collected in the booking details step."""
+    """Send OTP for the phone/email collected in the booking details step."""
     clinic = _resolve_clinic(payload.clinic_slug)
     session = _resolve_session(clinic, payload.session_token)
     booking = (session.conversation_context or {}).get("booking") or {}
     if booking.get("booking_id") != payload.booking_id:
         raise HttpError(404, "Booking session not found")
     phone = booking.get("patient_phone") or ""
-    if not phone:
-        raise HttpError(400, "Patient phone missing — submit details first")
+    email = booking.get("patient_email") or ""
+    if not phone and not email:
+        raise HttpError(400, "Patient contact missing — submit details first")
 
     try:
         result = send_otp(
             clinic=clinic,
             phone=phone,
+            email=email,
             session_token=session.session_token,
             first_name=booking.get("patient_first_name") or "",
             last_name=booking.get("patient_last_name") or "",
@@ -178,39 +180,55 @@ def booking_otp_send(request, payload: BookingOtpSendIn):
         "booking_id": payload.booking_id,
         "expires_in_minutes": result.expires_in_minutes,
         "debug_code": result.debug_code,
+        "channel": result.channel,
         "phone": phone,
+        "email": email,
     }
 
 
 @router.post("/booking/confirm", auth=None)
 def booking_confirm(request, payload: BookingConfirmIn):
-    """Verify OTP and create the appointment."""
+    """Verify OTP (when required) and create the appointment."""
+    from apps.chatbot.booking.config import get_booking_config
+
     clinic = _resolve_clinic(payload.clinic_slug)
     session = _resolve_session(clinic, payload.session_token)
     booking = (session.conversation_context or {}).get("booking") or {}
     if booking.get("booking_id") != payload.booking_id:
         raise HttpError(404, "Booking session not found")
 
+    cfg = get_booking_config(clinic)
+    vmode = cfg.get("verification_mode") or "sms"
     phone = booking.get("patient_phone") or ""
-    try:
-        otp_result = verify_otp(
-            clinic=clinic,
-            phone=phone,
-            code=payload.otp_code,
-            session_token=session.session_token,
-            first_name=booking.get("patient_first_name"),
-            last_name=booking.get("patient_last_name"),
-        )
-    except OTPError as exc:
-        raise HttpError(exc.status_code, str(exc)) from exc
+    email = booking.get("patient_email") or ""
+
+    patient = None
+    otp_verified = False
+    if vmode == "none":
+        otp_verified = False
+    else:
+        try:
+            otp_result = verify_otp(
+                clinic=clinic,
+                phone=phone,
+                email=email,
+                code=payload.otp_code,
+                session_token=session.session_token,
+                first_name=booking.get("patient_first_name"),
+                last_name=booking.get("patient_last_name"),
+            )
+        except OTPError as exc:
+            raise HttpError(exc.status_code, str(exc)) from exc
+        patient = otp_result.patient
+        otp_verified = True
 
     try:
         result = BookingService.confirm(
             clinic=clinic,
             chat_session=session,
             booking_id=payload.booking_id,
-            patient=otp_result.patient,
-            otp_verified=True,
+            patient=patient,
+            otp_verified=otp_verified,
         )
     except BookingError as exc:
         raise HttpError(exc.status_code, str(exc)) from exc

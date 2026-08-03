@@ -99,6 +99,10 @@ class ChatMessage(TenantModel):
 
 
 class OTPVerification(TenantModel):
+    class Channel(models.TextChoices):
+        SMS = "sms", "SMS"
+        EMAIL = "email", "Email"
+
     session = models.ForeignKey(
         ChatSession,
         on_delete=models.CASCADE,
@@ -111,7 +115,13 @@ class OTPVerification(TenantModel):
         blank=True,
         related_name="otp_verifications",
     )
-    phone = models.CharField(max_length=20)
+    phone = models.CharField(max_length=20, blank=True, default="")
+    email = models.EmailField(blank=True, default="")
+    channel = models.CharField(
+        max_length=16,
+        choices=Channel.choices,
+        default=Channel.SMS,
+    )
     code_hash = models.CharField(max_length=128)
     attempts = models.PositiveSmallIntegerField(default=0)
     max_attempts = models.PositiveSmallIntegerField(default=3)
@@ -124,7 +134,9 @@ class OTPVerification(TenantModel):
         indexes = [
             models.Index(fields=["session", "created_at"]),
             models.Index(fields=["clinic", "phone", "expires_at"]),
+            models.Index(fields=["clinic", "email", "expires_at"]),
         ]
 
     def __str__(self) -> str:
-        return f"OTP {self.phone} ({self.session_id})"
+        target = self.phone or self.email or "?"
+        return f"OTP {self.channel}:{target} ({self.session_id})"

@@ -1,4 +1,4 @@
-"""OTP generation, storage, and verification — backend-owned; Twilio sends SMS only."""
+"""OTP generation, storage, and verification — channel-aware (SMS / email)."""
 
 from __future__ import annotations
 
@@ -11,9 +11,10 @@ from datetime import timedelta
 from django.conf import settings
 from django.utils import timezone
 
-from apps.chatbot.integrations import twilio_sms
 from apps.chatbot.models import ChatSession, OTPVerification
+from apps.clinics.features import get_feature_flags, get_verification_mode
 from apps.clinics.models import Clinic
+from apps.notifications.service import NotificationService
 from apps.patients.models import Patient
 from apps.patients.services import patient_service
 
@@ -21,8 +22,6 @@ logger = logging.getLogger(__name__)
 
 
 class OTPError(Exception):
-    """Base OTP flow error with HTTP status code."""
-
     def __init__(self, message: str, status_code: int = 400) -> None:
         super().__init__(message)
         self.status_code = status_code
@@ -45,6 +44,7 @@ class OTPSendResult:
     session_token: str
     expires_in_minutes: int
     debug_code: str | None = None
+    channel: str = "sms"
 
 
 @dataclass
@@ -79,27 +79,81 @@ def _get_or_create_session(
     )
 
 
+def resolve_otp_channel(clinic: Clinic, requested: str | None = None) -> str:
+    mode = get_verification_mode(clinic)
+    flags = get_feature_flags(clinic)
+    req = (requested or "").lower().strip()
+
+    if mode == "none":
+        raise OTPError("Verification is disabled for this clinic", status_code=400)
+
+    if mode == "sms":
+        if not flags.get("sms_otp", True):
+            raise OTPError("SMS verification is disabled", status_code=400)
+        return "sms"
+    if mode == "email":
+        if not flags.get("email_otp", True):
+            raise OTPError("Email verification is disabled", status_code=400)
+        return "email"
+    # sms_or_email
+    if req in {"sms", "email"}:
+        if req == "sms" and not flags.get("sms_otp", True):
+            raise OTPError("SMS verification is disabled", status_code=400)
+        if req == "email" and not flags.get("email_otp", True):
+            raise OTPError("Email verification is disabled", status_code=400)
+        return req
+    return "sms" if flags.get("sms_otp", True) else "email"
+
+
 def send_otp(
     *,
     clinic: Clinic,
-    phone: str,
+    phone: str = "",
+    email: str = "",
     session_token: str | None = None,
     first_name: str = "",
     last_name: str = "",
+    channel: str | None = None,
 ) -> OTPSendResult:
     """
-    1. Ensure Patient exists for clinic + phone
-    2. Generate + store OTP
-    3. Send SMS via Twilio (or dev fallback)
+    Ensure Patient exists, store OTP, deliver via SMS or email.
     """
-    patient, _ = patient_service.get_or_create_by_phone(
-        clinic=clinic,
-        phone=phone,
-        first_name=first_name,
-        last_name=last_name,
-    )
-    session = _get_or_create_session(clinic=clinic, session_token=session_token)
+    channel_resolved = resolve_otp_channel(clinic, channel)
+    phone = (phone or "").strip()
+    email = (email or "").strip().lower()
 
+    if channel_resolved == "sms" and not phone:
+        raise OTPError("Phone is required for SMS verification")
+    if channel_resolved == "email" and not email:
+        raise OTPError("Email is required for email verification")
+
+    if phone:
+        patient, _ = patient_service.get_or_create_by_phone(
+            clinic=clinic,
+            phone=phone,
+            first_name=first_name,
+            last_name=last_name,
+        )
+        if email and not patient.email:
+            patient.email = email
+            patient.save(update_fields=["email", "updated_at"])
+    else:
+        # Email-only path — still need a patient; use email as unique key via phone placeholder
+        # Prefer existing by email
+        patient = Patient.objects.filter(clinic=clinic, email=email).first()
+        if patient is None:
+            # Synthesize a stable phone placeholder for unique constraint
+            placeholder = f"email:{email}"[:20]
+            patient, _ = patient_service.get_or_create_by_phone(
+                clinic=clinic,
+                phone=placeholder,
+                first_name=first_name,
+                last_name=last_name,
+            )
+            patient.email = email
+            patient.save(update_fields=["email", "updated_at"])
+
+    session = _get_or_create_session(clinic=clinic, session_token=session_token)
     code = _generate_code()
     expires = timezone.now() + timedelta(minutes=settings.OTP_EXPIRE_MINUTES)
 
@@ -107,24 +161,31 @@ def send_otp(
         clinic=clinic,
         session=session,
         patient=patient,
-        phone=phone,
+        phone=phone or getattr(patient, "phone", ""),
+        email=email or getattr(patient, "email", ""),
+        channel=channel_resolved,
         code_hash=_hash_code(code),
         expires_at=expires,
     )
 
     debug_code: str | None = None
-    sms_body = f"Your Synapse verification code is {code}"
-
-    if twilio_sms.is_configured():
+    if channel_resolved == "sms":
         try:
-            twilio_sms.send_sms(to=phone, body=sms_body)
-        except twilio_sms.TwilioSendError as exc:
+            NotificationService.send_patient_otp_sms(to=phone, code=code)
+        except Exception as exc:
+            logger.exception("SMS OTP failed")
             raise OTPError(str(exc), status_code=503) from exc
-        if settings.DEBUG:
+        debug_code = code if settings.DEBUG else None
+        # Always expose debug when console SMS provider
+        from apps.chatbot.integrations import twilio_sms
+
+        if not twilio_sms.is_configured():
             debug_code = code
     else:
-        logger.warning("Twilio not configured — OTP for %s (dev only)", phone)
-        debug_code = code
+        NotificationService.send_patient_otp_email(
+            to=email, code=code, clinic_name=clinic.name
+        )
+        debug_code = code if settings.DEBUG else None
 
     return OTPSendResult(
         patient=patient,
@@ -132,23 +193,20 @@ def send_otp(
         session_token=session.session_token,
         expires_in_minutes=settings.OTP_EXPIRE_MINUTES,
         debug_code=debug_code,
+        channel=channel_resolved,
     )
 
 
 def verify_otp(
     *,
     clinic: Clinic,
-    phone: str,
+    phone: str = "",
+    email: str = "",
     code: str,
     session_token: str | None = None,
     first_name: str | None = None,
     last_name: str | None = None,
 ) -> OTPVerifyResult:
-    """
-    Verify OTP and mark the existing Patient's phone as verified.
-
-    Patient row must already exist (created at send or by staff).
-    """
     session: ChatSession | None = None
     if session_token:
         try:
@@ -156,12 +214,21 @@ def verify_otp(
         except ChatSession.DoesNotExist:
             raise OTPError("Session not found", status_code=404) from None
 
+    phone = (phone or "").strip()
+    email = (email or "").strip().lower()
+
     otp_qs = OTPVerification.objects.filter(
         clinic=clinic,
-        phone=phone,
         verified_at__isnull=True,
         expires_at__gt=timezone.now(),
     ).order_by("-created_at")
+
+    if phone:
+        otp_qs = otp_qs.filter(phone=phone)
+    elif email:
+        otp_qs = otp_qs.filter(email=email)
+    else:
+        raise OTPError("Phone or email is required")
 
     if session is not None:
         otp_qs = otp_qs.filter(session=session)
@@ -181,7 +248,9 @@ def verify_otp(
     otp.verified_at = timezone.now()
     otp.save(update_fields=["verified_at"])
 
-    patient = patient_service.get_by_phone(clinic=clinic, phone=phone)
+    patient = otp.patient
+    if patient is None and phone:
+        patient = patient_service.get_by_phone(clinic=clinic, phone=phone)
     if patient is None:
         raise OTPError("Patient not found — request a new code", status_code=404)
 

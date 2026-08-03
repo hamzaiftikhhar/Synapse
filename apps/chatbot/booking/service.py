@@ -14,7 +14,12 @@ from django.utils import timezone
 
 from apps.chatbot.booking.config import get_booking_config
 from apps.chatbot.booking.discovery import suggest_specialties
-from apps.chatbot.booking.modes import first_step, next_step, prev_step
+from apps.chatbot.booking.modes import (
+    first_step,
+    next_step,
+    prev_step,
+    resolve_mode_from_path,
+)
 from apps.chatbot.booking.serializers import serialize_step
 from apps.chatbot.booking.state import BookingSession, BookingStep
 
@@ -67,15 +72,16 @@ class BookingService:
             session.doctor_id = str(doctor_id)
             session.doctor_name = doctor_name or cls._doctor_name(clinic, str(doctor_id))
 
-        # Skip ahead when context is known
+        # Skip path chooser only when context already pins the route
         if session.doctor_id:
+            session.mode = "choose_doctor"
             session.step = BookingStep.DATE.value
         elif session.specialty_id:
+            session.mode = "specialty_first"
             session.step = BookingStep.DOCTOR.value
         else:
-            session.step = first_step(cfg["mode"]).value
-            if cfg["mode"] == "first_available" and not suggested:
-                session.step = BookingStep.DATE.value
+            # Patient chooses: First available / Help choose / Know doctor
+            session.step = BookingStep.PATH.value
 
         cls._save(chat_session, session)
         payload = serialize_step(clinic, session)
@@ -101,8 +107,44 @@ class BookingService:
             prev = prev_step(session.mode, session.step)
             if prev:
                 session.step = prev.value
+                if prev == BookingStep.PATH:
+                    # Reset path-specific selections when returning to chooser
+                    session.doctor_id = None
+                    session.doctor_name = None
+                    session.date = None
+                    session.slot_start = None
+                    session.slot_end = None
+                    session.show_all_times = False
+                    # Keep specialty only as soft chip if they picked one mid-flow
                 if prev == BookingStep.TIME:
                     session.show_all_times = False
+            cls._touch(session)
+            cls._save(chat_session, session)
+            return serialize_step(clinic, session)
+
+        if action == "select_path":
+            path_id = str(value.get("path") or value.get("id") or "").strip().lower()
+            if path_id not in {"first_available", "help_choose", "know_doctor"}:
+                raise BookingError("Invalid booking path")
+            session.mode = resolve_mode_from_path(path_id)
+            # Optional soft continue with a suggested specialty
+            sid = str(value.get("specialty_id") or "").strip()
+            sname = str(value.get("specialty_name") or "").strip()
+            if sid and path_id == "help_choose":
+                session.specialty_id = sid
+                session.specialty_name = sname or cls._specialty_name(clinic, sid)
+                session.step = BookingStep.DOCTOR.value
+            else:
+                if path_id == "first_available":
+                    session.specialty_id = None
+                    session.specialty_name = None
+                    session.doctor_id = None
+                    session.doctor_name = None
+                session.step = first_step(session.mode).value
+            session.date = None
+            session.slot_start = None
+            session.slot_end = None
+            session.show_all_times = False
             cls._touch(session)
             cls._save(chat_session, session)
             return serialize_step(clinic, session)
@@ -210,15 +252,33 @@ class BookingService:
             first = str(value.get("first_name") or "").strip()
             last = str(value.get("last_name") or "").strip()
             phone = str(value.get("phone") or "").strip()
-            if not first or not phone:
-                raise BookingError("First name and phone are required")
+            email = str(value.get("email") or "").strip().lower()
+            cfg = get_booking_config(clinic)
+            vmode = cfg.get("verification_mode") or "sms"
+            if not first:
+                raise BookingError("First name is required")
+            if vmode == "sms" and not phone:
+                raise BookingError("Phone is required")
+            if vmode == "email" and not email:
+                raise BookingError("Email is required")
+            if vmode in {"sms_or_email", "none"} and not phone and not email:
+                raise BookingError("Phone or email is required")
             if not session.slot_start or not session.doctor_id:
                 raise BookingError("Select a time slot first")
-            # Ensure hold still valid
             cls._ensure_hold(session)
             session.patient_first_name = first
             session.patient_last_name = last
             session.patient_phone = phone
+            session.patient_email = email
+            if vmode == "none":
+                cls._save(chat_session, session)
+                return cls.confirm(
+                    clinic=clinic,
+                    chat_session=chat_session,
+                    booking_id=session.booking_id,
+                    patient=None,
+                    otp_verified=False,
+                )
             session.step = BookingStep.OTP.value
             cls._touch(session)
             cls._save(chat_session, session)
@@ -268,18 +328,42 @@ class BookingService:
 
         if patient is None:
             # Get or create patient from booking details
-            patient, _ = Patient.objects.get_or_create(
-                clinic=clinic,
-                phone=session.patient_phone,
-                defaults={
-                    "first_name": session.patient_first_name,
-                    "last_name": session.patient_last_name,
-                },
-            )
+            phone = session.patient_phone or ""
+            email = getattr(session, "patient_email", "") or ""
+            if phone:
+                patient, _ = Patient.objects.get_or_create(
+                    clinic=clinic,
+                    phone=phone,
+                    defaults={
+                        "first_name": session.patient_first_name,
+                        "last_name": session.patient_last_name,
+                        "email": email,
+                    },
+                )
+            elif email:
+                patient = Patient.objects.filter(clinic=clinic, email=email).first()
+                if patient is None:
+                    patient = Patient.objects.create(
+                        clinic=clinic,
+                        phone=f"email:{email}"[:20],
+                        email=email,
+                        first_name=session.patient_first_name,
+                        last_name=session.patient_last_name,
+                    )
+            else:
+                raise BookingError("Patient contact is required")
+            updates = []
             if not patient.first_name and session.patient_first_name:
                 patient.first_name = session.patient_first_name
+                updates.append("first_name")
+            if not patient.last_name and session.patient_last_name:
                 patient.last_name = session.patient_last_name
-                patient.save(update_fields=["first_name", "last_name"])
+                updates.append("last_name")
+            if email and not patient.email:
+                patient.email = email
+                updates.append("email")
+            if updates:
+                patient.save(update_fields=updates)
 
         session.patient_id = str(patient.id)
 

@@ -49,6 +49,8 @@ class Command(BaseCommand):
         )
 
     def _ensure_staff(self, clinic: Clinic) -> None:
+        from django.utils import timezone as dj_tz
+
         staff_user, created = User.objects.get_or_create(
             email="admin@acme-cardiology.example",
             defaults={
@@ -58,27 +60,61 @@ class Command(BaseCommand):
                 "role": UserRole.CLINIC_ADMIN,
                 "is_clinic_owner": True,
                 "is_staff": True,
+                "is_active": True,
+                "email_verified_at": dj_tz.now(),
             },
         )
         if created:
             staff_user.set_password("admin123")
             staff_user.save()
         else:
-            # Keep demo credentials predictable across re-seeds
-            updated = False
+            updated_fields = []
             if staff_user.role != UserRole.CLINIC_ADMIN:
                 staff_user.role = UserRole.CLINIC_ADMIN
-                updated = True
+                updated_fields.append("role")
             if not staff_user.is_clinic_owner:
                 staff_user.is_clinic_owner = True
-                updated = True
-            if updated:
-                staff_user.save(update_fields=["role", "is_clinic_owner"])
+                updated_fields.append("is_clinic_owner")
+            if not staff_user.email_verified_at:
+                staff_user.email_verified_at = dj_tz.now()
+                updated_fields.append("email_verified_at")
+            if not staff_user.is_active:
+                staff_user.is_active = True
+                updated_fields.append("is_active")
+            if updated_fields:
+                staff_user.save(update_fields=updated_fields)
+            staff_user.set_password("admin123")
+            staff_user.save(update_fields=["password"])
         ClinicStaff.objects.get_or_create(
             user=staff_user,
             clinic=clinic,
             defaults={"is_active": True},
         )
+
+        # Platform super admin (no clinic membership required)
+        super_user, s_created = User.objects.get_or_create(
+            email="superadmin@synapse.local",
+            defaults={
+                "username": "superadmin",
+                "first_name": "Super",
+                "last_name": "Admin",
+                "role": UserRole.SUPER_ADMIN,
+                "is_staff": True,
+                "is_superuser": True,
+                "is_active": True,
+                "email_verified_at": dj_tz.now(),
+            },
+        )
+        if s_created:
+            super_user.set_password("superadmin123")
+            super_user.save()
+        else:
+            super_user.role = UserRole.SUPER_ADMIN
+            super_user.is_active = True
+            if not super_user.email_verified_at:
+                super_user.email_verified_at = dj_tz.now()
+            super_user.set_password("superadmin123")
+            super_user.save()
 
     @transaction.atomic
     def handle(self, *args, **options):

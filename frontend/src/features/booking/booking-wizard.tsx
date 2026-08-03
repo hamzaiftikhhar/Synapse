@@ -179,7 +179,11 @@ export function BookingWizard({
       <div className="flex items-start justify-between gap-2 border-b border-border/70 px-3.5 py-3">
         <div className="min-w-0">
           <p className="text-sm font-semibold text-foreground">Book Appointment</p>
-          {state?.options?.doctor_name || state?.specialty_chip ? (
+          {step === "path" ? (
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Who would you like to see?
+            </p>
+          ) : state?.options?.doctor_name || state?.specialty_chip ? (
             <p className="mt-0.5 text-xs text-muted-foreground">
               {[
                 state.specialty_chip?.name,
@@ -188,7 +192,7 @@ export function BookingWizard({
                 .filter(Boolean)
                 .join(" · ")}
             </p>
-          ) : progress && step !== "confirmed" ? (
+          ) : progress && step !== "confirmed" && (progress.current ?? 0) > 0 ? (
             <p className="mt-0.5 text-xs text-muted-foreground">
               Step {progress.current} of {progress.total}
             </p>
@@ -237,10 +241,24 @@ export function BookingWizard({
           </p>
         ) : null}
 
-        {state?.guidance && step === "specialty" ? (
+        {state?.guidance && (step === "specialty" || step === "path") ? (
           <p className="mb-4 text-sm leading-relaxed text-muted-foreground">
             {state.guidance}
           </p>
+        ) : null}
+
+        {step === "path" && state && interactive ? (
+          <PathStep
+            options={state.options}
+            onSelectPath={(path, specialty) =>
+              void runStep("select_path", {
+                path,
+                ...(specialty
+                  ? { specialty_id: specialty.id, specialty_name: specialty.name }
+                  : {}),
+              })
+            }
+          />
         ) : null}
 
         {step === "specialty" && state && interactive ? (
@@ -326,14 +344,14 @@ export function BookingWizard({
         ) : null}
       </div>
 
-      {interactive && step ? (
+      {interactive && step && step !== "path" ? (
         <div className="shrink-0 border-t border-border/70 px-3.5 py-2.5">
           <Button
             type="button"
             variant="ghost"
             size="sm"
             className="gap-1"
-            disabled={loading || progress?.current === 1}
+            disabled={loading}
             onClick={() => void runStep("back")}
           >
             <ArrowLeft className="size-3.5" />
@@ -341,6 +359,99 @@ export function BookingWizard({
           </Button>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function PathStep({
+  options,
+  onSelectPath,
+}: {
+  options: Record<string, unknown>;
+  onSelectPath: (
+    path: "first_available" | "help_choose" | "know_doctor",
+    specialty?: BookingSpecialty
+  ) => void;
+}) {
+  const paths =
+    (options.paths as {
+      id: string;
+      emoji: string;
+      title: string;
+      description: string;
+      recommended?: boolean;
+    }[]) || [];
+  const suggested = (options.suggested as BookingSpecialty[]) || [];
+  const topSuggestion = suggested[0];
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <p className="text-sm font-medium text-foreground">
+          {(options.title as string) || "Who would you like to see?"}
+        </p>
+        {options.subtitle ? (
+          <p className="mt-1 text-xs text-muted-foreground">
+            {options.subtitle as string}
+          </p>
+        ) : null}
+      </div>
+
+      {topSuggestion ? (
+        <div className="rounded-[8px] border border-primary/20 bg-primary/[0.04] px-3 py-2.5">
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            Based on what you shared,{" "}
+            <span className="font-medium text-foreground">{topSuggestion.name}</span>{" "}
+            may be a good fit.
+          </p>
+          <button
+            type="button"
+            onClick={() => onSelectPath("help_choose", topSuggestion)}
+            className="mt-2 text-xs font-medium text-primary hover:underline"
+          >
+            Continue with {topSuggestion.name} →
+          </button>
+        </div>
+      ) : null}
+
+      <div className="space-y-2">
+        {paths.map((p) => (
+          <button
+            key={p.id}
+            type="button"
+            onClick={() =>
+              onSelectPath(
+                p.id as "first_available" | "help_choose" | "know_doctor"
+              )
+            }
+            className={cn(
+              "flex w-full items-start gap-3 rounded-[8px] border px-3 py-3 text-left transition-colors",
+              p.recommended
+                ? "border-primary/35 bg-primary/[0.03] hover:bg-primary/[0.06]"
+                : "border-border bg-background hover:bg-muted/40"
+            )}
+          >
+            <span className="text-lg leading-none" aria-hidden>
+              {p.emoji}
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="flex flex-wrap items-center gap-2">
+                <span className="text-sm font-medium text-foreground">
+                  {p.title}
+                </span>
+                {p.recommended ? (
+                  <span className="rounded-[4px] bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary">
+                    Recommended
+                  </span>
+                ) : null}
+              </span>
+              <span className="mt-0.5 block text-xs leading-relaxed text-muted-foreground">
+                {p.description}
+              </span>
+            </span>
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -523,6 +634,9 @@ function DateStep({
       <p className="text-sm font-semibold text-foreground">
         {(options.title as string) || "Choose a date"}
       </p>
+      {options.hint ? (
+        <p className="text-xs text-muted-foreground">{String(options.hint)}</p>
+      ) : null}
       {options.doctor_name ? (
         <p className="text-xs text-muted-foreground">
           With {String(options.doctor_name)}
@@ -564,7 +678,12 @@ function TimeStep({
         {(options.title as string) || "Choose a time"}
       </p>
       <p className="text-xs text-muted-foreground">
-        {[options.doctor_name, options.date].filter(Boolean).join(" · ")}
+        {options.clinic_assigned
+          ? "Clinic will confirm the doctor with your slot"
+          : [options.doctor_name, options.date].filter(Boolean).join(" · ")}
+        {options.clinic_assigned && options.date
+          ? ` · ${String(options.date)}`
+          : null}
       </p>
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
         {slots.map((s) => (

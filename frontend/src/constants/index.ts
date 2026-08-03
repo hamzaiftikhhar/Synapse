@@ -2,6 +2,7 @@ export const STORAGE_KEYS = {
   accessToken: "synapse_staff_access",
   refreshToken: "synapse_staff_refresh",
   rememberMe: "synapse_remember_me",
+  activeTenant: "synapse_active_tenant",
   patientAccessToken: "synapse_patient_access",
   chatSession: "synapse_chat_session",
 } as const;

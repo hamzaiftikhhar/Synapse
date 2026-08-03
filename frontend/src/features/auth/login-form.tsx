@@ -18,7 +18,7 @@ import { APP_NAME } from "@/constants";
 const schema = z.object({
   email: z.string().email("Enter a valid email"),
   password: z.string().min(1, "Password is required"),
-  clinic_slug: z.string().min(1, "Clinic slug is required"),
+  clinic_slug: z.string().optional(),
   remember: z.boolean(),
 });
 
@@ -35,7 +35,7 @@ export function LoginForm() {
     defaultValues: {
       email: "",
       password: "",
-      clinic_slug: "acme-cardiology",
+      clinic_slug: "",
       remember: true,
     },
   });
@@ -43,17 +43,39 @@ export function LoginForm() {
   async function onSubmit(values: FormValues) {
     setSubmitting(true);
     try {
-      await login(
+      const slug = values.clinic_slug?.trim() || undefined;
+      const data = await login(
         {
           email: values.email,
           password: values.password,
-          clinic_slug: values.clinic_slug,
+          clinic_slug: slug,
         },
         values.remember
       );
       toast.success("Welcome back");
-      const next = search.get("next") || "/dashboard";
-      router.replace(next);
+      const next = search.get("next");
+      if (next) {
+        router.replace(next);
+        return;
+      }
+      if (data.user.role === "SUPER_ADMIN") {
+        router.replace("/dashboard/platform");
+        return;
+      }
+      if (data.clinic) {
+        router.replace("/dashboard");
+        return;
+      }
+      const tenants = data.tenants ?? [];
+      if (tenants.length === 0) {
+        router.replace("/onboarding/create-clinic");
+        return;
+      }
+      if (tenants.length === 1) {
+        router.replace(`/select-tenant?auto=${tenants[0].slug}`);
+        return;
+      }
+      router.replace("/select-tenant");
     } catch (err) {
       toast.error(getApiErrorMessage(err));
     } finally {
@@ -68,28 +90,14 @@ export function LoginForm() {
           {APP_NAME}
         </Link>
         <h1 className="mt-6 text-2xl font-semibold tracking-tight text-navy">
-          Sign in to your clinic
+          Sign in
         </h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          Manage doctors, services, knowledge, and your patient chatbot.
+          Manage your clinic workspace or platform.
         </p>
       </div>
 
       <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-        <div className="space-y-2">
-          <Label htmlFor="clinic_slug">Clinic slug</Label>
-          <Input
-            id="clinic_slug"
-            placeholder="acme-cardiology"
-            autoComplete="organization"
-            {...form.register("clinic_slug")}
-          />
-          {form.formState.errors.clinic_slug && (
-            <p className="text-xs text-destructive">
-              {form.formState.errors.clinic_slug.message}
-            </p>
-          )}
-        </div>
         <div className="space-y-2">
           <Label htmlFor="email">Email</Label>
           <Input
@@ -127,6 +135,18 @@ export function LoginForm() {
             </p>
           )}
         </div>
+        <div className="space-y-2">
+          <Label htmlFor="clinic_slug">
+            Clinic slug{" "}
+            <span className="font-normal text-muted-foreground">(optional)</span>
+          </Label>
+          <Input
+            id="clinic_slug"
+            placeholder="acme-cardiology"
+            autoComplete="organization"
+            {...form.register("clinic_slug")}
+          />
+        </div>
         <label className="flex items-center gap-2 text-sm text-muted-foreground">
           <Checkbox
             checked={form.watch("remember")}
@@ -142,7 +162,7 @@ export function LoginForm() {
       <p className="mt-6 text-center text-sm text-muted-foreground">
         Need an account?{" "}
         <Link href="/register" className="text-primary hover:underline">
-          Request access
+          Create account
         </Link>
       </p>
     </div>

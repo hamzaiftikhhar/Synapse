@@ -60,7 +60,9 @@ def send_otp(request, payload: OTPSendIn):
     try:
         result = send_otp(
             clinic=clinic,
-            phone=payload.phone,
+            phone=payload.phone or "",
+            email=payload.email or "",
+            channel=payload.channel,
             session_token=payload.session_token,
             first_name=payload.first_name or "",
             last_name=payload.last_name or "",
@@ -73,6 +75,7 @@ def send_otp(request, payload: OTPSendIn):
         session_token=result.session_token,
         patient_id=result.patient.id,
         expires_in_minutes=result.expires_in_minutes,
+        channel=result.channel,
         debug_code=result.debug_code,
     )
 
@@ -84,7 +87,8 @@ def verify_otp(request, payload: OTPVerifyIn):
     try:
         result = verify_otp(
             clinic=clinic,
-            phone=payload.phone,
+            phone=payload.phone or "",
+            email=payload.email or "",
             code=payload.code,
             session_token=payload.session_token,
             first_name=payload.first_name,
