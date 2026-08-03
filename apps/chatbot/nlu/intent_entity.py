@@ -115,8 +115,8 @@ class IntentEntityService:
         )
         return result
 
-    @staticmethod
-    def _log_usage(
+    @staticmethod # staticmethod is a method that is bound to the class rather than the instance of the class.
+    def _log_usage( # this is a method that is used to log the usage of the intent classification.
         *,
         clinic: Clinic,
         session,

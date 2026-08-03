@@ -1,4 +1,5 @@
 import { api, persistStaffTokens, clearStaffTokens, widgetApi, setPatientToken, setActiveTenant } from "@/lib/api/client";
+import { STORAGE_KEYS } from "@/constants";
 import type {
   Appointment,
   AppointmentInput,
@@ -110,15 +111,18 @@ export const authService = {
     return data;
   },
   async enterClinic(tenant: string) {
-    const { data } = await api.post<{ tenant: string; clinic: import("@/types/api").Clinic }>(
-      "/auth/enter-clinic",
-      { tenant }
-    );
-    setActiveTenant(data.tenant);
+    const { data } = await api.post<StaffTokenResponse>("/auth/enter-clinic", {
+      tenant,
+    });
+    const remember = localStorage.getItem(STORAGE_KEYS.rememberMe) === "1";
+    persistStaffTokens(data.access_token, data.refresh_token, remember);
+    setActiveTenant(data.tenant || data.clinic?.slug || tenant);
     return data;
   },
   async exitClinic() {
-    const { data } = await api.post<MessageOut>("/auth/exit-clinic", {});
+    const { data } = await api.post<StaffTokenResponse>("/auth/exit-clinic", {});
+    const remember = localStorage.getItem(STORAGE_KEYS.rememberMe) === "1";
+    persistStaffTokens(data.access_token, data.refresh_token, remember);
     setActiveTenant(null);
     return data;
   },

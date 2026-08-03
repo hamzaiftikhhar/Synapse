@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import axios from "axios";
 import { clearStaffTokens, getActiveTenant, setActiveTenant } from "@/lib/api/client";
 import { STORAGE_KEYS } from "@/constants";
 import { authService } from "@/services";
@@ -24,7 +25,10 @@ type AuthState = {
   canExitClinic: boolean;
   isLoading: boolean;
   isAuthenticated: boolean;
-  login: (input: StaffLoginInput, remember?: boolean) => Promise<Awaited<ReturnType<typeof authService.login>>>;
+  login: (
+    input: StaffLoginInput,
+    remember?: boolean
+  ) => Promise<Awaited<ReturnType<typeof authService.login>>>;
   logout: () => void;
   refreshMe: () => Promise<void>;
   selectTenant: (slug: string) => Promise<void>;
@@ -39,6 +43,25 @@ function hasStoredToken() {
   return Boolean(
     localStorage.getItem(STORAGE_KEYS.accessToken) ||
       sessionStorage.getItem(STORAGE_KEYS.accessToken)
+  );
+}
+
+function applyTokenResponse(
+  data: Awaited<ReturnType<typeof authService.login>>,
+  setters: {
+    setUser: (u: User | null) => void;
+    setClinic: (c: Clinic | null) => void;
+    setTenant: (t: string | null) => void;
+    setTenants: (t: Tenant[]) => void;
+    setCanExitClinic: (v: boolean) => void;
+  }
+) {
+  setters.setUser(data.user);
+  setters.setClinic(data.clinic);
+  setters.setTenant(data.tenant ?? data.clinic?.slug ?? null);
+  setters.setTenants(data.tenants ?? []);
+  setters.setCanExitClinic(
+    data.user.role === "SUPER_ADMIN" && Boolean(data.clinic)
   );
 }
 
@@ -68,18 +91,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setTenant(data.tenant ?? data.clinic?.slug ?? getActiveTenant());
       setTenants(data.tenants ?? []);
       setCanExitClinic(Boolean(data.can_exit_clinic));
-      if (data.tenant) setActiveTenant(data.tenant);
-      else if (data.clinic?.slug && data.user.role !== "SUPER_ADMIN") {
+      if (data.tenant) {
+        setActiveTenant(data.tenant);
+      } else if (data.user.role === "SUPER_ADMIN" && !data.clinic) {
+        // Platform mode — clear stale tenant header
+        setActiveTenant(null);
+      } else if (data.clinic?.slug && data.user.role !== "SUPER_ADMIN") {
         setActiveTenant(data.clinic.slug);
       }
       qc.setQueryData(queryKeys.me, data);
-    } catch {
-      clearStaffTokens();
-      setUser(null);
-      setClinic(null);
-      setTenant(null);
-      setTenants([]);
-      setCanExitClinic(false);
+    } catch (err) {
+      const status = axios.isAxiosError(err) ? err.response?.status : undefined;
+      if (status === 401) {
+        clearStaffTokens();
+        setUser(null);
+        setClinic(null);
+        setTenant(null);
+        setTenants([]);
+        setCanExitClinic(false);
+      }
+      // Non-401: keep session; caller can retry
     } finally {
       setIsLoading(false);
     }
@@ -92,52 +123,71 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = useCallback(
     async (input: StaffLoginInput, remember = true) => {
       const data = await authService.login(input, remember);
-      setUser(data.user);
-      setClinic(data.clinic);
-      setTenant(data.tenant ?? data.clinic?.slug ?? null);
-      setTenants(data.tenants ?? []);
-      setCanExitClinic(false);
+      applyTokenResponse(data, {
+        setUser,
+        setClinic,
+        setTenant,
+        setTenants,
+        setCanExitClinic,
+      });
       qc.setQueryData(queryKeys.me, {
         user: data.user,
         clinic: data.clinic,
         tenant: data.tenant,
         tenants: data.tenants ?? [],
+        can_exit_clinic: data.user.role === "SUPER_ADMIN" && Boolean(data.clinic),
       });
       return data;
     },
     [qc]
   );
 
-  const selectTenant = useCallback(
-    async (slug: string) => {
-      const data = await authService.selectTenant(slug);
-      setUser(data.user);
-      setClinic(data.clinic);
-      setTenant(data.tenant ?? slug);
-      setTenants(data.tenants ?? []);
-      await refreshMe();
-    },
-    [refreshMe]
-  );
+  const selectTenant = useCallback(async (slug: string) => {
+    const data = await authService.selectTenant(slug);
+    applyTokenResponse(data, {
+      setUser,
+      setClinic,
+      setTenant,
+      setTenants,
+      setCanExitClinic,
+    });
+  }, []);
 
-  const enterClinic = useCallback(
-    async (slug: string) => {
-      const data = await authService.enterClinic(slug);
-      setClinic(data.clinic);
-      setTenant(data.tenant);
-      setCanExitClinic(true);
-      await refreshMe();
-    },
-    [refreshMe]
-  );
+  const enterClinic = useCallback(async (slug: string) => {
+    const data = await authService.enterClinic(slug);
+    applyTokenResponse(data, {
+      setUser,
+      setClinic,
+      setTenant,
+      setTenants,
+      setCanExitClinic,
+    });
+    qc.setQueryData(queryKeys.me, {
+      user: data.user,
+      clinic: data.clinic,
+      tenant: data.tenant,
+      tenants: data.tenants ?? [],
+      can_exit_clinic: true,
+    });
+  }, [qc]);
 
   const exitClinic = useCallback(async () => {
-    await authService.exitClinic();
-    setClinic(null);
-    setTenant(null);
-    setCanExitClinic(false);
-    await refreshMe();
-  }, [refreshMe]);
+    const data = await authService.exitClinic();
+    applyTokenResponse(data, {
+      setUser,
+      setClinic,
+      setTenant,
+      setTenants,
+      setCanExitClinic,
+    });
+    qc.setQueryData(queryKeys.me, {
+      user: data.user,
+      clinic: null,
+      tenant: null,
+      tenants: data.tenants ?? [],
+      can_exit_clinic: false,
+    });
+  }, [qc]);
 
   const logout = useCallback(() => {
     authService.logout();

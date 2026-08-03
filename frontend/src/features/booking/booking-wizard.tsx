@@ -45,6 +45,8 @@ export function BookingWizard({
   const { sessionToken, setSessionToken, config } = useWidget();
   const brandColor =
     config?.configuration?.widget?.primary_color?.trim() || undefined;
+  const verificationMode =
+    config?.configuration?.booking?.verification_mode || "sms";
   const [state, setState] = useState<BookingStepPayload | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -55,6 +57,7 @@ export function BookingWizard({
     first_name: "",
     last_name: "",
     phone: "",
+    email: "",
   });
   const [specialtyQuery, setSpecialtyQuery] = useState("");
   const [started, setStarted] = useState(false);
@@ -123,7 +126,9 @@ export function BookingWizard({
         });
         syncToken(payload);
         setState(payload);
-        if (action === "submit_details") {
+        if (payload.step === "confirmed") {
+          onConfirmed?.(payload);
+        } else if (action === "submit_details" && payload.step === "otp") {
           const otp = await bookingService.sendOtp({
             clinic_slug: clinicSlug,
             session_token: payload.session_token || sessionToken || "",
@@ -138,7 +143,7 @@ export function BookingWizard({
         setLoading(false);
       }
     },
-    [active, state, clinicSlug, sessionToken, syncToken]
+    [active, state, clinicSlug, sessionToken, syncToken, onConfirmed]
   );
 
   const confirm = useCallback(async () => {
@@ -310,12 +315,19 @@ export function BookingWizard({
             onChange={setDetails}
             onSubmit={() => void runStep("submit_details", details)}
             loading={loading}
+            verificationMode={
+              (state.options.verification_mode as string) || verificationMode
+            }
           />
         ) : null}
 
         {step === "otp" && state && interactive ? (
           <OtpStep
             phone={(state.options.phone as string) || details.phone}
+            email={(state.options.email as string) || details.email}
+            verificationMode={
+              (state.options.verification_mode as string) || verificationMode
+            }
             summary={(state.options.slot_summary as string) || ""}
             code={otpCode}
             onChange={setOtpCode}
@@ -722,17 +734,42 @@ function DetailsStep({
   onChange,
   onSubmit,
   loading,
+  verificationMode = "sms",
 }: {
   options: Record<string, unknown>;
-  details: { first_name: string; last_name: string; phone: string };
+  details: {
+    first_name: string;
+    last_name: string;
+    phone: string;
+    email: string;
+  };
   onChange: (d: {
     first_name: string;
     last_name: string;
     phone: string;
+    email: string;
   }) => void;
   onSubmit: () => void;
   loading: boolean;
+  verificationMode?: string;
 }) {
+  const needPhone =
+    verificationMode === "sms" ||
+    verificationMode === "sms_or_email" ||
+    verificationMode === "none";
+  const needEmail =
+    verificationMode === "email" ||
+    verificationMode === "sms_or_email" ||
+    verificationMode === "none";
+  const phoneRequired = verificationMode === "sms";
+  const emailRequired = verificationMode === "email";
+  const contactOk =
+    (phoneRequired ? details.phone.trim() : true) &&
+    (emailRequired ? details.email.trim() : true) &&
+    (verificationMode === "sms_or_email" || verificationMode === "none"
+      ? Boolean(details.phone.trim() || details.email.trim())
+      : true);
+
   return (
     <div className="space-y-4">
       <div>
@@ -765,24 +802,41 @@ function DetailsStep({
           />
         </div>
       </div>
-      <div className="space-y-1">
-        <Label className="text-xs">Phone</Label>
-        <Input
-          value={details.phone}
-          onChange={(e) => onChange({ ...details, phone: e.target.value })}
-          placeholder="+1…"
-          className="h-9 rounded-xl"
-        />
-      </div>
+      {needPhone ? (
+        <div className="space-y-1">
+          <Label className="text-xs">
+            Phone{phoneRequired ? "" : " (optional if email provided)"}
+          </Label>
+          <Input
+            value={details.phone}
+            onChange={(e) => onChange({ ...details, phone: e.target.value })}
+            placeholder="+1…"
+            className="h-9 rounded-xl"
+          />
+        </div>
+      ) : null}
+      {needEmail ? (
+        <div className="space-y-1">
+          <Label className="text-xs">
+            Email{emailRequired ? "" : " (optional if phone provided)"}
+          </Label>
+          <Input
+            type="email"
+            value={details.email}
+            onChange={(e) => onChange({ ...details, email: e.target.value })}
+            className="h-9 rounded-xl"
+          />
+        </div>
+      ) : null}
       <Button
         type="button"
         className="w-full rounded-xl"
-        disabled={
-          loading || !details.first_name.trim() || !details.phone.trim()
-        }
+        disabled={loading || !details.first_name.trim() || !contactOk}
         onClick={onSubmit}
       >
-        Continue to verification
+        {verificationMode === "none"
+          ? "Confirm appointment"
+          : "Continue to verification"}
       </Button>
     </div>
   );
@@ -790,6 +844,8 @@ function DetailsStep({
 
 function OtpStep({
   phone,
+  email,
+  verificationMode = "sms",
   summary,
   code,
   onChange,
@@ -799,6 +855,8 @@ function OtpStep({
   loading,
 }: {
   phone: string;
+  email?: string;
+  verificationMode?: string;
   summary: string;
   code: string;
   onChange: (c: string) => void;
@@ -807,12 +865,21 @@ function OtpStep({
   otpSent: boolean;
   loading: boolean;
 }) {
+  const dest =
+    verificationMode === "email"
+      ? email || "your email"
+      : verificationMode === "sms_or_email"
+        ? phone || email || "your contact"
+        : phone || "your phone";
+
   return (
     <div className="space-y-4">
       <div>
-        <p className="text-sm font-semibold text-foreground">Verify your phone</p>
+        <p className="text-sm font-semibold text-foreground">
+          Verify your {verificationMode === "email" ? "email" : "identity"}
+        </p>
         <p className="mt-1 text-xs text-muted-foreground">
-          We sent a code to {phone || "your phone"}.
+          We sent a code to {dest}.
           {summary ? ` Holding: ${summary}` : ""}
         </p>
         {otpSent && debugCode ? (

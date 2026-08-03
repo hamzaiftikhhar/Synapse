@@ -85,6 +85,16 @@ async function refreshAccessToken(): Promise<string | null> {
     });
     const remember = localStorage.getItem(STORAGE_KEYS.rememberMe) === "1";
     persistStaffTokens(data.access_token, data.refresh_token, remember);
+    // Keep client tenant aligned with refreshed JWT tenant claim
+    if (data.tenant) {
+      setActiveTenant(data.tenant);
+    } else if (data.clinic?.slug) {
+      setActiveTenant(data.clinic.slug);
+    }
+    // Super Admin platform mode: refresh may clear tenant — respect JWT
+    if (data.user?.role === "SUPER_ADMIN" && !data.tenant && !data.clinic) {
+      setActiveTenant(null);
+    }
     return data.access_token as string;
   } catch {
     clearStaffTokens();
@@ -106,6 +116,12 @@ api.interceptors.response.use(
       const token = await refreshPromise;
       if (token) {
         original.headers.Authorization = `Bearer ${token}`;
+        const tenant = getActiveTenant();
+        if (tenant) {
+          original.headers["X-Tenant-ID"] = tenant;
+        } else {
+          delete original.headers["X-Tenant-ID"];
+        }
         return api(original);
       }
       if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {

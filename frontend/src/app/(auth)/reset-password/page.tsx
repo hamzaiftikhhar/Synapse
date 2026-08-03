@@ -1,12 +1,50 @@
+"use client";
+
 import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useState } from "react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { APP_NAME } from "@/constants";
+import { getApiErrorMessage } from "@/lib/api/client";
+import { authService } from "@/services";
 
-export const metadata = { title: "Reset password" };
+function ResetPasswordInner() {
+  const search = useSearchParams();
+  const router = useRouter();
+  const token = search.get("token") || "";
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
-export default function ResetPasswordPage() {
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!token) {
+      toast.error("Missing reset token");
+      return;
+    }
+    if (password.length < 8) {
+      toast.error("Password must be at least 8 characters");
+      return;
+    }
+    if (password !== confirm) {
+      toast.error("Passwords do not match");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await authService.resetPassword(token, password);
+      toast.success("Password updated");
+      router.replace("/login");
+    } catch (err) {
+      toast.error(getApiErrorMessage(err));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   return (
     <div className="flex min-h-screen items-center justify-center bg-muted/30 px-6">
       <div className="w-full max-w-[400px] rounded-[6px] border border-border bg-white p-8 shadow-sm">
@@ -17,23 +55,42 @@ export default function ResetPasswordPage() {
           Choose a new password
         </h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          {/* TODO: Backend endpoint required — POST /auth/reset-password */}
-          Token-based password reset is not available yet.
+          Enter a new password for your account.
         </p>
-        <form className="mt-6 space-y-4">
+        <form onSubmit={onSubmit} className="mt-6 space-y-4">
           <div className="space-y-2">
             <Label htmlFor="password">New password</Label>
-            <Input id="password" type="password" disabled />
+            <Input
+              id="password"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+            />
           </div>
           <div className="space-y-2">
             <Label htmlFor="confirm">Confirm password</Label>
-            <Input id="confirm" type="password" disabled />
+            <Input
+              id="confirm"
+              type="password"
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
+              required
+            />
           </div>
-          <Button className="w-full rounded-[6px]" disabled>
-            Coming soon
+          <Button className="w-full rounded-[6px]" disabled={submitting || !token}>
+            {submitting ? "Saving…" : "Update password"}
           </Button>
         </form>
       </div>
     </div>
+  );
+}
+
+export default function ResetPasswordPage() {
+  return (
+    <Suspense fallback={<div className="p-8 text-center text-sm">Loading…</div>}>
+      <ResetPasswordInner />
+    </Suspense>
   );
 }

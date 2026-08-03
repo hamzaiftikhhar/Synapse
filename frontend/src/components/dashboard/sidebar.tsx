@@ -45,7 +45,8 @@ const ICONS: Record<string, LucideIcon> = {
 
 export function DashboardSidebar({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
-  const { clinic } = useAuth();
+  const { clinic, user } = useAuth();
+  const isSuper = user?.role === "SUPER_ADMIN";
 
   return (
     <aside className="flex h-full w-60 flex-col border-r border-border bg-sidebar">
@@ -58,12 +59,27 @@ export function DashboardSidebar({ onNavigate }: { onNavigate?: () => void }) {
             {APP_NAME}
           </p>
           <p className="truncate text-[11px] text-muted-foreground">
-            {clinic?.name ?? "Clinic portal"}
+            {clinic?.name ?? (isSuper ? "Platform" : "Clinic portal")}
           </p>
         </div>
       </div>
       <ScrollArea className="flex-1 px-2 py-3">
         <nav className="space-y-0.5">
+          {isSuper ? (
+            <Link
+              href="/dashboard/platform"
+              onClick={onNavigate}
+              className={cn(
+                "flex items-center gap-2.5 rounded-[6px] px-2.5 py-2 text-[13px] font-medium transition-colors",
+                pathname.startsWith("/dashboard/platform")
+                  ? "bg-primary/10 text-primary"
+                  : "text-sidebar-foreground/80 hover:bg-muted hover:text-foreground"
+              )}
+            >
+              <Building2 className="size-4 shrink-0 opacity-70" />
+              Platform
+            </Link>
+          ) : null}
           {DASHBOARD_NAV.map((item) => {
             const Icon = ICONS[item.icon] ?? LayoutDashboard;
             const active =

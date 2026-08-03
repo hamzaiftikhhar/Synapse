@@ -31,9 +31,9 @@ function VerifyEmailInner() {
         const res = await authService.verifyEmail(token);
         if (cancelled) return;
         setStatus("done");
-        setMessage(res.message || "Email verified. You can create your clinic.");
+        setMessage(res.message || "Email verified. Sign in to create your clinic.");
         toast.success("Email verified");
-        setTimeout(() => router.replace("/onboarding/create-clinic"), 1200);
+        setTimeout(() => router.replace("/login"), 1200);
       } catch (err) {
         if (cancelled) return;
         setStatus("error");

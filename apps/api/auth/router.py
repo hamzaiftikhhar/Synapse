@@ -36,7 +36,6 @@ from apps.api.auth.schemas import (
     ClinicOut,
     CreateClinicIn,
     EnterClinicIn,
-    EnterClinicOut,
     ForgotPasswordIn,
     MeOut,
     MessageOut,
@@ -440,9 +439,9 @@ def create_clinic(request, payload: CreateClinicIn):
     return _clinic_out(clinic)
 
 
-@router.post("/enter-clinic", response=EnterClinicOut, auth=staff_jwt_auth)
+@router.post("/enter-clinic", response=StaffTokenOut, auth=staff_jwt_auth)
 def enter_clinic(request, payload: EnterClinicIn):
-    """Super Admin: return tenant identity for X-Tenant-ID (JWT role unchanged)."""
+    """Super Admin: enter a clinic — re-issue JWT with tenant (role stays SUPER_ADMIN)."""
     require_super_admin(request)
     clinic = resolve_clinic_ref(payload.tenant)
     if clinic is None:
@@ -455,11 +454,12 @@ def enter_clinic(request, payload: EnterClinicIn):
         clinic=clinic,
         ip_address=client_ip(request),
     )
-    return EnterClinicOut(tenant=clinic.slug, clinic=_clinic_out(clinic))
+    return _issue_tokens(user=request.auth.user, clinic=clinic)
 
 
-@router.post("/exit-clinic", response=MessageOut, auth=staff_jwt_auth)
+@router.post("/exit-clinic", response=StaffTokenOut, auth=staff_jwt_auth)
 def exit_clinic(request):
+    """Super Admin: leave clinic context — re-issue JWT with tenant cleared."""
     require_super_admin(request)
     write_audit(
         action=AuditAction.EXIT_CLINIC,
@@ -467,4 +467,4 @@ def exit_clinic(request):
         clinic=request.auth.clinic,
         ip_address=client_ip(request),
     )
-    return MessageOut(message="Clear X-Tenant-ID on the client to exit clinic context.")
+    return _issue_tokens(user=request.auth.user, clinic=None)

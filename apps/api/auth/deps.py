@@ -104,20 +104,26 @@ class StaffJWTAuth(HttpBearer):
         )
 
         if user.role == UserRole.SUPER_ADMIN:
-            # Prefer explicit header (enter-clinic context); else token tenant
-            ref = (header_tenant or payload.tenant or "").strip() or None
-            if ref:
-                clinic = resolve_clinic_ref(ref)
-                if clinic is None:
-                    return None
-                if _blocked_status(clinic):
-                    return None
-                tenant_slug = clinic.slug
-            elif payload.clinic_id is not None:
-                clinic = _clinic_from_token(payload)
-                if clinic is None or _blocked_status(clinic):
-                    return None
-                tenant_slug = clinic.slug
+            # Prefer valid X-Tenant-ID override; else JWT tenant.
+            # Invalid/blocked refs must NOT 401 — fall back to platform mode.
+            candidates: list[str] = []
+            if header_tenant and str(header_tenant).strip():
+                candidates.append(str(header_tenant).strip())
+            if payload.tenant and str(payload.tenant).strip():
+                t = str(payload.tenant).strip()
+                if t not in candidates:
+                    candidates.append(t)
+            for ref in candidates:
+                resolved = resolve_clinic_ref(ref)
+                if resolved is not None and not _blocked_status(resolved):
+                    clinic = resolved
+                    tenant_slug = resolved.slug
+                    break
+            if clinic is None and payload.clinic_id is not None:
+                resolved = _clinic_from_token(payload)
+                if resolved is not None and not _blocked_status(resolved):
+                    clinic = resolved
+                    tenant_slug = resolved.slug
         else:
             # Non–super-admin: ignore forged X-Tenant-ID unless it matches membership
             clinic = _clinic_from_token(payload)

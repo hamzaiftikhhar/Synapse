@@ -14,7 +14,7 @@ import logging
 from ninja import Router
 from ninja.errors import HttpError
 
-from apps.api.auth.deps import PatientJWTAuth, StaffJWTAuth
+from apps.api.auth.deps import PatientJWTAuth, StaffJWTAuth, clinic_from
 from apps.api.chat.schemas import ChatMessageIn, ChatMessageOut, ChatTimingsOut
 
 logger = logging.getLogger(__name__)
@@ -70,9 +70,7 @@ def staff_chat_message(request, payload: ChatMessageIn) -> ChatMessageOut:
 
     Auth: staff_access JWT. No patient context. Useful for QA and Swagger.
     """
-    clinic = getattr(request.auth, "clinic", None)
-    if clinic is None:
-        raise HttpError(400, "Clinic context required — include clinic_id in your JWT")
+    clinic = clinic_from(request)
 
     message = (payload.message or "").strip()
     if not message:
