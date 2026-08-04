@@ -68,9 +68,12 @@ def evaluate_routing_case(case: EvalCase) -> CaseResult:
     services = list(case.services)
     documents = list(case.documents)
 
+    # Offline battery: safety → strong (LLM stand-in) → fallback
     source = "rules"
-    raw = None if case.force_unknown else try_rule_classify(case.message, tier="strong")
-    if raw is None:
+    raw = None if case.force_unknown else try_rule_classify(case.message, tier="safety")
+    if raw is None and not case.force_unknown:
+        raw = try_rule_classify(case.message, tier="strong")
+    if raw is None and not case.force_unknown:
         raw = try_rule_classify(case.message, tier="fallback")
     if raw is None or case.force_unknown:
         source = "unknown_seed"
@@ -134,15 +137,16 @@ def evaluate_routing_case(case: EvalCase) -> CaseResult:
         )
     ]
     has_catalog = bool(documents)
+    # Align with engine: never treat bare UNKNOWN + catalog as a doc match
     needs_vector = bool(nlu.needs_vector) or (
-        (soft_medical or knowledge_q) and (bool(matched_docs) or has_catalog)
-    )
+        (soft_medical or knowledge_q) and bool(matched_docs)
+    ) or (knowledge_q and has_catalog and nlu.intent in {Intent.FAQ, Intent.UNKNOWN})
     doc_match = bool(matched_docs) or (
         has_catalog
         and (
-            needs_vector
+            bool(nlu.needs_vector)
             or knowledge_q
-            or nlu.intent in {Intent.FAQ, Intent.MEDICAL_QUESTION, Intent.UNKNOWN}
+            or nlu.intent in {Intent.FAQ, Intent.MEDICAL_QUESTION}
         )
     )
     lane = resolve_lane(

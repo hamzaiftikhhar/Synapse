@@ -1,4 +1,4 @@
-"""Service SQL handlers."""
+"""Service SQL handlers — honor service_filter_mode (none|named|category)."""
 
 from __future__ import annotations
 
@@ -7,19 +7,40 @@ import re
 from apps.chatbot.sql_tool.base import SQLContext, SQLResult
 from apps.chatbot.sql_tool.utils import entity_ids
 
+_GENERIC_SERVICE_TOKENS = frozenset(
+    {
+        "visit", "visits", "care", "basic", "level", "routine", "simple",
+        "urgent", "patient", "adult", "exam", "and", "the", "for", "with",
+        "a", "an", "of", "or", "service", "services", "treatment",
+    }
+)
+
 
 def services_offered(ctx: SQLContext) -> SQLResult:
     from apps.services.models import Service
 
     qs = Service.objects.filter(clinic=ctx.clinic, is_deleted=False, is_active=True)
+    mode = _filter_mode(ctx)
 
-    if ctx.nlu.resolved_ids.service_id:
+    if mode == "none":
+        # Browse / list — never collapse to one fuzzy SKU
+        pass
+    elif mode == "named" and ctx.nlu.resolved_ids.service_id:
         qs = qs.filter(id=ctx.nlu.resolved_ids.service_id)
-    elif ctx.nlu.entities.service:
+    elif mode == "named" and ctx.nlu.entities.service:
+        qs = qs.filter(name__icontains=_service_needle(ctx.nlu.entities.service))
+    elif mode == "category":
+        needle = _service_needle(ctx.nlu.entities.service) or _category_needle(ctx.message)
+        if needle:
+            qs = qs.filter(name__icontains=needle)
+    elif ctx.nlu.resolved_ids.service_id:
+        qs = qs.filter(id=ctx.nlu.resolved_ids.service_id)
+    elif ctx.nlu.entities.service and mode != "none":
         qs = qs.filter(name__icontains=_service_needle(ctx.nlu.entities.service))
     else:
-        matched_ids = _match_services_from_message(ctx)
-        if matched_ids:
+        # Only strict full-name matches from message — never loose token hits
+        matched_ids = _match_services_strict(ctx)
+        if matched_ids and mode == "named":
             qs = qs.filter(id__in=matched_ids)
 
     doctor_ids = entity_ids(ctx.nlu.resolved_ids.doctor_id)
@@ -37,7 +58,7 @@ def services_offered(ctx: SQLContext) -> SQLResult:
         }
         for s in services
     ]
-    if rows and len(rows) == 1:
+    if rows and len(rows) == 1 and mode == "named":
         s = rows[0]
         dur = f", about {s['duration_min']} minutes" if s.get("duration_min") else ""
         summary = f"{s['name']} is {s['price']}{dur}."
@@ -45,7 +66,25 @@ def services_offered(ctx: SQLContext) -> SQLResult:
         summary = f"Services offered: {', '.join(r['name'] for r in rows[:5])}."
     else:
         summary = "No services found."
-    return SQLResult(handler="services_offered", found=bool(rows), rows=rows, summary=summary)
+    return SQLResult(
+        handler="services_offered",
+        found=bool(rows),
+        rows=rows,
+        summary=summary,
+        meta={"service_filter_mode": mode},
+    )
+
+
+def _filter_mode(ctx: SQLContext) -> str:
+    mode = getattr(ctx.nlu, "service_filter_mode", None) or "none"
+    mode = str(mode).strip().lower()
+    if mode not in {"none", "named", "category"}:
+        # Fallback: raw payload from heuristics
+        raw = getattr(ctx.nlu, "raw", None) or {}
+        mode = str(raw.get("service_filter_mode") or "none").lower()
+    if mode not in {"none", "named", "category"}:
+        mode = "none"
+    return mode
 
 
 def _service_needle(value: object) -> str:
@@ -54,8 +93,23 @@ def _service_needle(value: object) -> str:
     return str(value or "")
 
 
-def _match_services_from_message(ctx: SQLContext) -> list:
-    """Match this clinic's service names against the user message (tenant-dynamic)."""
+def _category_needle(message: str) -> str:
+    text = (message or "").lower()
+    for phrase in (
+        "urgent care",
+        "primary care",
+        "well child",
+        "well-child",
+        "cancer screening",
+        "physical",
+    ):
+        if phrase in text:
+            return phrase
+    return ""
+
+
+def _match_services_strict(ctx: SQLContext) -> list:
+    """Full-name or ≥2 distinctive tokens only — no single generic token."""
     from apps.services.models import Service
 
     message = (ctx.message or "").lower()
@@ -77,11 +131,11 @@ def _match_services_from_message(ctx: SQLContext) -> list:
             continue
         tokens = [
             t
-            for t in re.findall(r"[a-z0-9]{3,}", name)
-            if t not in {"and", "the", "for"}
+            for t in re.findall(r"[a-z0-9]{5,}", name)
+            if t not in _GENERIC_SERVICE_TOKENS
         ]
-        if len(tokens) >= 2 and all(t in message for t in tokens):
+        if len(tokens) >= 2 and all(t in message for t in tokens[:2]):
             hits.append(svc.id)
-        elif len(tokens) == 1 and tokens[0] in message and len(tokens[0]) >= 5:
+        elif len(tokens) == 1 and len(tokens[0]) >= 8 and tokens[0] in message:
             hits.append(svc.id)
     return hits

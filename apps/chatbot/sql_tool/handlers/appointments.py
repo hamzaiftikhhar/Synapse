@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from apps.chatbot.sql_tool.base import SQLContext, SQLResult
 from django.utils import timezone
+
+from apps.chatbot.sql_tool.base import SQLContext, SQLResult
 
 
 def patient_appointments(ctx: SQLContext) -> SQLResult:
@@ -13,8 +14,12 @@ def patient_appointments(ctx: SQLContext) -> SQLResult:
         return SQLResult(
             handler="patient_appointments",
             found=False,
-            summary="Patient not authenticated — cannot retrieve appointments.",
-            meta={"requires_auth": True},
+            summary=(
+                "To cancel or reschedule, please verify your phone number first "
+                "so I can pull up your appointments. You can also start booking "
+                "a new visit if you prefer."
+            ),
+            meta={"requires_auth": True, "auth_prompt": True},
         )
 
     qs = (

@@ -1,49 +1,23 @@
-"""Hybrid keyword heuristics applied after rules/NLU — clinic-agnostic."""
+"""Thin post-NLU gate — safety/phatic/timeout recovery only (no second classifier)."""
 
 from __future__ import annotations
 
-import re
+from dataclasses import replace
 from typing import Any
 
 from apps.chatbot.nlu.schemas import Intent, NLUResult
 from apps.chatbot.routing.signals import (
     catalog_overlap_score,
-    is_business_hours_query,
-    is_informational,
     is_phatic_farewell,
     is_phatic_greeting,
     is_price_or_duration_query,
-    is_procedure_duration_query,
+    is_service_list_query,
+    is_specialty_list_query,
     is_transactional_booking,
     looks_like_about_service,
     looks_like_knowledge_question,
     match_services_in_message,
-)
-
-
-_LOCATION_RE = re.compile(
-    r"\b(where|address|location|directions|map|parking)\b", re.I
-)
-_DOCTOR_RE = re.compile(
-    r"\b(find (?:me )?(?:a |the )?(?:doctor|dentist|physician)|"
-    r"help me find (?:a )?(?:doctor|dentist)|list (?:of )?(?:doctors|dentists)|"
-    r"who (are|is) (your|the) (?:doctor|dentist)|show (me )?(doctors|dentists|physicians)|"
-    r"cardiologist|dermatologist|neurologist|primary care)\b",
-    re.I,
-)
-_INSURANCE_RE = re.compile(
-    r"\b(insurance|aetna|cigna|medicare|medicaid|blue\s*cross|humana|"
-    r"accept(ed|s)?|coverage|copay|medi[- ]?cal|denti[- ]?cal)\b",
-    re.I,
-)
-_AVAIL_RE = re.compile(
-    r"\b(available|availability|earliest|tomorrow|today|slot|slots)\b", re.I
-)
-_BOOK_RE = re.compile(r"\b(book|schedule)\b", re.I)
-_SERVICES_LIST_RE = re.compile(
-    r"\b(what services|which services|services do you|list (?:of )?services|"
-    r"services (?:do you )?(?:offer|provide|have))\b",
-    re.I,
+    service_filter_mode as compute_service_filter_mode,
 )
 
 
@@ -55,15 +29,19 @@ def apply_routing_heuristics(
     service_catalog: list[dict[str, Any]] | None = None,
 ) -> NLUResult:
     """
-    Mutate routing flags by returning an updated NLUResult.
+    Validator-style post-pass (not a second English brain).
 
-    - Force SQL for known clinic ops (hours, doctors, insurance, location, pricing).
-    - Force vector when message overlaps this clinic's document catalog.
-    - Match this clinic's service names dynamically for price/duration/about queries.
-    - Prefer knowledge/RAG for informational policy questions over booking/hours collisions.
-    - Never leave needs_llm=True without needs_vector.
+    Allowed:
+      - Force DIRECT for phatic greeting/farewell
+      - Trust emergency flags
+      - Timeout/unknown recovery: knowledge/docs → vector; else clarify
+      - Attach strict service entity hints (never invent SQL lane from fuzzy hit)
+      - List/browse service questions: clear service filter (service_filter_mode=none)
+
+    Forbidden:
+      - Rewriting LLM intents for hours/doctors/pricing/insurance
+      - UNKNOWN + service_hit → SERVICES_OFFERED
     """
-    text = (message or "").lower()
     catalog = document_catalog or []
     services = service_catalog or []
 
@@ -74,168 +52,139 @@ def apply_routing_heuristics(
     clarification_needed = bool(nlu.clarification_needed)
     can_direct = bool(nlu.can_respond_directly)
     entities = nlu.entities
+    resolved_ids = nlu.resolved_ids
+    is_emergency = bool(nlu.is_emergency) or intent == Intent.EMERGENCY
 
     doc_hit, _ = catalog_overlap_score(message, catalog)
     knowledge_q = looks_like_knowledge_question(message)
     matched_services = match_services_in_message(message, services)
-    service_hit = bool(matched_services)
+    computed_mode = compute_service_filter_mode(message, matched_services)
+    llm_mode = getattr(nlu, "service_filter_mode", None)
+    raw_had_mode = isinstance(nlu.raw, dict) and "service_filter_mode" in nlu.raw
 
-    # Attach matched service name onto entities when missing (helps SQL filter)
-    if matched_services and not getattr(entities, "service", None):
-        try:
-            from dataclasses import replace
+    # List/browse always wins. Strict catalog named match beats default "none".
+    # Only trust LLM mode when explicitly present in raw payload.
+    if is_service_list_query(message):
+        filter_mode = "none"
+    elif computed_mode == "named" and matched_services:
+        filter_mode = "named"
+    elif raw_had_mode and llm_mode in {"named", "category", "none"}:
+        filter_mode = llm_mode
+    else:
+        filter_mode = computed_mode
 
-            entities = replace(entities, service=matched_services[0].get("name"))
-        except Exception:
-            pass
+    if filter_mode == "named" and matched_services and not getattr(entities, "service", None):
+        entities = replace(entities, service=matched_services[0].get("name"))
+    if filter_mode == "none":
+        entities = replace(entities, service=None)
+        if resolved_ids.service_id:
+            resolved_ids = replace(resolved_ids, service_id=None)
 
-    # Phatic greetings/farewells must stay DIRECT even when a doc catalog exists
+    raw = dict(nlu.raw or {})
+    raw["service_filter_mode"] = filter_mode
+
     if is_phatic_greeting(message):
-        return NLUResult(
+        return _result(
+            nlu,
             intent=Intent.GREETING,
-            secondary_intents=list(nlu.secondary_intents),
             confidence=max(float(nlu.confidence or 0), 0.95),
             entities=entities,
-            resolved_ids=nlu.resolved_ids,
             needs_sql=False,
             needs_vector=False,
             needs_llm=False,
-            can_respond_directly=True,
-            is_emergency=nlu.is_emergency,
-            is_off_topic=False,
+            can_direct=True,
             clarification_needed=False,
-            clarification_question=None,
-            reasoning_short=(nlu.reasoning_short or "") + " | phatic_greeting",
-            provider=nlu.provider,
-            model=nlu.model,
-            timings=nlu.timings,
+            is_emergency=False,
+            note="phatic_greeting",
+            raw=raw,
+            filter_mode=filter_mode,
         )
     if is_phatic_farewell(message):
-        return NLUResult(
+        return _result(
+            nlu,
             intent=Intent.FAREWELL,
-            secondary_intents=list(nlu.secondary_intents),
             confidence=max(float(nlu.confidence or 0), 0.95),
             entities=entities,
-            resolved_ids=nlu.resolved_ids,
             needs_sql=False,
             needs_vector=False,
             needs_llm=False,
-            can_respond_directly=True,
-            is_emergency=nlu.is_emergency,
-            is_off_topic=False,
+            can_direct=True,
             clarification_needed=False,
-            clarification_question=None,
-            reasoning_short=(nlu.reasoning_short or "") + " | phatic_farewell",
-            provider=nlu.provider,
-            model=nlu.model,
-            timings=nlu.timings,
+            is_emergency=False,
+            note="phatic_farewell",
+            raw=raw,
+            filter_mode=filter_mode,
         )
 
-    # Informational policy / post-op / arrival — prefer vector when docs exist.
-    # Must beat duration/pricing so "how many hours without straws" ≠ service list.
-    priced_named_service = bool(
-        service_hit
-        and re.search(r"\b(cost|price|pricing|how much does|how much is|how much for)\b", text)
-    )
-    if knowledge_q and catalog and not priced_named_service:
-        needs_vector = True
-        needs_llm = True
-        intent = Intent.FAQ
-        needs_sql = False
-        clarification_needed = False
+    if is_emergency:
+        return _result(
+            nlu,
+            intent=Intent.EMERGENCY,
+            confidence=max(float(nlu.confidence or 0), 0.95),
+            entities=entities,
+            needs_sql=False,
+            needs_vector=False,
+            needs_llm=False,
+            can_direct=True,
+            clarification_needed=False,
+            is_emergency=True,
+            note="emergency_trust",
+            raw=raw,
+            filter_mode=filter_mode,
+        )
 
-    # Price / duration / named service — BEFORE business hours (critical)
-    elif (
-        is_price_or_duration_query(message)
-        or is_procedure_duration_query(message)
-        or (service_hit and (looks_like_about_service(message) or is_informational(message)))
-        or _SERVICES_LIST_RE.search(text)
-    ) and not _INSURANCE_RE.search(text):
-        if _SERVICES_LIST_RE.search(text) and not (
-            is_price_or_duration_query(message) or is_procedure_duration_query(message)
-        ):
-            intent = Intent.SERVICES_OFFERED
-        elif re.search(r"\b(cost|price|pricing|how much|fee)\b", text) or is_procedure_duration_query(message):
-            intent = Intent.PRICING
-        elif service_hit:
-            intent = Intent.SERVICES_OFFERED
-        else:
-            intent = Intent.SERVICES_OFFERED
-        needs_sql = True
-        if doc_hit and knowledge_q and not service_hit:
-            needs_vector = True
-            needs_llm = True
-        else:
-            needs_vector = False
-            needs_llm = False
-        can_direct = False
-        clarification_needed = False
-
-    # Business hours only when speech-act is open/close
-    elif is_business_hours_query(message) and not knowledge_q and not service_hit:
-        intent = Intent.CLINIC_HOURS
-        needs_sql = True
-        needs_vector = False
-        needs_llm = False
-        can_direct = False
-        clarification_needed = False
-    elif _LOCATION_RE.search(text) and not _DOCTOR_RE.search(text) and not knowledge_q:
-        intent = Intent.CLINIC_LOCATION
-        needs_sql = True
-        needs_vector = False
-        needs_llm = False
-        can_direct = False
-    elif _DOCTOR_RE.search(text) and not _BOOK_RE.search(text) and not knowledge_q:
+    if is_specialty_list_query(message) and intent in {
+        Intent.UNKNOWN,
+        Intent.SERVICES_OFFERED,
+        Intent.FAQ,
+        Intent.DOCTOR_SEARCH,
+    }:
         intent = Intent.DOCTOR_SEARCH
         needs_sql = True
         needs_vector = False
         needs_llm = False
-        can_direct = False
         clarification_needed = False
-    elif _AVAIL_RE.search(text) and (
-        _DOCTOR_RE.search(text) or "primary" in text or "general practice" in text
-    ):
-        intent = Intent.DOCTOR_AVAILABILITY
+        can_direct = False
+        raw["sql_tool_hint"] = "specialties"
+        raw["sql_tool"] = "specialties"
+
+    if is_service_list_query(message) and intent in {
+        Intent.SERVICES_OFFERED,
+        Intent.PRICING,
+        Intent.UNKNOWN,
+    }:
+        intent = Intent.SERVICES_OFFERED
         needs_sql = True
         needs_vector = False
         needs_llm = False
+        clarification_needed = False
         can_direct = False
-    elif _INSURANCE_RE.search(text) and (
-        "accept" in text or "cover" in text or "insurance" in text or "check my" in text
+        entities = replace(entities, service=None)
+        if resolved_ids.service_id:
+            resolved_ids = replace(resolved_ids, service_id=None)
+        filter_mode = "none"
+        raw["service_filter_mode"] = "none"
+
+    # Policy / membership / cancel-fee frames → vector when docs exist
+    if (
+        knowledge_q
+        and catalog
+        and intent
+        in {
+            Intent.PRICING,
+            Intent.SERVICES_OFFERED,
+            Intent.UNKNOWN,
+            Intent.FAQ,
+            Intent.CLINIC_HOURS,
+        }
     ):
-        if intent not in {Intent.FAQ, Intent.INSURANCE_VERIFICATION}:
-            intent = Intent.INSURANCE_ACCEPTED
-        needs_sql = True
-        if doc_hit and knowledge_q:
-            needs_vector = True
-            needs_llm = True
-        else:
-            needs_vector = False
-            needs_llm = False
-        can_direct = False
+        intent = Intent.FAQ
+        needs_vector = True
+        needs_llm = True
+        needs_sql = False
         clarification_needed = False
 
-    # Catalog overlap → vector for FAQ / explain / policy frames
-    if doc_hit and intent not in {
-        Intent.PRICING,
-        Intent.SERVICES_OFFERED,
-        Intent.CLINIC_HOURS,
-        Intent.DOCTOR_SEARCH,
-        Intent.DOCTOR_AVAILABILITY,
-        Intent.CLINIC_LOCATION,
-    }:
-        if knowledge_q or intent == Intent.FAQ or "what does" in text or "explain" in text:
-            needs_vector = True
-            needs_llm = True
-            if intent not in {
-                Intent.INSURANCE_ACCEPTED,
-                Intent.INSURANCE_VERIFICATION,
-            }:
-                intent = Intent.FAQ
-                needs_sql = False
-
-    # Booking intent only when transactional — informational "appointment" stays FAQ
-    if intent == Intent.BOOK_APPOINTMENT and is_informational(message) and not is_transactional_booking(message):
+    if intent == Intent.BOOK_APPOINTMENT and not is_transactional_booking(message):
         if catalog or knowledge_q:
             intent = Intent.FAQ
             needs_vector = True
@@ -243,55 +192,87 @@ def apply_routing_heuristics(
             needs_sql = False
             clarification_needed = False
 
-    # Unknown / timed-out NLU: prefer SQL if a clinic service was named; else vector if docs
-    if (
-        (intent == Intent.UNKNOWN or clarification_needed)
-        and not is_transactional_booking(message)
-    ):
-        if service_hit:
-            intent = Intent.SERVICES_OFFERED
+    # Timeout / unknown recovery (strict only — never fuzzy service_hit → SQL)
+    if intent == Intent.UNKNOWN and not is_transactional_booking(message):
+        if (knowledge_q and catalog) or (doc_hit and knowledge_q):
+            needs_vector = True
+            needs_llm = True
+            intent = Intent.FAQ
+            needs_sql = False
+            clarification_needed = False
+        elif filter_mode == "named" and matched_services and (
+            is_price_or_duration_query(message) or looks_like_about_service(message)
+        ):
+            intent = (
+                Intent.PRICING
+                if is_price_or_duration_query(message)
+                else Intent.SERVICES_OFFERED
+            )
             needs_sql = True
             needs_vector = False
             needs_llm = False
             clarification_needed = False
-        elif catalog and knowledge_q:
-            needs_vector = True
-            needs_llm = True
-            if intent == Intent.UNKNOWN:
-                intent = Intent.FAQ
-            clarification_needed = False
 
-    # Contract: Large LLM only with vector
     if needs_llm and not needs_vector:
         needs_llm = False
 
-    # Pure SQL clinic facts never need vector unless hybrid/FAQ above set it
-    if intent in {
-        Intent.CLINIC_HOURS,
-        Intent.CLINIC_LOCATION,
-        Intent.DOCTOR_SEARCH,
-        Intent.DOCTOR_AVAILABILITY,
-        Intent.PRICING,
-        Intent.SERVICES_OFFERED,
-    } and not needs_vector:
-        needs_llm = False
+    return _result(
+        nlu,
+        intent=intent,
+        confidence=nlu.confidence,
+        entities=entities,
+        resolved_ids=resolved_ids,
+        needs_sql=needs_sql,
+        needs_vector=needs_vector,
+        needs_llm=needs_llm,
+        can_direct=can_direct,
+        clarification_needed=clarification_needed,
+        is_emergency=is_emergency,
+        note="heuristics_thin",
+        raw=raw,
+        filter_mode=filter_mode,
+    )
 
+
+def _result(
+    nlu: NLUResult,
+    *,
+    intent: Intent,
+    confidence: float,
+    entities: Any,
+    needs_sql: bool,
+    needs_vector: bool,
+    needs_llm: bool,
+    can_direct: bool,
+    clarification_needed: bool,
+    is_emergency: bool,
+    note: str,
+    raw: dict[str, Any],
+    filter_mode: str = "none",
+    resolved_ids: Any = None,
+) -> NLUResult:
     return NLUResult(
         intent=intent,
         secondary_intents=list(nlu.secondary_intents),
-        confidence=nlu.confidence,
+        confidence=confidence,
         entities=entities,
-        resolved_ids=nlu.resolved_ids,
+        resolved_ids=resolved_ids if resolved_ids is not None else nlu.resolved_ids,
         needs_sql=needs_sql,
         needs_vector=needs_vector,
         needs_llm=needs_llm,
         can_respond_directly=can_direct,
-        is_emergency=nlu.is_emergency,
+        is_emergency=is_emergency,
         is_off_topic=nlu.is_off_topic,
         clarification_needed=clarification_needed,
-        clarification_question=nlu.clarification_question,
-        reasoning_short=(nlu.reasoning_short or "") + " | heuristics",
+        clarification_question=nlu.clarification_question if clarification_needed else None,
+        reasoning_short=(nlu.reasoning_short or "") + f" | {note}",
+        service_filter_mode=filter_mode,
+        sql_tool=raw.get("sql_tool") or raw.get("sql_tool_hint") or nlu.sql_tool,
+        document_needed=bool(
+            nlu.document_needed or (needs_vector and intent == Intent.FAQ)
+        ),
         provider=nlu.provider,
         model=nlu.model,
         timings=nlu.timings,
+        raw=raw,
     )

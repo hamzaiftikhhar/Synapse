@@ -327,14 +327,14 @@ def build_eval_cases(*, target: int = 520) -> list[EvalCase]:
         "timeout_recover",
         "vector_rag",
         [
-            "something about the patient agreement",
             "explain the clinical protocols briefly",
             "random policy question about deposits",
+            "what is the cancellation deposit policy",
         ],
         tags=("rag", "timeout"),
         force_unknown=True,
         confidence=0.5,
-        also=frozenset({"vector_rag"}),
+        also=frozenset({"vector_rag", "clarify"}),
         limit=24,
     )
 
@@ -361,8 +361,91 @@ def build_eval_cases(*, target: int = 520) -> list[EvalCase]:
             "my skin is itchy but not emergency",
         ],
         tags=("medical",),
-        also=frozenset({"direct", "sql_fast", "vector_rag"}),
+        also=frozenset({"direct", "sql_fast", "vector_rag", "clarify"}),
         limit=16,
+    )
+
+    # ── Horizon golden regressions (router inversion) ─────────────────────
+    horizon_docs = (
+        {
+            "id": "h1",
+            "title": "Membership & Refund Policy",
+            "routing_summary": (
+                "Membership termination refund and prorated dues. "
+                "Cancellation fee within 24 hours. Reactivation rules."
+            ),
+            "routing_keywords": [
+                "refund",
+                "membership",
+                "cancellation",
+                "cancel",
+                "fee",
+                "reactivate",
+                "prorated",
+                "dues",
+            ],
+        },
+    )
+    add(
+        "horizon_cancel_fee",
+        "vector_rag",
+        [
+            "I need to cancel my appointment for tomorrow afternoon, but it's less than 24 hours away... am I gonna get charged a fee for that?",
+            "what is your cancel fee policy",
+            "If I drop my membership halfway through the year do I get a refund",
+        ],
+        tags=("rag", "horizon", "regression"),
+        documents=horizon_docs,
+        also=frozenset({"vector_rag"}),
+        limit=12,
+    )
+    add(
+        "horizon_emergency",
+        "direct",
+        [
+            "My husband has been complaining about this tight pressure in his chest that's radiating down his arm for the past hour. Can I bring him in for a quick walk-in right now?",
+            "tight pressure in chest radiating to arm",
+            "chest hurts and left arm is numb",
+        ],
+        tags=("safety", "horizon", "regression"),
+        also=frozenset({"direct"}),
+        limit=12,
+    )
+    add(
+        "horizon_service_list",
+        "sql_fast",
+        [
+            "What are the urgent care your clinic provides?",
+            "what urgent care services do you provide",
+            "can you please tell me what are the things you provide",
+        ],
+        tags=("sql", "horizon", "regression"),
+        also=frozenset({"sql_fast", "clarify"}),
+        limit=12,
+    )
+    add(
+        "horizon_no_visit_sku",
+        "clarify",
+        [
+            "how many times we can visit a specialized doctor",
+            "if we put 55 kg of meat in Sulphuric acid how much time it will take to completely dissolve",
+        ],
+        tags=("clarify", "horizon", "regression"),
+        force_unknown=True,
+        confidence=0.5,
+        also=frozenset({"clarify", "direct"}),
+        limit=8,
+    )
+    add(
+        "horizon_specialties",
+        "sql_fast",
+        [
+            "can you please tell me what specialities you provide",
+            "what specialties do you provide",
+        ],
+        tags=("sql", "horizon", "regression"),
+        also=frozenset({"sql_fast", "clarify"}),
+        limit=8,
     )
 
     # Pad to target with systematic paraphrases of core SQL intents

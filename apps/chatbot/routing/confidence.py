@@ -1,12 +1,10 @@
-"""Confidence-banded routing policy — Small-LLM trust without regex sprawl.
+"""Confidence-banded routing policy — recovery depth without inventing SQL lanes.
 
 Bands (defaults; overridable via settings):
   >= high   Trust structured SQL / direct / booking decisions
   mid–high  SQL first; allow hybrid RAG if docs exist and answer may be thin
-  low–mid   Prefer vector when catalog exists; else clarify or weak SQL
-  < low     Catalog → vector once; else clarify
-
-Regex/heuristics remain a thin fast-path; confidence decides recovery depth.
+  low–mid   Prefer vector when catalog + knowledge; else clarify (never invent services)
+  < low     Catalog + knowledge → vector once; else clarify
 """
 
 from __future__ import annotations
@@ -88,7 +86,8 @@ def apply_confidence_policy(
     """
     Adjust routing flags from calibrated confidence.
 
-    Does not invent intents — only widens/narrows SQL vs vector vs clarify.
+    Does not invent intents from fuzzy service hits.
+    service_hit is retained for hybrid hints only when intent is already SQL-trusted.
     """
     band = band_for_confidence(float(nlu.confidence or 0.0))
     needs_sql = bool(nlu.needs_sql)
@@ -101,7 +100,6 @@ def apply_confidence_policy(
     prefer_clarify = False
     reason = f"band={band.value}"
 
-    # Hard trusts — never demote safety / greetings / booking commits
     if intent in {Intent.EMERGENCY} or nlu.is_emergency:
         return ConfidencePolicyResult(
             nlu=nlu,
@@ -123,7 +121,6 @@ def apply_confidence_policy(
         )
 
     if band == ConfidenceBand.HIGH:
-        # Trust SQL for structured facts; don't open RAG unless already flagged
         if intent in _SQL_TRUST:
             needs_vector = False if not knowledge_q else needs_vector
             needs_llm = needs_vector
@@ -132,7 +129,6 @@ def apply_confidence_policy(
         allow_hybrid = bool(has_catalog and knowledge_q)
 
     elif band == ConfidenceBand.MID:
-        # SQL + optional hybrid fallback when docs exist
         if intent in _SQL_TRUST or needs_sql:
             allow_hybrid = bool(has_catalog)
             reason += "|sql_hybrid_ok"
@@ -142,23 +138,22 @@ def apply_confidence_policy(
             clarification_needed = False
             prefer_vector = True
             reason += "|mid_catalog_vector"
-        elif intent == Intent.UNKNOWN and has_catalog and not service_hit:
-            # Mid unknown without knowledge speech-act: don't auto-RAG greetings/noise
+        elif intent == Intent.UNKNOWN and has_catalog and not knowledge_q:
             prefer_clarify = False
             reason += "|mid_unknown_hold"
-        if service_hit and not knowledge_q:
-            needs_sql = True
-            intent = intent if intent in _SQL_TRUST else Intent.SERVICES_OFFERED
-            clarification_needed = False
+        # Do NOT force SERVICES_OFFERED from service_hit at mid confidence
 
     elif band == ConfidenceBand.LOW:
-        if has_catalog and (knowledge_q or intent == Intent.FAQ or intent == Intent.MEDICAL_QUESTION):
+        if has_catalog and (
+            knowledge_q or intent == Intent.FAQ or intent == Intent.MEDICAL_QUESTION
+        ):
             needs_vector = True
             needs_llm = True
             clarification_needed = False
             prefer_vector = True
             reason += "|low_prefer_vector"
-        elif intent in _SQL_TRUST and (needs_sql or service_hit):
+        elif intent in _SQL_TRUST and needs_sql and float(nlu.confidence or 0) >= 0.70:
+            # Only keep SQL when already high-ish structured intent — not timeout@0.5
             allow_hybrid = bool(has_catalog)
             clarification_needed = False
             reason += "|low_keep_sql"
@@ -169,12 +164,16 @@ def apply_confidence_policy(
             prefer_vector = True
             reason += "|low_unknown_knowledge"
         else:
-            prefer_clarify = not has_catalog and intent == Intent.UNKNOWN
-            if prefer_clarify:
+            # Timeout / unknown / weak — clarify; never invent SQL from service_hit
+            if intent == Intent.UNKNOWN or clarification_needed:
+                prefer_clarify = True
                 clarification_needed = True
+                needs_sql = False
                 reason += "|low_clarify"
             else:
                 reason += "|low_hold"
+        # Ignore unused service_hit for low-band invent
+        _ = service_hit
 
     else:  # VERY_LOW
         if has_catalog and knowledge_q:
@@ -184,14 +183,14 @@ def apply_confidence_policy(
             prefer_vector = True
             intent = Intent.FAQ if intent == Intent.UNKNOWN else intent
             reason += "|vl_catalog_vector"
-        elif intent in _SQL_TRUST and needs_sql and float(nlu.confidence or 0) >= 0.35:
-            # Weak but structured signal from rules — keep SQL
+        elif intent in _SQL_TRUST and needs_sql and float(nlu.confidence or 0) >= 0.55:
             allow_hybrid = False
             clarification_needed = False
             reason += "|vl_weak_sql"
         else:
             clarification_needed = True
             prefer_clarify = True
+            needs_sql = False
             reason += "|vl_clarify"
 
     if needs_llm and not needs_vector:
@@ -212,9 +211,13 @@ def apply_confidence_policy(
         clarification_needed=clarification_needed,
         clarification_question=nlu.clarification_question,
         reasoning_short=(nlu.reasoning_short or "") + f" | conf:{reason}",
+        service_filter_mode=nlu.service_filter_mode,
+        sql_tool=nlu.sql_tool,
+        document_needed=bool(nlu.document_needed or needs_vector),
         provider=nlu.provider,
         model=nlu.model,
         timings=nlu.timings,
+        raw=nlu.raw,
     )
     return ConfidencePolicyResult(
         nlu=updated,

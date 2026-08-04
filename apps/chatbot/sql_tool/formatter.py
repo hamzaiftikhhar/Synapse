@@ -156,7 +156,16 @@ def format_sql_results(results: list[dict[str, Any]]) -> str:
             parts.append("Services we offer:\n" + "\n".join(lines))
             continue
 
-        if handler == "patient_appointments" and rows:
+        if handler == "patient_appointments":
+            if not found or not rows:
+                parts.append(
+                    summary
+                    or (
+                        "To cancel or reschedule, please verify your phone number first "
+                        "so I can pull up your appointments."
+                    )
+                )
+                continue
             lines = [
                 f"- {r['doctor']} on {r['start_time']} ({r['status']})"
                 for r in rows[:5]

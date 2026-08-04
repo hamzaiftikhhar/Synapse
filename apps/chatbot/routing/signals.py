@@ -117,7 +117,54 @@ _STOPWORDS = frozenset(
         "want", "what", "when", "where", "which", "while", "with", "would",
         "your", "yours", "tell", "give", "make", "help", "need", "know",
         "hours", "hour", "time", "take", "takes", "full", "body",
+        # Generic care/visit tokens — never treat as a named service SKU
+        "visit", "visits", "care", "basic", "level", "routine", "simple",
+        "urgent", "patient", "adult", "exam", "combo", "swab", "rapid",
+        "treatment", "treatments", "service", "services", "procedure",
+        "wrinkle", "tooth", "child", "well",
     }
+)
+
+# List / browse frames — must NOT collapse to a single matched service SKU
+_SERVICE_LIST_RE = re.compile(
+    r"\b("
+    r"what (?:services|special(?:t(?:y|ies)|ities)|things)\b|"
+    r"which (?:services|special(?:t(?:y|ies)|ities))\b|"
+    r"services? (?:do you )?(?:offer|provide|have)\b|"
+    r"special(?:t(?:y|ies)|ities) (?:do you )?(?:offer|provide|have)\b|"
+    r"list (?:of )?(?:services|special(?:t(?:y|ies)|ities))\b|"
+    r"what (?:do you|things do you) (?:offer|provide)\b|"
+    r"what (?:are )?(?:the )?(?:urgent care|primary care).{0,40}provid|"
+    r"what (?:urgent care|primary care).{0,40}(?:provid|offer)|"
+    r"(?:urgent care|primary care) (?:services?\b|do you provid)|"
+    r"(?:urgent care|primary care).{0,30}(?:clinic )?(?:provid|offer)"
+    r")",
+    re.I,
+)
+
+_SYMPTOM_CUE_RE = re.compile(
+    r"\b("
+    r"chest (?:pain|hurt|hurts|pressure|tight(?:ness)?)|"
+    r"(?:tight|crushing) (?:pressure|pain) in (?:my |his |her )?chest|"
+    r"pressure in (?:my |his |her )?chest|"
+    r"pain (?:in|radiat\w*).{0,40}\barm|"
+    r"radiat\w*.{0,30}\b(?:left )?arm|"
+    r"can'?t breathe|cannot breathe|shortness of breath|"
+    r"heart attack|stroke|suicid|"
+    r"severe bleeding|unconscious|choking|"
+    r"numb(?:ness)? (?:in )?(?:my |left )?arm|"
+    r"left arm numb"
+    r")\b",
+    re.I,
+)
+
+_SPECIALTY_LIST_RE = re.compile(
+    r"\b("
+    r"what special(?:t(?:y|ies)|ities)|which special(?:t(?:y|ies)|ities)|"
+    r"special(?:t(?:y|ies)|ities) (?:do you )?(?:offer|provide|have)|"
+    r"list (?:of )?special(?:t(?:y|ies)|ities)"
+    r")\b",
+    re.I,
 )
 
 _PHATIC_GREETING_RE = re.compile(
@@ -195,9 +242,46 @@ def is_procedure_duration_query(message: str) -> bool:
     return bool(_DURATION_HOURS_RE.search(message or ""))
 
 
+def has_symptom_cues(message: str) -> bool:
+    """True when message contains emergency/soft-symptom language (blocks hours steal)."""
+    return bool(_SYMPTOM_CUE_RE.search(message or ""))
+
+
+def is_service_list_query(message: str) -> bool:
+    """Browse/list services — do not pin a single SKU from fuzzy name overlap."""
+    return bool(_SERVICE_LIST_RE.search(message or ""))
+
+
+def is_specialty_list_query(message: str) -> bool:
+    return bool(_SPECIALTY_LIST_RE.search(message or ""))
+
+
+def service_filter_mode(
+    message: str, matched_services: list[dict[str, Any]] | None = None
+) -> str:
+    """
+    none | named | category
+
+    - none: list/browse all (or no filter)
+    - named: user clearly named one service (full name / strong multi-token hit)
+    - category: keyword category without a single SKU (e.g. "urgent care services")
+    """
+    if is_service_list_query(message) or is_specialty_list_query(message):
+        return "none"
+    hits = matched_services or []
+    if len(hits) == 1:
+        return "named"
+    if len(hits) > 1:
+        return "category"
+    return "none"
+
+
 def is_business_hours_query(message: str) -> bool:
     text = (message or "").strip()
     if not text:
+        return False
+    # Symptom / emergency narratives must never become open/close answers
+    if has_symptom_cues(text):
         return False
     # Duration / procedure time always wins over open/close
     if is_procedure_duration_query(text) or is_price_or_duration_query(text):
@@ -231,7 +315,22 @@ def is_business_hours_query(message: str) -> bool:
 
 def is_price_or_duration_query(message: str) -> bool:
     text = message or ""
+    # Policy / membership fees are knowledge, not catalog pricing
+    if re.search(
+        r"\b(cancel(?:lation)?|refund|membership|policy|deposit|dues|prorat\w*)\b",
+        text,
+        re.I,
+    ) and re.search(r"\b(fee|fees|charge|refund|policy)\b", text, re.I):
+        return False
     if is_procedure_duration_query(text):
+        # Bare "how much time" without a clinic service/procedure cue is not SQL pricing
+        if re.search(r"\bhow\s+much\s+time\b", text, re.I) and not re.search(
+            r"\b(service|procedure|treatment|appointment|cleaning|exam|"
+            r"extraction|screening|botox|laser|visit|physical)\b",
+            text,
+            re.I,
+        ):
+            return False
         return True
     if not _PRICE_DURATION_RE.search(text):
         return False
@@ -259,6 +358,17 @@ def looks_like_knowledge_question(message: str) -> bool:
         return False
     if is_transactional_booking(text):
         return False
+    # Cancellation/refund/membership fee frames beat service-pricing speech acts
+    if re.search(
+        r"\b(cancel(?:lation)?|refund|membership|reactivat\w*|terminat\w*)\b",
+        text,
+        re.I,
+    ) and re.search(
+        r"\b(fee|fees|policy|policies|charge|refund|dues|prorat\w*)\b",
+        text,
+        re.I,
+    ):
+        return True
     # Post-op / restriction frames beat bare duration/pricing speech acts
     if _KNOWLEDGE_FRAME_RE.search(text):
         return True
@@ -320,9 +430,18 @@ def catalog_overlap_score(
 def match_services_in_message(
     message: str, services: list[dict[str, Any]] | None
 ) -> list[dict[str, Any]]:
-    """Match this clinic's service names in free text (tenant-dynamic)."""
+    """
+    Strict tenant-dynamic service name match.
+
+    Accepts: full name ⊆ text, multi-word phrase (≥2 tokens, len≥8),
+    or ≥2 significant (len≥5, non-stopword) tokens from the name.
+    Rejects: bare single tokens like "visit" / "care" / "routine".
+    """
     text = (message or "").lower()
     if not text or not services:
+        return []
+    # List/browse questions never pin a SKU via fuzzy overlap
+    if is_service_list_query(text):
         return []
     hits: list[dict[str, Any]] = []
     for svc in services:
@@ -332,26 +451,32 @@ def match_services_in_message(
         if name in text:
             hits.append(svc)
             continue
-        # Phrase windows (e.g. "cancer screening", "botox")
-        words = [w for w in re.findall(r"[a-z0-9]+", name) if w not in {"and", "the", "for", "with"}]
+        words = [
+            w
+            for w in re.findall(r"[a-z0-9]+", name)
+            if w not in {"and", "the", "for", "with", "a", "an", "of", "or"}
+            and w not in _STOPWORDS
+        ]
         matched = False
+        # Multi-word phrase windows only (never single generic token)
         for n in (3, 2):
             if matched:
                 break
             for i in range(0, max(0, len(words) - n + 1)):
                 phrase = " ".join(words[i : i + n])
-                if len(phrase) >= 6 and phrase in text:
+                if len(phrase) >= 8 and phrase in text:
                     matched = True
                     break
+        # Distinctive single brand/procedure tokens only (len≥7, not stopword)
         if not matched:
-            # Strong single token (botox, invisalign, extraction…)
             for w in words:
-                if len(w) >= 5 and w in text:
+                if len(w) >= 7 and w in text and w not in _STOPWORDS:
                     matched = True
                     break
+        # ≥2 significant tokens present (each len≥5)
         if not matched and len(words) >= 2:
-            overlap = sum(1 for t in words if t in text)
-            if overlap >= 2 and overlap / len(words) >= 0.4:
+            strong = [t for t in words if len(t) >= 5]
+            if len(strong) >= 2 and all(t in text for t in strong[:2]):
                 matched = True
         if matched:
             hits.append(svc)

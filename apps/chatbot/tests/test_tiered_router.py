@@ -112,13 +112,15 @@ class RulesLaneTests(SimpleTestCase):
 
 
 class HeuristicsTests(SimpleTestCase):
-    def test_heuristics_force_sql_for_doctors(self):
+    def test_heuristics_do_not_invent_sql_for_doctors_on_unknown(self):
+        """Thin heuristics: doctor search is Small-LLM / strong-rules, not post-pass invent."""
         nlu = parse_nlu_payload(
             {
                 "intent": "unknown",
                 "confidence": 0.5,
                 "needs_llm": True,
                 "needs_vector": True,
+                "clarification_needed": True,
             }
         )
         out = apply_routing_heuristics(
@@ -126,10 +128,8 @@ class HeuristicsTests(SimpleTestCase):
             nlu=nlu,
             document_catalog=[],
         )
-        self.assertEqual(out.intent, Intent.DOCTOR_SEARCH)
-        self.assertTrue(out.needs_sql)
-        self.assertFalse(out.needs_vector)
-        self.assertFalse(out.needs_llm)
+        self.assertEqual(out.intent, Intent.UNKNOWN)
+        self.assertFalse(out.needs_sql)
 
     def test_heuristics_force_vector_on_policy_catalog_hit(self):
         catalog = [
@@ -182,7 +182,8 @@ class HeuristicsTests(SimpleTestCase):
         self.assertFalse(out.clarification_needed)
         self.assertEqual(out.intent, Intent.FAQ)
 
-    def test_heuristics_how_much_hours_with_service_catalog(self):
+    def test_heuristics_how_much_hours_with_named_service_recovers_sql(self):
+        """Strict full-name match + duration may recover SQL (not fuzzy tokens)."""
         services = [
             {"id": "1", "name": "Full Body Mole & Cancer Screening"},
             {"id": "2", "name": "Botox / Dysport Wrinkle Treatment"},
@@ -202,8 +203,27 @@ class HeuristicsTests(SimpleTestCase):
         )
         self.assertIn(out.intent, {Intent.PRICING, Intent.SERVICES_OFFERED})
         self.assertTrue(out.needs_sql)
-        self.assertFalse(out.clarification_needed)
         self.assertNotEqual(out.intent, Intent.CLINIC_HOURS)
+
+    def test_heuristics_visit_token_does_not_force_services(self):
+        services = [
+            {"id": "1", "name": "Urgent Care Visit (Level 1 / Basic)"},
+        ]
+        nlu = parse_nlu_payload(
+            {
+                "intent": "unknown",
+                "confidence": 0.5,
+                "clarification_needed": True,
+            }
+        )
+        out = apply_routing_heuristics(
+            message="how many times we can visit a specialized doctor",
+            nlu=nlu,
+            document_catalog=[],
+            service_catalog=services,
+        )
+        self.assertNotEqual(out.intent, Intent.SERVICES_OFFERED)
+        self.assertFalse(out.needs_sql)
 
     def test_decision_drops_needs_llm_without_vector(self):
         nlu = parse_nlu_payload(

@@ -185,15 +185,16 @@ class ChatEngine:
         doctor_followup = self._is_doctor_quality_followup(message) and last_doctor
         matched_docs = matching_document_ids(message, doc_catalog)
         has_catalog = bool(doc_catalog)
+        # Do not auto-vector on bare UNKNOWN + catalog (NLU timeout must not open Large LLM)
         needs_vector = bool(nlu_result.needs_vector) or (
-            (soft_medical or knowledge_q) and (bool(matched_docs) or has_catalog)
-        )
+            (soft_medical or knowledge_q) and bool(matched_docs)
+        ) or (knowledge_q and has_catalog and nlu_result.intent in {Intent.FAQ, Intent.UNKNOWN})
         doc_match = bool(matched_docs) or (
             has_catalog
             and (
-                needs_vector
+                bool(nlu_result.needs_vector)
                 or knowledge_q
-                or nlu_result.intent in {Intent.FAQ, Intent.MEDICAL_QUESTION, Intent.UNKNOWN}
+                or nlu_result.intent in {Intent.FAQ, Intent.MEDICAL_QUESTION}
             )
         )
 
@@ -230,8 +231,23 @@ class ChatEngine:
             timings["fast_path_ms"] = (time.perf_counter() - t0) * 1000
 
         elif lane == Lane.CLARIFY:
-            # Last-chance recovery only when policy/docs actually match — not bare catalog presence
-            if (needs_vector or conf_policy.prefer_vector or bool(matched_docs)) and not is_booking_intent:
+            # Escalate only when knowledge/docs clearly match — never after bare NLU timeout
+            degraded = (nlu_result.raw or {}).get("_degraded") or (
+                getattr(nlu_result.timings, "classifier_source", "") == "rules_fallback"
+                and float(nlu_result.confidence or 0) < 0.55
+            )
+            can_recover_rag = (
+                not is_booking_intent
+                and (
+                    (bool(matched_docs) and knowledge_q)
+                    or (
+                        not degraded
+                        and (needs_vector or conf_policy.prefer_vector)
+                        and (bool(matched_docs) or knowledge_q)
+                    )
+                )
+            )
+            if can_recover_rag:
                 lane = Lane.VECTOR_RAG
                 timings["lane"] = lane.value
                 t0 = time.perf_counter()
@@ -394,6 +410,17 @@ class ChatEngine:
         )
         ui_meta["lane"] = lane.value
         ui_meta["routing"] = confidence_meta(conf_policy)
+        if nlu_result.service_filter_mode:
+            ui_meta["service_filter_mode"] = nlu_result.service_filter_mode
+        if nlu_result.sql_tool:
+            ui_meta["sql_tool"] = nlu_result.sql_tool
+        # Surface degraded NLU (timeout/fallback) so clients can show softer UX
+        source = ""
+        if nlu_result.timings and getattr(nlu_result.timings, "classifier_source", None):
+            source = str(nlu_result.timings.classifier_source)
+        if source in {"rules_fallback"} or (nlu_result.raw or {}).get("_degraded"):
+            ui_meta["degraded"] = True
+            ui_meta["degraded_reason"] = "nlu_timeout_or_fallback"
 
         if (soft_medical or (is_booking_intent and not booking_commit)) and suggested:
             ui_meta.setdefault("specialties", [])

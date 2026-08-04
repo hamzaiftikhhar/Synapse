@@ -53,6 +53,22 @@ class Route(str, Enum):
 
 VALID_INTENTS = frozenset(i.value for i in Intent)
 
+# How SQL services/pricing should filter catalog rows
+VALID_SERVICE_FILTER_MODES = frozenset({"none", "named", "category"})
+VALID_SQL_TOOLS = frozenset(
+    {
+        "hours",
+        "location",
+        "insurance",
+        "doctors",
+        "specialties",
+        "services",
+        "pricing",
+        "appointments",
+        "null",
+    }
+)
+
 ENTITY_KEYS = (
     "doctor_name",
     "specialty",
@@ -121,6 +137,10 @@ class NLUResult:
     clarification_needed: bool = False
     clarification_question: str | None = None
     reasoning_short: str = ""
+    # Router contract extras (Small-LLM-first)
+    service_filter_mode: str = "none"  # none | named | category
+    sql_tool: str | None = None
+    document_needed: bool = False
     provider: str = ""
     model: str = ""
     timings: NLUTimings = field(default_factory=NLUTimings)
@@ -142,6 +162,9 @@ class NLUResult:
             "clarification_needed": self.clarification_needed,
             "clarification_question": self.clarification_question,
             "reasoning_short": self.reasoning_short,
+            "service_filter_mode": self.service_filter_mode,
+            "sql_tool": self.sql_tool,
+            "document_needed": self.document_needed,
             "provider": self.provider,
             "model": self.model,
             "timings": self.timings.to_dict(),
@@ -204,20 +227,40 @@ def parse_nlu_payload(
         confidence_f = 0.0
     confidence_f = max(0.0, min(1.0, confidence_f))
 
+    filter_mode = str(data.get("service_filter_mode") or "none").strip().lower()
+    if filter_mode not in VALID_SERVICE_FILTER_MODES:
+        filter_mode = "none"
+
+    sql_tool_raw = data.get("sql_tool")
+    sql_tool = _optional_str(sql_tool_raw)
+    if sql_tool:
+        sql_tool = sql_tool.lower()
+        if sql_tool not in VALID_SQL_TOOLS or sql_tool == "null":
+            sql_tool = None
+
+    document_needed = bool(data.get("document_needed", False))
+    needs_vector = bool(data.get("needs_vector", False)) or document_needed
+    needs_llm = bool(data.get("needs_llm", False))
+    if document_needed:
+        needs_llm = True
+
     return NLUResult(
         intent=intent,
         secondary_intents=secondary,
         confidence=confidence_f,
         entities=entities,
         needs_sql=bool(data.get("needs_sql", False)),
-        needs_vector=bool(data.get("needs_vector", False)),
-        needs_llm=bool(data.get("needs_llm", False)),
+        needs_vector=needs_vector,
+        needs_llm=needs_llm,
         can_respond_directly=bool(data.get("can_respond_directly", False)),
         is_emergency=bool(data.get("is_emergency", False)),
         is_off_topic=bool(data.get("is_off_topic", False)),
         clarification_needed=bool(data.get("clarification_needed", False)),
         clarification_question=_optional_str(data.get("clarification_question")),
         reasoning_short=str(data.get("reasoning_short") or "")[:500],
+        service_filter_mode=filter_mode,
+        sql_tool=sql_tool,
+        document_needed=document_needed,
         provider=provider,
         model=model,
         raw=data,

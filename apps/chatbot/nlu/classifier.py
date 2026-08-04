@@ -1,4 +1,4 @@
-"""Classifier with rules fast-path, strict timeout, and fallback."""
+"""Classifier with safety/phatic fast-path, Small-LLM-first, and fallback."""
 
 from __future__ import annotations
 
@@ -9,7 +9,12 @@ from typing import Any
 from django.conf import settings
 
 from apps.chatbot.nlu.base import NLUError, NLUProvider
-from apps.chatbot.nlu.entity_extract import extract_entities, merge_entities
+from apps.chatbot.nlu.entity_extract import (
+    extract_entities,
+    extract_emergency_symptoms,
+    has_symptom_cues,
+    merge_entities,
+)
 from apps.chatbot.nlu.factory import get_nlu_provider
 from apps.chatbot.nlu.openai_provider import OpenAINLUProvider
 from apps.chatbot.nlu.rules import try_rule_classify
@@ -33,27 +38,54 @@ def classify_message(
     """
     Classify a message:
 
-    rules_fast → rules_strong → LLM (strict timeout, single attempt)
-    → OpenAI fallback (optional) → rules_fallback / clarify payload
+    safety (emergency) → rules_fast (phatic) → [optional rules_strong]
+    → Small LLM → OpenAI fallback (incl. timeout) → rules_fallback / clarify
     """
     started = time.perf_counter()
 
     if getattr(settings, "NLU_ENABLE_RULES", True):
+        # Gate A — emergency / narrative cardiac (fail-closed, never wait on LLM)
+        safety = try_rule_classify(message, tier="safety")
+        if safety is not None:
+            return _finalize_rules(safety, started)
+        if has_symptom_cues(message) and extract_emergency_symptoms(message):
+            # Extra narrative emergency catch even if strong regex missed phrasing
+            symptoms = extract_emergency_symptoms(message)
+            return _finalize_rules(
+                {
+                    "intent": "emergency",
+                    "secondary_intents": [],
+                    "confidence": 0.98,
+                    "entities": {**extract_entities(message), "symptom": symptoms},
+                    "needs_sql": False,
+                    "needs_vector": False,
+                    "needs_llm": False,
+                    "can_respond_directly": True,
+                    "is_emergency": True,
+                    "is_off_topic": False,
+                    "clarification_needed": False,
+                    "clarification_question": None,
+                    "reasoning_short": "Emergency narrative (safety gate)",
+                    "_classifier_source": "rules_safety",
+                },
+                started,
+            )
+
+        # Gate B — phatic only
         fast = try_rule_classify(message, tier="fast")
         if fast is not None:
             return _finalize_rules(fast, started)
 
-        if getattr(settings, "NLU_RULES_BEFORE_LLM", True):
+        # Strong semantic rules only when explicitly enabled (default: False)
+        if getattr(settings, "NLU_RULES_BEFORE_LLM", False):
             strong = try_rule_classify(message, tier="strong")
             if strong is not None:
                 return _finalize_rules(strong, started)
 
     primary = provider or get_nlu_provider()
-    # Hard ceiling — never block the chatbot for more than this.
-    timeout = float(getattr(settings, "NLU_API_TIMEOUT_SECONDS", 6.5))
+    timeout = float(getattr(settings, "NLU_API_TIMEOUT_SECONDS", 3.5))
     last_error: NLUError | None = None
 
-    # Single attempt only (retry would double worst-case latency)
     try:
         raw = primary.classify(
             message=message,
@@ -62,11 +94,23 @@ def classify_message(
         )
         if isinstance(raw, dict):
             raw.setdefault("_classifier_source", primary.provider_name)
-            # Enrich LLM entities with local regex gaps
             raw["entities"] = merge_entities(
                 raw.get("entities") if isinstance(raw.get("entities"), dict) else {},
                 extract_entities(message),
             )
+            # Fail-closed: elevate emergency if cue present but LLM missed it
+            if has_symptom_cues(message) and not raw.get("is_emergency"):
+                symptoms = extract_emergency_symptoms(message)
+                if symptoms or has_symptom_cues(message):
+                    raw["intent"] = "emergency"
+                    raw["is_emergency"] = True
+                    raw["can_respond_directly"] = True
+                    raw["needs_sql"] = False
+                    raw["needs_vector"] = False
+                    raw["needs_llm"] = False
+                    ents = raw.get("entities") if isinstance(raw.get("entities"), dict) else {}
+                    ents["symptom"] = symptoms or ents.get("symptom")
+                    raw["entities"] = ents
         return raw
     except NLUError as exc:
         last_error = exc
@@ -77,12 +121,14 @@ def classify_message(
             exc,
         )
 
-    # OpenAI fallback — only when primary is Gemini and key exists
+    allow_timeout_fallback = bool(
+        getattr(settings, "NLU_FALLBACK_ON_TIMEOUT", True)
+    )
     if (
         primary.provider_name == "gemini"
         and settings.OPENAI_API_KEY
         and getattr(settings, "NLU_FALLBACK_OPENAI", True)
-        and not _is_timeout_error(last_error)  # on timeout prefer instant rules
+        and (allow_timeout_fallback or not _is_timeout_error(last_error))
     ):
         fallback_model = getattr(settings, "NLU_FALLBACK_MODEL", "gpt-4.1-mini")
         logger.info("NLU falling back to OpenAI model=%s", fallback_model)
@@ -91,10 +137,12 @@ def classify_message(
                 model_name=fallback_model,
                 api_key=settings.OPENAI_API_KEY,
             )
+            # Shorter budget on fallback to stay under client timeout
+            fb_timeout = min(timeout, 3.0)
             raw = fb.classify(
                 message=message,
                 conversation_context=conversation_context,
-                timeout=timeout,
+                timeout=fb_timeout,
             )
             if isinstance(raw, dict):
                 raw["_classifier_source"] = "openai_fallback"
@@ -102,10 +150,37 @@ def classify_message(
                     raw.get("entities") if isinstance(raw.get("entities"), dict) else {},
                     extract_entities(message),
                 )
+                if has_symptom_cues(message):
+                    raw["intent"] = "emergency"
+                    raw["is_emergency"] = True
+                    raw["can_respond_directly"] = True
             return raw
         except NLUError as exc:
             last_error = exc
             logger.warning("OpenAI NLU fallback failed: %s", exc)
+
+    # Safety again after provider failure (chest-pressure should never clarify)
+    if has_symptom_cues(message):
+        symptoms = extract_emergency_symptoms(message)
+        return _finalize_rules(
+            {
+                "intent": "emergency",
+                "secondary_intents": [],
+                "confidence": 0.95,
+                "entities": {**extract_entities(message), "symptom": symptoms or None},
+                "needs_sql": False,
+                "needs_vector": False,
+                "needs_llm": False,
+                "can_respond_directly": True,
+                "is_emergency": True,
+                "is_off_topic": False,
+                "clarification_needed": False,
+                "clarification_question": None,
+                "reasoning_short": "Emergency after NLU failure (safety gate)",
+                "_classifier_source": "rules_safety",
+            },
+            started,
+        )
 
     if getattr(settings, "NLU_ENABLE_RULES", True):
         fallback_rule = try_rule_classify(message, tier="fallback")
@@ -113,8 +188,6 @@ def classify_message(
             logger.info("NLU using rules fallback after provider failure")
             return _finalize_rules(fallback_rule, started)
 
-    # Soft clarify — never hang the user. Engine may upgrade to vector_rag
-    # when the clinic has a document catalog (timeout must not ignore docs).
     logger.info("NLU returning clarify fallback after provider failure")
     return _finalize_rules(
         {

@@ -14,9 +14,13 @@ from apps.chatbot.routing.doc_catalog import (
     matching_document_ids,
 )
 from apps.chatbot.routing.signals import (
+    has_symptom_cues,
+    is_service_list_query,
+    is_specialty_list_query,
     is_transactional_booking,
     looks_like_knowledge_question,
     match_services_in_message,
+    service_filter_mode,
 )
 
 __all__ = [
@@ -34,4 +38,8 @@ __all__ = [
     "is_transactional_booking",
     "looks_like_knowledge_question",
     "match_services_in_message",
+    "has_symptom_cues",
+    "is_service_list_query",
+    "is_specialty_list_query",
+    "service_filter_mode",
 ]

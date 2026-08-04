@@ -72,6 +72,19 @@ _INSURANCE_BRANDS = [
 
 _EMERGENCY_SYMPTOMS = [
     "chest pain",
+    "chest pressure",
+    "chest tightness",
+    "chest hurts",
+    "tight pressure",
+    "pain in my chest",
+    "pain in chest",
+    "pressure in his chest",
+    "pressure in her chest",
+    "pressure in my chest",
+    "radiating down his arm",
+    "radiating down her arm",
+    "radiating down my arm",
+    "radiating to my arm",
     "left arm numbness",
     "arm numbness",
     "can't breathe",
@@ -86,6 +99,22 @@ _EMERGENCY_SYMPTOMS = [
     "suicidal",
 ]
 
+_SYMPTOM_CUE_RE = re.compile(
+    r"\b("
+    r"chest (?:pain|hurt|hurts|pressure|tight(?:ness)?)|"
+    r"(?:tight|crushing) (?:pressure|pain) in (?:my |his |her )?chest|"
+    r"pressure in (?:my |his |her )?chest|"
+    r"pain (?:in|radiat\w*).{0,40}\barm|"
+    r"radiat\w*.{0,30}\b(?:left )?arm|"
+    r"can'?t breathe|cannot breathe|shortness of breath|"
+    r"heart attack|stroke|suicid|"
+    r"severe bleeding|unconscious|choking|"
+    r"numb(?:ness)? (?:in )?(?:my |left )?arm|"
+    r"left arm numb"
+    r")\b",
+    re.I,
+)
+
 _DOCTOR_RE = re.compile(
     r"\b(?:dr\.?|doctor)\s+([A-Za-z][A-Za-z'-]{1,30})(?:\s+([A-Za-z][A-Za-z'-]{1,30}))?",
     re.IGNORECASE,
@@ -97,7 +126,7 @@ _NEGATION_RE = re.compile(
 )
 
 _COMPOUND_RE = re.compile(
-    r"\b(and also|also tell|plus|in addition|as well as|and can|and do)\b|\?.*\?",
+    r"\b(and also|also tell|plus|in addition|as well as|and can|and do)\b",
     re.IGNORECASE,
 )
 
@@ -114,9 +143,13 @@ def has_negation_near(text: str, keyword: str, window: int = 40) -> bool:
 
 def looks_like_compound(text: str) -> bool:
     """Multi-clause / multi-question messages should not use single-intent rules."""
-    if _COMPOUND_RE.search(text):
+    if _COMPOUND_RE.search(text or ""):
         return True
-    if text.count("?") >= 2:
+    # Distinct question clauses (ignore trailing punctuation spam like "hours??")
+    body = re.sub(r"[?!.\s]+$", "", text or "")
+    # Split on ? that are followed by more content
+    clauses = [c.strip() for c in re.split(r"\?", body) if c.strip()]
+    if len(clauses) >= 2:
         return True
     return False
 
@@ -137,12 +170,24 @@ def extract_entities(text: str) -> dict[str, Any]:
     }
 
 
+def has_symptom_cues(text: str) -> bool:
+    """True when message contains emergency/soft-symptom language."""
+    return bool(_SYMPTOM_CUE_RE.search(text or ""))
+
+
 def extract_emergency_symptoms(text: str) -> list[str]:
     lower = text.lower()
     found: list[str] = []
     for symptom in _EMERGENCY_SYMPTOMS:
         if symptom in lower and symptom not in found:
             found.append(symptom)
+    if not found and has_symptom_cues(text):
+        if "chest" in lower:
+            found.append("chest symptoms")
+        if "arm" in lower:
+            found.append("arm symptoms")
+        if not found:
+            found.append("emergency symptoms")
     return found
 
 

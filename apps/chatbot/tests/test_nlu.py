@@ -185,7 +185,7 @@ class RuleClassifierTests(SimpleTestCase):
 
     def test_emergency_symptoms_clean(self):
         text = "I have intense chest pain and left arm numbness, when can I see a doctor?"
-        hit = try_rule_classify(text, tier="strong")
+        hit = try_rule_classify(text, tier="safety")
         self.assertIsNotNone(hit)
         self.assertTrue(hit["is_emergency"])
         self.assertEqual(
@@ -194,6 +194,15 @@ class RuleClassifierTests(SimpleTestCase):
         )
         self.assertIn("chest pain", hit["entities"]["symptom"])
         self.assertNotEqual(hit["entities"]["symptom"], text)
+
+    def test_emergency_narrative_chest_pressure(self):
+        hit = try_rule_classify(
+            "chest pressure into my arm for an hour right now",
+            tier="safety",
+        )
+        self.assertIsNotNone(hit)
+        self.assertTrue(hit["is_emergency"])
+        self.assertEqual(hit["intent"], "emergency")
 
     def test_low_confidence_triggers_clarify(self):
         nlu = parse_nlu_payload({"intent": "unknown", "confidence": 0.5})
@@ -295,10 +304,7 @@ class IntentEntityServiceMockedTests(SimpleTestCase):
                 log_usage=False,
             )
 
-        # Availability rule fallback or clarify
-        self.assertTrue(
-            result.clarification_needed
-            or result.intent
-            in {Intent.DOCTOR_AVAILABILITY, Intent.BOOK_APPOINTMENT, Intent.UNKNOWN}
-        )
+        # Degraded clarify — never invent availability from timeout
+        self.assertTrue(result.clarification_needed or result.intent == Intent.UNKNOWN)
         self.assertLess(result.timings.total_ms, 100)
+        self.assertLessEqual(result.confidence, 0.5)

@@ -7,6 +7,7 @@ from collections.abc import Callable
 
 from apps.chatbot.nlu.schemas import Intent, NLUResult
 from apps.chatbot.sql_tool.base import SQLContext, SQLHandler, SQLResult
+from apps.chatbot.routing.signals import is_specialty_list_query
 from apps.chatbot.sql_tool.handlers import (
     clinic_hours,
     clinic_location,
@@ -35,6 +36,18 @@ _INTENT_HANDLERS: dict[Intent, SQLHandler] = {
     Intent.PRICING: services_offered,
 }
 
+# sql_tool string from Small LLM → handler override
+_SQL_TOOL_HANDLERS: dict[str, SQLHandler] = {
+    "hours": clinic_hours,
+    "location": clinic_location,
+    "insurance": insurance_accepted,
+    "doctors": search_doctors,
+    "specialties": list_specialties,
+    "services": services_offered,
+    "pricing": services_offered,
+    "appointments": patient_appointments,
+}
+
 # Extra handlers for multi-intent / enrichment — avoid dumping specialties on every doctor search
 _INTENT_SUPPLEMENTS: dict[Intent, list[SQLHandler]] = {
     Intent.INSURANCE_VERIFICATION: [],
@@ -59,7 +72,7 @@ class SQLTool:
         message: str = "",
     ) -> list[SQLResult]:
         ctx = SQLContext(clinic=clinic, nlu=nlu, patient=patient, message=message or "")
-        handlers = cls._handlers_for(nlu)
+        handlers = cls._handlers_for(nlu, message=message or "")
         if not handlers:
             return [
                 SQLResult(
@@ -99,7 +112,7 @@ class SQLTool:
         return handler(ctx)
 
     @classmethod
-    def _handlers_for(cls, nlu: NLUResult) -> list[SQLHandler]:
+    def _handlers_for(cls, nlu: NLUResult, message: str = "") -> list[SQLHandler]:
         intents = [nlu.intent, *nlu.secondary_intents]
         handlers: list[SQLHandler] = []
         seen: set[str] = set()
@@ -109,6 +122,20 @@ class SQLTool:
             if name not in seen:
                 seen.add(name)
                 handlers.append(handler)
+
+        raw = getattr(nlu, "raw", None) or {}
+        tool = getattr(nlu, "sql_tool", None) or raw.get("sql_tool") or raw.get(
+            "sql_tool_hint"
+        )
+        if isinstance(tool, str):
+            key = tool.strip().lower()
+            if key in _SQL_TOOL_HANDLERS:
+                add(_SQL_TOOL_HANDLERS[key])
+                return handlers
+
+        if is_specialty_list_query(message):
+            add(list_specialties)
+            return handlers
 
         for intent in intents:
             primary = _INTENT_HANDLERS.get(intent)
