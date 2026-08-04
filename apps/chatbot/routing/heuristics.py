@@ -10,6 +10,8 @@ from apps.chatbot.routing.signals import (
     catalog_overlap_score,
     is_business_hours_query,
     is_informational,
+    is_phatic_farewell,
+    is_phatic_greeting,
     is_price_or_duration_query,
     is_procedure_duration_query,
     is_transactional_booking,
@@ -86,6 +88,48 @@ def apply_routing_heuristics(
             entities = replace(entities, service=matched_services[0].get("name"))
         except Exception:
             pass
+
+    # Phatic greetings/farewells must stay DIRECT even when a doc catalog exists
+    if is_phatic_greeting(message):
+        return NLUResult(
+            intent=Intent.GREETING,
+            secondary_intents=list(nlu.secondary_intents),
+            confidence=max(float(nlu.confidence or 0), 0.95),
+            entities=entities,
+            resolved_ids=nlu.resolved_ids,
+            needs_sql=False,
+            needs_vector=False,
+            needs_llm=False,
+            can_respond_directly=True,
+            is_emergency=nlu.is_emergency,
+            is_off_topic=False,
+            clarification_needed=False,
+            clarification_question=None,
+            reasoning_short=(nlu.reasoning_short or "") + " | phatic_greeting",
+            provider=nlu.provider,
+            model=nlu.model,
+            timings=nlu.timings,
+        )
+    if is_phatic_farewell(message):
+        return NLUResult(
+            intent=Intent.FAREWELL,
+            secondary_intents=list(nlu.secondary_intents),
+            confidence=max(float(nlu.confidence or 0), 0.95),
+            entities=entities,
+            resolved_ids=nlu.resolved_ids,
+            needs_sql=False,
+            needs_vector=False,
+            needs_llm=False,
+            can_respond_directly=True,
+            is_emergency=nlu.is_emergency,
+            is_off_topic=False,
+            clarification_needed=False,
+            clarification_question=None,
+            reasoning_short=(nlu.reasoning_short or "") + " | phatic_farewell",
+            provider=nlu.provider,
+            model=nlu.model,
+            timings=nlu.timings,
+        )
 
     # Informational policy / post-op / arrival — prefer vector when docs exist.
     # Must beat duration/pricing so "how many hours without straws" ≠ service list.
@@ -210,7 +254,7 @@ def apply_routing_heuristics(
             needs_vector = False
             needs_llm = False
             clarification_needed = False
-        elif catalog:
+        elif catalog and knowledge_q:
             needs_vector = True
             needs_llm = True
             if intent == Intent.UNKNOWN:

@@ -225,11 +225,20 @@ EMBEDDING_DIMENSIONS = env.int("EMBEDDING_DIMENSIONS", default=768)
 NLU_PROVIDER = env("NLU_PROVIDER", default="gemini")
 NLU_MODEL = env("NLU_MODEL", default="gemini-3.1-flash-lite")
 GOOGLE_API_KEY = env("GOOGLE_API_KEY", default="")
-NLU_API_TIMEOUT_SECONDS = env.float("NLU_API_TIMEOUT_SECONDS", default=6.5)
+# Fail-faster Small-LLM router (OpenAI fallback still allowed on timeout)
+NLU_API_TIMEOUT_SECONDS = env.float("NLU_API_TIMEOUT_SECONDS", default=3.5)
+# Chat routing confidence bands (Small-LLM trust / hybrid / clarify)
 NLU_CONFIDENCE_THRESHOLD = env.float("NLU_CONFIDENCE_THRESHOLD", default=0.75)
+CHAT_CONFIDENCE_HIGH = env.float("CHAT_CONFIDENCE_HIGH", default=0.90)
+CHAT_CONFIDENCE_MID = env.float("CHAT_CONFIDENCE_MID", default=0.70)
+CHAT_CONFIDENCE_LOW = env.float("CHAT_CONFIDENCE_LOW", default=0.45)
+
 NLU_ENABLE_RULES = env.bool("NLU_ENABLE_RULES", default=True)
-NLU_RULES_BEFORE_LLM = env.bool("NLU_RULES_BEFORE_LLM", default=True)
+# Small-LLM-first: safety/phatic only before LLM; strong semantic regex is off by default
+NLU_RULES_BEFORE_LLM = env.bool("NLU_RULES_BEFORE_LLM", default=False)
 NLU_FALLBACK_OPENAI = env.bool("NLU_FALLBACK_OPENAI", default=True)
+# Allow OpenAI fallback even when primary timed out (reliability P0)
+NLU_FALLBACK_ON_TIMEOUT = env.bool("NLU_FALLBACK_ON_TIMEOUT", default=True)
 NLU_FALLBACK_MODEL = env("NLU_FALLBACK_MODEL", default="gpt-4.1-mini")
 
 # ─── Chat / RAG response generation (separate from NLU) ───────────────────────

@@ -300,8 +300,27 @@ class ResolveLaneTests(SimpleTestCase):
             needs_vector=False,
             doc_match=False,
             has_catalog=True,
+            prefer_vector=True,
         )
         self.assertEqual(lane, Lane.VECTOR_RAG)
+
+    def test_clarify_with_idle_catalog_stays_clarify(self):
+        nlu = self._nlu(
+            intent="unknown",
+            clarification_needed=True,
+            clarification_question="Could you clarify?",
+        )
+        lane = resolve_lane(
+            nlu=nlu,
+            route=Route.CLARIFY,
+            is_booking_intent=False,
+            soft_medical=False,
+            needs_vector=False,
+            doc_match=False,
+            has_catalog=True,
+            prefer_vector=False,
+        )
+        self.assertEqual(lane, Lane.CLARIFY)
 
 
 class SqlHonestyTests(SimpleTestCase):

@@ -61,6 +61,8 @@ def resolve_lane(
     needs_vector: bool,
     doc_match: bool,
     has_catalog: bool = False,
+    prefer_vector: bool = False,
+    prefer_clarify: bool = False,
 ) -> Lane:
     """Pick the execution lane. Large LLM is only used for VECTOR_RAG."""
     if nlu.is_emergency or nlu.intent == Intent.EMERGENCY or route == Route.EMERGENCY:
@@ -68,6 +70,15 @@ def resolve_lane(
 
     if is_booking_intent:
         return Lane.BOOKING
+
+    if prefer_clarify and not has_catalog and not needs_vector and not nlu.needs_sql:
+        return Lane.CLARIFY
+
+    # Confidence / recovery: prefer vector when policy says so and docs exist
+    if prefer_vector and has_catalog and not is_booking_intent:
+        if nlu.needs_sql and nlu.intent in _SQL_INTENTS and not doc_match and not needs_vector:
+            return Lane.SQL_FAST
+        return Lane.VECTOR_RAG
 
     # FAQ / policy / PDF-matched / medical-with-docs → RAG (before SQL steal)
     if needs_vector or nlu.intent == Intent.FAQ or (doc_match and soft_medical):
@@ -93,9 +104,12 @@ def resolve_lane(
     if route == Route.CLARIFY or nlu.clarification_needed or nlu.intent == Intent.UNKNOWN:
         if nlu.needs_sql:
             return Lane.SQL_FAST
-        # Dynamic recovery: any clinic with docs → try RAG before clarify menu
-        if doc_match or has_catalog:
+        # Recover to RAG only when docs *match* or policy prefers vector — not merely because
+        # the clinic owns PDFs (that stole greetings/farewells into vector_rag).
+        if needs_vector or prefer_vector or doc_match:
             return Lane.VECTOR_RAG
+        if prefer_clarify or not has_catalog:
+            return Lane.CLARIFY
         return Lane.CLARIFY
 
     if nlu.needs_sql:
@@ -113,6 +127,7 @@ def resolve_lane(
         return Lane.CLARIFY
 
     if has_catalog and nlu.intent in {Intent.UNKNOWN, Intent.FAQ, Intent.MEDICAL_QUESTION}:
-        return Lane.VECTOR_RAG
+        if needs_vector or prefer_vector or doc_match or nlu.intent != Intent.UNKNOWN:
+            return Lane.VECTOR_RAG
 
     return Lane.CLARIFY

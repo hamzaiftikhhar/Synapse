@@ -123,6 +123,23 @@ class ChatEngine:
             service_catalog=service_catalog,
         )
 
+        from apps.chatbot.routing.confidence import (
+            apply_confidence_policy,
+            confidence_meta,
+        )
+        from apps.chatbot.routing.signals import match_services_in_message
+
+        service_hit = bool(match_services_in_message(message, service_catalog))
+        knowledge_q = looks_like_knowledge_question(message)
+        conf_policy = apply_confidence_policy(
+            nlu_result,
+            has_catalog=bool(doc_catalog),
+            service_hit=service_hit,
+            knowledge_q=knowledge_q,
+        )
+        nlu_result = conf_policy.nlu
+        timings["confidence_band"] = conf_policy.band.value
+
         # ── 2. Decision Engine ───────────────────────────────────────────────
         t0 = time.perf_counter()
         from apps.chatbot.nlu.decision import DecisionEngine
@@ -188,6 +205,8 @@ class ChatEngine:
             needs_vector=needs_vector,
             doc_match=doc_match,
             has_catalog=has_catalog,
+            prefer_vector=conf_policy.prefer_vector,
+            prefer_clarify=conf_policy.prefer_clarify,
         )
 
         # Doctor quality follow-up: template, no RAG
@@ -197,6 +216,7 @@ class ChatEngine:
         suggested: list[dict[str, Any]] = []
         guidance = ""
         timings["lane"] = lane.value
+        allow_hybrid = bool(conf_policy.allow_hybrid)
 
         # ── 3. Execute lane ──────────────────────────────────────────────────
         if lane == Lane.DIRECT:
@@ -210,8 +230,8 @@ class ChatEngine:
             timings["fast_path_ms"] = (time.perf_counter() - t0) * 1000
 
         elif lane == Lane.CLARIFY:
-            # Last-chance recovery: clinic has docs → RAG instead of 4-option menu
-            if has_catalog and not is_booking_intent:
+            # Last-chance recovery only when policy/docs actually match — not bare catalog presence
+            if (needs_vector or conf_policy.prefer_vector or bool(matched_docs)) and not is_booking_intent:
                 lane = Lane.VECTOR_RAG
                 timings["lane"] = lane.value
                 t0 = time.perf_counter()
@@ -250,6 +270,7 @@ class ChatEngine:
                 sql_rows=sql_rows,
                 has_catalog=has_catalog,
                 knowledge_q=knowledge_q,
+                allow_hybrid=allow_hybrid,
             ):
                 lane = Lane.VECTOR_RAG
                 timings["lane"] = lane.value
@@ -372,6 +393,7 @@ class ChatEngine:
             last_specialty=last_specialty,
         )
         ui_meta["lane"] = lane.value
+        ui_meta["routing"] = confidence_meta(conf_policy)
 
         if (soft_medical or (is_booking_intent and not booking_commit)) and suggested:
             ui_meta.setdefault("specialties", [])
@@ -463,6 +485,7 @@ class ChatEngine:
         sql_rows: list[dict[str, Any]],
         has_catalog: bool,
         knowledge_q: bool,
+        allow_hybrid: bool = False,
     ) -> bool:
         """Escalate SQL → vector when structured lookup misses and docs exist."""
         from apps.chatbot.routing.lanes import HYBRID_SQL_INTENTS
@@ -471,11 +494,17 @@ class ChatEngine:
         if not has_catalog:
             return False
         if self._sql_found(sql_rows) and not knowledge_q and not nlu.needs_vector:
+            # Mid-confidence policy may still allow hybrid for thin answers later;
+            # today we only escalate on empty/miss or explicit vector need.
+            if not allow_hybrid:
+                return False
             return False
         intent = nlu.intent
         if intent in HYBRID_SQL_INTENTS or knowledge_q or bool(nlu.needs_vector):
             return True
         if intent == Intent.UNKNOWN:
+            return True
+        if allow_hybrid and not self._sql_found(sql_rows):
             return True
         # Empty SQL on pricing/services always try docs when present
         if not self._sql_found(sql_rows) and intent in {

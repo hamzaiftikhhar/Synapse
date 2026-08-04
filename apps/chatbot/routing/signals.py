@@ -120,6 +120,51 @@ _STOPWORDS = frozenset(
     }
 )
 
+_PHATIC_GREETING_RE = re.compile(
+    r"^\s*(?:(?:hey|hi|hello|yo|hiya|howdy)\s+)*"
+    r"(?:hi|hello|hey|hiya|howdy|yo|good\s+(?:morning|afternoon|evening))"
+    r"(?:\s+(?:there|all|folks))?"
+    r"(?:\s+how\s+are\s+(?:you|u|ya))?"
+    r"(?:\s+please)?"
+    r"[\s?!.]*$",
+    re.I,
+)
+_PHATIC_FAREWELL_RE = re.compile(
+    r"^\s*(?:(?:hey|hi|hello|ok|okay|alright|well)\s+)*"
+    r"(?:bye|goodbye|good\s*bye|see\s+y(?:a|ou)|take\s+care|thanks?\s+bye|"
+    r"thank\s+you|thanks|thx|ttyl|later)"
+    r"(?:\s+please)?"
+    r"[\s?!.]*$",
+    re.I,
+)
+
+
+def is_phatic_greeting(message: str) -> bool:
+    text = (message or "").strip()
+    if not text or len(text) > 48:
+        return False
+    # Strip common filler prefixes used in chat
+    text = re.sub(
+        r"^(?:umm+|uh+|so+|quick\s+q\s*[—\-:]?\s*|pls\s+|please\s+)+",
+        "",
+        text,
+        flags=re.I,
+    ).strip()
+    return bool(_PHATIC_GREETING_RE.match(text))
+
+
+def is_phatic_farewell(message: str) -> bool:
+    text = (message or "").strip()
+    if not text or len(text) > 48:
+        return False
+    text = re.sub(
+        r"^(?:umm+|uh+|ok+|okay\s+|quick\s+q\s*[—\-:]?\s*|pls\s+|please\s+)+",
+        "",
+        text,
+        flags=re.I,
+    ).strip()
+    return bool(_PHATIC_FAREWELL_RE.match(text))
+
 
 def is_informational(message: str) -> bool:
     text = (message or "").strip()

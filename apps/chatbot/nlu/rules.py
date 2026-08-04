@@ -165,7 +165,19 @@ def _normalize(text: str) -> str:
     if text.startswith("message:"):
         text = text[8:].strip()
     text = re.sub(r"[^\w\s'?-]", " ", text)
-    return re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"\s+", " ", text).strip()
+    # Lightweight production typos (not clinic-specific)
+    replacements = (
+        (r"\bapointment\b", "appointment"),
+        (r"\bappt\b", "appointment"),
+        (r"\bdocotr\b", "doctor"),
+        (r"\bhoures\b", "hours"),
+        (r"\bhrs\b", "hours"),
+        (r"\binsurence\b", "insurance"),
+    )
+    for pattern, repl in replacements:
+        text = re.sub(pattern, repl, text)
+    return text
 
 
 def _with_entities(message: str, payload: dict[str, Any]) -> dict[str, Any]:
