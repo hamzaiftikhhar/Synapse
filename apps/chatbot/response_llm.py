@@ -27,6 +27,30 @@ class ResponseLLMError(Exception):
     pass
 
 
+def build_response_prompts(
+    *,
+    clinic: Any,
+    message: str,
+    nlu: Any | None = None,
+    sql_rows: list[dict[str, Any]] | None = None,
+    vector_rows: list[dict[str, Any]] | None = None,
+    history: list[dict[str, str]] | None = None,
+    extra_context: str = "",
+) -> dict[str, str]:
+    """Return the exact system/user prompts sent to the Large LLM (for pipeline debug)."""
+    return {
+        "system_prompt": _system_prompt(clinic),
+        "user_prompt": _user_block(
+            message=message,
+            nlu=nlu,
+            sql_rows=sql_rows or [],
+            vector_rows=vector_rows or [],
+            history=history or [],
+            extra_context=extra_context,
+        ),
+    }
+
+
 def synthesize_clinic_reply(
     *,
     clinic: Any,
@@ -39,15 +63,17 @@ def synthesize_clinic_reply(
 ) -> str:
     """Generate a concise patient-facing answer from grounded clinic context."""
     provider = (getattr(settings, "CHAT_RESPONSE_PROVIDER", "gemini") or "gemini").lower()
-    system = _system_prompt(clinic)
-    user_block = _user_block(
+    prompts = build_response_prompts(
+        clinic=clinic,
         message=message,
         nlu=nlu,
-        sql_rows=sql_rows or [],
-        vector_rows=vector_rows or [],
-        history=history or [],
+        sql_rows=sql_rows,
+        vector_rows=vector_rows,
+        history=history,
         extra_context=extra_context,
     )
+    system = prompts["system_prompt"]
+    user_block = prompts["user_prompt"]
 
     if provider == "openai":
         return _openai_generate(system=system, user_block=user_block)

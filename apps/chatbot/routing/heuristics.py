@@ -29,18 +29,20 @@ def apply_routing_heuristics(
     service_catalog: list[dict[str, Any]] | None = None,
 ) -> NLUResult:
     """
-    Validator-style post-pass (not a second English brain).
+    Runtime sensors + safety/entity hints — not the lane owner.
+
+    The ExecutionPlan planner ignores deprecated needs_*/sql_tool flags when
+    choosing tasks. This pass may still correct speech-act semantics and attach
+    entity/filter hints for downstream SQL handlers.
 
     Allowed:
-      - Force DIRECT for phatic greeting/farewell
-      - Trust emergency flags
-      - Timeout/unknown recovery: knowledge/docs → vector; else clarify
-      - Attach strict service entity hints (never invent SQL lane from fuzzy hit)
-      - List/browse service questions: clear service filter (service_filter_mode=none)
+      - Force phatic greeting/farewell / trust emergency
+      - Entity hints + service_filter_mode
+      - Speech-act semantic corrections (informational book → faq, etc.)
 
     Forbidden:
-      - Rewriting LLM intents for hours/doctors/pricing/insurance
-      - UNKNOWN + service_hit → SERVICES_OFFERED
+      - Owning final lane / execution routing (planner does that)
+      - UNKNOWN + fuzzy service_hit → SERVICES_OFFERED
     """
     catalog = document_catalog or []
     services = service_catalog or []

@@ -150,6 +150,11 @@ def evaluate_routing_case(case: EvalCase) -> CaseResult:
             or nlu.intent in {Intent.FAQ, Intent.MEDICAL_QUESTION}
         )
     )
+    from apps.chatbot.routing.signals import (
+        is_service_list_query,
+        is_specialty_list_query,
+    )
+
     plan = choose_plan(
         nlu=nlu,
         is_booking_intent=is_booking,
@@ -163,6 +168,15 @@ def evaluate_routing_case(case: EvalCase) -> CaseResult:
         doctor_ranking_request=False,
         instruction_injection=False,
         unknown_doctor_requested=False,
+        message=case.message,
+        booking_commit=booking_commit,
+        knowledge_q=knowledge_q,
+        specialty_list=is_specialty_list_query(case.message),
+        service_list=is_service_list_query(case.message),
+        matched_doc_ids=matched_docs,
+        service_hit=service_hit,
+        allow_hybrid=bool(policy.allow_hybrid),
+        confidence_band=policy.band.value,
     )
     lane = plan.lane
 

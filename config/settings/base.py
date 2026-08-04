@@ -256,3 +256,9 @@ CHAT_PREMIUM_MODEL = env("CHAT_PREMIUM_MODEL", default="gpt-4o-mini")
 CHAT_RESPONSE_TIMEOUT_SECONDS = env.float("CHAT_RESPONSE_TIMEOUT_SECONDS", default=12.0)
 CHAT_VECTOR_MIN_SCORE = env.float("CHAT_VECTOR_MIN_SCORE", default=0.25)
 
+# Structured AI pipeline debugger (terminal + optional logs/chat/*.json)
+# Use this — not Swagger — to inspect Small LLM prompts, planner scores,
+# SQL rows, vector chunks, Large LLM prompts, and final replies.
+DEBUG_CHAT_PIPELINE = env.bool("DEBUG_CHAT_PIPELINE", default=False)
+DEBUG_CHAT_PIPELINE_SAVE_JSON = env.bool("DEBUG_CHAT_PIPELINE_SAVE_JSON", default=True)
+

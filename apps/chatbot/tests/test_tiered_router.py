@@ -412,7 +412,7 @@ class EngineLaneIsolationTests(SimpleTestCase):
     @patch("apps.chatbot.routing.build_service_catalog", return_value=[])
     @patch("apps.chatbot.routing.build_document_catalog", return_value=[])
     @patch("apps.chatbot.response_llm.synthesize_clinic_reply")
-    @patch("apps.chatbot.engine.ChatEngine._run_sql")
+    @patch("apps.chatbot.engine.ChatEngine._run_sql_tasks")
     @patch("apps.chatbot.nlu.intent_entity.IntentEntityService.analyze")
     def test_sql_lane_never_calls_large_llm(
         self, mock_analyze, mock_sql, mock_synth, _catalog, _services

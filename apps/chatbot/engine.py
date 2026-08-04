@@ -101,7 +101,7 @@ class ChatEngine:
                 s.get("name") or "" for s in service_catalog[:20]
             )[:600]
 
-        # ── 1. NLU ──────────────────────────────────────────────────────────
+        # ── 1. NLU (semantics) ──────────────────────────────────────────────
         t0 = time.perf_counter()
         from apps.chatbot.nlu.intent_entity import IntentEntityService
 
@@ -114,7 +114,7 @@ class ChatEngine:
         )
         timings["nlu_ms"] = (time.perf_counter() - t0) * 1000
 
-        # Heuristic post-pass (SQL vs vector gating)
+        # Heuristics as sensors: entity hints, phatic/emergency safety — not lane owner
         nlu_result = apply_routing_heuristics(
             message=message,
             nlu=nlu_result,
@@ -126,7 +126,18 @@ class ChatEngine:
             apply_confidence_policy,
             confidence_meta,
         )
-        from apps.chatbot.routing.signals import match_services_in_message
+        from apps.chatbot.routing.signals import (
+            is_service_list_query,
+            is_specialty_list_query,
+            match_services_in_message,
+        )
+        from apps.chatbot.nlu.schemas import Intent, Route
+        from apps.chatbot.planner import (
+            apply_plan_to_nlu,
+            build_execution_plan,
+            build_planner_facts,
+        )
+        from apps.chatbot.nlu.decision import EMERGENCY_SAFETY_MESSAGE
 
         service_hit = bool(match_services_in_message(message, service_catalog))
         knowledge_q = looks_like_knowledge_question(message)
@@ -139,19 +150,11 @@ class ChatEngine:
         nlu_result = conf_policy.nlu
         timings["confidence_band"] = conf_policy.band.value
 
-        # ── 2. Decision Engine ───────────────────────────────────────────────
-        t0 = time.perf_counter()
-        from apps.chatbot.nlu.decision import DecisionEngine
-
-        decision = DecisionEngine.decide(nlu_result)
-        timings["decision_ms"] = (time.perf_counter() - t0) * 1000
-
-        from apps.chatbot.nlu.schemas import Intent, Route
-
-        route = decision.route
         sql_rows: list[dict[str, Any]] = []
         vector_rows: list[dict[str, Any]] = []
         response_text = ""
+        suggested: list[dict[str, Any]] = []
+        guidance = ""
 
         last_doctor = ctx.get("last_doctor") if isinstance(ctx.get("last_doctor"), dict) else None
         last_specialty = (
@@ -160,7 +163,6 @@ class ChatEngine:
 
         booking_commit = self._is_booking_commit(message, nlu_result)
         knowledge_q = looks_like_knowledge_question(message)
-        # Speech-act: only open booking UI for transactional book/reschedule
         is_booking_intent = (
             nlu_result.intent
             in {
@@ -181,19 +183,14 @@ class ChatEngine:
             and not knowledge_q
         )
 
-        doctor_followup = self._is_doctor_quality_followup(message) and last_doctor
+        doctor_followup = bool(self._is_doctor_quality_followup(message) and last_doctor)
         matched_docs = matching_document_ids(message, doc_catalog)
         has_catalog = bool(doc_catalog)
-        # Do not auto-vector on bare UNKNOWN + catalog (NLU timeout must not open Large LLM)
-        needs_vector = bool(nlu_result.needs_vector) or (
-            (soft_medical or knowledge_q) and bool(matched_docs)
-        ) or (knowledge_q and has_catalog and nlu_result.intent in {Intent.FAQ, Intent.UNKNOWN})
         doc_match = bool(matched_docs) or (
             has_catalog
             and (
-                bool(nlu_result.needs_vector)
-                or knowledge_q
-                or nlu_result.intent in {Intent.FAQ, Intent.MEDICAL_QUESTION}
+                knowledge_q
+                or nlu_result.intent in {Intent.FAQ, Intent.MEDICAL_QUESTION, Intent.MEMBERSHIP}
             )
         )
 
@@ -205,104 +202,124 @@ class ChatEngine:
         instruction_injection = self._looks_like_instruction_injection(message)
         unknown_doctor_requested = self._requests_unknown_doctor(message, clinic, nlu_result)
 
-        from apps.chatbot.planner import choose_plan
-
-        plan = choose_plan(
+        # ── 2. Planner (no I/O) → ExecutionPlan ─────────────────────────────
+        t0 = time.perf_counter()
+        facts = build_planner_facts(
+            message=message,
             nlu=nlu_result,
             is_booking_intent=is_booking_intent,
+            booking_commit=booking_commit,
             soft_medical=soft_medical,
-            needs_vector=needs_vector,
-            doc_match=doc_match,
+            knowledge_q=knowledge_q,
+            specialty_list=is_specialty_list_query(message),
+            service_list=is_service_list_query(message),
             has_catalog=has_catalog,
+            doc_match=doc_match,
+            matched_doc_ids=matched_docs or [],
+            service_hit=service_hit,
             prefer_vector=conf_policy.prefer_vector,
             prefer_clarify=conf_policy.prefer_clarify,
+            allow_hybrid=bool(conf_policy.allow_hybrid),
             degraded=degraded,
             doctor_ranking_request=doctor_ranking_request,
             instruction_injection=instruction_injection,
             unknown_doctor_requested=unknown_doctor_requested,
+            doctor_followup=doctor_followup,
+            confidence_band=conf_policy.band.value,
         )
-        lane = plan.lane
-
-        # Doctor quality follow-up: template, no RAG
-        if doctor_followup and lane != Lane.BOOKING and not doctor_ranking_request:
-            lane = Lane.DIRECT
-
-        suggested: list[dict[str, Any]] = []
-        guidance = ""
+        exec_plan = build_execution_plan(nlu=nlu_result, facts=facts)
+        nlu_result = apply_plan_to_nlu(nlu_result, exec_plan)
+        lane = exec_plan.primary_lane
+        route = exec_plan.to_route()
+        timings["decision_ms"] = (time.perf_counter() - t0) * 1000
         timings["lane"] = lane.value
-        allow_hybrid = bool(conf_policy.allow_hybrid)
-        timings["planner_reason"] = plan.reason
+        timings["planner_reason"] = exec_plan.reason
 
-        # ── 3. Execute lane ──────────────────────────────────────────────────
-        if lane == Lane.DIRECT:
+        # ── 3. Executor — run tasks from ExecutionPlan ──────────────────────
+        safety_message = (
+            EMERGENCY_SAFETY_MESSAGE
+            if exec_plan.emergency or exec_plan.direct_mode == "emergency"
+            else None
+        )
+
+        if exec_plan.direct or exec_plan.emergency:
             t0 = time.perf_counter()
-            if plan.direct_mode == "doctor_ranking_refusal":
+            if exec_plan.direct_mode == "doctor_ranking_refusal":
                 response_text = self._doctor_ranking_reply()
-            elif plan.direct_mode == "prompt_injection_refusal":
+            elif exec_plan.direct_mode == "prompt_injection_refusal":
                 response_text = self._instruction_injection_reply()
-            elif plan.direct_mode == "unknown_doctor_refusal":
+            elif exec_plan.direct_mode == "unknown_doctor_refusal":
                 response_text = self._unknown_doctor_reply()
-            elif doctor_followup and last_doctor:
+            elif exec_plan.doctor_followup and last_doctor:
                 response_text = self._doctor_followup_reply(last_doctor)
-            elif soft_medical:
+            elif exec_plan.soft_medical or exec_plan.direct_mode == "soft_medical":
                 response_text = self._soft_medical_reply(clinic, message)
+                suggested, guidance = self._maybe_suggest_specialties(clinic, message, timings)
             else:
-                response_text = self._fast_path(decision, message, clinic)
+                response_text = self._fast_path_from_plan(
+                    exec_plan, nlu_result, message, clinic, safety_message
+                )
             timings["fast_path_ms"] = (time.perf_counter() - t0) * 1000
 
-        elif lane == Lane.CLARIFY:
-            # Escalate only when knowledge/docs clearly match — never after bare NLU timeout
-            can_recover_rag = (
-                not is_booking_intent
-                and (
-                    (bool(matched_docs) and knowledge_q)
-                    or (
-                        not degraded
-                        and (needs_vector or conf_policy.prefer_vector)
-                        and (bool(matched_docs) or knowledge_q)
-                    )
+        else:
+            # SQL tasks
+            if exec_plan.sql_tasks:
+                t0 = time.perf_counter()
+                sql_rows = self._run_sql_tasks(
+                    clinic,
+                    nlu_result,
+                    exec_plan.sql_tasks,
+                    patient=patient,
+                    message=message,
                 )
-            )
-            if can_recover_rag:
-                lane = Lane.VECTOR_RAG
-                timings["lane"] = lane.value
+                timings["sql_ms"] = (time.perf_counter() - t0) * 1000
+
+            # Vector tasks
+            if exec_plan.vector_tasks or exec_plan.use_response_llm:
                 t0 = time.perf_counter()
                 vector_rows = self._run_vector(
                     clinic, message, document_ids=matched_docs or None
                 )
                 timings["vector_ms"] = (time.perf_counter() - t0) * 1000
-                t0 = time.perf_counter()
-                response_text = self._generate_response(
-                    clinic=clinic,
-                    message=message,
+
+            # Booking UI prep
+            if exec_plan.booking:
+                suggested, guidance = self._maybe_suggest_specialties(
+                    clinic, message, timings
+                )
+                if booking_commit:
+                    resolved = self._resolve_doctor_from_message(clinic, message)
+                    if resolved:
+                        last_doctor = resolved
+
+            # Compose response from executed tasks
+            response_text = self._compose_from_plan(
+                clinic=clinic,
+                message=message,
+                nlu=nlu_result,
+                exec_plan=exec_plan,
+                sql_rows=sql_rows,
+                vector_rows=vector_rows,
+                session=session,
+                booking_commit=booking_commit,
+                suggested=suggested,
+                guidance=guidance,
+                soft_medical=soft_medical,
+                timings=timings,
+            )
+
+            # Thin SQL + catalog: optional hybrid escalate when plan was sql-only
+            if (
+                exec_plan.sql_tasks
+                and not exec_plan.vector_tasks
+                and not exec_plan.booking
+                and self._should_hybrid_rag(
                     nlu=nlu_result,
                     sql_rows=sql_rows,
-                    vector_rows=vector_rows,
-                    session=session,
-                    extra_context="",
+                    has_catalog=has_catalog,
+                    knowledge_q=knowledge_q,
+                    allow_hybrid=bool(conf_policy.allow_hybrid),
                 )
-                timings["llm_ms"] = (time.perf_counter() - t0) * 1000
-            else:
-                t0 = time.perf_counter()
-                response_text = self._fast_path(decision, message, clinic)
-                timings["fast_path_ms"] = (time.perf_counter() - t0) * 1000
-
-        elif lane == Lane.SQL_FAST:
-            t0 = time.perf_counter()
-            sql_rows = self._run_sql(
-                clinic, nlu_result, patient=patient, message=message
-            )
-            timings["sql_ms"] = (time.perf_counter() - t0) * 1000
-            from apps.chatbot.sql_tool import format_sql_results
-
-            response_text = format_sql_results(sql_rows)
-            # Hybrid: empty/thin SQL + clinic docs → escalate to vector RAG (any tenant)
-            if self._should_hybrid_rag(
-                nlu=nlu_result,
-                sql_rows=sql_rows,
-                has_catalog=has_catalog,
-                knowledge_q=knowledge_q,
-                allow_hybrid=allow_hybrid,
             ):
                 lane = Lane.VECTOR_RAG
                 timings["lane"] = lane.value
@@ -322,73 +339,6 @@ class ChatEngine:
                     extra_context="",
                 )
                 timings["llm_ms"] = (time.perf_counter() - t0) * 1000
-            elif soft_medical and not self._sql_found(sql_rows):
-                response_text = self._soft_medical_reply(clinic, message)
-
-        elif lane == Lane.BOOKING:
-            from apps.chatbot.booking.config import get_booking_config
-            from apps.chatbot.booking.discovery import suggest_specialties
-
-            cfg = get_booking_config(clinic)
-            if cfg.get("ai_discovery"):
-                t0 = time.perf_counter()
-                suggested, guidance = suggest_specialties(clinic, message=message)
-                timings["discovery_ms"] = (time.perf_counter() - t0) * 1000
-
-            if booking_commit:
-                resolved = self._resolve_doctor_from_message(clinic, message)
-                if resolved:
-                    last_doctor = resolved
-                response_text = (
-                    "Sure — I'll help you schedule. Choose your preferences below "
-                    "and we'll lock in a time."
-                )
-            else:
-                bits = []
-                if guidance:
-                    bits.append(guidance)
-                if suggested:
-                    names = ", ".join(
-                        (s.get("plain_label") or s.get("name") or "")
-                        for s in suggested[:3]
-                    )
-                    bits.append(
-                        f"Based on what you shared, these areas may help: {names}."
-                    )
-                bits.append(
-                    "Use the booking form below to pick a specialty, doctor, and time."
-                )
-                response_text = " ".join(bits)
-
-        elif lane == Lane.VECTOR_RAG:
-            # Optional SQL if also needed
-            if nlu_result.needs_sql:
-                t0 = time.perf_counter()
-                sql_rows = self._run_sql(
-                clinic, nlu_result, patient=patient, message=message
-            )
-                timings["sql_ms"] = (time.perf_counter() - t0) * 1000
-
-            t0 = time.perf_counter()
-            vector_rows = self._run_vector(
-                clinic, message, document_ids=matched_docs or None
-            )
-            timings["vector_ms"] = (time.perf_counter() - t0) * 1000
-
-            t0 = time.perf_counter()
-            response_text = self._generate_response(
-                clinic=clinic,
-                message=message,
-                nlu=nlu_result,
-                sql_rows=sql_rows,
-                vector_rows=vector_rows,
-                session=session,
-                extra_context="",
-            )
-            timings["llm_ms"] = (time.perf_counter() - t0) * 1000
-
-        else:
-            response_text = self._fast_path(decision, message, clinic)
 
         timings["total_ms"] = (time.perf_counter() - started) * 1000
 
@@ -406,9 +356,6 @@ class ChatEngine:
                     )
         if shown_doctors and not last_doctor:
             last_doctor = shown_doctors[0]
-        # Do NOT promote AI specialty suggestions into last_specialty —
-        # that would prefill booking.specialty_id and skip the path chooser.
-        # Suggestions stay soft via ui_meta.suggested_specialties / chips.
 
         from apps.chatbot.ui_meta import build_ui_meta
 
@@ -426,12 +373,11 @@ class ChatEngine:
         )
         ui_meta["lane"] = lane.value
         ui_meta["routing"] = confidence_meta(conf_policy)
-        ui_meta["planner"] = plan.to_dict()
+        ui_meta["planner"] = exec_plan.to_dict()
         if nlu_result.service_filter_mode:
             ui_meta["service_filter_mode"] = nlu_result.service_filter_mode
         if nlu_result.sql_tool:
             ui_meta["sql_tool"] = nlu_result.sql_tool
-        # Surface degraded NLU (timeout/fallback) so clients can show softer UX
         source = ""
         if nlu_result.timings and getattr(nlu_result.timings, "classifier_source", None):
             source = str(nlu_result.timings.classifier_source)
@@ -469,14 +415,15 @@ class ChatEngine:
             )
 
         logger.info(
-            "chat_route clinic=%s lane=%s intent=%s sql_tool=%s degraded=%s "
-            "planner=%s timings=%s",
+            "chat_route clinic=%s lane=%s intent=%s sql_tasks=%s vector_tasks=%s "
+            "degraded=%s planner=%s timings=%s",
             getattr(clinic, "id", None),
             lane.value,
             nlu_result.intent.value,
-            nlu_result.sql_tool,
+            exec_plan.sql_tasks,
+            exec_plan.vector_tasks,
             bool(ui_meta.get("degraded")),
-            plan.to_dict(),
+            exec_plan.to_dict(),
             {
                 "nlu_ms": round(float(timings.get("nlu_ms", 0.0)), 1),
                 "sql_ms": round(float(timings.get("sql_ms", 0.0)), 1),
@@ -486,21 +433,166 @@ class ChatEngine:
             },
         )
 
+        self._emit_pipeline_debug(
+            clinic=clinic,
+            message=message,
+            session=session,
+            patient=patient,
+            nlu_ctx=nlu_ctx,
+            nlu_result=nlu_result,
+            plan=exec_plan,
+            lane=lane,
+            route=route,
+            sql_rows=sql_rows,
+            vector_rows=vector_rows,
+            response_text=response_text,
+            timings=timings,
+            ui_meta=ui_meta,
+        )
+
         return EngineResult(
             response=response_text,
             route=route.value,
             intent=nlu_result.intent.value,
             confidence=nlu_result.confidence,
-            needs_sql=bool(nlu_result.needs_sql),
-            needs_vector=lane == Lane.VECTOR_RAG,
-            needs_llm=lane == Lane.VECTOR_RAG,
-            safety_message=decision.safety_message,
+            needs_sql=bool(exec_plan.sql_tasks),
+            needs_vector=bool(exec_plan.vector_tasks),
+            needs_llm=bool(exec_plan.use_response_llm),
+            safety_message=safety_message,
             sql_results=sql_rows,
             vector_results=vector_rows,
             timings=timings,
             meta=ui_meta,
             lane=lane.value,
         )
+
+    def _emit_pipeline_debug(
+        self,
+        *,
+        clinic: Any,
+        message: str,
+        session: Any | None,
+        patient: Any | None,
+        nlu_ctx: dict[str, Any],
+        nlu_result: Any,
+        plan: Any,
+        lane: Any,
+        route: Any,
+        sql_rows: list[dict[str, Any]],
+        vector_rows: list[dict[str, Any]],
+        response_text: str,
+        timings: dict[str, Any],
+        ui_meta: dict[str, Any],
+    ) -> None:
+        """Print / save structured pipeline evidence when DEBUG_CHAT_PIPELINE is on."""
+        from apps.chatbot.pipeline_debug import (
+            ChatPipelineTrace,
+            capture_nlu_prompts,
+            capture_response_prompts,
+            pipeline_debug_enabled,
+        )
+
+        if not pipeline_debug_enabled():
+            return
+
+        nlu_prompts = capture_nlu_prompts(message, nlu_ctx)
+        nlu_source = ""
+        if nlu_result.timings and getattr(nlu_result.timings, "classifier_source", None):
+            nlu_source = str(nlu_result.timings.classifier_source)
+
+        large_llm: dict[str, Any] = {
+            "executed": False,
+            "provider": getattr(settings, "CHAT_RESPONSE_PROVIDER", ""),
+            "model": getattr(settings, "CHAT_RESPONSE_MODEL", ""),
+            "latency_ms": round(float(timings.get("llm_ms", 0.0)), 1),
+            "tokens": "n/a",
+            "system_prompt": "",
+            "user_prompt": "",
+        }
+        if float(timings.get("llm_ms", 0.0)) > 0 or lane.value == "vector_rag":
+            history = self._load_history(session, limit=8)
+            prompts = capture_response_prompts(
+                clinic=clinic,
+                message=message,
+                nlu=nlu_result,
+                sql_rows=sql_rows,
+                vector_rows=vector_rows,
+                history=history,
+                extra_context="",
+            )
+            large_llm.update(
+                {
+                    "executed": True,
+                    "system_prompt": prompts.get("system_prompt", ""),
+                    "user_prompt": prompts.get("user_prompt", ""),
+                }
+            )
+
+        handlers = [
+            block.get("handler")
+            for block in sql_rows
+            if isinstance(block, dict) and block.get("handler")
+        ]
+
+        trace = ChatPipelineTrace(
+            user_message=message,
+            clinic_id=str(getattr(clinic, "id", "") or ""),
+            clinic_name=str(getattr(clinic, "name", "") or ""),
+            session_id=str(getattr(session, "id", "") or ""),
+            patient_id=str(getattr(patient, "id", "") or ""),
+            nlu={
+                "source": nlu_source or nlu_result.provider or "-",
+                "provider": nlu_result.provider,
+                "model": nlu_result.model,
+                "intent": nlu_result.intent.value,
+                "confidence": nlu_result.confidence,
+                "entities": nlu_result.entities.to_dict(),
+                "needs_sql": nlu_result.needs_sql,
+                "needs_vector": nlu_result.needs_vector,
+                "needs_llm": nlu_result.needs_llm,
+                "is_emergency": nlu_result.is_emergency,
+                "document_needed": nlu_result.document_needed,
+                "sql_tool": nlu_result.sql_tool,
+                "service_filter_mode": nlu_result.service_filter_mode,
+                "reasoning": nlu_result.reasoning_short,
+                "system_prompt": nlu_prompts.get("system_prompt", ""),
+                "user_prompt": nlu_prompts.get("user_prompt", ""),
+                "timings": nlu_result.timings.to_dict() if nlu_result.timings else {},
+            },
+            planner={
+                **plan.to_dict(),
+                "degraded": bool(ui_meta.get("degraded")),
+            },
+            sql={
+                "executed": bool(sql_rows),
+                "handlers": handlers,
+                "rows": sql_rows,
+            },
+            vector={
+                "executed": bool(vector_rows) or float(timings.get("vector_ms", 0.0)) > 0,
+                "hit_count": len(vector_rows),
+                "chunks": [
+                    {
+                        "score": c.get("score"),
+                        "document": c.get("document"),
+                        "heading": c.get("heading"),
+                        "text": c.get("text"),
+                    }
+                    for c in vector_rows[:5]
+                ],
+            },
+            large_llm=large_llm,
+            final={
+                "lane": lane.value,
+                "route": route.value,
+                "response": response_text,
+            },
+            timings={
+                k: (round(float(v), 1) if isinstance(v, (int, float)) else v)
+                for k, v in timings.items()
+            },
+        )
+        trace.emit()
 
     def _soft_medical_reply(self, clinic: Any, message: str) -> str:
         from apps.chatbot.booking.config import get_booking_config
@@ -618,6 +710,135 @@ class ChatEngine:
 
         results = SQLTool.run(clinic, nlu, patient=patient, message=message)
         return [r.to_dict() for r in results]
+
+    def _run_sql_tasks(
+        self,
+        clinic: Any,
+        nlu: Any,
+        tasks: list[str],
+        *,
+        patient: Any = None,
+        message: str = "",
+    ) -> list[dict[str, Any]]:
+        from apps.chatbot.sql_tool import SQLTool
+
+        results = SQLTool.run_tasks(
+            clinic, nlu, tasks, patient=patient, message=message
+        )
+        return [r.to_dict() for r in results]
+
+    def _maybe_suggest_specialties(
+        self,
+        clinic: Any,
+        message: str,
+        timings: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], str]:
+        from apps.chatbot.booking.config import get_booking_config
+        from apps.chatbot.booking.discovery import suggest_specialties
+
+        cfg = get_booking_config(clinic)
+        if not cfg.get("ai_discovery"):
+            return [], ""
+        t0 = time.perf_counter()
+        suggested, guidance = suggest_specialties(clinic, message=message)
+        timings["discovery_ms"] = (time.perf_counter() - t0) * 1000
+        return suggested or [], guidance or ""
+
+    def _fast_path_from_plan(
+        self,
+        exec_plan: Any,
+        nlu: Any,
+        message: str,
+        clinic: Any,
+        safety_message: str | None,
+    ) -> str:
+        from apps.chatbot.nlu.schemas import Route
+        from apps.chatbot.response_templates import get_response, resolve_direct_template
+
+        clinic_phone = getattr(clinic, "phone", "") or ""
+        if exec_plan.emergency or exec_plan.direct_mode == "emergency":
+            return safety_message or get_response("EMERGENCY")
+        if exec_plan.clarify or exec_plan.to_route() == Route.CLARIFY:
+            if getattr(nlu, "clarification_question", None):
+                return nlu.clarification_question
+            return get_response("CLARIFY_GENERIC")
+        template_id = resolve_direct_template(nlu.intent.value, message)
+        return get_response(template_id, clinic_phone=clinic_phone)
+
+    def _compose_from_plan(
+        self,
+        *,
+        clinic: Any,
+        message: str,
+        nlu: Any,
+        exec_plan: Any,
+        sql_rows: list[dict[str, Any]],
+        vector_rows: list[dict[str, Any]],
+        session: Any | None,
+        booking_commit: bool,
+        suggested: list[dict[str, Any]],
+        guidance: str,
+        soft_medical: bool,
+        timings: dict[str, Any],
+    ) -> str:
+        """Compose patient-facing text after tasks have been executed."""
+        from apps.chatbot.sql_tool import format_sql_results
+
+        booking_text = ""
+        if exec_plan.booking:
+            if booking_commit:
+                booking_text = (
+                    "Sure — I'll help you schedule. Choose your preferences below "
+                    "and we'll lock in a time."
+                )
+            else:
+                bits = []
+                if guidance:
+                    bits.append(guidance)
+                if suggested:
+                    names = ", ".join(
+                        (s.get("plain_label") or s.get("name") or "")
+                        for s in suggested[:3]
+                    )
+                    bits.append(
+                        f"Based on what you shared, these areas may help: {names}."
+                    )
+                bits.append(
+                    "Use the booking form below to pick a specialty, doctor, and time."
+                )
+                booking_text = " ".join(bits)
+
+        if exec_plan.use_response_llm or exec_plan.vector_tasks:
+            t0 = time.perf_counter()
+            grounded = self._generate_response(
+                clinic=clinic,
+                message=message,
+                nlu=nlu,
+                sql_rows=sql_rows,
+                vector_rows=vector_rows,
+                session=session,
+                extra_context=booking_text,
+            )
+            timings["llm_ms"] = (time.perf_counter() - t0) * 1000
+            if booking_text and grounded:
+                return f"{grounded}\n\n{booking_text}"
+            return grounded or booking_text
+
+        if exec_plan.sql_tasks:
+            sql_text = format_sql_results(sql_rows)
+            if soft_medical and not self._sql_found(sql_rows):
+                sql_text = self._soft_medical_reply(clinic, message)
+            if booking_text:
+                return f"{sql_text}\n\n{booking_text}" if sql_text else booking_text
+            return sql_text
+
+        if exec_plan.booking:
+            return booking_text
+
+        if exec_plan.clarify:
+            return self._fast_path_from_plan(exec_plan, nlu, message, clinic, None)
+
+        return self._fast_path_from_plan(exec_plan, nlu, message, clinic, None)
 
     def _run_vector(
         self,

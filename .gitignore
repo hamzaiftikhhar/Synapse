@@ -33,6 +33,9 @@ media/*
 db.sqlite3
 local_settings.py
 
+# Chat pipeline debug artifacts
+logs/
+
 # IDE / OS
 .idea/
 .vscode/

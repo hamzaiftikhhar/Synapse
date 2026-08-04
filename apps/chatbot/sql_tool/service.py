@@ -71,8 +71,45 @@ class SQLTool:
         patient: object | None = None,
         message: str = "",
     ) -> list[SQLResult]:
+        """Compatibility entry: derive handlers from NLU (legacy). Prefer run_tasks."""
         ctx = SQLContext(clinic=clinic, nlu=nlu, patient=patient, message=message or "")
         handlers = cls._handlers_for(nlu, message=message or "")
+        return cls._execute_handlers(handlers, ctx, nlu=nlu)
+
+    @classmethod
+    def run_tasks(
+        cls,
+        clinic: object,
+        nlu: NLUResult,
+        tasks: list[str],
+        *,
+        patient: object | None = None,
+        message: str = "",
+    ) -> list[SQLResult]:
+        """Execute SQL tools named by the ExecutionPlan (planner source of truth)."""
+        ctx = SQLContext(clinic=clinic, nlu=nlu, patient=patient, message=message or "")
+        handlers: list[SQLHandler] = []
+        seen: set[str] = set()
+        for task in tasks or []:
+            key = str(task or "").strip().lower()
+            handler = _SQL_TOOL_HANDLERS.get(key)
+            if handler is None:
+                continue
+            name = handler.__name__
+            if name in seen:
+                continue
+            seen.add(name)
+            handlers.append(handler)
+        return cls._execute_handlers(handlers, ctx, nlu=nlu)
+
+    @classmethod
+    def _execute_handlers(
+        cls,
+        handlers: list[SQLHandler],
+        ctx: SQLContext,
+        *,
+        nlu: NLUResult,
+    ) -> list[SQLResult]:
         if not handlers:
             return [
                 SQLResult(
