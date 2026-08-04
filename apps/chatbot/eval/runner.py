@@ -9,11 +9,12 @@ from typing import Any
 
 from apps.chatbot.eval.cases import EvalCase
 from apps.chatbot.nlu.decision import DecisionEngine
+from apps.chatbot.planner import choose_plan
 from apps.chatbot.nlu.rules import try_rule_classify
 from apps.chatbot.nlu.schemas import Intent, parse_nlu_payload
 from apps.chatbot.routing.confidence import apply_confidence_policy
 from apps.chatbot.routing.heuristics import apply_routing_heuristics
-from apps.chatbot.routing.lanes import Lane, resolve_lane
+from apps.chatbot.routing.lanes import Lane
 from apps.chatbot.routing.signals import (
     is_transactional_booking,
     looks_like_knowledge_question,
@@ -149,9 +150,8 @@ def evaluate_routing_case(case: EvalCase) -> CaseResult:
             or nlu.intent in {Intent.FAQ, Intent.MEDICAL_QUESTION}
         )
     )
-    lane = resolve_lane(
+    plan = choose_plan(
         nlu=nlu,
-        route=decision.route,
         is_booking_intent=is_booking,
         soft_medical=soft_medical,
         needs_vector=needs_vector,
@@ -159,7 +159,12 @@ def evaluate_routing_case(case: EvalCase) -> CaseResult:
         has_catalog=has_catalog,
         prefer_vector=policy.prefer_vector,
         prefer_clarify=policy.prefer_clarify,
+        degraded=bool(getattr(nlu.timings, "classifier_source", "") == "rules_fallback"),
+        doctor_ranking_request=False,
+        instruction_injection=False,
+        unknown_doctor_requested=False,
     )
+    lane = plan.lane
 
     acceptable = case.acceptable_lanes or frozenset({case.expected_lane})
     # Map family soft checks: duration must never be confused only — lane set is enough

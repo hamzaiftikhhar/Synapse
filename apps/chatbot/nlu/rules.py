@@ -96,7 +96,12 @@ _EMERGENCY_RE = re.compile(
     r"(?:left\s+)?arm\s+(?:numb(?:ness)?|tingling|pain).{0,40}chest|"
     r"chest.{0,40}(?:left\s+)?arm\s+(?:numb|pain|tingl)|"
     r"can't\s+breathe|cannot\s+breathe|difficulty\s+breathing|"
-    r"shortness\s+of\s+breath|heart\s+attack|stroke|"
+    r"shortness\s+of\s+breath|heavy\s+pressure\s+on\s+(?:my\s+|his\s+|her\s+)?chest|"
+    r"hard\s+to\s+swallow|trouble\s+swallowing|"
+    r"tongue\s+(?:feels\s+huge|swelling|swollen)|"
+    r"lips?\s+(?:are\s+)?tingling|"
+    r"dizzy\s+and\s+faint|faint\s+and\s+dizzy|"
+    r"heart\s+attack|stroke|"
     r"suicidal|kill\s+myself|severe\s+bleeding|unconscious|"
     r"choking|left\s+arm\s+numbness"
     r")\b",
@@ -453,6 +458,21 @@ def _match_strong_legacy(
             needs_llm=False,
             sql_tool="location",
             reasoning_short="Clinic location (rule)",
+            _classifier_source="rules_strong",
+        )
+
+    if re.fullmatch(
+        r"(?:hey|hi|hello|umm|uh|quick\s+q)?\s*hours\??\s*(?:please)?",
+        text,
+    ):
+        return _base_payload(
+            intent=Intent.CLINIC_HOURS.value,
+            confidence=0.88,
+            needs_sql=True,
+            needs_vector=False,
+            needs_llm=False,
+            sql_tool="hours",
+            reasoning_short="Clinic hours short-form (rule)",
             _classifier_source="rules_strong",
         )
 

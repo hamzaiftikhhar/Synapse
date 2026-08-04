@@ -9,7 +9,7 @@ from django.utils import timezone
 from ninja import Router, Schema
 from ninja.errors import HttpError
 
-from apps.api.chat.router import _to_out
+from apps.api.chat.router import _fallback_out, _to_out
 from apps.api.chat.schemas import ChatMessageOut
 from apps.chatbot.engine import ChatEngine
 from apps.chatbot.marketing_engine import MarketingEngine
@@ -102,7 +102,9 @@ def guest_chat_message(request, payload: WidgetChatIn):
         )
     except Exception as exc:
         logger.exception("Guest chat failed clinic=%s", clinic.id)
-        raise HttpError(500, "Failed to process message") from exc
+        out = _fallback_out()
+        out.meta = {**out.meta, "session_token": session.session_token}
+        return out
 
     out = _to_out(result)
     out.meta = {**out.meta, "session_token": session.session_token}

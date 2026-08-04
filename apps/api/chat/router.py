@@ -56,7 +56,7 @@ def patient_chat_message(request, payload: ChatMessageIn) -> ChatMessageOut:
         )
     except Exception as exc:
         logger.exception("ChatEngine failed for clinic=%s", clinic.id)
-        raise HttpError(500, "Failed to process message") from exc
+        return _fallback_out()
 
     return _to_out(result)
 
@@ -88,7 +88,7 @@ def staff_chat_message(request, payload: ChatMessageIn) -> ChatMessageOut:
         )
     except Exception as exc:
         logger.exception("ChatEngine (staff) failed for clinic=%s", clinic.id)
-        raise HttpError(500, "Failed to process message") from exc
+        return _fallback_out()
 
     return _to_out(result)
 
@@ -152,4 +152,27 @@ def _to_out(result: object) -> ChatMessageOut:
             total_ms=raw.get("total_ms", 0.0),
         ),
         meta=result.meta,  # type: ignore[attr-defined]
+    )
+
+
+def _fallback_out() -> ChatMessageOut:
+    return ChatMessageOut(
+        response=(
+            "I want to make sure I help with the right thing. Could you rephrase "
+            "your question, or ask about appointments, doctors, clinic hours, "
+            "insurance, services, or clinic policies?"
+        ),
+        route="clarify",
+        intent="unknown",
+        confidence=0.0,
+        needs_sql=False,
+        needs_vector=False,
+        needs_llm=False,
+        safety_message=None,
+        timings=ChatTimingsOut(),
+        meta={
+            "degraded": True,
+            "degraded_reason": "chat_engine_exception",
+            "lane": "clarify",
+        },
     )

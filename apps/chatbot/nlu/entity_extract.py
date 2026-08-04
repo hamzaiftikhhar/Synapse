@@ -87,6 +87,13 @@ _EMERGENCY_SYMPTOMS = [
     "radiating to my arm",
     "left arm numbness",
     "arm numbness",
+    "severe shortness of breath",
+    "hard to swallow",
+    "trouble swallowing",
+    "tongue feels huge",
+    "tongue swelling",
+    "lips are tingling",
+    "dizzy and faint",
     "can't breathe",
     "cannot breathe",
     "difficulty breathing",
@@ -107,6 +114,11 @@ _SYMPTOM_CUE_RE = re.compile(
     r"pain (?:in|radiat\w*).{0,40}\barm|"
     r"radiat\w*.{0,30}\b(?:left )?arm|"
     r"can'?t breathe|cannot breathe|shortness of breath|"
+    r"heavy pressure on (?:my |his |her )?chest|"
+    r"hard to swallow|trouble swallowing|"
+    r"tongue (?:feels huge|swelling|swollen)|"
+    r"lips? (?:are )?tingling|"
+    r"dizzy and faint|faint and dizzy|"
     r"heart attack|stroke|suicid|"
     r"severe bleeding|unconscious|choking|"
     r"numb(?:ness)? (?:in )?(?:my |left )?arm|"
@@ -145,11 +157,20 @@ def looks_like_compound(text: str) -> bool:
     """Multi-clause / multi-question messages should not use single-intent rules."""
     if _COMPOUND_RE.search(text or ""):
         return True
-    # Distinct question clauses (ignore trailing punctuation spam like "hours??")
-    body = re.sub(r"[?!.\s]+$", "", text or "")
-    # Split on ? that are followed by more content
-    clauses = [c.strip() for c in re.split(r"\?", body) if c.strip()]
-    if len(clauses) >= 2:
+    # Distinct question clauses only; ignore polite tails like "hours? please"
+    pieces = [c.strip() for c in re.split(r"\?", text or "") if c.strip()]
+    if len(pieces) >= 2:
+        trailing_fillers = {
+            "please",
+            "pls",
+            "thanks",
+            "thank you",
+            "thx",
+            "ok",
+            "okay",
+        }
+        if len(pieces) == 2 and pieces[1].lower() in trailing_fillers:
+            return False
         return True
     return False
 
