@@ -312,7 +312,14 @@ export function ChatWidget({
           lastBookingMetaRef.current = bookingMeta as Record<string, unknown>;
         }
         setMessages((prev) => [...prev, ...parsed.messages]);
-      } catch {
+      } catch (err) {
+        // Log timeout vs network for ops; user-facing copy stays friendly.
+        const ax = err as { code?: string; message?: string; response?: { status?: number } };
+        console.warn("chat_request_failed", {
+          code: ax?.code,
+          status: ax?.response?.status,
+          message: ax?.message,
+        });
         if (reqId !== requestIdRef.current) return;
         await waitForNaturalReplyPace(startedAt);
         if (reqId !== requestIdRef.current) return;

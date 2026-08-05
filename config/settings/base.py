@@ -220,45 +220,54 @@ EMBEDDING_MODEL = env("EMBEDDING_MODEL", default="BAAI/bge-base-en-v1.5")
 EMBEDDING_DIMENSIONS = env.int("EMBEDDING_DIMENSIONS", default=768)
 
 # ─── Intent & Entity NLU (chatbot routing) ────────────────────────────────────
-# Swap provider by changing NLU_PROVIDER + NLU_MODEL (+ API key). Embeddings stay separate.
-# OpenAI recommended tier: gpt-4.1-nano (fast/cheap routing) → gpt-4.1-mini (fallback).
-NLU_PROVIDER = env("NLU_PROVIDER", default="gemini")
-NLU_MODEL = env("NLU_MODEL", default="gemini-3.1-flash-lite")
+# OpenAI primary (nano) for reliability; Gemini secondary when key is valid AIza…
+NLU_PROVIDER = env("NLU_PROVIDER", default="openai")
+NLU_MODEL = env("NLU_MODEL", default="gpt-4.1-nano")
 GOOGLE_API_KEY = env("GOOGLE_API_KEY", default="")
-# Fail-faster Small-LLM router (OpenAI fallback still allowed on timeout)
 NLU_API_TIMEOUT_SECONDS = env.float("NLU_API_TIMEOUT_SECONDS", default=3.5)
-# Chat routing confidence bands (Small-LLM trust / hybrid / clarify)
 NLU_CONFIDENCE_THRESHOLD = env.float("NLU_CONFIDENCE_THRESHOLD", default=0.75)
 CHAT_CONFIDENCE_HIGH = env.float("CHAT_CONFIDENCE_HIGH", default=0.90)
 CHAT_CONFIDENCE_MID = env.float("CHAT_CONFIDENCE_MID", default=0.70)
 CHAT_CONFIDENCE_LOW = env.float("CHAT_CONFIDENCE_LOW", default=0.45)
 
 NLU_ENABLE_RULES = env.bool("NLU_ENABLE_RULES", default=True)
-# Small-LLM-first: safety/phatic only before LLM; strong semantic regex is off by default
 NLU_RULES_BEFORE_LLM = env.bool("NLU_RULES_BEFORE_LLM", default=False)
+# Secondary provider after primary failure (circuit-breaker aware)
+NLU_SECONDARY_PROVIDER = env("NLU_SECONDARY_PROVIDER", default="gemini")
 NLU_FALLBACK_OPENAI = env.bool("NLU_FALLBACK_OPENAI", default=True)
-# Allow OpenAI fallback even when primary timed out (reliability P0)
 NLU_FALLBACK_ON_TIMEOUT = env.bool("NLU_FALLBACK_ON_TIMEOUT", default=True)
 NLU_FALLBACK_MODEL = env("NLU_FALLBACK_MODEL", default="gpt-4.1-mini")
 
 # ─── Chat / RAG response generation (separate from NLU) ───────────────────────
-# Swap provider when moving from Gemini (dev) → OpenAI GPT (prod):
-#   CHAT_RESPONSE_PROVIDER=openai
-#   CHAT_RESPONSE_MODEL=gpt-4.1-mini   (or gpt-4o)
-CHAT_RESPONSE_PROVIDER = env("CHAT_RESPONSE_PROVIDER", default="gemini")
-CHAT_RESPONSE_MODEL = env("CHAT_RESPONSE_MODEL", default="gemini-3.1-flash-lite")
+CHAT_RESPONSE_PROVIDER = env("CHAT_RESPONSE_PROVIDER", default="openai")
+CHAT_RESPONSE_MODEL = env("CHAT_RESPONSE_MODEL", default="gpt-4.1-mini")
 CHAT_RESPONSE_FALLBACK_MODELS = env(
     "CHAT_RESPONSE_FALLBACK_MODELS",
-    # At most one fallback is used by response_llm (avoid stacked timeouts)
-    default="gemini-2.0-flash-lite",
+    default="",
+)
+CHAT_RESPONSE_SECONDARY_PROVIDER = env(
+    "CHAT_RESPONSE_SECONDARY_PROVIDER", default="gemini"
 )
 CHAT_PREMIUM_MODEL = env("CHAT_PREMIUM_MODEL", default="gpt-4o-mini")
-CHAT_RESPONSE_TIMEOUT_SECONDS = env.float("CHAT_RESPONSE_TIMEOUT_SECONDS", default=12.0)
+# Hard wall-clock for ALL response-LLM attempts combined
+CHAT_RESPONSE_TIMEOUT_SECONDS = env.float("CHAT_RESPONSE_TIMEOUT_SECONDS", default=8.0)
 CHAT_VECTOR_MIN_SCORE = env.float("CHAT_VECTOR_MIN_SCORE", default=0.25)
+# End-to-end server budget — skip Large LLM when remaining time is too low
+CHAT_REQUEST_BUDGET_SECONDS = env.float("CHAT_REQUEST_BUDGET_SECONDS", default=20.0)
+CHAT_RESPONSE_MIN_REMAINING_SECONDS = env.float(
+    "CHAT_RESPONSE_MIN_REMAINING_SECONDS", default=2.0
+)
+# Circuit breaker for failing LLM providers
+LLM_CIRCUIT_FAILURE_THRESHOLD = env.int("LLM_CIRCUIT_FAILURE_THRESHOLD", default=5)
+LLM_CIRCUIT_COOLDOWN_SECONDS = env.float("LLM_CIRCUIT_COOLDOWN_SECONDS", default=600.0)
+# Cache TTL for stable clinic SQL facts (hours/doctors/insurance/services)
+CLINIC_FACT_CACHE_TTL_SECONDS = env.int("CLINIC_FACT_CACHE_TTL_SECONDS", default=600)
 
 # Structured AI pipeline debugger (terminal + optional logs/chat/*.json)
 # Use this — not Swagger — to inspect Small LLM prompts, planner scores,
 # SQL rows, vector chunks, Large LLM prompts, and final replies.
 DEBUG_CHAT_PIPELINE = env.bool("DEBUG_CHAT_PIPELINE", default=False)
 DEBUG_CHAT_PIPELINE_SAVE_JSON = env.bool("DEBUG_CHAT_PIPELINE_SAVE_JSON", default=True)
+# Token streaming for RAG replies (designed; off until budgets are proven)
+CHAT_RESPONSE_STREAMING = env.bool("CHAT_RESPONSE_STREAMING", default=False)
 

@@ -7,7 +7,7 @@ LLM orchestration fields (needs_sql, needs_vector, needs_llm, sql_tool,
 document_needed) are deprecated: parser may still accept them, but this
 planner ignores them when choosing tasks.
 """
-
+#give me 3 lines about this file? this file is used to decide what the executor should do this turn. 
 from __future__ import annotations
 
 import re
@@ -82,6 +82,34 @@ _BILLING_POLICY_RE = re.compile(
     r"bill(?:ing)?|medicare|superbill|insurance\s+(?:bill|claim|direct)|"
     r"accept(?:s|ed)?\s+medicare|direct\s+bill|out[- ]of[- ]pocket|"
     r"fee[- ]for[- ]service|membership\s+fee"
+    r")\b",
+    re.I,
+)
+
+_AESTHETIC_RE = re.compile(
+    r"\b(botox|filler|fillers|laser|microneedl|chemical\s*peel|"
+    r"tattoo\s*removal|facial|dysport|juvederm|skin\s*consult|"
+    r"cheapest\s+facial)\b",
+    re.I,
+)
+
+_MEDICAL_ADVICE_RE = re.compile(
+    r"("
+    r"\b(pregnant|pregnancy|lupus|blood\s*thinners?|warfarin|eliquis|"
+    r"autoimmune)\b.{0,80}\b(botox|filler|laser|inject|procedure|safe)\b|"
+    r"\b(botox|filler|laser|inject|procedure)\b.{0,80}\b("
+    r"pregnant|pregnancy|lupus|blood\s*thinners?|warfarin|eliquis|safe\??)"
+    r"\b"
+    r")",
+    re.I,
+)
+
+_CHECK_APPOINTMENT_RE = re.compile(
+    r"\b("
+    r"check\s+(?:my\s+)?appointment|"
+    r"(?:is\s+)?(?:my\s+)?appointment\s+(?:still\s+)?(?:valid|confirmed|booked)|"
+    r"do\s+i\s+have\s+an?\s+appointment|"
+    r"look\s+up\s+my\s+appointment"
     r")\b",
     re.I,
 )
@@ -409,6 +437,21 @@ def build_execution_plan(*, nlu: NLUResult, facts: PlannerFacts) -> ExecutionPla
             facts=fact_dict,
         )
 
+    if _MEDICAL_ADVICE_RE.search(message) or (
+        nlu.intent == Intent.MEDICAL_QUESTION
+        and _AESTHETIC_RE.search(message)
+        and re.search(
+            r"\b(pregnant|pregnancy|lupus|blood\s*thinner|safe)\b", message, re.I
+        )
+    ):
+        return ExecutionPlan(
+            direct=True,
+            direct_mode="medical_advice_refusal",
+            reason="planner_medical_advice_refusal",
+            scores=PlannerScores(direct=0.96),
+            facts=fact_dict,
+        )
+
     # ── Direct phatic / off-topic ───────────────────────────────────────────
     if nlu.intent in _DIRECT_INTENTS or (
         nlu.can_respond_directly
@@ -501,6 +544,28 @@ def build_execution_plan(*, nlu: NLUResult, facts: PlannerFacts) -> ExecutionPla
         add_vector("general_faq")
 
     booking = bool(facts.is_booking_intent) and not facts.unknown_doctor_requested
+
+    # Check / reschedule my appointment → booking/auth workflow (not clarify)
+    if _CHECK_APPOINTMENT_RE.search(message) or nlu.intent in {
+        Intent.RESCHEDULE_APPOINTMENT,
+        Intent.CANCEL_APPOINTMENT,
+    }:
+        if not facts.knowledge_q or nlu.intent in {
+            Intent.RESCHEDULE_APPOINTMENT,
+            Intent.CANCEL_APPOINTMENT,
+        }:
+            booking = True
+            if nlu.intent == Intent.CANCEL_APPOINTMENT and facts.knowledge_q:
+                booking = False  # cancel FEE / policy stays vector
+
+    # Aesthetic / cosmetic SKUs questions → services SQL (+ booking if transactional)
+    if _AESTHETIC_RE.search(message):
+        add_sql("services")
+        if facts.is_booking_intent or booking:
+            booking = True
+        # Prefer services over unrelated specialty discovery
+        if "doctors" in sql_tasks and not getattr(nlu.entities, "doctor_name", None):
+            sql_tasks = [t for t in sql_tasks if t != "doctors"]
 
     # Degraded UNKNOWN: do not invent SQL
     if facts.degraded and nlu.intent == Intent.UNKNOWN:

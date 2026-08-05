@@ -1,19 +1,22 @@
 """
-Final answer synthesis LLM — provider-agnostic.
+Final answer synthesis LLM — provider-agnostic with hard wall-clock deadlines.
 
-Uses SQL rows + vector knowledge + chat history to produce a concise
-clinic reply. Swap CHAT_RESPONSE_PROVIDER between gemini (dev) and openai (prod).
+Never lets an LLM decide how long the API call lasts.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import time
 import urllib.error
 import urllib.request
 from typing import Any
 
 from django.conf import settings
+
+from apps.chatbot.nlu.deadline import run_with_deadline
+from apps.chatbot.providers import circuit_breaker
 
 logger = logging.getLogger(__name__)
 
@@ -60,9 +63,9 @@ def synthesize_clinic_reply(
     vector_rows: list[dict[str, Any]] | None = None,
     history: list[dict[str, str]] | None = None,
     extra_context: str = "",
+    deadline_seconds: float | None = None,
 ) -> str:
     """Generate a concise patient-facing answer from grounded clinic context."""
-    provider = (getattr(settings, "CHAT_RESPONSE_PROVIDER", "gemini") or "gemini").lower()
     prompts = build_response_prompts(
         clinic=clinic,
         message=message,
@@ -75,9 +78,61 @@ def synthesize_clinic_reply(
     system = prompts["system_prompt"]
     user_block = prompts["user_prompt"]
 
-    if provider == "openai":
-        return _openai_generate(system=system, user_block=user_block)
-    return _gemini_generate(system=system, user_block=user_block)
+    budget = float(
+        deadline_seconds
+        if deadline_seconds is not None
+        else getattr(settings, "CHAT_RESPONSE_TIMEOUT_SECONDS", 8.0)
+    )
+    budget = max(0.5, budget)
+    started = time.perf_counter()
+
+    primary = (getattr(settings, "CHAT_RESPONSE_PROVIDER", "openai") or "openai").lower()
+    secondary = (
+        getattr(settings, "CHAT_RESPONSE_SECONDARY_PROVIDER", "") or ""
+    ).lower().strip()
+
+    providers = [primary]
+    if secondary and secondary != primary:
+        providers.append(secondary)
+
+    last_error: Exception | None = None
+    for provider in providers:
+        remaining = budget - (time.perf_counter() - started)
+        if remaining < 0.5:
+            break
+        if not circuit_breaker.is_available(provider):
+            logger.info("response_llm skip provider=%s circuit_open", provider)
+            continue
+        try:
+            if provider == "openai":
+                text = _openai_generate(
+                    system=system, user_block=user_block, deadline=remaining
+                )
+            elif provider == "gemini":
+                text = _gemini_generate(
+                    system=system, user_block=user_block, deadline=remaining
+                )
+            else:
+                continue
+            circuit_breaker.record_success(provider)
+            return text
+        except Exception as exc:
+            last_error = exc
+            circuit_breaker.record_failure(provider, str(exc))
+            logger.warning("response_llm provider=%s failed: %s", provider, exc)
+            continue
+
+    raise last_error or ResponseLLMError("Response LLM failed for all providers")
+
+
+def empty_rag_reply(clinic: Any) -> str:
+    """User-facing copy when vector retrieval has nothing useful."""
+    phone = getattr(clinic, "phone", "") or ""
+    phone_bit = f" or call us at {phone}" if phone else ""
+    return (
+        f"I couldn't find clinic-specific information on that in our documents. "
+        f"Please check with our care team through the patient portal{phone_bit}."
+    )
 
 
 def _system_prompt(clinic: Any) -> str:
@@ -89,8 +144,8 @@ def _system_prompt(clinic: Any) -> str:
         "Use ONLY the provided knowledge excerpts and optional SQL context. "
         "Do not invent doctors, appointment slots, hours, insurance plans, prices, or policies. "
         "Never diagnose or prescribe. "
-        "If knowledge excerpts are empty or unrelated, say you don't have that policy "
-        "document available — do NOT invent a call-the-clinic answer for availability. "
+        "If knowledge excerpts are empty or unrelated, say you couldn't find clinic-specific "
+        "information on that — do NOT invent a call-the-clinic answer for availability. "
         "Do not invent open slots or claim no doctors are available unless SQL shows that. "
         + (f"Clinic phone (only if needed): {phone}. " if phone else "")
         + "Do not mention SQL, vectors, embeddings, or internal tools."
@@ -116,7 +171,7 @@ def _user_block(
 
     if history:
         lines = []
-        for turn in history[-8:]:
+        for turn in history[-2:]:  # at most last 1–2 turns for latency
             role = turn.get("role", "user")
             content = (turn.get("content") or "").strip()
             if content:
@@ -150,25 +205,17 @@ def _user_block(
     return "\n\n".join(parts)
 
 
-def _gemini_generate(*, system: str, user_block: str) -> str:
+def _gemini_generate(*, system: str, user_block: str, deadline: float) -> str:
     api_key = getattr(settings, "GOOGLE_API_KEY", "") or ""
     if not api_key:
         raise ResponseLLMError("GOOGLE_API_KEY is not configured")
 
-    primary = getattr(settings, "CHAT_RESPONSE_MODEL", "gemini-3.1-flash-lite")
-    fallbacks = getattr(
-        settings,
-        "CHAT_RESPONSE_FALLBACK_MODELS",
-        "",
-    )
-    # Max 1 fallback model — avoid stacked 20s timeouts
-    fallback_list = [
-        m.strip()
-        for m in str(fallbacks).split(",")
-        if m.strip() and m.strip() != primary
-    ][:1]
-    models = [primary] + fallback_list
-    timeout = float(getattr(settings, "CHAT_RESPONSE_TIMEOUT_SECONDS", 12.0))
+    primary = getattr(settings, "CHAT_RESPONSE_MODEL", "gemini-2.0-flash-lite")
+    # Only use Gemini model list when provider is gemini; else a flash-lite default
+    if "gpt" in str(primary).lower():
+        primary = "gemini-2.0-flash-lite"
+    models = [primary]
+    per_try = min(float(deadline), float(getattr(settings, "CHAT_RESPONSE_TIMEOUT_SECONDS", 8.0)))
 
     payload = {
         "systemInstruction": {"parts": [{"text": system}]},
@@ -189,25 +236,25 @@ def _gemini_generate(*, system: str, user_block: str) -> str:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
+
+        def _do_request() -> dict[str, Any]:
+            with urllib.request.urlopen(request, timeout=per_try) as response:
+                return json.loads(response.read().decode("utf-8"))
+
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                envelope = json.loads(response.read().decode("utf-8"))
+            envelope = run_with_deadline(_do_request, seconds=per_try)
+        except TimeoutError as exc:
+            last_error = ResponseLLMError(f"Gemini timed out after {per_try}s")
+            logger.warning("Gemini response LLM model=%s timeout", model)
+            continue
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
-            logger.warning(
-                "Gemini response LLM model=%s HTTP %s: %s",
-                model,
-                exc.code,
-                detail[:300],
-            )
             last_error = ResponseLLMError(f"Gemini HTTP {exc.code}: {detail[:300]}")
-            # Try next model on not-found / overload
             if exc.code in {404, 429, 503}:
                 continue
             raise last_error from exc
         except Exception as exc:
             last_error = ResponseLLMError(f"Gemini request failed: {exc}")
-            logger.warning("Gemini response LLM model=%s error: %s", model, exc)
             continue
 
         candidates = envelope.get("candidates") or []
@@ -225,7 +272,7 @@ def _gemini_generate(*, system: str, user_block: str) -> str:
     raise last_error or ResponseLLMError("Gemini response LLM failed for all models")
 
 
-def _openai_generate(*, system: str, user_block: str) -> str:
+def _openai_generate(*, system: str, user_block: str, deadline: float) -> str:
     api_key = getattr(settings, "OPENAI_API_KEY", "") or ""
     if not api_key:
         raise ResponseLLMError("OPENAI_API_KEY is not configured")
@@ -236,18 +283,27 @@ def _openai_generate(*, system: str, user_block: str) -> str:
         raise ResponseLLMError("openai package is not installed") from exc
 
     model = getattr(settings, "CHAT_RESPONSE_MODEL", "gpt-4.1-mini")
-    timeout = float(getattr(settings, "CHAT_RESPONSE_TIMEOUT_SECONDS", 20.0))
-    client = OpenAI(api_key=api_key, timeout=timeout)
-    resp = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user_block},
-        ],
-        temperature=0.35,
-        max_tokens=400,
-    )
-    text = (resp.choices[0].message.content or "").strip()
-    if not text:
-        raise ResponseLLMError("OpenAI returned empty content")
-    return text
+    if str(model).startswith("gemini"):
+        model = "gpt-4.1-mini"
+    per_try = min(float(deadline), float(getattr(settings, "CHAT_RESPONSE_TIMEOUT_SECONDS", 8.0)))
+    client = OpenAI(api_key=api_key, timeout=per_try)
+
+    def _do_request() -> str:
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_block},
+            ],
+            temperature=0.35,
+            max_tokens=400,
+        )
+        text = (resp.choices[0].message.content or "").strip()
+        if not text:
+            raise ResponseLLMError("OpenAI returned empty content")
+        return text
+
+    try:
+        return run_with_deadline(_do_request, seconds=per_try)
+    except TimeoutError as exc:
+        raise ResponseLLMError(f"OpenAI timed out after {per_try}s") from exc

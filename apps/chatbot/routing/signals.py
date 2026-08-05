@@ -22,12 +22,15 @@ _INFORMATIONAL_RE = re.compile(
 _TRANSACTIONAL_BOOK_RE = re.compile(
     r"\b("
     r"(?:i )?(?:want to |wanna |would like to |need to |can i |please )?"
-    r"(?:book|schedule|make|set up|reserve)\b|"
-    r"\b(?:book|schedule)\s+(?:something|an? appointment|a visit)\b|"
+    r"(?:book|schedule|make|set up|reserve|reschedule)\b|"
+    r"\b(?:book|schedule|reschedule)\s+(?:something|an? appointment|a visit|my appointment)\b|"
     r"\bstart booking\b|"
     r"\bbook (?:an? )?appointment\b|"
     r"\bschedule (?:an? )?appointment\b|"
-    r"\bbook .{0,40}\bwith\b"
+    r"\breschedule (?:my |an? )?appointment\b|"
+    r"\bbook .{0,40}\bwith\b|"
+    r"\bschedule a spot\b|"
+    r"\bcheck (?:my )?appointment\b"
     r")",
     re.I,
 )

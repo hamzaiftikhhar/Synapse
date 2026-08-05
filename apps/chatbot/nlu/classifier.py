@@ -1,4 +1,4 @@
-"""Classifier with safety/phatic fast-path, Small-LLM-first, and fallback."""
+"""Classifier with safety/phatic/booking fast-path, OpenAI-primary, circuit-aware secondary."""
 
 from __future__ import annotations
 
@@ -16,9 +16,11 @@ from apps.chatbot.nlu.entity_extract import (
     merge_entities,
 )
 from apps.chatbot.nlu.factory import get_nlu_provider
+from apps.chatbot.nlu.gemini_provider import GeminiNLUProvider
 from apps.chatbot.nlu.openai_provider import OpenAINLUProvider
 from apps.chatbot.nlu.rules import try_rule_classify
 from apps.chatbot.nlu.timings import NLUTimings
+from apps.chatbot.providers import circuit_breaker
 
 logger = logging.getLogger(__name__)
 
@@ -38,18 +40,28 @@ def classify_message(
     """
     Classify a message:
 
-    safety (emergency) → rules_fast (phatic) → [optional rules_strong]
-    → Small LLM → OpenAI fallback (incl. timeout) → rules_fallback / clarify
+    safety → rules_fast (phatic/hours/booking) → [optional rules_strong]
+    → primary LLM → secondary LLM (circuit-aware) → rules_fallback / clarify
     """
     started = time.perf_counter()
+    # Cap catalog noise in NLU context
+    if conversation_context:
+        conversation_context = dict(conversation_context)
+        catalog = conversation_context.get("document_catalog")
+        if isinstance(catalog, str) and len(catalog) > 600:
+            conversation_context["document_catalog"] = catalog[:600]
+        services = conversation_context.get("services")
+        if isinstance(services, str) and len(services) > 300:
+            conversation_context["services"] = services[:300]
+        # Drop bulky history blobs from Small LLM
+        for key in ("history", "messages", "turns"):
+            conversation_context.pop(key, None)
 
     if getattr(settings, "NLU_ENABLE_RULES", True):
-        # Gate A — emergency / narrative cardiac (fail-closed, never wait on LLM)
         safety = try_rule_classify(message, tier="safety")
         if safety is not None:
             return _finalize_rules(safety, started)
         if has_symptom_cues(message) and extract_emergency_symptoms(message):
-            # Extra narrative emergency catch even if strong regex missed phrasing
             symptoms = extract_emergency_symptoms(message)
             return _finalize_rules(
                 {
@@ -71,95 +83,64 @@ def classify_message(
                 started,
             )
 
-        # Gate B — phatic only
         fast = try_rule_classify(message, tier="fast")
         if fast is not None:
             return _finalize_rules(fast, started)
 
-        # Strong semantic rules only when explicitly enabled (default: False)
         if getattr(settings, "NLU_RULES_BEFORE_LLM", False):
             strong = try_rule_classify(message, tier="strong")
             if strong is not None:
                 return _finalize_rules(strong, started)
 
-    primary = provider or get_nlu_provider()
     timeout = float(getattr(settings, "NLU_API_TIMEOUT_SECONDS", 3.5))
     last_error: NLUError | None = None
 
-    try:
-        raw = primary.classify(
-            message=message,
-            conversation_context=conversation_context,
-            timeout=timeout,
-        )
-        if isinstance(raw, dict):
-            raw.setdefault("_classifier_source", primary.provider_name)
-            raw["entities"] = merge_entities(
-                raw.get("entities") if isinstance(raw.get("entities"), dict) else {},
-                extract_entities(message),
-            )
-            # Fail-closed: elevate emergency if cue present but LLM missed it
-            if has_symptom_cues(message) and not raw.get("is_emergency"):
-                symptoms = extract_emergency_symptoms(message)
-                if symptoms or has_symptom_cues(message):
-                    raw["intent"] = "emergency"
-                    raw["is_emergency"] = True
-                    raw["can_respond_directly"] = True
-                    raw["needs_sql"] = False
-                    raw["needs_vector"] = False
-                    raw["needs_llm"] = False
-                    ents = raw.get("entities") if isinstance(raw.get("entities"), dict) else {}
-                    ents["symptom"] = symptoms or ents.get("symptom")
-                    raw["entities"] = ents
-        return raw
-    except NLUError as exc:
-        last_error = exc
-        logger.warning(
-            "NLU provider %s failed (timeout=%s): %s",
-            primary.provider_name,
-            _is_timeout_error(exc),
-            exc,
-        )
-
-    allow_timeout_fallback = bool(
-        getattr(settings, "NLU_FALLBACK_ON_TIMEOUT", True)
-    )
-    if (
-        primary.provider_name == "gemini"
-        and settings.OPENAI_API_KEY
-        and getattr(settings, "NLU_FALLBACK_OPENAI", True)
-        and (allow_timeout_fallback or not _is_timeout_error(last_error))
-    ):
-        fallback_model = getattr(settings, "NLU_FALLBACK_MODEL", "gpt-4.1-mini")
-        logger.info("NLU falling back to OpenAI model=%s", fallback_model)
+    # Ordered provider attempts: configured primary, then secondary / mini fallback
+    attempts = _provider_attempts(provider)
+    for attempt in attempts:
+        name = attempt["name"]
+        if not circuit_breaker.is_available(name):
+            logger.info("NLU skip provider=%s circuit_open", name)
+            continue
         try:
-            fb = OpenAINLUProvider(
-                model_name=fallback_model,
-                api_key=settings.OPENAI_API_KEY,
-            )
-            # Shorter budget on fallback to stay under client timeout
-            fb_timeout = min(timeout, 3.0)
-            raw = fb.classify(
+            attempt_timeout = attempt.get("timeout")
+            if attempt_timeout is None:
+                attempt_timeout = timeout
+            raw = attempt["provider"].classify(
                 message=message,
                 conversation_context=conversation_context,
-                timeout=fb_timeout,
+                timeout=min(timeout, float(attempt_timeout)),
             )
             if isinstance(raw, dict):
-                raw["_classifier_source"] = "openai_fallback"
+                raw.setdefault("_classifier_source", name)
                 raw["entities"] = merge_entities(
                     raw.get("entities") if isinstance(raw.get("entities"), dict) else {},
                     extract_entities(message),
                 )
-                if has_symptom_cues(message):
-                    raw["intent"] = "emergency"
-                    raw["is_emergency"] = True
-                    raw["can_respond_directly"] = True
+                if has_symptom_cues(message) and not raw.get("is_emergency"):
+                    symptoms = extract_emergency_symptoms(message)
+                    if symptoms or has_symptom_cues(message):
+                        raw["intent"] = "emergency"
+                        raw["is_emergency"] = True
+                        raw["can_respond_directly"] = True
+                        raw["needs_sql"] = False
+                        raw["needs_vector"] = False
+                        raw["needs_llm"] = False
+                        ents = raw.get("entities") if isinstance(raw.get("entities"), dict) else {}
+                        ents["symptom"] = symptoms or ents.get("symptom")
+                        raw["entities"] = ents
+            circuit_breaker.record_success(name)
             return raw
         except NLUError as exc:
             last_error = exc
-            logger.warning("OpenAI NLU fallback failed: %s", exc)
+            circuit_breaker.record_failure(name, str(exc))
+            logger.warning(
+                "NLU provider %s failed (timeout=%s): %s",
+                name,
+                _is_timeout_error(exc),
+                exc,
+            )
 
-    # Safety again after provider failure (chest-pressure should never clarify)
     if has_symptom_cues(message):
         symptoms = extract_emergency_symptoms(message)
         return _finalize_rules(
@@ -188,7 +169,7 @@ def classify_message(
             logger.info("NLU using rules fallback after provider failure")
             return _finalize_rules(fallback_rule, started)
 
-    logger.info("NLU returning clarify fallback after provider failure")
+    logger.info("NLU returning clarify fallback after provider failure: %s", last_error)
     return _finalize_rules(
         {
             "intent": "unknown",
@@ -205,9 +186,62 @@ def classify_message(
             "clarification_question": _TIMEOUT_CLARIFY,
             "reasoning_short": "Provider timeout/error — clarification fallback",
             "_classifier_source": "rules_fallback",
+            "_degraded": True,
         },
         started,
     )
+
+
+def _provider_attempts(override: NLUProvider | None) -> list[dict[str, Any]]:
+    """Build primary → secondary → mini-fallback chain."""
+    if override is not None:
+        return [{"name": override.provider_name, "provider": override, "timeout": None}]
+
+    attempts: list[dict[str, Any]] = []
+    primary = get_nlu_provider()
+    attempts.append({"name": primary.provider_name, "provider": primary, "timeout": None})
+
+    # If primary is openai nano, add mini as same-vendor accuracy/latency fallback
+    if primary.provider_name == "openai" and settings.OPENAI_API_KEY:
+        fb_model = getattr(settings, "NLU_FALLBACK_MODEL", "gpt-4.1-mini")
+        if fb_model and fb_model != getattr(settings, "NLU_MODEL", ""):
+            attempts.append(
+                {
+                    "name": "openai_fallback",
+                    "provider": OpenAINLUProvider(
+                        model_name=fb_model, api_key=settings.OPENAI_API_KEY
+                    ),
+                    "timeout": min(
+                        float(getattr(settings, "NLU_API_TIMEOUT_SECONDS", 3.5)), 3.0
+                    ),
+                }
+            )
+
+    secondary = str(getattr(settings, "NLU_SECONDARY_PROVIDER", "") or "").lower().strip()
+    if secondary == "gemini" and getattr(settings, "GOOGLE_API_KEY", ""):
+        key = settings.GOOGLE_API_KEY
+        # Skip obviously invalid AI Studio keys to avoid burning the budget
+        if key.startswith("AIza"):
+            model = getattr(settings, "NLU_SECONDARY_MODEL", "gemini-2.0-flash-lite")
+            attempts.append(
+                {
+                    "name": "gemini",
+                    "provider": GeminiNLUProvider(model_name=model, api_key=key),
+                    "timeout": min(
+                        float(getattr(settings, "NLU_API_TIMEOUT_SECONDS", 3.5)), 3.0
+                    ),
+                }
+            )
+
+    # Deduplicate by name
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for a in attempts:
+        if a["name"] in seen:
+            continue
+        seen.add(a["name"])
+        out.append(a)
+    return out
 
 
 def _finalize_rules(payload: dict[str, Any], started: float) -> dict[str, Any]:

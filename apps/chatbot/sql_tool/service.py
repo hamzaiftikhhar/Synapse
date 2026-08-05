@@ -87,9 +87,14 @@ class SQLTool:
         message: str = "",
     ) -> list[SQLResult]:
         """Execute SQL tools named by the ExecutionPlan (planner source of truth)."""
+        from apps.chatbot.sql_tool.cache import get_cached_result, set_cached_result
+
         ctx = SQLContext(clinic=clinic, nlu=nlu, patient=patient, message=message or "")
-        handlers: list[SQLHandler] = []
+        clinic_id = getattr(clinic, "id", None)
+        results: list[SQLResult] = []
+        pending_handlers: list[tuple[str, SQLHandler]] = []
         seen: set[str] = set()
+
         for task in tasks or []:
             key = str(task or "").strip().lower()
             handler = _SQL_TOOL_HANDLERS.get(key)
@@ -99,8 +104,38 @@ class SQLTool:
             if name in seen:
                 continue
             seen.add(name)
-            handlers.append(handler)
-        return cls._execute_handlers(handlers, ctx, nlu=nlu)
+            cached = get_cached_result(clinic_id, key) if clinic_id is not None else None
+            if cached is not None:
+                # Reconstruct SQLResult-like dicts already stored as to_dict()
+                for row in cached:
+                    results.append(
+                        SQLResult(
+                            handler=row.get("handler", name),
+                            found=bool(row.get("found")),
+                            rows=list(row.get("rows") or []),
+                            summary=str(row.get("summary") or ""),
+                            meta=dict(row.get("meta") or {}),
+                        )
+                    )
+                continue
+            pending_handlers.append((key, handler))
+
+        if pending_handlers:
+            fresh = cls._execute_handlers(
+                [h for _, h in pending_handlers], ctx, nlu=nlu
+            )
+            # Cache each task's result block
+            by_handler = {r.handler: r for r in fresh}
+            for key, handler in pending_handlers:
+                name = handler.__name__
+                block = by_handler.get(name)
+                if block is not None and clinic_id is not None:
+                    set_cached_result(clinic_id, key, [block.to_dict()])
+            results.extend(fresh)
+
+        if not results:
+            return cls._execute_handlers([], ctx, nlu=nlu)
+        return results
 
     @classmethod
     def _execute_handlers(

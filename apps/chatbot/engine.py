@@ -73,6 +73,10 @@ class ChatEngine:
     ) -> EngineResult:
         started = time.perf_counter()
         timings: dict[str, float] = {}
+        request_budget = float(getattr(settings, "CHAT_REQUEST_BUDGET_SECONDS", 20.0))
+        min_llm_remaining = float(
+            getattr(settings, "CHAT_RESPONSE_MIN_REMAINING_SECONDS", 2.0)
+        )
 
         from apps.chatbot.routing import (
             Lane,
@@ -250,11 +254,16 @@ class ChatEngine:
                 response_text = self._instruction_injection_reply()
             elif exec_plan.direct_mode == "unknown_doctor_refusal":
                 response_text = self._unknown_doctor_reply()
+            elif exec_plan.direct_mode == "medical_advice_refusal":
+                response_text = self._medical_advice_refusal_reply()
             elif exec_plan.doctor_followup and last_doctor:
                 response_text = self._doctor_followup_reply(last_doctor)
             elif exec_plan.soft_medical or exec_plan.direct_mode == "soft_medical":
                 response_text = self._soft_medical_reply(clinic, message)
-                suggested, guidance = self._maybe_suggest_specialties(clinic, message, timings)
+                if not self._looks_like_aesthetic_request(message):
+                    suggested, guidance = self._maybe_suggest_specialties(
+                        clinic, message, timings
+                    )
             else:
                 response_text = self._fast_path_from_plan(
                     exec_plan, nlu_result, message, clinic, safety_message
@@ -282,11 +291,12 @@ class ChatEngine:
                 )
                 timings["vector_ms"] = (time.perf_counter() - t0) * 1000
 
-            # Booking UI prep
+            # Booking UI prep (skip specialty discovery for aesthetic/service SKUs)
             if exec_plan.booking:
-                suggested, guidance = self._maybe_suggest_specialties(
-                    clinic, message, timings
-                )
+                if not self._looks_like_aesthetic_request(message):
+                    suggested, guidance = self._maybe_suggest_specialties(
+                        clinic, message, timings
+                    )
                 if booking_commit:
                     resolved = self._resolve_doctor_from_message(clinic, message)
                     if resolved:
@@ -306,13 +316,18 @@ class ChatEngine:
                 guidance=guidance,
                 soft_medical=soft_medical,
                 timings=timings,
+                request_started=started,
+                request_budget=request_budget,
+                min_llm_remaining=min_llm_remaining,
             )
 
             # Thin SQL + catalog: optional hybrid escalate when plan was sql-only
+            remaining = request_budget - (time.perf_counter() - started)
             if (
                 exec_plan.sql_tasks
                 and not exec_plan.vector_tasks
                 and not exec_plan.booking
+                and remaining >= min_llm_remaining
                 and self._should_hybrid_rag(
                     nlu=nlu_result,
                     sql_rows=sql_rows,
@@ -337,6 +352,8 @@ class ChatEngine:
                     vector_rows=vector_rows,
                     session=session,
                     extra_context="",
+                    deadline_seconds=request_budget - (time.perf_counter() - started),
+                    timings=timings,
                 )
                 timings["llm_ms"] = (time.perf_counter() - t0) * 1000
 
@@ -780,11 +797,15 @@ class ChatEngine:
         guidance: str,
         soft_medical: bool,
         timings: dict[str, Any],
+        request_started: float | None = None,
+        request_budget: float = 20.0,
+        min_llm_remaining: float = 2.0,
     ) -> str:
         """Compose patient-facing text after tasks have been executed."""
         from apps.chatbot.sql_tool import format_sql_results
 
         booking_text = ""
+        aesthetic = self._looks_like_aesthetic_request(message)
         if exec_plan.booking:
             if booking_commit:
                 booking_text = (
@@ -793,9 +814,9 @@ class ChatEngine:
                 )
             else:
                 bits = []
-                if guidance:
+                if guidance and not aesthetic:
                     bits.append(guidance)
-                if suggested:
+                if suggested and not aesthetic:
                     names = ", ".join(
                         (s.get("plain_label") or s.get("name") or "")
                         for s in suggested[:3]
@@ -808,7 +829,33 @@ class ChatEngine:
                 )
                 booking_text = " ".join(bits)
 
+        if exec_plan.direct_mode == "medical_advice_refusal":
+            return self._medical_advice_refusal_reply()
+
         if exec_plan.use_response_llm or exec_plan.vector_tasks:
+            if not vector_rows:
+                from apps.chatbot.response_llm import empty_rag_reply
+
+                grounded = empty_rag_reply(clinic)
+                timings["degraded_reason"] = "empty_vector"
+                if booking_text:
+                    return f"{grounded}\n\n{booking_text}"
+                return grounded
+
+            remaining = request_budget
+            if request_started is not None:
+                remaining = request_budget - (time.perf_counter() - request_started)
+            if remaining < min_llm_remaining:
+                timings["degraded_reason"] = "response_llm_budget"
+                from apps.chatbot.response_llm import empty_rag_reply
+
+                grounded = (vector_rows[0].get("text") or "")[:400] or empty_rag_reply(
+                    clinic
+                )
+                if booking_text:
+                    return f"{grounded}\n\n{booking_text}"
+                return grounded
+
             t0 = time.perf_counter()
             grounded = self._generate_response(
                 clinic=clinic,
@@ -818,6 +865,8 @@ class ChatEngine:
                 vector_rows=vector_rows,
                 session=session,
                 extra_context=booking_text,
+                deadline_seconds=remaining,
+                timings=timings,
             )
             timings["llm_ms"] = (time.perf_counter() - t0) * 1000
             if booking_text and grounded:
@@ -888,12 +937,18 @@ class ChatEngine:
         vector_rows: list[dict[str, Any]],
         session: Any | None,
         extra_context: str = "",
+        deadline_seconds: float | None = None,
+        timings: dict[str, Any] | None = None,
     ) -> str:
-        """Large LLM — vector_rag lane only."""
-        from apps.chatbot.response_llm import ResponseLLMError, synthesize_clinic_reply
+        """Large LLM — vector_rag lane only. Hard-capped by deadline_seconds."""
+        from apps.chatbot.response_llm import (
+            ResponseLLMError,
+            empty_rag_reply,
+            synthesize_clinic_reply,
+        )
         from apps.chatbot.sql_tool import format_sql_results
 
-        history = self._load_history(session, limit=8)
+        history = self._load_history(session, limit=2)
         try:
             return synthesize_clinic_reply(
                 clinic=clinic,
@@ -903,11 +958,16 @@ class ChatEngine:
                 vector_rows=vector_rows,
                 history=history,
                 extra_context=extra_context,
+                deadline_seconds=deadline_seconds,
             )
         except ResponseLLMError as exc:
             logger.warning("Response LLM failed: %s", exc)
+            if timings is not None:
+                timings["degraded_reason"] = "response_llm_timeout"
         except Exception:
             logger.exception("Response LLM unexpected failure")
+            if timings is not None:
+                timings["degraded_reason"] = "response_llm_error"
 
         if vector_rows:
             top = vector_rows[0]
@@ -916,9 +976,25 @@ class ChatEngine:
                 return snippet[:500]
         if sql_rows:
             return format_sql_results(sql_rows)
+        return empty_rag_reply(clinic)
+
+    def _looks_like_aesthetic_request(self, message: str) -> bool:
+        import re
+
+        return bool(
+            re.search(
+                r"\b(botox|filler|fillers|laser|microneedl|chemical\s*peel|"
+                r"tattoo\s*removal|facial|dysport|juvederm|skin\s*consult)\b",
+                message or "",
+                re.I,
+            )
+        )
+
+    def _medical_advice_refusal_reply(self) -> str:
         return (
-            "I couldn't find that in our clinic documents. "
-            "Please try rephrasing, or ask about hours, insurance, or booking."
+            "I can't advise whether a procedure is safe for your specific medical "
+            "situation. Please discuss this with your clinician through the patient "
+            "portal or by calling the clinic before booking."
         )
 
     def _build_context(self, session: Any | None) -> dict[str, Any] | None:

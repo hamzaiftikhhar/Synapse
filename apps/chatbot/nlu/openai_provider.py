@@ -50,21 +50,32 @@ class OpenAINLUProvider:
         timings.system_chars = len(system_prompt)
         timings.prompt_chars = len(system_prompt) + len(user_prompt)
 
-        request_timeout = timeout or getattr(settings, "NLU_API_TIMEOUT_SECONDS", 8)
+        from apps.chatbot.nlu.deadline import run_with_deadline
+
+        request_timeout = float(
+            timeout if timeout is not None else getattr(settings, "NLU_API_TIMEOUT_SECONDS", 3.5)
+        )
         client = OpenAI(api_key=self._api_key, timeout=request_timeout)
 
         t0 = time.perf_counter()
-        try:
-            response = client.chat.completions.create(
+
+        def _do_request():
+            return client.chat.completions.create(
                 model=self.model_name,
                 temperature=0.1,
-                max_tokens=384,
+                max_tokens=256,
                 response_format={"type": "json_object"},
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
             )
+
+        try:
+            response = run_with_deadline(_do_request, seconds=request_timeout)
+        except TimeoutError as exc:
+            timings.api_call_ms = (time.perf_counter() - t0) * 1000
+            raise NLUError(f"OpenAI API timed out after {request_timeout}s") from exc
         except Exception as exc:
             logger.exception("OpenAI NLU classify failed")
             if "timeout" in str(exc).lower():
