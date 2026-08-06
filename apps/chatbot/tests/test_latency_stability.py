@@ -82,3 +82,36 @@ class ResponseDeadlineTests(SimpleTestCase):
         text = empty_rag_reply(clinic)
         self.assertIn("clinic-specific", text.lower())
         self.assertNotIn("policy document", text.lower())
+
+    @override_settings(
+        CHAT_RESPONSE_PROVIDER="openai",
+        CHAT_RESPONSE_SECONDARY_PROVIDER="gemini",
+        CHAT_RESPONSE_TIMEOUT_SECONDS=8.0,
+    )
+    @patch("apps.chatbot.response_llm._gemini_generate")
+    @patch("apps.chatbot.response_llm._openai_generate")
+    def test_fallback_splits_budget_instead_of_full_timeout_each(
+        self, mock_openai, mock_gemini
+    ):
+        """Regression: each provider used to get its own independent
+        min(remaining, CHAT_RESPONSE_TIMEOUT_SECONDS) slice, so a primary
+        timeout plus a secondary timeout could stack to 2x the per-provider
+        cap (the 16s stalls in production). Each attempt must now get a fair
+        share of the total budget instead."""
+        circuit_breaker.reset()
+        mock_openai.side_effect = ResponseLLMError("boom")
+        mock_gemini.return_value = "ok"
+        clinic = type("C", (), {"name": "Acme", "phone": "555"})()
+
+        text = synthesize_clinic_reply(
+            clinic=clinic,
+            message="hi",
+            vector_rows=[{"score": 0.9, "heading": "x", "text": "y"}],
+            deadline_seconds=18.0,
+        )
+
+        self.assertEqual(text, "ok")
+        openai_deadline = mock_openai.call_args.kwargs["deadline"]
+        gemini_deadline = mock_gemini.call_args.kwargs["deadline"]
+        self.assertLessEqual(openai_deadline, 9.5)
+        self.assertLessEqual(gemini_deadline, 9.5)

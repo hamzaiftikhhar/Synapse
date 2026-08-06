@@ -95,6 +95,16 @@ def synthesize_clinic_reply(
     if secondary and secondary != primary:
         providers.append(secondary)
 
+    # Split the wall-clock budget evenly across every provider we might try,
+    # once, up front — so total time across all fallback attempts is bounded
+    # by `budget` regardless of provider count. Previously each provider got
+    # min(remaining, CHAT_RESPONSE_TIMEOUT_SECONDS) computed fresh every
+    # iteration; since the outer request budget is generous, `remaining`
+    # stayed above the per-provider cap even after the first provider used
+    # its full slice, so two providers could each independently burn a full
+    # CHAT_RESPONSE_TIMEOUT_SECONDS (8s + 8s = 16s stalls).
+    per_provider_budget = budget / len(providers)
+
     last_error: Exception | None = None
     for provider in providers:
         remaining = budget - (time.perf_counter() - started)
@@ -103,14 +113,15 @@ def synthesize_clinic_reply(
         if not circuit_breaker.is_available(provider):
             logger.info("response_llm skip provider=%s circuit_open", provider)
             continue
+        deadline = min(remaining, per_provider_budget)
         try:
             if provider == "openai":
                 text = _openai_generate(
-                    system=system, user_block=user_block, deadline=remaining
+                    system=system, user_block=user_block, deadline=deadline
                 )
             elif provider == "gemini":
                 text = _gemini_generate(
-                    system=system, user_block=user_block, deadline=remaining
+                    system=system, user_block=user_block, deadline=deadline
                 )
             else:
                 continue
