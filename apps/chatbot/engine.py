@@ -956,6 +956,11 @@ class ChatEngine:
 
         if exec_plan.use_response_llm or exec_plan.vector_tasks:
             if not vector_rows:
+                if self._sql_found(sql_rows):
+                    sql_text = format_sql_results(sql_rows)
+                    timings["degraded_reason"] = "empty_vector_sql_fallback"
+                    return f"{sql_text}\n\n{booking_text}" if booking_text else sql_text
+
                 from apps.chatbot.response_llm import empty_rag_reply
 
                 grounded = empty_rag_reply(clinic)
@@ -969,6 +974,10 @@ class ChatEngine:
                 remaining = request_budget - (time.perf_counter() - request_started)
             if remaining < min_llm_remaining:
                 timings["degraded_reason"] = "response_llm_budget"
+                if self._sql_found(sql_rows):
+                    sql_text = format_sql_results(sql_rows)
+                    return f"{sql_text}\n\n{booking_text}" if booking_text else sql_text
+
                 from apps.chatbot.response_llm import empty_rag_reply
 
                 grounded = empty_rag_reply(clinic)

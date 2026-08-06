@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import time
 from unittest.mock import patch
 
 from django.test import SimpleTestCase, override_settings
 
 from apps.chatbot.nlu.schemas import parse_nlu_payload
-from apps.chatbot.planner import build_execution_plan, build_planner_facts
+from apps.chatbot.planner import ExecutionPlan, build_execution_plan, build_planner_facts
 from apps.chatbot.providers import circuit_breaker
 from apps.chatbot.response_llm import ResponseLLMError, empty_rag_reply, synthesize_clinic_reply
 from apps.chatbot.routing.lanes import Lane
@@ -143,3 +144,62 @@ class ResponseDeadlineTests(SimpleTestCase):
 
         self.assertNotIn("PATIENT AGREEMENT", text)
         self.assertEqual(text, empty_rag_reply(clinic))
+
+
+class ComposeFromPlanFallbackTests(SimpleTestCase):
+    """Regression: when the response LLM can't run (no vector context yet,
+    or the request budget runs out before it's called), _compose_from_plan
+    used to always fall back to the generic empty_rag_reply() apology even
+    when sql_rows already had the answer — e.g. a pricing question would
+    show a $450 service card while the text said "I couldn't find clinic-
+    specific information... call us." It must prefer the SQL-grounded text
+    instead, exactly like _generate_response's own exception-handler
+    fallback already does."""
+
+    def _plan(self):
+        return ExecutionPlan(
+            sql_tasks=["services"], vector_tasks=["clinic_documents"], use_response_llm=True
+        )
+
+    def _sql_rows(self):
+        return [
+            {
+                "handler": "services_offered",
+                "found": True,
+                "rows": [{"name": "In-Office Laser Teeth Whitening", "price_cents": 45000}],
+            }
+        ]
+
+    def _compose(self, **overrides):
+        from apps.chatbot.engine import ChatEngine
+
+        clinic = type("C", (), {"name": "Acme", "phone": "555"})()
+        kwargs = dict(
+            clinic=clinic,
+            message="how much is teeth whitening",
+            nlu=None,
+            exec_plan=self._plan(),
+            sql_rows=self._sql_rows(),
+            vector_rows=[],
+            session=None,
+            booking_commit=False,
+            suggested=[],
+            guidance="",
+            soft_medical=False,
+            timings={},
+        )
+        kwargs.update(overrides)
+        return ChatEngine()._compose_from_plan(**kwargs)
+
+    def test_empty_vector_prefers_sql_over_generic_apology(self):
+        text = self._compose(vector_rows=[])
+        self.assertNotIn("couldn't find clinic-specific information", text)
+
+    def test_budget_exhausted_prefers_sql_over_generic_apology(self):
+        text = self._compose(
+            vector_rows=[{"score": 0.9, "heading": "x", "text": "y"}],
+            request_started=time.perf_counter() - 100,
+            request_budget=20.0,
+            min_llm_remaining=2.0,
+        )
+        self.assertNotIn("couldn't find clinic-specific information", text)
