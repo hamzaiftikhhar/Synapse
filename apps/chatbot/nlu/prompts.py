@@ -13,6 +13,7 @@ _INTENTS = ",".join(i.value for i in Intent)
 _SYSTEM_PROMPT = f"""Clinic NLU. JSON only. Semantics only — Python decides tools.
 Fields: intent,secondary_intents,confidence,entities,is_emergency,is_off_topic,clarification_needed,clarification_question,can_respond_directly,reasoning_short,service_filter_mode,topic
 Entity keys: doctor_name,specialty,service,insurance_provider,date,time,patient_name,location,symptom
+Entities: extract only what the user's current message states. Docs/Services/Ctx are background for grounding intent, not a source of entity values — never copy a name from them. Unstated → null.
 Intents: {_INTENTS}
 service_filter_mode: none|named|category
 topic: hours|location|insurance|doctors|specialties|services|pricing|membership|billing_policy|cancellation|post_op|general_faq|null
