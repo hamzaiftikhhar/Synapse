@@ -112,7 +112,10 @@ _ABOUT_SERVICE_RE = re.compile(
     re.I,
 )
 
-_STOPWORDS = frozenset(
+# Single source of truth for "generic English word, never a name/SKU fragment"
+# — reused by nlu/resolvers.py's doctor fuzzy-matcher as well as the
+# service-matching functions below. Don't fork a second list.
+STOPWORDS = frozenset(
     {
         "about", "after", "again", "also", "been", "before", "being", "between",
         "clinic", "could", "does", "doing", "from", "have", "here", "into",
@@ -478,7 +481,7 @@ def looks_like_knowledge_question(message: str) -> bool:
 
 def significant_tokens(text: str) -> set[str]:
     tokens = set(re.findall(r"[a-z0-9]{4,}", (text or "").lower()))
-    return {t for t in tokens if t not in _STOPWORDS}
+    return {t for t in tokens if t not in STOPWORDS}
 
 
 def catalog_overlap_score(
@@ -550,7 +553,7 @@ def match_services_in_message(
             w
             for w in re.findall(r"[a-z0-9]+", name)
             if w not in {"and", "the", "for", "with", "a", "an", "of", "or"}
-            and w not in _STOPWORDS
+            and w not in STOPWORDS
         ]
         matched = False
         # Multi-word phrase windows only (never single generic token)
@@ -565,7 +568,7 @@ def match_services_in_message(
         # Distinctive single brand/procedure tokens only (len≥7, not stopword)
         if not matched:
             for w in words:
-                if len(w) >= 7 and w in text and w not in _STOPWORDS:
+                if len(w) >= 7 and w in text and w not in STOPWORDS:
                     matched = True
                     break
         # ≥2 significant tokens present (each len≥5)

@@ -10,6 +10,7 @@ from django.db.models import Q
 
 from apps.clinics.models import Clinic
 from apps.chatbot.nlu.schemas import ExtractedEntities, ResolvedIds
+from apps.chatbot.routing.signals import STOPWORDS
 
 # Confidence bands for doctor matching
 HIGH_CONFIDENCE = 0.85
@@ -200,7 +201,8 @@ def resolve_doctor_candidates(
                 w.strip(".,!?")
                 for w in query.split()
                 if len(w.strip(".,!?")) > 2
-                and w.lower() not in {"the", "with", "book", "see", "please", "doctor", "dr", "doc"}
+                and w.lower() not in STOPWORDS
+                and w.lower() not in {"doctor", "dr", "doc", "book"}
             ]
             for word in words:
                 bare = _strip_doctor_prefix(word)

@@ -59,3 +59,17 @@ class DoctorResolutionBandsTests(TestCase):
         self.assertEqual(confidence_band(0.9), "high")
         self.assertEqual(confidence_band(0.7), "medium")
         self.assertEqual(confidence_band(0.5), "low")
+
+    def test_generic_words_do_not_hallucinate_a_doctor(self):
+        """Regression: "there" in free text used to fuzzy-collide with the
+        surname "Thorne" (Levenshtein ratio 0.667, above the 0.65 clarify
+        gate) and produce a spurious "Did you mean Dr. Aris Thorne?" on
+        messages that never named a doctor."""
+        for message in (
+            "is there any doc available tomorrow night?",
+            "is there any General Dentistry",
+            "any doctor free tomorrow?",
+        ):
+            resolution = resolve_doctor_candidates(self.clinic, message)
+            self.assertEqual(resolution.status, "unknown", message)
+            self.assertIsNone(resolution.doctor, message)
