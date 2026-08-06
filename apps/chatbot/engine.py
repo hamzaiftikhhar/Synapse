@@ -965,9 +965,7 @@ class ChatEngine:
                 timings["degraded_reason"] = "response_llm_budget"
                 from apps.chatbot.response_llm import empty_rag_reply
 
-                grounded = (vector_rows[0].get("text") or "")[:400] or empty_rag_reply(
-                    clinic
-                )
+                grounded = empty_rag_reply(clinic)
                 if booking_text:
                     return f"{grounded}\n\n{booking_text}"
                 return grounded
@@ -1085,11 +1083,6 @@ class ChatEngine:
             if timings is not None:
                 timings["degraded_reason"] = "response_llm_error"
 
-        if vector_rows:
-            top = vector_rows[0]
-            snippet = (top.get("text") or "").strip()
-            if snippet:
-                return snippet[:500]
         if sql_rows:
             return format_sql_results(sql_rows)
         return empty_rag_reply(clinic)

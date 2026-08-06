@@ -115,3 +115,31 @@ class ResponseDeadlineTests(SimpleTestCase):
         gemini_deadline = mock_gemini.call_args.kwargs["deadline"]
         self.assertLessEqual(openai_deadline, 9.5)
         self.assertLessEqual(gemini_deadline, 9.5)
+
+    @patch("apps.chatbot.response_llm.synthesize_clinic_reply")
+    def test_llm_failure_never_returns_raw_chunk_text(self, mock_synth):
+        """Regression: on LLM failure, engine.py used to return an unedited,
+        arbitrarily-truncated vector chunk (real production symptom: a
+        policy document dumped verbatim, cut off mid-sentence) instead of
+        the clean empty_rag_reply() fallback that already exists for this."""
+        from apps.chatbot.engine import ChatEngine
+
+        mock_synth.side_effect = ResponseLLMError("boom")
+        clinic = type("C", (), {"name": "Acme", "phone": "555"})()
+        raw_chunk = (
+            "PATIENT AGREEMENT, FINANCIAL POLICIES & CLINICAL PROTOCOLS\n\n"
+            "Acme Dental provides general, cosmetic, and orthodontic dental "
+            "care. Patients are expected to arrive 10 minutes prior..."
+        )
+
+        text = ChatEngine()._generate_response(
+            clinic=clinic,
+            message="what types do you have",
+            nlu=None,
+            sql_rows=[],
+            vector_rows=[{"score": 0.9, "heading": "Policy", "text": raw_chunk}],
+            session=None,
+        )
+
+        self.assertNotIn("PATIENT AGREEMENT", text)
+        self.assertEqual(text, empty_rag_reply(clinic))
