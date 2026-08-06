@@ -190,9 +190,10 @@ _DOCTOR_AVAILABILITY_RE = re.compile(
 
 _URGENT_AVAILABILITY_RE = re.compile(
     r"\b("
-    r"squeeze\s+me\s+in|asap|as\s+soon\s+as\s+possible|"
+    r"squeeze\s+me\s+in|asap|as\s+soon\s+as\s+possible|urgent|"
     r"next\s+available|earliest\s+(?:opening|slot|appointment)|"
-    r"urgent\s+appointment|need\s+(?:to\s+)?(?:be\s+)?seen\s+(?:today|asap|soon)"
+    r"urgent\s+appointment|emergency\s+appointment|"
+    r"need\s+(?:to\s+)?(?:be\s+)?seen\s+(?:today|asap|soon)"
     r")\b",
     re.I,
 )

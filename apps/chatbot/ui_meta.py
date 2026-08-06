@@ -28,7 +28,6 @@ def build_ui_meta(
     last_insurance: dict[str, Any] | None = None,
     active_booking: dict[str, Any] | None = None,
     ui_priority: str = "optional",
-    prioritized_turn: Any | None = None,
     doctor_resolution: Any | None = None,
 ) -> dict[str, Any]:
     """Map SQL handler output + intent to frontend component payloads."""
@@ -106,7 +105,6 @@ def build_ui_meta(
         return orchestrate_ui_meta(meta, intent=intent, ui_priority=ui_priority)
 
     has_doctors = False
-    availability_slots: list[dict[str, Any]] = []
     for block in sql_results:
         handler = block.get("handler", "")
         rows = block.get("rows") or []
@@ -123,7 +121,6 @@ def build_ui_meta(
 
         elif handler == "doctor_availability" and rows:
             mapped = [_map_slot(r) for r in rows[:6]]
-            availability_slots = mapped
             if mapped:
                 meta["recommended"] = {
                     "type": "slot",
@@ -236,15 +233,6 @@ def build_ui_meta(
                     "phone": clinic.phone,
                 }
             )
-
-    if prioritized_turn and getattr(prioritized_turn, "offer_earliest_slots", False):
-        if availability_slots and "recommended" not in meta:
-            meta["recommended"] = {
-                "type": "slot",
-                "slot": availability_slots[0],
-                "action": "book_slot",
-                "label": "Book earliest opening",
-            }
 
     return orchestrate_ui_meta(meta, intent=intent, ui_priority=ui_priority)
 

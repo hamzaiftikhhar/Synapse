@@ -140,7 +140,6 @@ class ChatEngine:
             service_catalog=service_catalog,
         )
 
-        from apps.chatbot.intent_priority import analyze_compound_turn, apply_priority_to_nlu
         from apps.chatbot.routing.signals import (
             is_doctor_availability_query,
             is_service_list_query,
@@ -154,16 +153,8 @@ class ChatEngine:
         )
         from dataclasses import replace
 
-        prioritized_turn = analyze_compound_turn(message, nlu_result, timeline)
-        nlu_result = apply_priority_to_nlu(nlu_result, prioritized_turn)
-
         if recovery.kind != "none" and recovery_reply(recovery, timeline):
             nlu_ctx["recovery"] = recovery.kind
-
-        if prioritized_turn.timeline_sensitive:
-            timeline.timeline_sensitive = True
-        if prioritized_turn.urgent_booking:
-            timeline.urgent = True
 
         from apps.chatbot.routing.confidence import (
             apply_confidence_policy,
@@ -241,7 +232,7 @@ class ChatEngine:
             ctx = save_timeline(ctx, timeline)
 
         doctor_availability_query = is_doctor_availability_query(message)
-        urgent_availability = is_urgent_availability_request(message) or prioritized_turn.urgent_booking
+        urgent_availability = is_urgent_availability_request(message)
 
         booking_commit = self._is_booking_commit(message, nlu_result)
         knowledge_q = looks_like_knowledge_question(message)
@@ -342,8 +333,6 @@ class ChatEngine:
                 response_text = self._doctor_followup_reply(last_doctor)
             elif exec_plan.soft_medical or exec_plan.direct_mode == "soft_medical":
                 response_text = self._soft_medical_reply(clinic, message)
-                if prioritized_turn.offer_earliest_slots:
-                    response_text += " Want me to check the earliest appointment?"
                 if not self._looks_like_aesthetic_request(message):
                     suggested, guidance = self._maybe_suggest_specialties(
                         clinic, message, timings
@@ -493,7 +482,6 @@ class ChatEngine:
             last_insurance=last_insurance,
             active_booking=active_booking,
             ui_priority=exec_plan.ui_priority.value,
-            prioritized_turn=prioritized_turn,
             doctor_resolution=doctor_resolution,
         )
         ui_meta["ui_priority"] = exec_plan.ui_priority.value.upper()

@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from django.test import SimpleTestCase
 
-from apps.chatbot.intent_priority import analyze_compound_turn
 from apps.chatbot.nlu.rules import try_rule_classify
 from apps.chatbot.nlu.schemas import Intent, parse_nlu_payload
 from apps.chatbot.planner import build_execution_plan, build_planner_facts
-from apps.chatbot.routing.signals import is_business_hours_query, is_doctor_availability_query
+from apps.chatbot.routing.signals import (
+    is_business_hours_query,
+    is_doctor_availability_query,
+    is_urgent_availability_request,
+)
 
 
 def _plan(message: str, intent: str):
@@ -17,9 +20,7 @@ def _plan(message: str, intent: str):
         message=message,
         nlu=nlu,
         doctor_availability_query=is_doctor_availability_query(message),
-        urgent_availability=bool(
-            __import__("re").search(r"squeeze|asap", message, __import__("re").I)
-        ),
+        urgent_availability=is_urgent_availability_request(message),
     )
     return build_execution_plan(nlu=nlu, facts=facts)
 
@@ -48,15 +49,12 @@ class HumanChaosRoutingTests(SimpleTestCase):
         self.assertIn("availability", plan.sql_tasks)
         self.assertNotIn("hours", plan.sql_tasks)
 
-    def test_molar_hurt_offers_earliest(self):
-        nlu = parse_nlu_payload({"intent": "medical_question", "confidence": 0.85})
-        turn = analyze_compound_turn("my molar hurts bad", nlu)
-        self.assertTrue(turn.offer_earliest_slots)
-
     def test_yo_is_not_hours(self):
         self.assertFalse(is_business_hours_query("yo"))
 
-    def test_wedding_whitening_timeline(self):
-        nlu = parse_nlu_payload({"intent": "services_offered", "confidence": 0.85})
-        turn = analyze_compound_turn("need whitening before wedding", nlu)
-        self.assertTrue(turn.timeline_sensitive)
+    def test_squeeze_me_in_is_urgent_availability(self):
+        self.assertTrue(is_urgent_availability_request("can yall squeeze me in"))
+
+    def test_urgent_availability_plan_uses_availability_task(self):
+        plan = _plan("can yall squeeze me in", Intent.UNKNOWN.value)
+        self.assertIn("availability", plan.sql_tasks)
