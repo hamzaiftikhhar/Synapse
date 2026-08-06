@@ -501,3 +501,43 @@ class EngineLaneIsolationTests(SimpleTestCase):
         self.assertEqual(result.lane, Lane.VECTOR_RAG.value)
         self.assertTrue(result.needs_llm)
         self.assertIn("Policy", result.response)
+
+    @patch("apps.chatbot.nlu.resolvers.resolve_specialty_for_service", return_value=None)
+    @patch("apps.chatbot.booking.discovery.suggest_specialties", return_value=([], ""))
+    @patch(
+        "apps.chatbot.routing.build_service_catalog",
+        return_value=[{"id": "svc1", "name": "Adult Cleaning, Exam & X-Rays"}],
+    )
+    @patch("apps.chatbot.routing.build_document_catalog", return_value=[])
+    @patch("apps.chatbot.nlu.intent_entity.IntentEntityService.analyze")
+    def test_booking_from_free_text_does_not_crash(
+        self, mock_analyze, _catalog, _services, _suggest, _resolve_specialty
+    ):
+        """Regression: naming a known service in a booking request used to
+        raise NameError inside _compose_from_plan (matched_services/
+        last_doctor/last_specialty were referenced but never passed as
+        parameters) — caught by the outer exception handler and disguised as
+        a generic "I want to make sure I help with the right thing" clarify
+        response with confidence 0.0. Real repro from production: "I would
+        like to book Adult Cleaning, Exam & X-Rays" from a service-card tap."""
+        from apps.chatbot.engine import ChatEngine
+
+        mock_analyze.return_value = parse_nlu_payload(
+            {
+                "intent": "book_appointment",
+                "confidence": 0.9,
+                "needs_sql": False,
+                "needs_vector": False,
+                "needs_llm": False,
+            }
+        )
+
+        result = ChatEngine().process(
+            clinic=self._clinic(),
+            message="I would like to book Adult Cleaning, Exam & X-Rays",
+            session=None,
+        )
+
+        self.assertEqual(result.intent, "book_appointment")
+        self.assertGreater(result.confidence, 0.0)
+        self.assertNotIn("rephrase your question", result.response)

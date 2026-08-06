@@ -424,6 +424,9 @@ class ChatEngine:
                 request_started=started,
                 request_budget=request_budget,
                 min_llm_remaining=min_llm_remaining,
+                matched_services=matched_services,
+                last_doctor=last_doctor,
+                last_specialty=last_specialty,
             )
 
             # Thin SQL + catalog: optional hybrid escalate when plan was sql-only
@@ -932,6 +935,9 @@ class ChatEngine:
         request_started: float | None = None,
         request_budget: float = 20.0,
         min_llm_remaining: float = 2.0,
+        matched_services: list[dict[str, Any]] | None = None,
+        last_doctor: dict[str, Any] | None = None,
+        last_specialty: dict[str, Any] | None = None,
     ) -> str:
         """Compose patient-facing text after tasks have been executed."""
         from apps.chatbot.sql_tool import format_sql_results
