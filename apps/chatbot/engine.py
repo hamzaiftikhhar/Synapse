@@ -96,6 +96,20 @@ class ChatEngine:
         timings["doc_catalog_ms"] = (time.perf_counter() - t0) * 1000
 
         ctx = conversation_context or self._build_context(session) or {}
+        from apps.chatbot.conversation_state import (
+            apply_recovery,
+            detect_recovery,
+            load_timeline,
+            merge_turn_context,
+            recovery_reply,
+            save_timeline,
+        )
+
+        timeline = load_timeline(ctx)
+        recovery = detect_recovery(message, timeline)
+        if recovery.kind != "none":
+            timeline = apply_recovery(recovery, timeline)
+            ctx = save_timeline(ctx, timeline)
         nlu_ctx = dict(ctx) if isinstance(ctx, dict) else {}
         catalog_text = catalog_for_nlu_context(doc_catalog)
         if catalog_text:
@@ -126,14 +140,34 @@ class ChatEngine:
             service_catalog=service_catalog,
         )
 
+        from apps.chatbot.intent_priority import analyze_compound_turn, apply_priority_to_nlu
+        from apps.chatbot.routing.signals import (
+            is_doctor_availability_query,
+            is_service_list_query,
+            is_specialty_list_query,
+            is_urgent_availability_request,
+            match_services_in_message,
+        )
+        from apps.chatbot.nlu.resolvers import (
+            did_you_mean_doctor_reply,
+            resolve_doctor_candidates,
+        )
+        from dataclasses import replace
+
+        prioritized_turn = analyze_compound_turn(message, nlu_result, timeline)
+        nlu_result = apply_priority_to_nlu(nlu_result, prioritized_turn)
+
+        if recovery.kind != "none" and recovery_reply(recovery, timeline):
+            nlu_ctx["recovery"] = recovery.kind
+
+        if prioritized_turn.timeline_sensitive:
+            timeline.timeline_sensitive = True
+        if prioritized_turn.urgent_booking:
+            timeline.urgent = True
+
         from apps.chatbot.routing.confidence import (
             apply_confidence_policy,
             confidence_meta,
-        )
-        from apps.chatbot.routing.signals import (
-            is_service_list_query,
-            is_specialty_list_query,
-            match_services_in_message,
         )
         from apps.chatbot.nlu.schemas import Intent, Route
         from apps.chatbot.planner import (
@@ -144,6 +178,17 @@ class ChatEngine:
         from apps.chatbot.nlu.decision import EMERGENCY_SAFETY_MESSAGE
 
         matched_services = match_services_in_message(message, service_catalog)
+        if matched_services:
+            svc = matched_services[0]
+            timeline = merge_turn_context(
+                timeline,
+                service={
+                    "id": svc.get("id"),
+                    "name": svc.get("name"),
+                },
+            )
+        ctx = save_timeline(ctx, timeline)
+
         service_hit = bool(matched_services)
         knowledge_q = looks_like_knowledge_question(message)
         conf_policy = apply_confidence_policy(
@@ -165,6 +210,38 @@ class ChatEngine:
         last_specialty = (
             ctx.get("last_specialty") if isinstance(ctx.get("last_specialty"), dict) else None
         )
+        last_service = (
+            ctx.get("last_service") if isinstance(ctx.get("last_service"), dict) else None
+        )
+        last_insurance = (
+            ctx.get("last_insurance") if isinstance(ctx.get("last_insurance"), dict) else None
+        )
+
+        doctor_resolution = resolve_doctor_candidates(clinic, message)
+        if doctor_resolution.doctor and doctor_resolution.confidence_band == "high":
+            doc = doctor_resolution.doctor
+            last_doctor = doc
+            nlu_result = replace(
+                nlu_result,
+                resolved_ids=replace(
+                    nlu_result.resolved_ids,
+                    doctor_id=str(doc.get("id") or ""),
+                ),
+            )
+            timeline = merge_turn_context(timeline, doctor=doc)
+            ctx = save_timeline(ctx, timeline)
+        elif doctor_resolution.status == "clarify":
+            timeline = merge_turn_context(
+                timeline,
+                pending_clarification={
+                    "type": "doctor",
+                    "candidates": [c.doctor for c in doctor_resolution.candidates[:3]],
+                },
+            )
+            ctx = save_timeline(ctx, timeline)
+
+        doctor_availability_query = is_doctor_availability_query(message)
+        urgent_availability = is_urgent_availability_request(message) or prioritized_turn.urgent_booking
 
         booking_commit = self._is_booking_commit(message, nlu_result)
         knowledge_q = looks_like_knowledge_question(message)
@@ -205,7 +282,9 @@ class ChatEngine:
         )
         doctor_ranking_request = self._is_doctor_ranking_request(message)
         instruction_injection = self._looks_like_instruction_injection(message)
-        unknown_doctor_requested = self._requests_unknown_doctor(message, clinic, nlu_result)
+        unknown_doctor_requested = self._requests_unknown_doctor(
+            message, clinic, nlu_result, doctor_resolution=doctor_resolution
+        )
 
         # ── 2. Planner (no I/O) → ExecutionPlan ─────────────────────────────
         t0 = time.perf_counter()
@@ -230,6 +309,8 @@ class ChatEngine:
             instruction_injection=instruction_injection,
             unknown_doctor_requested=unknown_doctor_requested,
             doctor_followup=doctor_followup,
+            doctor_availability_query=doctor_availability_query,
+            urgent_availability=urgent_availability,
             confidence_band=conf_policy.band.value,
         )
         exec_plan = build_execution_plan(nlu=nlu_result, facts=facts)
@@ -261,6 +342,8 @@ class ChatEngine:
                 response_text = self._doctor_followup_reply(last_doctor)
             elif exec_plan.soft_medical or exec_plan.direct_mode == "soft_medical":
                 response_text = self._soft_medical_reply(clinic, message)
+                if prioritized_turn.offer_earliest_slots:
+                    response_text += " Want me to check the earliest appointment?"
                 if not self._looks_like_aesthetic_request(message):
                     suggested, guidance = self._maybe_suggest_specialties(
                         clinic, message, timings
@@ -406,8 +489,12 @@ class ChatEngine:
             booking_commit=booking_commit and is_booking_intent,
             last_doctor=last_doctor,
             last_specialty=last_specialty,
+            last_service=last_service,
+            last_insurance=last_insurance,
             active_booking=active_booking,
             ui_priority=exec_plan.ui_priority.value,
+            prioritized_turn=prioritized_turn,
+            doctor_resolution=doctor_resolution,
         )
         ui_meta["ui_priority"] = exec_plan.ui_priority.value.upper()
         ui_meta["lane"] = lane.value
@@ -450,13 +537,26 @@ class ChatEngine:
                     for s in suggested[:4]
                 ]
 
+        recovery_text = recovery_reply(recovery, timeline) if recovery.kind != "none" else None
+        clarify_text = did_you_mean_doctor_reply(doctor_resolution)
+        if recovery_text and recovery.kind == "reverse":
+            response_text = recovery_text
+        elif clarify_text and doctor_resolution.status == "clarify" and not exec_plan.booking:
+            if response_text and clarify_text not in response_text:
+                response_text = f"{clarify_text}\n\n{response_text}"
+            elif not response_text:
+                response_text = clarify_text
+
         if session is not None:
             self._save_messages(session, message, response_text, nlu_result)
             self._update_memory(
                 session,
                 last_doctor=last_doctor,
                 last_specialty=last_specialty,
+                last_service=last_service,
+                last_insurance=last_insurance,
                 intent=nlu_result.intent.value,
+                timeline=timeline,
             )
 
         logger.info(
@@ -836,8 +936,10 @@ class ChatEngine:
         if exec_plan.booking:
             if booking_commit:
                 booking_text = "Choose a time below."
+            elif matched_services or last_doctor or last_specialty:
+                booking_text = "Pick a time below to continue."
             else:
-                booking_text = "Use the form below to finish booking."
+                booking_text = "How would you like to book?"
 
         if exec_plan.direct_mode == "medical_advice_refusal":
             return self._medical_advice_refusal_reply()
@@ -1123,12 +1225,25 @@ class ChatEngine:
             )
         )
 
-    def _requests_unknown_doctor(self, message: str, clinic: Any, nlu: Any) -> bool:
+    def _requests_unknown_doctor(
+        self,
+        message: str,
+        clinic: Any,
+        nlu: Any,
+        *,
+        doctor_resolution: Any | None = None,
+    ) -> bool:
         text = (message or "").lower()
         wants_booking = any(k in text for k in ("book", "schedule", "appointment"))
         names = getattr(getattr(nlu, "entities", None), "doctor_name", None)
         if not wants_booking or not names:
             return False
+        if doctor_resolution is not None:
+            if doctor_resolution.confidence_band in {"high", "medium"}:
+                return False
+            if doctor_resolution.status == "unknown" and doctor_resolution.candidates:
+                return True
+            return doctor_resolution.status == "unknown"
         return self._resolve_doctor_from_message(clinic, message) is None
 
     def _is_booking_commit(self, message: str, nlu: Any) -> bool:
@@ -1205,14 +1320,25 @@ class ChatEngine:
         *,
         last_doctor: dict[str, Any] | None,
         last_specialty: dict[str, Any] | None,
+        last_service: dict[str, Any] | None = None,
+        last_insurance: dict[str, Any] | None = None,
         intent: str,
+        timeline: Any | None = None,
     ) -> None:
         try:
+            from apps.chatbot.conversation_state import save_timeline
+
             ctx = dict(session.conversation_context or {})
+            if timeline is not None:
+                ctx = save_timeline(ctx, timeline)
             if last_doctor and last_doctor.get("id"):
                 ctx["last_doctor"] = last_doctor
             if last_specialty and last_specialty.get("id"):
                 ctx["last_specialty"] = last_specialty
+            if last_service and last_service.get("id"):
+                ctx["last_service"] = last_service
+            if last_insurance:
+                ctx["last_insurance"] = last_insurance
             ctx["current_intent"] = intent
             session.conversation_context = ctx
             session.save(update_fields=["conversation_context", "last_active_at"])

@@ -8,11 +8,14 @@ from typing import Any
 from apps.chatbot.nlu.emergency_patterns import SYMPTOM_CUE_RE as _SYMPTOM_CUE_RE
 
 _DATE_PATTERNS = [
+    r"\bnext\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
     r"\b(?:next\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
     r"\btoday\b",
     r"\btomorrow\b",
     r"\bnext week\b",
     r"\bthis week\b",
+    r"\bin\s+\d+\s+weeks?\b",
+    r"\bin\s+\d+\s+days?\b",
     r"\bsame\s+day\b",
     r"\basap\b",
     r"\bas\s+soon\s+as\s+possible\b",

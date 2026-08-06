@@ -62,6 +62,9 @@ function appendMetaComponents(
   now: string
 ): BookingUpdate | null {
   let bookingUpdate: BookingUpdate | null = null;
+  const primary = typeof meta.primary_component === "string" ? meta.primary_component : null;
+
+  const allow = (component: string) => !primary || primary === component;
 
   if (Array.isArray(meta.cards) && meta.cards.length) {
     messages.push({
@@ -77,7 +80,7 @@ function appendMetaComponents(
   // booking is already in progress (launch:false + booking_id), don't mint a
   // second wizard card — merge into the existing one instead (fixes the
   // restart-on-every-turn bug).
-  if (meta.booking && typeof meta.booking === "object") {
+  if (meta.booking && typeof meta.booking === "object" && allow("booking")) {
     const booking = meta.booking as Record<string, unknown>;
     if (booking.launch) {
       messages.push({
@@ -100,7 +103,7 @@ function appendMetaComponents(
     }
   }
 
-  if (Array.isArray(meta.doctors) && meta.doctors.length) {
+  if (Array.isArray(meta.doctors) && meta.doctors.length && allow("doctors")) {
     messages.push({
       id: uid("docs"),
       role,
@@ -110,7 +113,7 @@ function appendMetaComponents(
     });
   }
 
-  if (Array.isArray(meta.services) && meta.services.length) {
+  if (Array.isArray(meta.services) && meta.services.length && allow("services")) {
     messages.push({
       id: uid("svc"),
       role,
@@ -120,7 +123,7 @@ function appendMetaComponents(
     });
   }
 
-  if (Array.isArray(meta.insurance) && meta.insurance.length) {
+  if (Array.isArray(meta.insurance) && meta.insurance.length && allow("insurance")) {
     messages.push({
       id: uid("ins"),
       role,
@@ -172,7 +175,7 @@ function appendMetaComponents(
     }
   }
 
-  if (Array.isArray(meta.time_slots) && meta.time_slots.length) {
+  if (Array.isArray(meta.time_slots) && meta.time_slots.length && allow("time_slots")) {
     messages.push({
       id: uid("slots"),
       role,
@@ -182,7 +185,7 @@ function appendMetaComponents(
     });
   }
 
-  if (meta.location && typeof meta.location === "object") {
+  if (meta.location && typeof meta.location === "object" && allow("location")) {
     messages.push({
       id: uid("loc"),
       role,

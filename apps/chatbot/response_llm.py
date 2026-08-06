@@ -135,21 +135,48 @@ def empty_rag_reply(clinic: Any) -> str:
     )
 
 
+def _load_constitution() -> str:
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parent / "prompts" / "receptionist_constitution.md"
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return (
+            "You are a premium clinic concierge. Be concise, warm, and patient-facing. "
+            "Never invent clinical facts or mention internal tools."
+        )
+
+
+def _clinic_prompt_overlay(clinic: Any) -> str:
+    try:
+        from apps.widget.models import WidgetSettings
+
+        settings = WidgetSettings.objects.filter(clinic=clinic).first()
+        if settings and isinstance(settings.configuration, dict):
+            ai = settings.configuration.get("ai") or {}
+            overlay = ai.get("clinic_prompt") or ai.get("system_prompt") or ""
+            if isinstance(overlay, str) and overlay.strip():
+                return overlay.strip()
+    except Exception:
+        pass
+    return ""
+
+
 def _system_prompt(clinic: Any) -> str:
     phone = getattr(clinic, "phone", "") or ""
-    return (
+    constitution = _load_constitution()
+    overlay = _clinic_prompt_overlay(clinic)
+    base = (
         f"You are the clinic assistant for {clinic.name}. "
+        f"{constitution} "
         "You are answering from retrieved knowledge-base excerpts (RAG lane only). "
-        "Write a concise, warm reply (2–4 sentences unless listing is needed). "
         "Use ONLY the provided knowledge excerpts and optional SQL context. "
-        "Do not invent doctors, appointment slots, hours, insurance plans, prices, or policies. "
-        "Never diagnose or prescribe. "
-        "If knowledge excerpts are empty or unrelated, say you couldn't find clinic-specific "
-        "information on that — do NOT invent a call-the-clinic answer for availability. "
-        "Do not invent open slots or claim no doctors are available unless SQL shows that. "
         + (f"Clinic phone (only if needed): {phone}. " if phone else "")
-        + "Do not mention SQL, vectors, embeddings, or internal tools."
     )
+    if overlay:
+        base += f"\n\n### Clinic-specific guidance\n{overlay[:2000]}"
+    return base
 
 
 def _user_block(

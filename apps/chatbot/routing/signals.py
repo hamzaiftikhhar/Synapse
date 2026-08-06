@@ -165,6 +165,38 @@ _PHATIC_GREETING_RE = re.compile(
     r"[\s?!.]*$",
     re.I,
 )
+_DAY_TOKEN_RE = re.compile(
+    r"\b("
+    r"today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+    r"mon|tue|wed|thu|fri|sat|sun|next\s+week|this\s+week|next\s+monday|"
+    r"next\s+tuesday|next\s+wednesday|next\s+thursday|next\s+friday|"
+    r"next\s+saturday|next\s+sunday|morning|afternoon|evening|after\s+work"
+    r")\b",
+    re.I,
+)
+
+_DOCTOR_CUE_RE = re.compile(r"\b(?:dr\.?|doctor|doc)\b", re.I)
+
+_DOCTOR_AVAILABILITY_RE = re.compile(
+    r"\b("
+    r"(?:dr\.?|doctor|doc)\s+[a-z][\w'-]{0,30}.{0,40}\b(?:free|available|availability|open|slot|slots)\b|"
+    r"\b(?:free|available|availability|open\s+slots?)\b.{0,40}\b(?:dr\.?|doctor|doc)\b|"
+    r"\b(?:is|are)\s+(?:dr\.?|doctor|doc)\b.{0,40}\b(?:free|available|open)\b|"
+    r"\b(?:dr\.?|doctor|doc)\b.{0,40}\b(?:free|available|open)\b.{0,20}"
+    r"(?:on|this|next)?\b"
+    r")\b",
+    re.I,
+)
+
+_URGENT_AVAILABILITY_RE = re.compile(
+    r"\b("
+    r"squeeze\s+me\s+in|asap|as\s+soon\s+as\s+possible|"
+    r"next\s+available|earliest\s+(?:opening|slot|appointment)|"
+    r"urgent\s+appointment|need\s+(?:to\s+)?(?:be\s+)?seen\s+(?:today|asap|soon)"
+    r")\b",
+    re.I,
+)
+
 _PHATIC_FAREWELL_RE = re.compile(
     r"^\s*(?:(?:hey|hi|hello|ok|okay|alright|well)\s+)*"
     r"(?:bye|goodbye|good\s*bye|see\s+y(?:a|ou)|take\s+care|thanks?\s+bye|"
@@ -265,9 +297,41 @@ def service_filter_mode(
     return "none"
 
 
+def is_doctor_availability_query(message: str) -> bool:
+    """Doctor + time window — not clinic open/close hours."""
+    text = message or ""
+    if not text:
+        return False
+    if _DOCTOR_AVAILABILITY_RE.search(text):
+        return True
+    if _DOCTOR_CUE_RE.search(text) and _DAY_TOKEN_RE.search(text):
+        if re.search(r"\b(free|available|availability|open|slot|slots|see\s+me)\b", text, re.I):
+            return True
+    if re.search(r"\b(free|available)\b", text, re.I) and _DAY_TOKEN_RE.search(text):
+        if _DOCTOR_CUE_RE.search(text):
+            return True
+    return False
+
+
+def is_urgent_availability_request(message: str) -> bool:
+    return bool(_URGENT_AVAILABILITY_RE.search(message or ""))
+
+
+def mentions_doctor_with_temporal(message: str) -> bool:
+    text = message or ""
+    return bool(_DOCTOR_CUE_RE.search(text) and _DAY_TOKEN_RE.search(text))
+
+
 def is_business_hours_query(message: str) -> bool:
     text = (message or "").strip()
     if not text:
+        return False
+    # Doctor availability must never become clinic hours
+    if is_doctor_availability_query(text):
+        return False
+    if mentions_doctor_with_temporal(text) and re.search(
+        r"\b(free|available|availability|slot|slots)\b", text, re.I
+    ):
         return False
     # Symptom / emergency narratives must never become open/close answers
     if has_symptom_cues(text):

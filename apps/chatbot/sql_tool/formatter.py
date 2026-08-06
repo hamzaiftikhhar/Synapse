@@ -4,6 +4,53 @@ from __future__ import annotations
 
 from typing import Any
 
+
+def _format_hours_grouped(rows: list[dict[str, Any]]) -> str:
+    """Compress repeated schedules into patient-facing ranges."""
+    open_days = [r for r in rows if not r.get("is_closed") and r.get("open_time")]
+    closed = [r for r in rows if r.get("is_closed")]
+    if not open_days:
+        return "Hours aren't listed — message us and we'll confirm."
+
+    def _fmt_time(t: str | None) -> str:
+        if not t:
+            return ""
+        return str(t).replace(":00", "").strip()
+
+    groups: list[tuple[str, str, str]] = []
+    for row in open_days:
+        key = f"{row.get('open_time')}|{row.get('close_time')}"
+        if groups and groups[-1][0] == key:
+            groups[-1] = (key, groups[-1][1], row["day"])
+        else:
+            groups.append((key, row["day"], row["day"]))
+
+    parts: list[str] = []
+    for key, start_day, end_day in groups:
+        open_t, close_t = key.split("|", 1)
+        span = start_day if start_day == end_day else f"{start_day}–{end_day}"
+        parts.append(f"{span} {_fmt_time(open_t)}–{_fmt_time(close_t)}")
+
+    text = "We're open " + ", ".join(parts) + "."
+    if closed:
+        closed_names = ", ".join(r["day"] for r in closed)
+        text += f" Closed {closed_names}."
+    return text
+
+
+def _format_availability(rows: list[dict[str, Any]], *, recommended: dict | None = None) -> str:
+    if recommended:
+        doc = recommended.get("doctor") or recommended.get("doctor_name") or "A doctor"
+        when = recommended.get("time") or recommended.get("label") or ""
+        return f"Earliest opening: {doc} at {when}."
+    preview = rows[:3]
+    if len(preview) == 1:
+        r = preview[0]
+        return f"{r.get('doctor', 'A doctor')} has an opening at {r.get('time', r.get('start', ''))}."
+    lines = [f"{r.get('doctor')} at {r.get('time', r.get('start', ''))}" for r in preview]
+    more = f" (+{len(rows) - 3} more)" if len(rows) > 3 else ""
+    return "Openings" + more + ": " + "; ".join(lines) + "."
+
 # Backend-owned honesty copy — never invent call-the-clinic availability
 EMPTY_AVAILABILITY = (
     "I couldn't retrieve availability right now. "
@@ -38,37 +85,7 @@ def format_sql_results(results: list[dict[str, Any]]) -> str:
             if not rows:
                 parts.append(summary or SQL_FAILURE)
                 continue
-            open_days = [
-                r for r in rows if not r.get("is_closed") and r.get("open_time")
-            ]
-            closed = [r for r in rows if r.get("is_closed")]
-            if open_days:
-                first = open_days[0]
-                same = all(
-                    r.get("open_time") == first.get("open_time")
-                    and r.get("close_time") == first.get("close_time")
-                    for r in open_days
-                )
-                day_names = [r["day"] for r in open_days]
-                if same and len(open_days) >= 5:
-                    span = f"{day_names[0]} through {day_names[-1]}"
-                    hours = f"{first.get('open_time')} to {first.get('close_time')}"
-                    text = f"Our clinic is open {span} from {hours}."
-                else:
-                    bits = [
-                        f"{r['day']} {r.get('open_time')}–{r.get('close_time')}"
-                        for r in open_days
-                    ]
-                    text = "Our clinic hours: " + "; ".join(bits) + "."
-                if closed:
-                    text += f" We are closed on {', '.join(r['day'] for r in closed)}."
-                text += (
-                    " If you need to reach us outside these hours, you can leave a "
-                    "message and expect a callback within 24 hours."
-                )
-                parts.append(text)
-            elif summary:
-                parts.append(summary)
+            parts.append(_format_hours_grouped(rows))
             continue
 
         if handler == "clinic_location" and rows:
@@ -91,13 +108,8 @@ def format_sql_results(results: list[dict[str, Any]]) -> str:
             if not found or not rows:
                 parts.append(summary if summary and "No available" in summary else EMPTY_AVAILABILITY)
                 continue
-            preview = rows[:5]
-            lines = [
-                f"- {r['doctor']} at {r.get('time', r.get('start', ''))}"
-                for r in preview
-            ]
-            more = f" (+{len(rows) - 5} more)" if len(rows) > 5 else ""
-            parts.append("Available slots" + more + ":\n" + "\n".join(lines))
+            recommended = rows[0] if rows else None
+            parts.append(_format_availability(rows, recommended=recommended))
             continue
 
         if handler == "search_doctors":

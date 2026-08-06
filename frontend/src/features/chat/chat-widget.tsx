@@ -453,13 +453,22 @@ export function ChatWidget({
       return;
     }
 
-    if (action === "select_insurance") {
-      // InsuranceCards handles selection locally — no re-ask in chat
+    if (action === "book_appointment") {
+      const payload = data as { service?: string; insurance?: string };
+      if (payload?.service) {
+        void sendText(`I would like to book ${payload.service}`);
+        return;
+      }
+      void sendText("I would like to book an appointment");
       return;
     }
 
-    if (action === "book_appointment") {
-      void sendText("I would like to book an appointment");
+    if (action === "select_insurance") {
+      const ins = data as { name?: string; select_message?: string };
+      const msg =
+        ins.select_message ||
+        (ins.name ? `I have ${ins.name} — continue to book` : "");
+      if (msg) void sendText(msg);
       return;
     }
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import re
 from datetime import date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -47,6 +48,19 @@ def parse_natural_date(raw: str | None, *, tz: ZoneInfo | None = None) -> date |
         return today
     if raw == "tomorrow":
         return today + timedelta(days=1)
+    if raw in ("next week", "this week"):
+        # Start of next ISO week (Monday) or today for this week
+        if raw == "this week":
+            return today
+        days_until_monday = (7 - today.weekday()) % 7 or 7
+        return today + timedelta(days=days_until_monday)
+
+    m = re.match(r"^in\s+(\d+)\s+weeks?$", raw)
+    if m:
+        return today + timedelta(weeks=int(m.group(1)))
+    m = re.match(r"^in\s+(\d+)\s+days?$", raw)
+    if m:
+        return today + timedelta(days=int(m.group(1)))
 
     day_map = {
         "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
@@ -54,6 +68,11 @@ def parse_natural_date(raw: str | None, *, tz: ZoneInfo | None = None) -> date |
         "mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6,
     }
     for name, weekday in day_map.items():
+        if re.search(rf"\bnext\s+{name}\b", raw):
+            days_ahead = (weekday - today.weekday()) % 7
+            if days_ahead == 0:
+                days_ahead = 7
+            return today + timedelta(days=days_ahead)
         if name in raw:
             days_ahead = (weekday - today.weekday()) % 7 or 7
             return today + timedelta(days=days_ahead)

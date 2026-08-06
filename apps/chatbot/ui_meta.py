@@ -24,8 +24,12 @@ def build_ui_meta(
     booking_commit: bool = False,
     last_doctor: dict[str, Any] | None = None,
     last_specialty: dict[str, Any] | None = None,
+    last_service: dict[str, Any] | None = None,
+    last_insurance: dict[str, Any] | None = None,
     active_booking: dict[str, Any] | None = None,
     ui_priority: str = "optional",
+    prioritized_turn: Any | None = None,
+    doctor_resolution: Any | None = None,
 ) -> dict[str, Any]:
     """Map SQL handler output + intent to frontend component payloads."""
     meta: dict[str, Any] = {
@@ -71,6 +75,11 @@ def build_ui_meta(
         if last_specialty and last_specialty.get("id"):
             booking["specialty_id"] = last_specialty.get("id")
             booking["specialty_name"] = last_specialty.get("name")
+        if last_service and last_service.get("id"):
+            booking["service_id"] = last_service.get("id")
+            booking["service_name"] = last_service.get("name")
+        if last_insurance and last_insurance.get("name"):
+            booking["insurance_name"] = last_insurance.get("name")
         meta["booking"] = booking
         # Soft specialty chips still useful; wizard embeds via booking.launch
         if suggested and not booking_commit:
@@ -94,9 +103,10 @@ def build_ui_meta(
             omit_book=True,
             ui_priority=ui_priority,
         )
-        return meta
+        return orchestrate_ui_meta(meta, intent=intent, ui_priority=ui_priority)
 
     has_doctors = False
+    availability_slots: list[dict[str, Any]] = []
     for block in sql_results:
         handler = block.get("handler", "")
         rows = block.get("rows") or []
@@ -112,8 +122,16 @@ def build_ui_meta(
             meta.setdefault("specialties", mapped)
 
         elif handler == "doctor_availability" and rows:
-            # Prefer not dumping many slots into chat — leave for wizard
-            pass
+            mapped = [_map_slot(r) for r in rows[:6]]
+            availability_slots = mapped
+            if mapped:
+                meta["recommended"] = {
+                    "type": "slot",
+                    "slot": mapped[0],
+                    "action": "book_slot",
+                    "label": "Book this time",
+                }
+                meta["time_slots"] = mapped
 
         elif handler == "insurance_accepted" and rows:
             # Handler already bounds the query (12 accepted, or 12 for a named
@@ -122,7 +140,17 @@ def build_ui_meta(
             meta["insurance"] = [_map_insurance(r) for r in rows[:20]]
 
         elif handler == "services_offered" and rows:
-            meta["services"] = [_map_service(r) for r in rows[:5]]
+            filter_mode = getattr(nlu, "service_filter_mode", None) if nlu else None
+            limit = 1 if filter_mode == "named" else min(5, len(rows))
+            services = [_map_service(r) for r in rows[:limit]]
+            if services:
+                meta["recommended"] = {
+                    "type": "service",
+                    "service": services[0],
+                    "action": "select_service",
+                    "label": f"Book {services[0].get('name', 'this service')}",
+                }
+            meta["services"] = services
 
         elif handler == "clinic_hours" and rows:
             # Prose only — do not emit day cards
@@ -209,6 +237,64 @@ def build_ui_meta(
                 }
             )
 
+    if prioritized_turn and getattr(prioritized_turn, "offer_earliest_slots", False):
+        if availability_slots and "recommended" not in meta:
+            meta["recommended"] = {
+                "type": "slot",
+                "slot": availability_slots[0],
+                "action": "book_slot",
+                "label": "Book earliest opening",
+            }
+
+    return orchestrate_ui_meta(meta, intent=intent, ui_priority=ui_priority)
+
+
+def orchestrate_ui_meta(
+    meta: dict[str, Any], *, intent: str, ui_priority: str
+) -> dict[str, Any]:
+    """Backend UI orchestrator — one primary component, progressive disclosure."""
+    primary = _pick_primary_component(meta, intent=intent)
+    meta["primary_component"] = primary
+    meta["recommended_action"] = (meta.get("recommended") or {}).get("action")
+    if primary:
+        meta = _suppress_competing_components(meta, primary, ui_priority=ui_priority)
+    return meta
+
+
+def _pick_primary_component(meta: dict[str, Any], *, intent: str) -> str | None:
+    if meta.get("booking", {}).get("launch"):
+        return "booking"
+    if meta.get("time_slots"):
+        return "time_slots"
+    if meta.get("doctors"):
+        return "doctors"
+    if meta.get("services"):
+        return "services"
+    if meta.get("insurance"):
+        return "insurance"
+    if meta.get("location"):
+        return "location"
+    if meta.get("appointments"):
+        return "appointments"
+    return None
+
+
+def _suppress_competing_components(
+    meta: dict[str, Any], primary: str, *, ui_priority: str
+) -> dict[str, Any]:
+    """Hide secondary UI blocks when a primary component is active."""
+    if ui_priority in {"NONE", "INLINE", "EMERGENCY"}:
+        meta.pop("specialties", None)
+        if primary != "services":
+            meta.pop("services", None)
+    if primary == "booking":
+        meta.pop("specialties", None)
+    if primary == "time_slots":
+        meta.pop("doctors", None)
+    if primary == "services" and meta.get("services") and len(meta["services"]) == 1:
+        meta.pop("specialties", None)
+    if primary == "insurance":
+        meta.pop("services", None)
     return meta
 
 

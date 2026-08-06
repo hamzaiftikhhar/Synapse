@@ -42,6 +42,7 @@ _SQL_TOOL_HANDLERS: dict[str, SQLHandler] = {
     "location": clinic_location,
     "insurance": insurance_accepted,
     "doctors": search_doctors,
+    "availability": doctor_availability,
     "specialties": list_specialties,
     "services": services_offered,
     "pricing": services_offered,

@@ -408,6 +408,53 @@ def _match_strong_legacy(
             _classifier_source="rules_strong",
         )
 
+    # Doctor + temporal availability BEFORE generic hours / book rules
+    if re.search(
+        r"\b("
+        r"(?:dr\.?|doctor|doc)\s+[a-z].{0,40}\b(?:free|available|availability|open|slot|slots)\b|"
+        r"\b(?:free|available|availability|open\s+slots?)\b.{0,40}\b(?:dr\.?|doctor|doc)\b|"
+        r"\b(?:is|are)\s+(?:dr\.?|doctor|doc)\b.{0,40}\b(?:free|available|open)\b"
+        r")\b",
+        text,
+        re.I,
+    ) or (
+        re.search(r"\b(?:dr\.?|doctor|doc)\b", text, re.I)
+        and re.search(r"\b(free|available|availability|slot|slots|open)\b", text, re.I)
+        and re.search(
+            r"\b(tomorrow|today|monday|tuesday|wednesday|thursday|friday|"
+            r"saturday|sunday|morning|afternoon|evening|next\s+week|next\s+monday)\b",
+            text,
+            re.I,
+        )
+    ):
+        return _base_payload(
+            intent=Intent.DOCTOR_AVAILABILITY.value,
+            confidence=0.93,
+            needs_sql=True,
+            needs_vector=False,
+            needs_llm=False,
+            sql_tool="doctors",
+            reasoning_short="Doctor availability (rule)",
+            _classifier_source="rules_strong",
+        )
+
+    if re.search(
+        r"\b(squeeze\s+me\s+in|asap|as\s+soon\s+as\s+possible|next\s+available|"
+        r"earliest\s+(?:opening|slot|appointment))\b",
+        text,
+        re.I,
+    ):
+        return _base_payload(
+            intent=Intent.DOCTOR_AVAILABILITY.value,
+            confidence=0.91,
+            needs_sql=True,
+            needs_vector=False,
+            needs_llm=False,
+            sql_tool="doctors",
+            reasoning_short="Urgent availability (rule)",
+            _classifier_source="rules_strong",
+        )
+
     if re.search(r"\b(book|schedule|make|wanna book)\b", text) and re.search(
         r"\b(appointment|visit|something)\b", text
     ) or re.search(r"\bbook .{0,40}\bwith\b", text):
@@ -420,9 +467,9 @@ def _match_strong_legacy(
             _classifier_source="rules_strong",
         )
 
-    if re.search(r"\b(slot|slots|available|availability)\b", text) and re.search(
+    if re.search(r"\b(slot|slots|available|availability|free)\b", text) and re.search(
         r"\b(tomorrow|today|monday|tuesday|wednesday|thursday|friday|"
-        r"saturday|sunday|morning|afternoon|evening|doctor|dr)\b",
+        r"saturday|sunday|morning|afternoon|evening|doctor|dr|doc)\b",
         text,
     ):
         return _base_payload(

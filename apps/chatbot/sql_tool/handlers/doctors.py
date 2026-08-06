@@ -17,6 +17,19 @@ from apps.chatbot.sql_tool.utils import (
 )
 
 
+def _slot_at_or_after(slot: dict, floor_time) -> bool:
+    start = slot.get("start") or ""
+    if not start or floor_time is None:
+        return True
+    try:
+        from datetime import datetime
+
+        dt = datetime.fromisoformat(str(start).replace("Z", "+00:00"))
+        return dt.time() >= floor_time
+    except Exception:
+        return True
+
+
 def search_doctors(ctx: SQLContext) -> SQLResult:
     from apps.doctors.models import Doctor
 
@@ -107,6 +120,7 @@ def list_specialties(ctx: SQLContext) -> SQLResult:
 def doctor_availability(ctx: SQLContext) -> SQLResult:
     from apps.chatbot.booking.slots import active_holds_for_date, compute_slots_for_day
     from apps.doctors.models import Doctor
+    from apps.chatbot.sql_tool.utils import parse_time_floor
 
     clinic = ctx.clinic
     nlu = ctx.nlu
@@ -116,6 +130,8 @@ def doctor_availability(ctx: SQLContext) -> SQLResult:
     target_date = parse_natural_date(dates[0] if dates else None, tz=tz)
     if target_date is None:
         target_date = timezone.now().astimezone(tz).date() + timedelta(days=1)
+
+    time_floor = parse_time_floor(entity_list(nlu.entities.time))
 
     doctor_qs = Doctor.objects.filter(
         clinic=clinic,
@@ -155,6 +171,13 @@ def doctor_availability(ctx: SQLContext) -> SQLResult:
         max_slots=20,
         excluded_keys=active_holds_for_date(clinic, target_date),
     )
+
+    if time_floor is not None:
+        slots = [
+            s
+            for s in slots
+            if _slot_at_or_after(s, time_floor)
+        ]
 
     found = bool(slots)
     summary = (

@@ -47,6 +47,8 @@ class BookingService:
         specialty_name: str | None = None,
         doctor_id: str | None = None,
         doctor_name: str | None = None,
+        service_id: str | None = None,
+        service_name: str | None = None,
     ) -> dict[str, Any]:
         cfg = get_booking_config(clinic)
         text = (reason or message or "").strip()
@@ -76,6 +78,8 @@ class BookingService:
             specialty_name=specialty_name,
             doctor_id=doctor_id,
             doctor_name=doctor_name,
+            service_id=service_id,
+            service_name=service_name,
             resuming=resuming,
         )
         cls._apply_date_time_hint(session, clinic, text)
@@ -115,11 +119,21 @@ class BookingService:
         specialty_name: str | None,
         doctor_id: str | None,
         doctor_name: str | None,
+        service_id: str | None = None,
+        service_name: str | None = None,
         resuming: bool,
     ) -> None:
-        """Update the draft in place with newly-known specialty/doctor. Never
-        erases already-known info, never touches booking_id or patient
-        details — only rewinds the steps a change actually invalidates."""
+        """Update the draft in place with newly-known specialty/doctor/service."""
+        if service_id and not specialty_id:
+            from apps.chatbot.nlu.resolvers import resolve_specialty_for_service
+
+            resolved_specialty_id = resolve_specialty_for_service(clinic, str(service_id))
+            if resolved_specialty_id:
+                specialty_id = resolved_specialty_id
+                specialty_name = specialty_name or cls._specialty_name(
+                    clinic, resolved_specialty_id
+                )
+
         changed_specialty = bool(specialty_id) and str(specialty_id) != (
             session.specialty_id or ""
         )
@@ -133,6 +147,8 @@ class BookingService:
         if changed_doctor:
             session.doctor_id = str(doctor_id)
             session.doctor_name = doctor_name or cls._doctor_name(clinic, str(doctor_id))
+        if service_id:
+            session.reason = session.reason or service_name or session.reason
 
         if changed_doctor or changed_specialty:
             session.date = None

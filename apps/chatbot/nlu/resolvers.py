@@ -2,10 +2,49 @@
 
 from __future__ import annotations
 
+import re
+from dataclasses import dataclass
+from typing import Any
+
 from django.db.models import Q
 
 from apps.clinics.models import Clinic
 from apps.chatbot.nlu.schemas import ExtractedEntities, ResolvedIds
+
+# Confidence bands for doctor matching
+HIGH_CONFIDENCE = 0.85
+MEDIUM_CONFIDENCE = 0.65
+DEFAULT_THRESHOLD = 0.60
+
+
+@dataclass(frozen=True)
+class DoctorCandidate:
+    doctor: dict[str, Any]
+    score: float
+    match_type: str = "fuzzy"
+
+
+@dataclass(frozen=True)
+class DoctorResolution:
+    """Result of clinic-scoped doctor resolution with confidence bands."""
+
+    status: str  # resolved | clarify | unknown
+    doctor: dict[str, Any] | None
+    candidates: tuple[DoctorCandidate, ...]
+    confidence_band: str  # high | medium | low
+    best_score: float = 0.0
+
+    @property
+    def needs_clarification(self) -> bool:
+        return self.status == "clarify"
+
+
+def confidence_band(score: float) -> str:
+    if score >= HIGH_CONFIDENCE:
+        return "high"
+    if score >= MEDIUM_CONFIDENCE:
+        return "medium"
+    return "low"
 
 
 def resolve_entities(
@@ -105,21 +144,28 @@ def _fuzzy_score(needle: str, candidate: str) -> float:
     return max(0.0, 1.0 - (dist / maxlen))
 
 
-def resolve_doctor_from_text(
-    clinic: Clinic, text: str | None, *, threshold: float = 0.6
-) -> dict[str, Any] | None:
-    """Resolve a doctor by scanning free text (a whole message, not a single
-    extracted name). Canonical replacement for ad hoc substring matching —
-    single source of truth for "does this message name one of our doctors".
+def _strip_doctor_prefix(text: str) -> str:
+    return re.sub(
+        r"^(?:dr\.?|doctor|doc)\.?\s+",
+        "",
+        text.strip(),
+        flags=re.I,
+    )
 
-    1) exact full-name / last-name substring hit (fast path — same behavior as
-       the old plain-substring matcher this replaces)
-    2) fuzzy per-word fallback via `_fuzzy_score` for typo tolerance (e.g.
-       "book with Dr. Rjet" → "Rajat Sharma")
-    """
+
+def _doctor_name_tokens(full_name: str) -> list[str]:
+    cleaned = (full_name or "").replace("Dr.", "").replace("Dr", "").strip()
+    return [t for t in cleaned.split() if len(t) > 2]
+
+
+def resolve_doctor_candidates(
+    clinic: Clinic, text: str | None, *, limit: int = 3
+) -> DoctorResolution:
+    """Rank clinic doctors against free text with confidence bands."""
     query = (text or "").strip()
     if not query:
-        return None
+        return DoctorResolution(status="unknown", doctor=None, candidates=(), confidence_band="low")
+
     from apps.doctors.models import Doctor
 
     doctors = list(
@@ -127,31 +173,112 @@ def resolve_doctor_from_text(
         .only("id", "full_name", "title", "bio")[:100]
     )
     lower = query.lower()
+    scored: list[DoctorCandidate] = []
 
-    for doctor in doctors:
-        if doctor.full_name and doctor.full_name.lower() in lower:
-            return _doctor_payload(doctor)
-    for doctor in doctors:
-        parts = (doctor.full_name or "").replace("Dr.", "").strip().split()
-        if parts and len(parts[-1]) > 3 and parts[-1].lower() in lower:
-            return _doctor_payload(doctor)
-
-    words = [w.strip(".,!?") for w in query.split() if len(w) > 2]
-    best: Any = None
-    best_score = 0.0
     for doctor in doctors:
         if not doctor.full_name:
             continue
-        candidate_tokens = doctor.full_name.replace("Dr.", "").split()
-        for word in words:
-            for token in candidate_tokens:
-                score = _fuzzy_score(word, token)
-                if score > best_score:
-                    best_score = score
-                    best = doctor
-    if best is not None and best_score >= threshold:
-        return _doctor_payload(best)
+        name_lower = doctor.full_name.lower()
+        score = 0.0
+        match_type = "fuzzy"
+
+        if name_lower in lower:
+            score = 1.0
+            match_type = "full_substring"
+        else:
+            parts = _doctor_name_tokens(doctor.full_name)
+            if parts and len(parts[-1]) > 3 and parts[-1].lower() in lower:
+                score = max(score, 0.92)
+                match_type = "last_name"
+            if len(parts) >= 2:
+                first_last = f"{parts[0]} {parts[-1]}".lower()
+                if first_last in lower:
+                    score = max(score, 0.95)
+                    match_type = "first_last"
+
+            words = [
+                w.strip(".,!?")
+                for w in query.split()
+                if len(w.strip(".,!?")) > 2
+                and w.lower() not in {"the", "with", "book", "see", "please", "doctor", "dr", "doc"}
+            ]
+            for word in words:
+                bare = _strip_doctor_prefix(word)
+                for token in parts:
+                    token_score = _fuzzy_score(bare or word, token)
+                    if token_score > score:
+                        score = token_score
+                        match_type = "token_fuzzy"
+                whole_score = _fuzzy_score(bare or word, doctor.full_name)
+                if whole_score > score:
+                    score = whole_score
+                    match_type = "name_fuzzy"
+
+        if score >= DEFAULT_THRESHOLD:
+            scored.append(
+                DoctorCandidate(
+                    doctor=_doctor_payload(doctor),
+                    score=round(score, 3),
+                    match_type=match_type,
+                )
+            )
+
+    scored.sort(key=lambda c: c.score, reverse=True)
+    top = scored[:limit]
+    if not top:
+        return DoctorResolution(status="unknown", doctor=None, candidates=(), confidence_band="low")
+
+    best = top[0]
+    band = confidence_band(best.score)
+    if band == "high":
+        return DoctorResolution(
+            status="resolved",
+            doctor=best.doctor,
+            candidates=tuple(top),
+            confidence_band=band,
+            best_score=best.score,
+        )
+    if band == "medium":
+        return DoctorResolution(
+            status="clarify",
+            doctor=best.doctor,
+            candidates=tuple(top),
+            confidence_band=band,
+            best_score=best.score,
+        )
+    return DoctorResolution(
+        status="unknown",
+        doctor=None,
+        candidates=tuple(top),
+        confidence_band=band,
+        best_score=best.score,
+    )
+
+
+def resolve_doctor_from_text(
+    clinic: Clinic, text: str | None, *, threshold: float = DEFAULT_THRESHOLD
+) -> dict[str, Any] | None:
+    """Resolve a doctor from free text using ranked candidates + confidence bands."""
+    resolution = resolve_doctor_candidates(clinic, text)
+    if resolution.status == "resolved":
+        return resolution.doctor
+    if resolution.status == "clarify" and resolution.best_score >= threshold:
+        return resolution.doctor
+    if resolution.doctor and resolution.best_score >= threshold:
+        return resolution.doctor
     return None
+
+
+def did_you_mean_doctor_reply(resolution: DoctorResolution) -> str | None:
+    """Patient-facing clarifier for medium-confidence doctor matches."""
+    if resolution.status != "clarify" or not resolution.candidates:
+        return None
+    best = resolution.candidates[0].doctor
+    name = best.get("name") or "that doctor"
+    alts = [c.doctor.get("name") for c in resolution.candidates[1:3] if c.doctor.get("name")]
+    if alts:
+        return f"Did you mean {name}? Other close matches: {', '.join(alts)}."
+    return f"Did you mean {name}?"
 
 
 def _doctor_payload(doctor: Any) -> dict[str, Any]:

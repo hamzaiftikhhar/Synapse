@@ -25,7 +25,7 @@ _INTENT_SQL_TASKS: dict[Intent, list[str]] = {
     Intent.INSURANCE_ACCEPTED: ["insurance"],
     Intent.INSURANCE_VERIFICATION: ["insurance"],
     Intent.DOCTOR_SEARCH: ["doctors"],
-    Intent.DOCTOR_AVAILABILITY: ["doctors"],
+    Intent.DOCTOR_AVAILABILITY: ["availability"],
     Intent.SERVICES_OFFERED: ["services"],
     Intent.PRICING: ["pricing"],
     Intent.CANCEL_APPOINTMENT: ["appointments"],
@@ -37,6 +37,7 @@ _TOPIC_SQL_TASKS: dict[str, list[str]] = {
     "location": ["location"],
     "insurance": ["insurance"],
     "doctors": ["doctors"],
+    "availability": ["availability"],
     "specialties": ["specialties"],
     "services": ["services"],
     "pricing": ["pricing"],
@@ -345,6 +346,8 @@ class PlannerFacts:
     instruction_injection: bool = False
     unknown_doctor_requested: bool = False
     doctor_followup: bool = False
+    doctor_availability_query: bool = False
+    urgent_availability: bool = False
     topic: str | None = None
     confidence_band: str = ""
 
@@ -368,6 +371,8 @@ class PlannerFacts:
             "instruction_injection": self.instruction_injection,
             "unknown_doctor_requested": self.unknown_doctor_requested,
             "doctor_followup": self.doctor_followup,
+            "doctor_availability_query": self.doctor_availability_query,
+            "urgent_availability": self.urgent_availability,
             "topic": self.topic,
             "confidence_band": self.confidence_band,
         }
@@ -395,6 +400,8 @@ def build_planner_facts(
     instruction_injection: bool = False,
     unknown_doctor_requested: bool = False,
     doctor_followup: bool = False,
+    doctor_availability_query: bool = False,
+    urgent_availability: bool = False,
     confidence_band: str = "",
 ) -> PlannerFacts:
     """Assemble runtime facts for the planner. No I/O."""
@@ -419,6 +426,8 @@ def build_planner_facts(
         instruction_injection=instruction_injection,
         unknown_doctor_requested=unknown_doctor_requested,
         doctor_followup=doctor_followup,
+        doctor_availability_query=doctor_availability_query,
+        urgent_availability=urgent_availability,
         topic=topic,
         confidence_band=confidence_band,
     )
@@ -471,7 +480,7 @@ def build_execution_plan(*, nlu: NLUResult, facts: PlannerFacts) -> ExecutionPla
             facts=fact_dict,
         )
 
-    if facts.unknown_doctor_requested:
+    if facts.unknown_doctor_requested and not facts.doctor_availability_query:
         return ExecutionPlan(
             direct=True,
             direct_mode="unknown_doctor_refusal",
@@ -537,6 +546,15 @@ def build_execution_plan(*, nlu: NLUResult, facts: PlannerFacts) -> ExecutionPla
             add_sql(task)
         if intent in _VECTOR_INTENTS:
             add_vector(_vector_task_for_intent(intent, message, topic))
+
+    if facts.doctor_availability_query:
+        add_sql("availability")
+        sql_tasks = [t for t in sql_tasks if t != "hours"]
+        if "doctors" in sql_tasks and "availability" in sql_tasks:
+            sql_tasks = [t for t in sql_tasks if t != "doctors"]
+
+    if facts.urgent_availability and "availability" not in sql_tasks:
+        add_sql("availability")
 
     if facts.specialty_list:
         add_sql("specialties")
