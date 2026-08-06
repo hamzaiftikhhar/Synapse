@@ -502,6 +502,7 @@ class ChatEngine:
             active_booking=active_booking,
             ui_priority=exec_plan.ui_priority.value,
             doctor_resolution=doctor_resolution,
+            exec_plan_booking=exec_plan.booking,
         )
         ui_meta["ui_priority"] = exec_plan.ui_priority.value.upper()
         ui_meta["lane"] = lane.value

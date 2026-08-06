@@ -29,6 +29,7 @@ def build_ui_meta(
     active_booking: dict[str, Any] | None = None,
     ui_priority: str = "optional",
     doctor_resolution: Any | None = None,
+    exec_plan_booking: bool = False,
 ) -> dict[str, Any]:
     """Map SQL handler output + intent to frontend component payloads."""
     meta: dict[str, Any] = {
@@ -42,11 +43,16 @@ def build_ui_meta(
         ),
     }
 
-    # Book appointment / reschedule → embed wizard in chat (Homey-style)
+    # Book appointment / reschedule → embed wizard in chat (Homey-style).
+    # Cancel only gets the wizard when planner.py's `booking` flag is set —
+    # it turns transactional cancel requests into booking=True but leaves
+    # knowledge-only cancel questions (e.g. "what's your cancellation fee")
+    # as booking=False, and the card must follow that same decision or the
+    # composed reply's "How would you like to book?" tail has no card behind it.
     if intent in (
         Intent.BOOK_APPOINTMENT.value,
         Intent.RESCHEDULE_APPOINTMENT.value,
-    ):
+    ) or (intent == Intent.CANCEL_APPOINTMENT.value and exec_plan_booking):
         booking_in_progress = bool(active_booking) and active_booking.get("step") != "confirmed"
 
         suggested, guidance = ([], "")
