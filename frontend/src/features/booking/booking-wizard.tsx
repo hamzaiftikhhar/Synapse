@@ -466,84 +466,39 @@ function SpecialtyStep({
   }, [all, query]);
 
   return (
-    <div className="space-y-4">
-      <div>
-        <p className="text-sm font-semibold text-foreground">
-          {(options.title as string) || "Choose a specialty"}
-        </p>
-        <p className="mt-1 text-xs text-muted-foreground">
-          {(options.subtitle as string) || ""}
-        </p>
-      </div>
+    <div className="space-y-3">
+      <p className="text-sm font-medium text-foreground">
+        {(options.title as string) || "Choose a specialty"}
+      </p>
       <div className="relative">
         <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
         <Input
           value={query}
           onChange={(e) => onQuery(e.target.value)}
           placeholder={
-            (options.search_placeholder as string) ||
-            "Condition, procedure or specialty"
+            (options.search_placeholder as string) || "Search"
           }
-          className="h-10 rounded-xl pl-9"
+          className="h-9 rounded-lg pl-9 text-sm"
         />
       </div>
-      {suggested.length && !query ? (
-        <div>
-          <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-            Suggested for you
-          </p>
-          <ul className="divide-y divide-border rounded-xl border border-border">
-            {suggested.map((s) => (
-              <li key={s.id}>
-                <button
-                  type="button"
-                  onClick={() => onSelect(s)}
-                  className="flex w-full flex-col items-start px-3 py-2.5 text-left transition-colors hover:bg-accent/60"
-                >
-                  <span className="text-sm font-medium text-foreground">
-                    {s.plain_label || s.name}
-                  </span>
-                  {s.description ? (
-                    <span className="line-clamp-1 text-xs text-muted-foreground">
-                      {s.description}
-                    </span>
-                  ) : null}
-                </button>
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-      <div>
-        <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-          {query ? "Results" : "All specialties"}
-        </p>
-        <ul className="divide-y divide-border rounded-xl border border-border">
-          {filtered.map((s) => (
-            <li key={s.id}>
-              <button
-                type="button"
-                onClick={() => onSelect(s)}
-                className="flex w-full items-center justify-between px-3 py-2.5 text-left transition-colors hover:bg-accent/60"
-              >
-                <span className="text-sm text-foreground">
-                  {s.plain_label || s.name}
-                </span>
-                {typeof s.doctor_count === "number" ? (
-                  <span className="text-[11px] text-muted-foreground">
-                    {s.doctor_count} doctors
-                  </span>
-                ) : null}
-              </button>
-            </li>
-          ))}
-          {!filtered.length ? (
-            <li className="px-3 py-4 text-center text-xs text-muted-foreground">
-              No matching specialties
-            </li>
-          ) : null}
-        </ul>
-      </div>
+      <ul className="divide-y divide-border rounded-lg border border-border max-h-48 overflow-y-auto">
+        {(query ? filtered : suggested.length ? suggested : filtered).map((s) => (
+          <li key={s.id}>
+            <button
+              type="button"
+              onClick={() => onSelect(s)}
+              className="flex w-full items-center justify-between px-3 py-2.5 text-left text-sm transition-colors hover:bg-accent/60"
+            >
+              <span>{s.plain_label || s.name}</span>
+            </button>
+          </li>
+        ))}
+        {!filtered.length && query ? (
+          <li className="px-3 py-4 text-center text-xs text-muted-foreground">
+            No matches
+          </li>
+        ) : null}
+      </ul>
     </div>
   );
 }
