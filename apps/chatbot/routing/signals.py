@@ -198,6 +198,47 @@ _URGENT_AVAILABILITY_RE = re.compile(
     re.I,
 )
 
+# Canonical "the patient has committed enough detail to skip discovery and go
+# straight into doctor/slot resolution" phrase set — the single source of
+# truth shared by nlu/rules.py's post-LLM fallback tier and engine.py's
+# booking-commit check. Distinct from is_transactional_booking() above: that
+# answers "is this about booking at all"; this answers the narrower "is it
+# specific enough to skip straight past discovery UI."
+BOOKING_COMMIT_EXACT = frozenset(
+    {
+        "start booking",
+        "book appointment",
+        "book an appointment",
+        "i would like to book an appointment",
+        "schedule an appointment",
+        "i wanna book something",
+    }
+)
+
+_BOOKING_COMMIT_WITH_RE = re.compile(r"(book|schedule).{0,40}(with\s+dr\.?|with\s+[a-z])", re.I)
+_GENERIC_DOCTOR_RE = re.compile(
+    r"\b(good|best|a|the|some)\s+doctor\b", re.I
+)
+
+
+def is_booking_commit(message: str, *, doctor_name: Any = None) -> bool:
+    """True when the patient has given enough specificity (exact commit
+    phrase, or a named doctor + booking verb) to skip discovery and go
+    straight to doctor/slot resolution."""
+    text = (message or "").lower().strip()
+    if not text:
+        return False
+    if text in BOOKING_COMMIT_EXACT or "start booking" in text:
+        return True
+
+    if doctor_name and any(k in text for k in ("book", "schedule", "appointment")):
+        return True
+
+    if _GENERIC_DOCTOR_RE.search(text):
+        return False
+
+    return bool(_BOOKING_COMMIT_WITH_RE.search(text))
+
 _PHATIC_FAREWELL_RE = re.compile(
     r"^\s*(?:(?:hey|hi|hello|ok|okay|alright|well)\s+)*"
     r"(?:bye|goodbye|good\s*bye|see\s+y(?:a|ou)|take\s+care|thanks?\s+bye|"

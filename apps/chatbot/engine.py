@@ -141,6 +141,7 @@ class ChatEngine:
         )
 
         from apps.chatbot.routing.signals import (
+            is_booking_commit,
             is_doctor_availability_query,
             is_service_list_query,
             is_specialty_list_query,
@@ -234,7 +235,9 @@ class ChatEngine:
         doctor_availability_query = is_doctor_availability_query(message)
         urgent_availability = is_urgent_availability_request(message)
 
-        booking_commit = self._is_booking_commit(message, nlu_result)
+        booking_commit = is_booking_commit(
+            message, doctor_name=getattr(nlu_result.entities, "doctor_name", None)
+        )
         knowledge_q = looks_like_knowledge_question(message)
         is_booking_intent = (
             nlu_result.intent
@@ -1233,34 +1236,6 @@ class ChatEngine:
                 return True
             return doctor_resolution.status == "unknown"
         return self._resolve_doctor_from_message(clinic, message) is None
-
-    def _is_booking_commit(self, message: str, nlu: Any) -> bool:
-        import re
-
-        text = (message or "").lower().strip()
-        if text in {
-            "start booking",
-            "book appointment",
-            "book an appointment",
-            "i would like to book an appointment",
-        }:
-            return True
-        if "start booking" in text:
-            return True
-
-        doctor_names = getattr(getattr(nlu, "entities", None), "doctor_name", None)
-        if doctor_names and any(k in text for k in ("book", "schedule", "appointment")):
-            return True
-
-        generic = (
-            "good doctor", "best doctor", "a doctor", "the doctor", "some doctor",
-        )
-        if any(g in text for g in generic):
-            return False
-
-        if re.search(r"(book|schedule).{0,40}(with\s+dr\.?|with\s+[a-z])", text):
-            return True
-        return False
 
     def _is_doctor_quality_followup(self, message: str) -> bool:
         text = (message or "").lower()

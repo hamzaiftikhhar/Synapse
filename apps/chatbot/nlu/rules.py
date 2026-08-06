@@ -18,6 +18,7 @@ from apps.chatbot.nlu.entity_extract import (
     merge_entities,
 )
 from apps.chatbot.nlu.schemas import Intent
+from apps.chatbot.routing.signals import BOOKING_COMMIT_EXACT as _BOOKING_COMMIT_EXACT
 
 _GREETING_EXACT = frozenset(
     {
@@ -86,16 +87,6 @@ _OFF_TOPIC_EXACT = frozenset(
     }
 )
 
-_BOOKING_COMMIT_EXACT = frozenset(
-    {
-        "start booking",
-        "book appointment",
-        "book an appointment",
-        "i would like to book an appointment",
-        "schedule an appointment",
-        "i wanna book something",
-    }
-)
 
 _OFF_TOPIC_ABUSE_RE = re.compile(
     r"\b(fuck|shit|damn|asshole|bitch)\b",
