@@ -51,6 +51,35 @@ _TOPIC_VECTOR_TASKS: dict[str, list[str]] = {
     "general_faq": ["general_faq"],
 }
 
+# Domains where an untrusted secondary signal (topic, or a *secondary* entry
+# in secondary_intents — never the trusted primary nlu.intent) needs a real
+# extracted entity to back it up before it's allowed to attach a live SQL
+# task. The classifier prompt asks for "Compound → secondary_intents", but on
+# low-signal/gibberish input it sometimes still fills topic/secondary_intents
+# with a plausible-sounding guess that has no textual grounding — e.g. random
+# text confidently tagged topic="insurance" with no insurance_provider entity
+# extracted, which used to attach a real insurance SQL task + card. Domains
+# with no natural entity counterpart (hours/location/pricing) are unaffected.
+_TOPIC_ENTITY_FIELD: dict[str, str] = {
+    "insurance": "insurance_provider",
+    "doctors": "doctor_name",
+    "services": "service",
+}
+_INTENT_TOPIC_DOMAIN: dict[Intent, str] = {
+    Intent.INSURANCE_ACCEPTED: "insurance",
+    Intent.INSURANCE_VERIFICATION: "insurance",
+    Intent.DOCTOR_SEARCH: "doctors",
+    Intent.SERVICES_OFFERED: "services",
+}
+
+
+def _entity_corroborates(domain: str | None, nlu: NLUResult) -> bool:
+    field = _TOPIC_ENTITY_FIELD.get(domain or "")
+    if not field:
+        return True
+    return bool(getattr(nlu.entities, field, None))
+
+
 _VECTOR_INTENTS = frozenset(
     {
         Intent.FAQ,
@@ -536,12 +565,19 @@ def build_execution_plan(*, nlu: NLUResult, facts: PlannerFacts) -> ExecutionPla
 
     # Topic from LLM (semantic) or message heuristics
     topic = facts.topic
-    if topic in _TOPIC_SQL_TASKS:
+    if topic in _TOPIC_SQL_TASKS and _entity_corroborates(topic, nlu):
         add_sql(*_TOPIC_SQL_TASKS[topic])
     if topic in _TOPIC_VECTOR_TASKS:
         add_vector(*_TOPIC_VECTOR_TASKS[topic])
 
-    for intent in intents:
+    for position, intent in enumerate(intents):
+        # Primary intent (position 0) is always trusted; secondary_intents
+        # need entity corroboration for domains that have one (see
+        # _entity_corroborates docstring above).
+        if position > 0 and not _entity_corroborates(
+            _INTENT_TOPIC_DOMAIN.get(intent), nlu
+        ):
+            continue
         for task in _INTENT_SQL_TASKS.get(intent, []):
             add_sql(task)
         if intent in _VECTOR_INTENTS:
@@ -590,11 +626,11 @@ def build_execution_plan(*, nlu: NLUResult, facts: PlannerFacts) -> ExecutionPla
         }:
             sql_tasks = [t for t in sql_tasks if t not in {"pricing", "services"}]
 
-    # Insurance entity on a booking/compound turn → insurance SQL + billing docs
-    if getattr(nlu.entities, "insurance_provider", None) or any(
-        i in {Intent.INSURANCE_ACCEPTED, Intent.INSURANCE_VERIFICATION}
-        for i in intents
-    ):
+    # Insurance entity on a booking/compound turn → insurance SQL + billing docs.
+    # "insurance" in sql_tasks already covers the primary/corroborated-secondary
+    # intent case via the loop above — this adds the entity-only trigger (e.g. a
+    # booking turn that just names a plan by name without an insurance intent).
+    if getattr(nlu.entities, "insurance_provider", None) or "insurance" in sql_tasks:
         add_sql("insurance")
         if _BILLING_POLICY_RE.search(message) or facts.is_booking_intent:
             if _BILLING_POLICY_RE.search(message):

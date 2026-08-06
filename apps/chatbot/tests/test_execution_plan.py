@@ -68,6 +68,51 @@ class ExecutionPlanTests(SimpleTestCase):
         self.assertTrue(plan.use_response_llm)
         self.assertEqual(plan.primary_lane, Lane.BOOKING)
 
+    def test_secondary_insurance_topic_without_entity_is_not_trusted(self):
+        """Regression: live-verifying the "Clarification flow" case found that
+        gibberish input ("banana purple seven") gets classified intent=faq
+        with topic="insurance" and secondary_intents=["insurance_verification"]
+        hallucinated by the small NLU classifier — no insurance_provider entity
+        was ever extracted, because there was nothing in the message to extract.
+        That used to still attach a real insurance SQL task (and render an
+        insurance card) on a reply whose own text says "could you clarify your
+        question?". Only the primary intent should be trusted unconditionally;
+        a topic or secondary intent needs a real entity to back it up."""
+        nlu = parse_nlu_payload(
+            {
+                "intent": "faq",
+                "secondary_intents": ["insurance_verification"],
+                "confidence": 0.85,
+                "topic": "insurance",
+                "entities": {},
+            }
+        )
+        msg = "banana purple seven"
+        plan = build_execution_plan(
+            nlu=nlu,
+            facts=_facts(nlu=nlu, message=msg, knowledge_q=False),
+        )
+        self.assertNotIn("insurance", plan.sql_tasks)
+
+    def test_primary_insurance_intent_stays_trusted_without_entity(self):
+        """The primary intent is never gated — "do you accept Delta Dental?"
+        with intent=insurance_accepted as the *primary* classification must
+        still get the insurance SQL task even before any entity is resolved
+        downstream."""
+        nlu = parse_nlu_payload(
+            {
+                "intent": "insurance_accepted",
+                "confidence": 0.95,
+                "entities": {},
+            }
+        )
+        msg = "do you accept Delta Dental?"
+        plan = build_execution_plan(
+            nlu=nlu,
+            facts=_facts(nlu=nlu, message=msg, knowledge_q=False),
+        )
+        self.assertIn("insurance", plan.sql_tasks)
+
     def test_cancel_fee_is_vector_not_pricing_sql(self):
         nlu = parse_nlu_payload(
             {
