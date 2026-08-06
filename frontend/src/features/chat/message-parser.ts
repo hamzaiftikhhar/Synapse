@@ -9,10 +9,21 @@ export function uid(prefix = "m") {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
+export type BookingUpdate = {
+  bookingId: string;
+  patch: Record<string, unknown>;
+};
+
 export type ParsedChatResponse = {
   messages: ChatMessage[];
   /** Contextual chips for the latest assistant turn (Homey-style, under the reply). */
   contextualActions: BackendAction[];
+  /**
+   * Present when a booking is already in progress (backend set
+   * `booking.launch=false` + a `booking_id`) — merge into the existing
+   * booking_wizard message instead of minting a new one.
+   */
+  bookingUpdate?: BookingUpdate | null;
 };
 
 function mapMetaMessage(
@@ -49,7 +60,9 @@ function appendMetaComponents(
   meta: Record<string, unknown>,
   role: ChatMessage["role"],
   now: string
-) {
+): BookingUpdate | null {
+  let bookingUpdate: BookingUpdate | null = null;
+
   if (Array.isArray(meta.cards) && meta.cards.length) {
     messages.push({
       id: uid("cards"),
@@ -60,7 +73,10 @@ function appendMetaComponents(
     });
   }
 
-  // Homey-style: embed wizard when backend sets booking.launch
+  // Homey-style: embed wizard when backend sets booking.launch. When a
+  // booking is already in progress (launch:false + booking_id), don't mint a
+  // second wizard card — merge into the existing one instead (fixes the
+  // restart-on-every-turn bug).
   if (meta.booking && typeof meta.booking === "object") {
     const booking = meta.booking as Record<string, unknown>;
     if (booking.launch) {
@@ -71,6 +87,8 @@ function appendMetaComponents(
         createdAt: now,
         payload: booking,
       });
+    } else if (typeof booking.booking_id === "string" && booking.booking_id) {
+      bookingUpdate = { bookingId: booking.booking_id, patch: booking };
     } else {
       messages.push({
         id: uid("booking"),
@@ -129,7 +147,11 @@ function appendMetaComponents(
     });
   }
 
-  if (Array.isArray(meta.specialties) && meta.specialties.length) {
+  const priority = String(meta.ui_priority || "").toUpperCase();
+  const suppressExtra =
+    priority === "NONE" || priority === "BOOKING" || priority === "EMERGENCY";
+
+  if (Array.isArray(meta.specialties) && meta.specialties.length && !suppressExtra) {
     // Prefer inline wizard over duplicating specialty cards when embedding
     const booking = meta.booking as Record<string, unknown> | undefined;
     if (!(booking && booking.launch)) {
@@ -193,6 +215,8 @@ function appendMetaComponents(
       payload: { replies: meta.quick_replies },
     });
   }
+
+  return bookingUpdate;
 }
 
 function attachActionsToLastAssistantMessage(
@@ -250,7 +274,7 @@ export function parseChatResponse(
     });
   }
 
-  appendMetaComponents(messages, meta, role, now);
+  const bookingUpdate = appendMetaComponents(messages, meta, role, now);
   attachActionsToLastAssistantMessage(messages, contextualActions);
 
   if (res.safety_message) {
@@ -263,7 +287,7 @@ export function parseChatResponse(
     });
   }
 
-  return { messages, contextualActions };
+  return { messages, contextualActions, bookingUpdate };
 }
 
 export function userTextMessage(content: string): ChatMessage {

@@ -45,6 +45,7 @@ class BookingSession:
     appointment_id: str | None = None
     suggested_specialty_ids: list[str] = field(default_factory=list)
     show_all_times: bool = False
+    time_hint: str | None = None  # ISO time floor, e.g. "17:00:00" — filters TIME step options
     created_at: str = ""
     updated_at: str = ""
 

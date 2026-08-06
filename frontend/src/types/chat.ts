@@ -37,6 +37,7 @@ export type DoctorCardData = {
   name: string;
   title?: string;
   bio?: string;
+  photo_url?: string;
   languages?: string[];
   accepting?: boolean;
   /** Message to send when the user selects this doctor (from backend). */
@@ -49,6 +50,8 @@ export type InsuranceCardData = {
   name: string;
   plan?: string;
   notes?: string;
+  is_accepted?: boolean;
+  select_message?: string;
 };
 
 export type ServiceCardData = {
@@ -57,6 +60,8 @@ export type ServiceCardData = {
   description?: string;
   duration_min?: number;
   price_cents?: number | null;
+  category?: string;
+  select_message?: string;
 };
 
 export type TimeSlotData = {

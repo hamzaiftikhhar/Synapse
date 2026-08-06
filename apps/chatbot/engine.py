@@ -143,7 +143,8 @@ class ChatEngine:
         )
         from apps.chatbot.nlu.decision import EMERGENCY_SAFETY_MESSAGE
 
-        service_hit = bool(match_services_in_message(message, service_catalog))
+        matched_services = match_services_in_message(message, service_catalog)
+        service_hit = bool(matched_services)
         knowledge_q = looks_like_knowledge_question(message)
         conf_policy = apply_confidence_policy(
             nlu_result,
@@ -301,6 +302,22 @@ class ChatEngine:
                     resolved = self._resolve_doctor_from_message(clinic, message)
                     if resolved:
                         last_doctor = resolved
+                # Known service (e.g. "Botox") -> specialty, grounded in real
+                # Doctor<->Service<->Specialty relations. Runs even for
+                # aesthetic requests (previously only ever a negative signal
+                # that suppressed specialty discovery above). Never overrides
+                # a specialty the patient already pinned this session.
+                if matched_services and not last_specialty:
+                    from apps.chatbot.nlu.resolvers import resolve_specialty_for_service
+
+                    resolved_specialty_id = resolve_specialty_for_service(
+                        clinic, matched_services[0].get("id")
+                    )
+                    if resolved_specialty_id:
+                        last_specialty = {
+                            "id": resolved_specialty_id,
+                            "name": self._specialty_display_name(clinic, resolved_specialty_id),
+                        }
 
             # Compose response from executed tasks
             response_text = self._compose_from_plan(
@@ -376,6 +393,8 @@ class ChatEngine:
 
         from apps.chatbot.ui_meta import build_ui_meta
 
+        active_booking = ctx.get("booking") if isinstance(ctx.get("booking"), dict) else None
+
         ui_meta = build_ui_meta(
             clinic=clinic,
             intent=nlu_result.intent.value,
@@ -387,7 +406,10 @@ class ChatEngine:
             booking_commit=booking_commit and is_booking_intent,
             last_doctor=last_doctor,
             last_specialty=last_specialty,
+            active_booking=active_booking,
+            ui_priority=exec_plan.ui_priority.value,
         )
+        ui_meta["ui_priority"] = exec_plan.ui_priority.value.upper()
         ui_meta["lane"] = lane.value
         ui_meta["routing"] = confidence_meta(conf_policy)
         ui_meta["planner"] = exec_plan.to_dict()
@@ -408,7 +430,13 @@ class ChatEngine:
         if instruction_injection:
             ui_meta["prompt_injection_refused"] = True
 
-        if (soft_medical or (is_booking_intent and not booking_commit)) and suggested:
+        # Do not append specialty chips when booking wizard is already embedded
+        if (
+            is_booking_intent
+            and not booking_commit
+            and suggested
+            and not ui_meta.get("booking", {}).get("launch")
+        ):
             ui_meta.setdefault("specialties", [])
             if not ui_meta["specialties"]:
                 ui_meta["specialties"] = [
@@ -805,29 +833,11 @@ class ChatEngine:
         from apps.chatbot.sql_tool import format_sql_results
 
         booking_text = ""
-        aesthetic = self._looks_like_aesthetic_request(message)
         if exec_plan.booking:
             if booking_commit:
-                booking_text = (
-                    "Sure — I'll help you schedule. Choose your preferences below "
-                    "and we'll lock in a time."
-                )
+                booking_text = "Choose a time below."
             else:
-                bits = []
-                if guidance and not aesthetic:
-                    bits.append(guidance)
-                if suggested and not aesthetic:
-                    names = ", ".join(
-                        (s.get("plain_label") or s.get("name") or "")
-                        for s in suggested[:3]
-                    )
-                    bits.append(
-                        f"Based on what you shared, these areas may help: {names}."
-                    )
-                bits.append(
-                    "Use the booking form below to pick a specialty, doctor, and time."
-                )
-                booking_text = " ".join(bits)
+                booking_text = "Use the form below to finish booking."
 
         if exec_plan.direct_mode == "medical_advice_refusal":
             return self._medical_advice_refusal_reply()
@@ -977,6 +987,14 @@ class ChatEngine:
         if sql_rows:
             return format_sql_results(sql_rows)
         return empty_rag_reply(clinic)
+
+    def _specialty_display_name(self, clinic: Any, specialty_id: str) -> str:
+        try:
+            from apps.specialties.models import Specialty
+
+            return Specialty.objects.get(clinic=clinic, id=specialty_id).name
+        except Exception:
+            return ""
 
     def _looks_like_aesthetic_request(self, message: str) -> bool:
         import re
@@ -1173,34 +1191,13 @@ class ChatEngine:
     def _resolve_doctor_from_message(
         self, clinic: Any, message: str
     ) -> dict[str, Any] | None:
-        text = (message or "").strip()
-        if not text:
-            return None
-        try:
-            from apps.doctors.models import Doctor
+        from apps.chatbot.nlu.resolvers import resolve_doctor_from_text
 
-            qs = Doctor.objects.filter(
-                clinic=clinic, is_deleted=False, is_active=True
-            )
-            for d in qs[:25]:
-                if d.full_name and d.full_name.lower() in text.lower():
-                    return {
-                        "id": str(d.id),
-                        "name": d.full_name,
-                        "title": d.title or "",
-                        "bio": (d.bio or "")[:240],
-                    }
-                parts = d.full_name.replace("Dr.", "").strip().split()
-                if parts and parts[-1].lower() in text.lower() and len(parts[-1]) > 3:
-                    return {
-                        "id": str(d.id),
-                        "name": d.full_name,
-                        "title": d.title or "",
-                        "bio": (d.bio or "")[:240],
-                    }
+        try:
+            return resolve_doctor_from_text(clinic, message)
         except Exception:
             logger.exception("Doctor resolve from message failed")
-        return None
+            return None
 
     def _update_memory(
         self,

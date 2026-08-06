@@ -10,6 +10,7 @@ export type BookingInlineCardProps = {
   active?: boolean;
   onConfirmed?: (payload: BookingStepPayload) => void;
   onDismiss?: () => void;
+  onStarted?: (bookingId: string) => void;
 };
 
 export function BookingInlineCard({
@@ -18,6 +19,7 @@ export function BookingInlineCard({
   active = true,
   onConfirmed,
   onDismiss,
+  onStarted,
 }: BookingInlineCardProps) {
   const reason =
     (typeof payload?.reason === "string" && payload.reason) ||
@@ -53,6 +55,7 @@ export function BookingInlineCard({
         active={active}
         onConfirmed={onConfirmed}
         onDismiss={onDismiss}
+        onStarted={onStarted}
       />
     </div>
   );

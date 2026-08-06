@@ -59,23 +59,17 @@ PATH_TO_MODE: dict[str, str] = {
 PATH_OPTIONS = [
     {
         "id": "first_available",
-        "emoji": "🏥",
-        "title": "First Available Appointment",
-        "description": "Book the soonest open slot — the clinic assigns a doctor.",
+        "title": "First available",
         "recommended": True,
     },
     {
         "id": "help_choose",
-        "emoji": "🩺",
-        "title": "Help Me Choose a Doctor",
-        "description": "Pick a specialty (or symptom area), then a doctor.",
+        "title": "Choose specialty",
         "recommended": False,
     },
     {
         "id": "know_doctor",
-        "emoji": "👨‍⚕️",
-        "title": "I Have a Doctor in Mind",
-        "description": "Skip specialty and choose your doctor directly.",
+        "title": "I know my doctor",
         "recommended": False,
     },
 ]

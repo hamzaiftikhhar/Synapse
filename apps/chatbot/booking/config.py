@@ -13,10 +13,16 @@ DEFAULT_BOOKING_CONFIG: dict[str, Any] = {
     "require_auth": True,
     "verification_mode": "sms",  # sms | email | sms_or_email | none
     "max_slots_preview": 5,
-    "date_horizon_days": 14,
+    "date_horizon_days": 30,
     "slot_hold_minutes": 10,
     "show_reason": True,
     "slot_duration_min": 30,
+    # Calendar density thresholds — ratio of remaining/capacity below which a
+    # day is "few" (yellow) or "almost_full" (red); above "few" is "plenty" (green).
+    "density_thresholds": {"few": 0.5, "almost_full": 0.15},
+    # How many days ahead to scan for the PATH step's "Earliest Available" hero
+    # slot — intentionally short, not the full booking horizon.
+    "hero_horizon_days": 3,
 }
 
 VALID_MODES = frozenset(

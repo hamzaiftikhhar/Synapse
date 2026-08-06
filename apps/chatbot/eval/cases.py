@@ -448,6 +448,103 @@ def build_eval_cases(*, target: int = 520) -> list[EvalCase]:
         limit=8,
     )
 
+    # ── Adversarial: Gen-Z / regional slang, typos, compound asks ──────────
+    # expected_lane/acceptable_lanes below are the ACTUAL observed lanes from
+    # running this battery (apps.chatbot.eval.runner.evaluate_routing_case)
+    # against each phrase individually, not guessed — see the class docstring
+    # note in test_eval_battery.py. Most resolve to `clarify`: this documents
+    # real, measured robustness gaps against casual phrasing (no "uhc"
+    # insurance alias, "squeeze me in"/"need sumthing" not matching the
+    # transactional-booking regex, "tmrw"/"b4" not normalized, etc.) rather
+    # than asserting these are handled correctly. The one hard invariant —
+    # none of this casual/illness phrasing may ever resolve to the
+    # safety-critical `emergency` lane — is enforced separately in
+    # test_eval_battery.py's test_no_adversarial_case_becomes_emergency.
+    # Each phrase gets its own add() call (rather than being grouped with a
+    # shared `limit`) so _noise()'s prefix/suffix expansion can't silently
+    # truncate a later phrase in the list out of the battery entirely.
+    add(
+        "adversarial_booking_slang_squeeze",
+        "clarify",
+        ["yo can yall squeeze me in today"],
+        tags=("adversarial", "genz"),
+        limit=4,
+    )
+    add(
+        "adversarial_booking_slang_after_work",
+        "clarify",
+        ["need sumthing after work"],
+        tags=("adversarial", "genz"),
+        limit=4,
+    )
+    add(
+        "adversarial_booking_slang_tmrw",
+        "clarify",
+        ["got anything tmrw"],
+        tags=("adversarial", "genz"),
+        limit=4,
+    )
+    add(
+        "adversarial_insurance_slang_uhc",
+        "clarify",
+        ["do yall take uhc"],
+        tags=("adversarial", "genz"),
+        limit=4,
+    )
+    add(
+        "adversarial_medical_slang_accutane",
+        "clarify",
+        ["im on accutane rn"],
+        tags=("adversarial", "genz"),
+        limit=8,
+    )
+    add(
+        "adversarial_medical_slang_pediatric",
+        "clarify",
+        ["my kid got sick"],
+        tags=("adversarial", "genz"),
+        limit=4,
+    )
+    add(
+        "adversarial_pricing_slang_botox",
+        "sql_fast",
+        ["botox b4 wedding?"],
+        tags=("adversarial", "genz"),
+        limit=4,
+    )
+    add(
+        "adversarial_appointment_lookup_slang",
+        "clarify",
+        ["cant remembr if i booked"],
+        tags=("adversarial", "genz"),
+        limit=4,
+    )
+    add(
+        "adversarial_doctor_search_slang_filler",
+        "sql_fast",
+        ["who does filler"],
+        tags=("adversarial", "genz"),
+        services=(
+            *_DEFAULT_SERVICES,
+            {"id": "s7", "name": "Dermal Filler Injections"},
+        ),
+        limit=4,
+    )
+    add(
+        "adversarial_availability_slang_cooked",
+        "clarify",
+        ["is friday cooked?"],
+        tags=("adversarial", "genz"),
+        limit=4,
+    )
+    add(
+        "adversarial_compound_insurance_booking",
+        "clarify",
+        ["do you take Aetna and can I book with Dr. Lee friday"],
+        tags=("adversarial", "compound"),
+        limit=4,
+    )
+
     # Pad to target with systematic paraphrases of core SQL intents
     if len(cases) < target:
         fillers = [

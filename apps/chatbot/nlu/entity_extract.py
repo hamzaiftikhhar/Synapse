@@ -5,12 +5,18 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from apps.chatbot.nlu.emergency_patterns import SYMPTOM_CUE_RE as _SYMPTOM_CUE_RE
+
 _DATE_PATTERNS = [
     r"\b(?:next\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
     r"\btoday\b",
     r"\btomorrow\b",
     r"\bnext week\b",
     r"\bthis week\b",
+    r"\bsame\s+day\b",
+    r"\basap\b",
+    r"\bas\s+soon\s+as\s+possible\b",
+    r"\bnext\s+available\b",
 ]
 
 _TIME_PATTERNS = [
@@ -19,6 +25,8 @@ _TIME_PATTERNS = [
     r"\bevening\b",
     r"\bnoon\b",
     r"\bnight\b",
+    r"\bafter\s+work\b",
+    r"\bafter\s+\d{1,2}\s*(?:am|pm)?\b",
 ]
 
 _SPECIALTIES = [
@@ -105,27 +113,6 @@ _EMERGENCY_SYMPTOMS = [
     "choking",
     "suicidal",
 ]
-
-_SYMPTOM_CUE_RE = re.compile(
-    r"\b("
-    r"chest (?:pain|hurt|hurts|pressure|tight(?:ness)?)|"
-    r"(?:tight|crushing) (?:pressure|pain) in (?:my |his |her )?chest|"
-    r"pressure in (?:my |his |her )?chest|"
-    r"pain (?:in|radiat\w*).{0,40}\barm|"
-    r"radiat\w*.{0,30}\b(?:left )?arm|"
-    r"can'?t breathe|cannot breathe|shortness of breath|"
-    r"heavy pressure on (?:my |his |her )?chest|"
-    r"hard to swallow|trouble swallowing|"
-    r"tongue (?:feels huge|swelling|swollen)|"
-    r"lips? (?:are )?tingling|"
-    r"dizzy and faint|faint and dizzy|"
-    r"heart attack|stroke|suicid|"
-    r"severe bleeding|unconscious|choking|"
-    r"numb(?:ness)? (?:in )?(?:my |left )?arm|"
-    r"left arm numb"
-    r")\b",
-    re.I,
-)
 
 _DOCTOR_RE = re.compile(
     r"\b(?:dr\.?|doctor)\s+([A-Za-z][A-Za-z'-]{1,30})(?:\s+([A-Za-z][A-Za-z'-]{1,30}))?",

@@ -33,6 +33,7 @@ export function MessageRenderer({
   bookingWizardActive,
   onBookingConfirmed,
   onBookingDismiss,
+  onBookingStarted,
   typingHint,
 }: {
   message: ChatMessage;
@@ -44,6 +45,7 @@ export function MessageRenderer({
   bookingWizardActive?: boolean;
   onBookingConfirmed?: (payload: BookingStepPayload) => void;
   onBookingDismiss?: (messageId: string) => void;
+  onBookingStarted?: (messageId: string, bookingId: string) => void;
   /** Last user message — used for calm typing status copy. */
   typingHint?: string;
 }) {
@@ -87,6 +89,7 @@ export function MessageRenderer({
         <InsuranceCards
           plans={(message.payload?.plans as never[]) || []}
           onAction={onAction}
+          clinicSlug={clinicSlug}
         />
       );
       break;
@@ -121,6 +124,7 @@ export function MessageRenderer({
           active={bookingWizardActive !== false}
           onConfirmed={onBookingConfirmed}
           onDismiss={() => onBookingDismiss?.(message.id)}
+          onStarted={(bookingId) => onBookingStarted?.(message.id, bookingId)}
         />
       ) : null;
       break;

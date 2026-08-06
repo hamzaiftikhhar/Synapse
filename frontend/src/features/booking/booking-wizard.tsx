@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Loader2, Search, X } from "lucide-react";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -9,6 +10,8 @@ import { cn } from "@/lib/utils";
 import { getApiErrorMessage } from "@/lib/api/client";
 import { bookingService } from "@/services";
 import type {
+  BookingDateDensity,
+  BookingDateOption,
   BookingDoctor,
   BookingSlot,
   BookingSpecialty,
@@ -27,6 +30,8 @@ export type BookingWizardProps = {
   active?: boolean;
   onConfirmed?: (payload: BookingStepPayload) => void;
   onDismiss?: () => void;
+  /** Fired after every successful start() with the (stable, resumed) booking_id. */
+  onStarted?: (bookingId: string) => void;
   className?: string;
 };
 
@@ -40,6 +45,7 @@ export function BookingWizard({
   active = true,
   onConfirmed,
   onDismiss,
+  onStarted,
   className,
 }: BookingWizardProps) {
   const { sessionToken, setSessionToken, config } = useWidget();
@@ -89,6 +95,7 @@ export function BookingWizard({
       syncToken(payload);
       setState(payload);
       setStarted(true);
+      if (payload.booking_id) onStarted?.(payload.booking_id);
     } catch (e) {
       setError(getApiErrorMessage(e));
     } finally {
@@ -103,6 +110,7 @@ export function BookingWizard({
     doctorId,
     doctorName,
     syncToken,
+    onStarted,
   ]);
 
   useEffect(() => {
@@ -110,6 +118,22 @@ export function BookingWizard({
       void start();
     }
   }, [active, clinicSlug, started, start]);
+
+  // Chat resolved a new doctor/specialty for this same booking (e.g. "actually
+  // Dr. Y") — re-call start() so the (now resume-safe) backend updates the
+  // existing draft in place rather than the UI going stale.
+  const prevHints = useRef({ specialtyId, doctorId });
+  useEffect(() => {
+    if (!started) return;
+    if (
+      prevHints.current.specialtyId === specialtyId &&
+      prevHints.current.doctorId === doctorId
+    ) {
+      return;
+    }
+    prevHints.current = { specialtyId, doctorId };
+    void start();
+  }, [started, specialtyId, doctorId, start]);
 
   const runStep = useCallback(
     async (action: string, value: Record<string, unknown> = {}) => {
@@ -126,6 +150,9 @@ export function BookingWizard({
         });
         syncToken(payload);
         setState(payload);
+        if (payload.stale_hero) {
+          setError("That time was just taken — pick another below.");
+        }
         if (payload.step === "confirmed") {
           onConfirmed?.(payload);
         } else if (action === "submit_details" && payload.step === "otp") {
@@ -184,11 +211,7 @@ export function BookingWizard({
       <div className="flex items-start justify-between gap-2 border-b border-border/70 px-3.5 py-3">
         <div className="min-w-0">
           <p className="text-sm font-semibold text-foreground">Book Appointment</p>
-          {step === "path" ? (
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              Who would you like to see?
-            </p>
-          ) : state?.options?.doctor_name || state?.specialty_chip ? (
+          {step !== "path" && (state?.options?.doctor_name || state?.specialty_chip) ? (
             <p className="mt-0.5 text-xs text-muted-foreground">
               {[
                 state.specialty_chip?.name,
@@ -197,7 +220,7 @@ export function BookingWizard({
                 .filter(Boolean)
                 .join(" · ")}
             </p>
-          ) : progress && step !== "confirmed" && (progress.current ?? 0) > 0 ? (
+          ) : progress && step !== "confirmed" && step !== "path" && (progress.current ?? 0) > 0 ? (
             <p className="mt-0.5 text-xs text-muted-foreground">
               Step {progress.current} of {progress.total}
             </p>
@@ -246,8 +269,8 @@ export function BookingWizard({
           </p>
         ) : null}
 
-        {state?.guidance && (step === "specialty" || step === "path") ? (
-          <p className="mb-4 text-sm leading-relaxed text-muted-foreground">
+        {state?.guidance && step === "specialty" ? (
+          <p className="mb-3 text-xs leading-relaxed text-muted-foreground">
             {state.guidance}
           </p>
         ) : null}
@@ -388,82 +411,32 @@ function PathStep({
   const paths =
     (options.paths as {
       id: string;
-      emoji: string;
       title: string;
-      description: string;
       recommended?: boolean;
     }[]) || [];
-  const suggested = (options.suggested as BookingSpecialty[]) || [];
-  const topSuggestion = suggested[0];
 
   return (
-    <div className="space-y-3">
-      <div>
-        <p className="text-sm font-medium text-foreground">
-          {(options.title as string) || "Who would you like to see?"}
-        </p>
-        {options.subtitle ? (
-          <p className="mt-1 text-xs text-muted-foreground">
-            {options.subtitle as string}
-          </p>
-        ) : null}
-      </div>
-
-      {topSuggestion ? (
-        <div className="rounded-[8px] border border-primary/20 bg-primary/[0.04] px-3 py-2.5">
-          <p className="text-xs leading-relaxed text-muted-foreground">
-            Based on what you shared,{" "}
-            <span className="font-medium text-foreground">{topSuggestion.name}</span>{" "}
-            may be a good fit.
-          </p>
-          <button
-            type="button"
-            onClick={() => onSelectPath("help_choose", topSuggestion)}
-            className="mt-2 text-xs font-medium text-primary hover:underline"
-          >
-            Continue with {topSuggestion.name} →
-          </button>
-        </div>
-      ) : null}
-
-      <div className="space-y-2">
-        {paths.map((p) => (
-          <button
-            key={p.id}
-            type="button"
-            onClick={() =>
-              onSelectPath(
-                p.id as "first_available" | "help_choose" | "know_doctor"
-              )
-            }
-            className={cn(
-              "flex w-full items-start gap-3 rounded-[8px] border px-3 py-3 text-left transition-colors",
-              p.recommended
-                ? "border-primary/35 bg-primary/[0.03] hover:bg-primary/[0.06]"
-                : "border-border bg-background hover:bg-muted/40"
-            )}
-          >
-            <span className="text-lg leading-none" aria-hidden>
-              {p.emoji}
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="flex flex-wrap items-center gap-2">
-                <span className="text-sm font-medium text-foreground">
-                  {p.title}
-                </span>
-                {p.recommended ? (
-                  <span className="rounded-[4px] bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary">
-                    Recommended
-                  </span>
-                ) : null}
-              </span>
-              <span className="mt-0.5 block text-xs leading-relaxed text-muted-foreground">
-                {p.description}
-              </span>
-            </span>
-          </button>
-        ))}
-      </div>
+    <div className="space-y-2">
+      <p className="text-sm font-medium text-foreground">
+        {(options.title as string) || "How would you like to book?"}
+      </p>
+      {paths.map((p) => (
+        <button
+          key={p.id}
+          type="button"
+          onClick={() =>
+            onSelectPath(p.id as "first_available" | "help_choose" | "know_doctor")
+          }
+          className={cn(
+            "flex w-full items-center rounded-lg border px-3 py-3 text-left text-sm font-medium transition-colors",
+            p.recommended
+              ? "border-primary/35 bg-primary/[0.04] hover:bg-primary/[0.08]"
+              : "border-border bg-background hover:bg-muted/40"
+          )}
+        >
+          {p.title}
+        </button>
+      ))}
     </div>
   );
 }
@@ -575,6 +548,12 @@ function SpecialtyStep({
   );
 }
 
+function doctorInitials(name: string): string {
+  const parts = name.replace(/^dr\.?\s*/i, "").trim().split(/\s+/);
+  const letters = parts.slice(0, 2).map((p) => p[0]?.toUpperCase() || "");
+  return letters.join("") || "?";
+}
+
 function DoctorStep({
   options,
   onSelect,
@@ -588,37 +567,37 @@ function DoctorStep({
       <p className="text-sm font-semibold text-foreground">
         {(options.title as string) || "Choose a doctor"}
       </p>
-      <div className="space-y-2">
+      <div className="space-y-1.5">
         {doctors.map((d) => (
           <button
             key={d.id}
             type="button"
             onClick={() => onSelect(d)}
-            className="flex w-full flex-col gap-1 rounded-xl border border-border bg-white p-3 text-left transition-[border-color,box-shadow] hover:border-primary/40 hover:shadow-sm"
+            className="flex w-full items-center gap-3 rounded-xl border border-border bg-white px-3 py-2 text-left transition-[border-color,box-shadow] hover:border-primary/40 hover:shadow-sm"
           >
-            <div className="flex items-start justify-between gap-2">
-              <div>
-                <p className="text-sm font-semibold text-foreground">{d.name}</p>
-                <p className="text-xs text-muted-foreground">
-                  {(d.specialties || []).slice(0, 2).join(" · ") ||
-                    d.title ||
-                    "Physician"}
-                </p>
-              </div>
-              <span className="shrink-0 rounded-full bg-accent px-2 py-0.5 text-[10px] font-medium text-primary">
-                Select
+            <Avatar>
+              {d.photo_url ? <AvatarImage src={d.photo_url} alt={d.name} /> : null}
+              <AvatarFallback>{doctorInitials(d.name)}</AvatarFallback>
+            </Avatar>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-sm font-semibold text-foreground">
+                {d.name}
               </span>
-            </div>
-            {d.next_available ? (
-              <p className="text-[11px] text-muted-foreground">
-                Next available:{" "}
-                <span className="font-medium text-foreground">
-                  {d.next_available.label ||
-                    d.next_available.time ||
-                    d.next_available.start}
-                </span>
-              </p>
-            ) : null}
+              <span className="block truncate text-xs text-muted-foreground">
+                {[
+                  (d.specialties || [])[0] || d.title || "Physician",
+                  d.next_available?.label || d.next_available?.time,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </span>
+            </span>
+            {/* Whole row is the click target — a real nested <button> here
+                would be invalid HTML, so this is a styled, non-interactive
+                pill (upgraded from the old passive "Select" pill). */}
+            <span className="shrink-0 rounded-full bg-primary px-3 py-1 text-[11px] font-medium text-primary-foreground">
+              Reserve
+            </span>
           </button>
         ))}
         {!doctors.length ? (
@@ -631,6 +610,24 @@ function DoctorStep({
   );
 }
 
+const DENSITY_CELL_STYLES: Record<BookingDateDensity, string> = {
+  plenty:
+    "border-emerald-200 bg-emerald-50/70 hover:border-emerald-300 dark:border-emerald-900/40 dark:bg-emerald-950/20",
+  few: "border-amber-200 bg-amber-50/70 hover:border-amber-300 dark:border-amber-900/40 dark:bg-amber-950/20",
+  almost_full:
+    "border-rose-200 bg-rose-50/60 hover:border-rose-300 dark:border-rose-900/40 dark:bg-rose-950/20",
+  closed: "border-border bg-muted/30 text-muted-foreground/40 cursor-not-allowed",
+};
+
+const DENSITY_DOT_STYLES: Record<BookingDateDensity, string> = {
+  plenty: "bg-emerald-500",
+  few: "bg-amber-500",
+  almost_full: "bg-rose-500",
+  closed: "bg-transparent",
+};
+
+const WEEKDAY_LABELS = ["S", "M", "T", "W", "T", "F", "S"];
+
 function DateStep({
   options,
   onSelect,
@@ -638,9 +635,18 @@ function DateStep({
   options: Record<string, unknown>;
   onSelect: (date: string) => void;
 }) {
-  const dates =
-    (options.dates as { date: string; label: string; is_today?: boolean }[]) ||
-    [];
+  const dates = (options.dates as BookingDateOption[]) || [];
+  const selectedDate = (options.selected_date as string | null) || null;
+  const selectedRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    selectedRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [selectedDate]);
+
+  const leadingBlanks = dates.length
+    ? new Date(`${dates[0].date}T12:00:00`).getDay()
+    : 0;
+
   return (
     <div className="space-y-3">
       <p className="text-sm font-semibold text-foreground">
@@ -654,24 +660,92 @@ function DateStep({
           With {String(options.doctor_name)}
         </p>
       ) : null}
-      <div className="grid grid-cols-2 gap-2">
-        {dates.map((d) => (
-          <button
-            key={d.date}
-            type="button"
-            onClick={() => onSelect(d.date)}
-            className={cn(
-              "rounded-xl border border-border px-3 py-3 text-left text-sm transition-[border-color,background-color] hover:border-primary/40",
-              d.is_today && "border-primary/30 bg-accent/40"
-            )}
-          >
-            {d.label}
-          </button>
-        ))}
+      <div className="max-h-52 overflow-y-auto rounded-lg border border-border/60 p-1.5">
+        <div className="grid grid-cols-7 gap-1 text-center text-[10px] font-medium text-muted-foreground">
+          {WEEKDAY_LABELS.map((w, i) => (
+            <div key={i} className="py-1">
+              {w}
+            </div>
+          ))}
+        </div>
+        <div className="grid grid-cols-7 gap-1">
+          {Array.from({ length: leadingBlanks }).map((_, i) => (
+            <div key={`blank-${i}`} aria-hidden />
+          ))}
+          {dates.map((d) => {
+            const density = d.density || "plenty";
+            const closed = density === "closed";
+            const isSelected = d.date === selectedDate;
+            return (
+              <button
+                key={d.date}
+                ref={isSelected ? selectedRef : undefined}
+                type="button"
+                disabled={closed}
+                onClick={() => onSelect(d.date)}
+                title={
+                  closed
+                    ? d.reason === "closed"
+                      ? "Clinic closed"
+                      : "No availability"
+                    : undefined
+                }
+                className={cn(
+                  "relative aspect-square rounded-md border text-[11px] transition-colors",
+                  DENSITY_CELL_STYLES[density],
+                  d.is_today && !closed && "font-semibold text-primary",
+                  isSelected && "ring-2 ring-primary/50"
+                )}
+              >
+                {Number(d.date.slice(-2))}
+                {!closed ? (
+                  <span
+                    className={cn(
+                      "absolute bottom-1 left-1/2 size-1 -translate-x-1/2 rounded-full",
+                      DENSITY_DOT_STYLES[density]
+                    )}
+                    aria-hidden
+                  />
+                ) : null}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      <div className="flex flex-wrap items-center gap-3 text-[10px] text-muted-foreground">
+        <span className="flex items-center gap-1">
+          <span className="size-1.5 rounded-full bg-emerald-500" /> Plenty
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="size-1.5 rounded-full bg-amber-500" /> Few left
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="size-1.5 rounded-full bg-rose-500" /> Almost full
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="size-1.5 rounded-full bg-muted-foreground/30" /> Unavailable
+        </span>
       </div>
     </div>
   );
 }
+
+function slotHour(slot: BookingSlot): number | null {
+  // Read the wall-clock hour directly from the ISO string (already in
+  // clinic-local time from the backend) — never Date.getHours(), which
+  // would silently convert to the browser's local timezone instead.
+  const match = /T(\d{2}):/.exec(slot.start || "");
+  return match ? Number(match[1]) : null;
+}
+
+function timeBucket(hour: number | null): 0 | 1 | 2 {
+  if (hour == null) return 0;
+  if (hour < 12) return 0;
+  if (hour < 17) return 1;
+  return 2;
+}
+
+const TIME_SECTION_LABELS = ["Morning", "Afternoon", "Evening"] as const;
 
 function TimeStep({
   options,
@@ -684,6 +758,30 @@ function TimeStep({
 }) {
   const slots = (options.slots as BookingSlot[]) || [];
   const hasMore = Boolean(options.has_more);
+  const timeHintUnmet = Boolean(options.time_hint_unmet);
+  const timeHint = (options.time_hint as string | null) || null;
+
+  const sections = useMemo(() => {
+    const groups: BookingSlot[][] = [[], [], []];
+    for (const s of slots) groups[timeBucket(slotHour(s))].push(s);
+    return TIME_SECTION_LABELS.map((label, i) => ({
+      key: i,
+      label,
+      slots: groups[i],
+    })).filter((g) => g.slots.length);
+  }, [slots]);
+
+  const activeSectionKey = useMemo(() => {
+    if (!timeHint) return null;
+    const hour = Number(timeHint.slice(0, 2));
+    return Number.isNaN(hour) ? null : timeBucket(hour);
+  }, [timeHint]);
+
+  const activeSectionRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    activeSectionRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [activeSectionKey, slots]);
+
   return (
     <div className="space-y-3">
       <p className="text-sm font-semibold text-foreground">
@@ -697,21 +795,38 @@ function TimeStep({
           ? ` · ${String(options.date)}`
           : null}
       </p>
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-        {slots.map((s) => (
-          <button
-            key={s.id}
-            type="button"
-            onClick={() => onSelect(s)}
-            className="rounded-xl border border-border px-2 py-2.5 text-center text-xs font-medium transition-[border-color,background-color] hover:border-primary/40 hover:bg-accent"
+      {timeHintUnmet ? (
+        <p className="rounded-lg border border-amber-200 bg-amber-50/70 px-2.5 py-1.5 text-[11px] text-amber-800 dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-300">
+          No times matched your preferred time — showing all available times instead.
+        </p>
+      ) : null}
+      <div className="max-h-80 space-y-4 overflow-y-auto">
+        {sections.map((section) => (
+          <div
+            key={section.key}
+            ref={section.key === activeSectionKey ? activeSectionRef : undefined}
           >
-            <span className="block text-foreground">{s.label}</span>
-            {s.doctor && !options.doctor_name ? (
-              <span className="mt-0.5 block text-[10px] font-normal text-muted-foreground">
-                {s.doctor}
-              </span>
-            ) : null}
-          </button>
+            <p className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              {section.label}
+            </p>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              {section.slots.map((s) => (
+                <button
+                  key={s.id}
+                  type="button"
+                  onClick={() => onSelect(s)}
+                  className="rounded-xl border border-border px-2 py-2.5 text-center text-xs font-medium transition-[border-color,background-color] hover:border-primary/40 hover:bg-accent"
+                >
+                  <span className="block text-foreground">{s.label}</span>
+                  {s.doctor && !options.doctor_name ? (
+                    <span className="mt-0.5 block text-[10px] font-normal text-muted-foreground">
+                      {s.doctor}
+                    </span>
+                  ) : null}
+                </button>
+              ))}
+            </div>
+          </div>
         ))}
       </div>
       {!slots.length ? (

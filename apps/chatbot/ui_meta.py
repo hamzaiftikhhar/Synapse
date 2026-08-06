@@ -24,6 +24,8 @@ def build_ui_meta(
     booking_commit: bool = False,
     last_doctor: dict[str, Any] | None = None,
     last_specialty: dict[str, Any] | None = None,
+    active_booking: dict[str, Any] | None = None,
+    ui_priority: str = "optional",
 ) -> dict[str, Any]:
     """Map SQL handler output + intent to frontend component payloads."""
     meta: dict[str, Any] = {
@@ -33,6 +35,7 @@ def build_ui_meta(
             is_emergency,
             has_doctors=False,
             booking_commit=booking_commit,
+            ui_priority=ui_priority,
         ),
     }
 
@@ -41,19 +44,25 @@ def build_ui_meta(
         Intent.BOOK_APPOINTMENT.value,
         Intent.RESCHEDULE_APPOINTMENT.value,
     ):
-        from apps.chatbot.booking.config import get_booking_config
-        from apps.chatbot.booking.discovery import suggest_specialties
+        booking_in_progress = bool(active_booking) and active_booking.get("step") != "confirmed"
 
-        cfg = get_booking_config(clinic)
         suggested, guidance = ([], "")
-        if cfg.get("ai_discovery"):
-            suggested, guidance = suggest_specialties(clinic, message=message)
+        if not booking_in_progress:
+            from apps.chatbot.booking.config import get_booking_config
+            from apps.chatbot.booking.discovery import suggest_specialties
+
+            cfg = get_booking_config(clinic)
+            if cfg.get("ai_discovery"):
+                suggested, guidance = suggest_specialties(clinic, message=message)
+
         booking: dict[str, Any] = {
-            "launch": True,
+            "launch": not booking_in_progress,
             "suggested_specialties": suggested,
             "guidance": guidance,
             "reason": message,
         }
+        if booking_in_progress:
+            booking["booking_id"] = active_booking.get("booking_id")
         if last_doctor:
             booking["doctor_id"] = last_doctor.get("id")
             booking["doctor_name"] = last_doctor.get("name")
@@ -83,6 +92,7 @@ def build_ui_meta(
             has_doctors=False,
             booking_commit=True,
             omit_book=True,
+            ui_priority=ui_priority,
         )
         return meta
 
@@ -106,7 +116,10 @@ def build_ui_meta(
             pass
 
         elif handler == "insurance_accepted" and rows:
-            meta["insurance"] = [_map_insurance(r) for r in rows[:3]]
+            # Handler already bounds the query (12 accepted, or 12 for a named
+            # provider) — [:20] is a ceiling, not a re-truncation, so the new
+            # searchable insurance list actually has something to search.
+            meta["insurance"] = [_map_insurance(r) for r in rows[:20]]
 
         elif handler == "services_offered" and rows:
             meta["services"] = [_map_service(r) for r in rows[:5]]
@@ -170,6 +183,7 @@ def build_ui_meta(
         is_emergency,
         has_doctors=has_doctors,
         booking_commit=booking_commit,
+        ui_priority=ui_priority,
     )
 
     if is_emergency:
@@ -210,6 +224,22 @@ def _dedupe_doctors(doctors: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+# UIPriority -> which cross-sell chips are allowed this turn. Emergency/booking
+# turns already have their own dedicated UI (911 buttons / the wizard) and
+# never need the generic smart-action or Book Appointment chip on top of it.
+# NONE/INLINE (informational answers, clarify turns) get no cross-sell chips —
+# this is the actual card-spam fix; it does not touch the handler's own
+# direct-answer card (e.g. the insurance card still renders for NONE).
+_CHIP_POLICY: dict[str, dict[str, bool]] = {
+    "emergency": {"smart": False, "book": False},
+    "booking": {"smart": False, "book": False},
+    "primary": {"smart": True, "book": True},
+    "optional": {"smart": True, "book": True},
+    "inline": {"smart": False, "book": False},
+    "none": {"smart": False, "book": False},
+}
+
+
 def _contextual_actions(
     intent: str,
     clinic: Any,
@@ -218,16 +248,19 @@ def _contextual_actions(
     has_doctors: bool = False,
     booking_commit: bool = False,
     omit_book: bool = False,
+    ui_priority: str = "optional",
 ) -> list[dict[str, Any]]:
-    """Action chips under the latest assistant response. Book always; no Main Menu."""
+    """Action chips under the latest assistant response, gated by ui_priority."""
+    policy = _CHIP_POLICY.get(ui_priority, _CHIP_POLICY["optional"])
     actions: list[dict[str, Any]] = []
 
-    smart = _smart_action(intent, clinic, is_emergency, has_doctors=has_doctors)
-    if smart:
-        actions.append(smart)
+    if policy["smart"]:
+        smart = _smart_action(intent, clinic, is_emergency, has_doctors=has_doctors)
+        if smart:
+            actions.append(smart)
 
     # Book Appointment → chat message (never open wizard client-side)
-    if not omit_book:
+    if not omit_book and policy["book"]:
         filled = booking_commit or intent in (
             Intent.BOOK_APPOINTMENT.value,
             Intent.RESCHEDULE_APPOINTMENT.value,
@@ -280,14 +313,7 @@ def _smart_action(
             "message": "Where is the clinic located?",
         }
     if intent in (Intent.CLINIC_HOURS.value,):
-        # Hours already answered — offer insurance as situational alternate
-        return {
-            "id": "insurance",
-            "label": "Check Insurance",
-            "icon": "Shield",
-            "behavior": "message",
-            "message": "Do you accept my insurance?",
-        }
+        return None
     if intent in (Intent.DOCTOR_SEARCH.value, Intent.DOCTOR_AVAILABILITY.value):
         if has_doctors:
             return {
@@ -305,21 +331,10 @@ def _smart_action(
             "message": "Help me find a doctor",
         }
     if intent in (Intent.INSURANCE_ACCEPTED.value, Intent.INSURANCE_VERIFICATION.value):
-        return {
-            "id": "insurance",
-            "label": "Check Insurance",
-            "icon": "Shield",
-            "behavior": "message",
-            "message": "Do you accept my insurance?",
-        }
+        return None
     if intent in (Intent.SERVICES_OFFERED.value, Intent.PRICING.value):
-        return {
-            "id": "services",
-            "label": "View Services",
-            "icon": "BriefcaseMedical",
-            "behavior": "message",
-            "message": "What services do you offer?",
-        }
+        # Cards already shown — no redundant View Services chip
+        return None
     if intent in (Intent.MEDICAL_QUESTION.value,):
         return {
             "id": "doctors",
@@ -328,14 +343,8 @@ def _smart_action(
             "behavior": "message",
             "message": "Help me find a doctor",
         }
-    # Default: Find a Doctor
-    return {
-        "id": "find_doctor",
-        "label": "Find a Doctor",
-        "icon": "Search",
-        "behavior": "message",
-        "message": "Help me find a doctor",
-    }
+    # Default: no chip spam on informational turns
+    return None
 
 
 def _map_doctor(row: dict[str, Any]) -> dict[str, Any]:
@@ -345,6 +354,7 @@ def _map_doctor(row: dict[str, Any]) -> dict[str, Any]:
         "name": name,
         "title": row.get("title", ""),
         "bio": row.get("bio", ""),
+        "photo_url": row.get("photo_url", ""),
         "languages": row.get("languages", []),
         "accepting": row.get("is_accepting_patients", True),
         "specialties": row.get("specialties", []),
@@ -380,6 +390,7 @@ def _map_insurance(row: dict[str, Any]) -> dict[str, Any]:
         "name": provider,
         "plan": plan,
         "notes": row.get("notes", ""),
+        "is_accepted": row.get("is_accepted", True),
         "select_message": f"Do you accept {provider}" + (f" {plan}" if plan else "") + "?",
     }
 
@@ -389,6 +400,9 @@ def _map_service(row: dict[str, Any]) -> dict[str, Any]:
         "id": row.get("id"),
         "name": row.get("name", ""),
         "description": row.get("description", ""),
+        "duration_min": row.get("duration_min"),
+        "price_cents": row.get("price_cents"),
+        "category": row.get("category", ""),
         "price": row.get("price", ""),
-        "select_message": f"Tell me more about {row.get('name', 'this service')}",
+        "select_message": f"I would like to book {row.get('name', 'this service')}",
     }

@@ -105,6 +105,92 @@ def _fuzzy_score(needle: str, candidate: str) -> float:
     return max(0.0, 1.0 - (dist / maxlen))
 
 
+def resolve_doctor_from_text(
+    clinic: Clinic, text: str | None, *, threshold: float = 0.6
+) -> dict[str, Any] | None:
+    """Resolve a doctor by scanning free text (a whole message, not a single
+    extracted name). Canonical replacement for ad hoc substring matching —
+    single source of truth for "does this message name one of our doctors".
+
+    1) exact full-name / last-name substring hit (fast path — same behavior as
+       the old plain-substring matcher this replaces)
+    2) fuzzy per-word fallback via `_fuzzy_score` for typo tolerance (e.g.
+       "book with Dr. Rjet" → "Rajat Sharma")
+    """
+    query = (text or "").strip()
+    if not query:
+        return None
+    from apps.doctors.models import Doctor
+
+    doctors = list(
+        Doctor.objects.filter(clinic=clinic, is_deleted=False, is_active=True)
+        .only("id", "full_name", "title", "bio")[:100]
+    )
+    lower = query.lower()
+
+    for doctor in doctors:
+        if doctor.full_name and doctor.full_name.lower() in lower:
+            return _doctor_payload(doctor)
+    for doctor in doctors:
+        parts = (doctor.full_name or "").replace("Dr.", "").strip().split()
+        if parts and len(parts[-1]) > 3 and parts[-1].lower() in lower:
+            return _doctor_payload(doctor)
+
+    words = [w.strip(".,!?") for w in query.split() if len(w) > 2]
+    best: Any = None
+    best_score = 0.0
+    for doctor in doctors:
+        if not doctor.full_name:
+            continue
+        candidate_tokens = doctor.full_name.replace("Dr.", "").split()
+        for word in words:
+            for token in candidate_tokens:
+                score = _fuzzy_score(word, token)
+                if score > best_score:
+                    best_score = score
+                    best = doctor
+    if best is not None and best_score >= threshold:
+        return _doctor_payload(best)
+    return None
+
+
+def _doctor_payload(doctor: Any) -> dict[str, Any]:
+    return {
+        "id": str(doctor.id),
+        "name": doctor.full_name,
+        "title": doctor.title or "",
+        "bio": (doctor.bio or "")[:240],
+    }
+
+
+def resolve_specialty_for_service(clinic: Clinic, service_id: str | None) -> str | None:
+    """Resolve the specialty most associated with a known service, grounded in
+    real Doctor<->Service<->Specialty relations (Service.category is free text
+    and unused elsewhere in the chat pipeline — this ranks specialties by how
+    many doctors performing this service belong to each one)."""
+    if not service_id:
+        return None
+    from django.db.models import Count
+
+    from apps.specialties.models import Specialty
+
+    hit = (
+        Specialty.objects.filter(
+            clinic=clinic,
+            is_deleted=False,
+            is_active=True,
+            doctors__is_deleted=False,
+            doctors__is_active=True,
+            doctors__services__id=service_id,
+            doctors__services__is_deleted=False,
+        )
+        .annotate(cnt=Count("doctors", distinct=True))
+        .order_by("-cnt")
+        .first()
+    )
+    return str(hit.id) if hit else None
+
+
 def _match_doctor(clinic: Clinic, name: str | None) -> str | None:
     if not name:
         return None

@@ -33,6 +33,16 @@ def services_offered(ctx: SQLContext) -> SQLResult:
         needle = _service_needle(ctx.nlu.entities.service) or _category_needle(ctx.message)
         if needle:
             qs = qs.filter(name__icontains=needle)
+        else:
+            # Neither the hardcoded category phrases nor the NLU-extracted
+            # service entity matched — fall back to a strict, clinic-agnostic
+            # token match against this clinic's actual service names instead
+            # of silently returning the entire unfiltered catalog (e.g. "what
+            # laser services do you have" was previously surfacing every
+            # active service, Botox/filler/acne included).
+            matched_ids = _match_services_strict(ctx)
+            if matched_ids:
+                qs = qs.filter(id__in=matched_ids)
     elif ctx.nlu.resolved_ids.service_id:
         qs = qs.filter(id=ctx.nlu.resolved_ids.service_id)
     elif ctx.nlu.entities.service and mode != "none":
@@ -54,6 +64,8 @@ def services_offered(ctx: SQLContext) -> SQLResult:
             "name": s.name,
             "description": (s.description or "")[:300],
             "duration_min": s.duration_min,
+            "price_cents": s.price_cents,
+            "category": s.category or "",
             "price": f"${s.price_cents / 100:.2f}" if s.price_cents else "Contact for pricing",
         }
         for s in services

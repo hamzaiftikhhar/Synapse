@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from apps.chatbot.nlu.emergency_patterns import EMERGENCY_RE as _EMERGENCY_RE
 from apps.chatbot.nlu.entity_extract import (
     extract_emergency_symptoms,
     extract_entities,
@@ -83,29 +84,6 @@ _OFF_TOPIC_EXACT = frozenset(
         "interesting", "wow", "omg", "oh my god", "oh wow",
         "no worries", "no problem", "np", "nvm", "nevermind",
     }
-)
-
-# Fail-closed emergency — narrative cardiac + classic red flags
-_EMERGENCY_RE = re.compile(
-    r"\b("
-    r"chest\s+pain|chest\s+(?:pressure|tightness|tight)|"
-    r"pain\s+in\s+(?:my\s+)?chest|chest\s+hurts?|"
-    r"(?:tight|crushing)\s+(?:pressure|pain)\s+in\s+(?:my\s+|his\s+|her\s+)?chest|"
-    r"pressure\s+(?:in|into|to)\s+(?:my\s+|his\s+|her\s+)?(?:chest|arm)|"
-    r"radiat(?:e|ing|es)?\s+(?:to\s+|down\s+)?(?:my\s+|his\s+|her\s+)?(?:left\s+)?arm|"
-    r"(?:left\s+)?arm\s+(?:numb(?:ness)?|tingling|pain).{0,40}chest|"
-    r"chest.{0,40}(?:left\s+)?arm\s+(?:numb|pain|tingl)|"
-    r"can't\s+breathe|cannot\s+breathe|difficulty\s+breathing|"
-    r"shortness\s+of\s+breath|heavy\s+pressure\s+on\s+(?:my\s+|his\s+|her\s+)?chest|"
-    r"hard\s+to\s+swallow|trouble\s+swallowing|"
-    r"tongue\s+(?:feels\s+huge|swelling|swollen)|"
-    r"lips?\s+(?:are\s+)?tingling|"
-    r"dizzy\s+and\s+faint|faint\s+and\s+dizzy|"
-    r"heart\s+attack|stroke|"
-    r"suicidal|kill\s+myself|severe\s+bleeding|unconscious|"
-    r"choking|left\s+arm\s+numbness"
-    r")\b",
-    re.IGNORECASE,
 )
 
 _BOOKING_COMMIT_EXACT = frozenset(

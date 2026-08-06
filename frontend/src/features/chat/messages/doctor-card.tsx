@@ -1,7 +1,13 @@
 "use client";
 
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import type { ChatActionHandler, DoctorCardData } from "@/types/chat";
+
+function initials(name: string): string {
+  const parts = name.replace(/^dr\.?\s*/i, "").trim().split(/\s+/);
+  return parts.slice(0, 2).map((p) => p[0]?.toUpperCase() || "").join("") || "?";
+}
 
 export function DoctorCard({
   doctor,
@@ -12,10 +18,20 @@ export function DoctorCard({
 }) {
   return (
     <div className="rounded-[6px] border border-border bg-white p-3">
-      <p className="text-sm font-semibold text-navy">{doctor.name}</p>
-      {doctor.title ? (
-        <p className="text-xs text-primary">{doctor.title}</p>
-      ) : null}
+      <div className="flex items-start gap-2.5">
+        <Avatar>
+          {doctor.photo_url ? (
+            <AvatarImage src={doctor.photo_url} alt={doctor.name} />
+          ) : null}
+          <AvatarFallback>{initials(doctor.name)}</AvatarFallback>
+        </Avatar>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-semibold text-navy">{doctor.name}</p>
+          {doctor.title ? (
+            <p className="truncate text-xs text-primary">{doctor.title}</p>
+          ) : null}
+        </div>
+      </div>
       {doctor.bio ? (
         <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{doctor.bio}</p>
       ) : null}

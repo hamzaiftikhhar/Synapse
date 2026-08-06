@@ -127,33 +127,16 @@ def format_sql_results(results: list[dict[str, Any]]) -> str:
                     or "I couldn't find matching insurance plans in our records for that."
                 )
                 continue
-            # Prefer handler summary (handles accepted + explicitly rejected plans)
-            if summary:
-                parts.append(summary)
-            else:
-                accepted = [r for r in rows if r.get("is_accepted", True)]
-                names = ", ".join(
-                    f"{r['provider_name']}"
-                    + (f" ({r['plan_name']})" if r.get("plan_name") else "")
-                    for r in accepted[:8]
-                )
-                parts.append(f"We accept: {names}." if names else summary)
+            # Searchable insurance list renders as cards — short prose only
+            parts.append("Search your plan below.")
             continue
 
         if handler == "services_offered":
             if not rows:
                 parts.append(summary or "I couldn't find services for that request.")
                 continue
-            lines = []
-            for r in rows[:6]:
-                bit = f"- {r['name']}"
-                if r.get("price"):
-                    bit += f" — {r['price']}"
-                dur = r.get("duration_min")
-                if dur:
-                    bit += f" ({dur} min)"
-                lines.append(bit)
-            parts.append("Services we offer:\n" + "\n".join(lines))
+            # Cards render the list — keep prose minimal for patients
+            parts.append("Pick a service below.")
             continue
 
         if handler == "patient_appointments":

@@ -51,43 +51,171 @@ class BookingService:
         cfg = get_booking_config(clinic)
         text = (reason or message or "").strip()
 
+        existing = cls._load_active(chat_session)
+        resuming = existing is not None
         suggested, guidance = ([], "")
-        if cfg.get("ai_discovery"):
-            suggested, guidance = suggest_specialties(clinic, message=text, reason=text)
 
-        session = BookingSession.create(
-            clinic_id=str(clinic.id),
-            mode=cfg["mode"],
-            reason=text,
+        if resuming:
+            session = existing
+            if text and text != session.reason:
+                session.reason = text
+        else:
+            if cfg.get("ai_discovery"):
+                suggested, guidance = suggest_specialties(clinic, message=text, reason=text)
+            session = BookingSession.create(
+                clinic_id=str(clinic.id),
+                mode=cfg["mode"],
+                reason=text,
+            )
+            session.suggested_specialty_ids = [s["id"] for s in suggested]
+
+        cls._apply_prefill(
+            session,
+            clinic,
+            specialty_id=specialty_id,
+            specialty_name=specialty_name,
+            doctor_id=doctor_id,
+            doctor_name=doctor_name,
+            resuming=resuming,
         )
-        session.suggested_specialty_ids = [s["id"] for s in suggested]
+        cls._apply_date_time_hint(session, clinic, text)
 
-        # Prefill from conversation
-        if specialty_id:
+        cls._touch(session)
+        cls._save(chat_session, session)
+        payload = serialize_step(clinic, session)
+        payload["resumed"] = resuming
+        if not resuming:
+            payload["guidance"] = guidance
+            payload["suggested_specialties"] = suggested
+        return payload
+
+    @staticmethod
+    def _load_active(chat_session: Any) -> BookingSession | None:
+        """The in-progress BookingSession for this chat session, if any —
+        None when there isn't one yet or the last one already CONFIRMED."""
+        ctx = chat_session.conversation_context or {}
+        data = ctx.get("booking") if isinstance(ctx, dict) else None
+        if not isinstance(data, dict):
+            return None
+        try:
+            session = BookingSession.from_dict(data)
+        except Exception:
+            return None
+        if session.step == BookingStep.CONFIRMED.value:
+            return None
+        return session
+
+    @classmethod
+    def _apply_prefill(
+        cls,
+        session: BookingSession,
+        clinic: Any,
+        *,
+        specialty_id: str | None,
+        specialty_name: str | None,
+        doctor_id: str | None,
+        doctor_name: str | None,
+        resuming: bool,
+    ) -> None:
+        """Update the draft in place with newly-known specialty/doctor. Never
+        erases already-known info, never touches booking_id or patient
+        details — only rewinds the steps a change actually invalidates."""
+        changed_specialty = bool(specialty_id) and str(specialty_id) != (
+            session.specialty_id or ""
+        )
+        changed_doctor = bool(doctor_id) and str(doctor_id) != (session.doctor_id or "")
+
+        if changed_specialty:
             session.specialty_id = str(specialty_id)
             session.specialty_name = specialty_name or cls._specialty_name(
                 clinic, str(specialty_id)
             )
-        if doctor_id:
+        if changed_doctor:
             session.doctor_id = str(doctor_id)
             session.doctor_name = doctor_name or cls._doctor_name(clinic, str(doctor_id))
 
-        # Skip path chooser only when context already pins the route
-        if session.doctor_id:
+        if changed_doctor or changed_specialty:
+            session.date = None
+            session.slot_start = None
+            session.slot_end = None
+            session.show_all_times = False
+            session.hold_expires_at = None
+
+        if not resuming:
+            # Skip path chooser only when context already pins the route
+            if session.doctor_id:
+                session.mode = "choose_doctor"
+                session.step = BookingStep.DATE.value
+            elif session.specialty_id:
+                session.mode = "specialty_first"
+                session.step = BookingStep.DOCTOR.value
+            else:
+                # Patient chooses: First available / Help choose / Know doctor
+                session.step = BookingStep.PATH.value
+            return
+
+        if changed_doctor and session.step in {
+            BookingStep.PATH.value,
+            BookingStep.SPECIALTY.value,
+            BookingStep.TIME.value,
+            BookingStep.DETAILS.value,
+            BookingStep.OTP.value,
+        }:
             session.mode = "choose_doctor"
             session.step = BookingStep.DATE.value
-        elif session.specialty_id:
+        elif changed_specialty and not doctor_id and session.step in {
+            BookingStep.PATH.value,
+            BookingStep.DOCTOR.value,
+            BookingStep.DATE.value,
+            BookingStep.TIME.value,
+            BookingStep.DETAILS.value,
+            BookingStep.OTP.value,
+        }:
             session.mode = "specialty_first"
             session.step = BookingStep.DOCTOR.value
-        else:
-            # Patient chooses: First available / Help choose / Know doctor
-            session.step = BookingStep.PATH.value
 
-        cls._save(chat_session, session)
-        payload = serialize_step(clinic, session)
-        payload["guidance"] = guidance
-        payload["suggested_specialties"] = suggested
-        return payload
+    @classmethod
+    def _apply_date_time_hint(cls, session: BookingSession, clinic: Any, text: str) -> None:
+        """Minimal relative date/time parsing so a message like "Botox Friday
+        after 5" can seed the DATE/TIME steps instead of forcing the patient
+        to click through them. Deliberately simple: "ASAP"/"same day" resolve
+        to today only, not a multi-day forward search."""
+        if not text:
+            return
+        from apps.chatbot.nlu.entity_extract import extract_entities
+        from apps.chatbot.sql_tool.utils import (
+            clinic_timezone,
+            is_asap_request,
+            is_same_day_request,
+            parse_natural_date,
+            parse_time_floor,
+        )
+
+        entities = extract_entities(text)
+        tz = clinic_timezone(clinic)
+
+        target_date = None
+        if is_same_day_request(text) or is_asap_request(text):
+            target_date = timezone.now().astimezone(tz).date()
+        else:
+            dates = entities.get("date") or []
+            if dates:
+                target_date = parse_natural_date(dates[0], tz=tz)
+
+        time_floor = parse_time_floor(entities.get("time") or [])
+
+        if target_date is not None:
+            session.date = target_date.isoformat()
+        if time_floor is not None:
+            session.time_hint = time_floor.isoformat()
+
+        if session.date and session.doctor_id and session.step in {
+            BookingStep.PATH.value,
+            BookingStep.SPECIALTY.value,
+            BookingStep.DOCTOR.value,
+            BookingStep.DATE.value,
+        }:
+            session.step = BookingStep.TIME.value
 
     @classmethod
     def apply_step(
@@ -247,6 +375,45 @@ class BookingService:
             cls._touch(session)
             cls._save(chat_session, session)
             return serialize_step(clinic, session)
+
+        if action == "select_hero":
+            start = str(value.get("start") or "")
+            end = str(value.get("end") or "")
+            doctor_id = str(value.get("doctor_id") or "")
+            doctor_name = str(value.get("doctor") or value.get("doctor_name") or "")
+            if not start or not end or not doctor_id:
+                raise BookingError("Slot start, end, and doctor_id are required")
+
+            # Hero data can be seconds/minutes stale by the time the patient
+            # taps it — revalidate before holding, rather than discovering the
+            # collision much later at confirm().
+            if cls._slot_still_open(clinic, doctor_id=doctor_id, start=start):
+                session.mode = "choose_doctor"
+                session.doctor_id = doctor_id
+                session.doctor_name = doctor_name or cls._doctor_name(clinic, doctor_id)
+                session.slot_start = start
+                session.slot_end = end
+                cls._hold_internal(session, clinic)
+                session.step = BookingStep.DETAILS.value
+                cls._touch(session)
+                cls._save(chat_session, session)
+                return serialize_step(clinic, session)
+
+            # Taken between hero-render and tap — fall back to date picking,
+            # not an error page.
+            session.mode = "general"
+            session.doctor_id = None
+            session.doctor_name = None
+            session.date = None
+            session.slot_start = None
+            session.slot_end = None
+            session.show_all_times = False
+            session.step = BookingStep.DATE.value
+            cls._touch(session)
+            cls._save(chat_session, session)
+            payload = serialize_step(clinic, session)
+            payload["stale_hero"] = True
+            return payload
 
         if action == "submit_details":
             first = str(value.get("first_name") or "").strip()
@@ -489,6 +656,42 @@ class BookingService:
             return Doctor.objects.get(clinic=clinic, id=doctor_id).full_name
         except Doctor.DoesNotExist:
             return ""
+
+    @staticmethod
+    def _slot_still_open(clinic: Any, *, doctor_id: str, start: str) -> bool:
+        """Re-checks a specific doctor+slot is still bookable — used to
+        revalidate the PATH step's hero slot, which can be stale by the time
+        the patient taps it."""
+        from apps.chatbot.booking.slots import active_holds_for_date, compute_slots_for_day
+        from apps.doctors.models import Doctor
+
+        try:
+            start_dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        try:
+            doctor = Doctor.objects.get(clinic=clinic, id=doctor_id, is_deleted=False)
+        except Doctor.DoesNotExist:
+            return False
+
+        target_date = start_dt.date()
+        target = start_dt.replace(second=0, microsecond=0)
+        slots = compute_slots_for_day(
+            clinic,
+            target_date=target_date,
+            doctors=[doctor],
+            excluded_keys=active_holds_for_date(clinic, target_date),
+        )
+        for s in slots:
+            try:
+                slot_start = datetime.fromisoformat(
+                    str(s.get("start") or "").replace("Z", "+00:00")
+                ).replace(second=0, microsecond=0)
+            except ValueError:
+                continue
+            if slot_start == target:
+                return True
+        return False
 
 
 def _confirmation_code() -> str:

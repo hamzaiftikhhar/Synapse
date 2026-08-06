@@ -338,6 +338,7 @@ export type BookingDoctor = {
   name: string;
   title?: string;
   bio?: string;
+  photo_url?: string;
   languages?: string[];
   specialties?: string[];
   next_available?: {
@@ -358,6 +359,17 @@ export type BookingSlot = {
   doctor_id?: string;
   time?: string;
   date?: string;
+  day_label?: string;
+};
+
+export type BookingDateDensity = "plenty" | "few" | "almost_full" | "closed";
+
+export type BookingDateOption = {
+  date: string;
+  label: string;
+  is_today?: boolean;
+  density?: BookingDateDensity;
+  reason?: string;
 };
 
 export type BookingStepPayload = {
@@ -372,6 +384,8 @@ export type BookingStepPayload = {
   specialty_chip?: { id: string; name: string } | null;
   options: Record<string, unknown>;
   hold?: { expires_at: string } | null;
+  /** Set when a select_hero action's slot was taken between render and tap. */
+  stale_hero?: boolean;
   confirmation?: {
     confirmation_code?: string;
     appointment_id?: string;

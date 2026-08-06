@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from apps.chatbot.nlu.emergency_patterns import SYMPTOM_CUE_RE as _SYMPTOM_CUE_RE
+
 # Question / info-seeking frames (any clinic)
 _INFORMATIONAL_RE = re.compile(
     r"\b("
@@ -142,22 +144,6 @@ _SERVICE_LIST_RE = re.compile(
     r"(?:urgent care|primary care) (?:services?\b|do you provid)|"
     r"(?:urgent care|primary care).{0,30}(?:clinic )?(?:provid|offer)"
     r")",
-    re.I,
-)
-
-_SYMPTOM_CUE_RE = re.compile(
-    r"\b("
-    r"chest (?:pain|hurt|hurts|pressure|tight(?:ness)?)|"
-    r"(?:tight|crushing) (?:pressure|pain) in (?:my |his |her )?chest|"
-    r"pressure in (?:my |his |her )?chest|"
-    r"pain (?:in|radiat\w*).{0,40}\barm|"
-    r"radiat\w*.{0,30}\b(?:left )?arm|"
-    r"can'?t breathe|cannot breathe|shortness of breath|"
-    r"heart attack|stroke|suicid|"
-    r"severe bleeding|unconscious|choking|"
-    r"numb(?:ness)? (?:in )?(?:my |left )?arm|"
-    r"left arm numb"
-    r")\b",
     re.I,
 )
 

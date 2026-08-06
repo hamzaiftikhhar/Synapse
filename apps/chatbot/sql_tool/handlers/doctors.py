@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, time, timedelta
-from typing import Any
+from datetime import timedelta
 
 from django.utils import timezone
 
@@ -15,7 +14,6 @@ from apps.chatbot.sql_tool.utils import (
     entity_ids,
     entity_list,
     parse_natural_date,
-    slot_to_dict,
 )
 
 
@@ -107,8 +105,8 @@ def list_specialties(ctx: SQLContext) -> SQLResult:
 
 
 def doctor_availability(ctx: SQLContext) -> SQLResult:
-    from apps.appointments.models import Appointment, AppointmentStatus
-    from apps.doctors.models import Doctor, DoctorLeave, DoctorSchedule
+    from apps.chatbot.booking.slots import active_holds_for_date, compute_slots_for_day
+    from apps.doctors.models import Doctor
 
     clinic = ctx.clinic
     nlu = ctx.nlu
@@ -150,64 +148,13 @@ def doctor_availability(ctx: SQLContext) -> SQLResult:
             meta={"target_date": target_date.isoformat()},
         )
 
-    day_of_week = target_date.weekday()
-    day_start = timezone.make_aware(datetime.combine(target_date, time.min), tz)
-    day_end = timezone.make_aware(datetime.combine(target_date, time.max), tz)
-
-    slots: list[dict[str, Any]] = []
-    for doctor in doctors:
-        on_leave = DoctorLeave.objects.filter(
-            clinic=clinic,
-            doctor=doctor,
-            is_active=True,
-            start_at__lt=day_end,
-            end_at__gt=day_start,
-        ).exists()
-        if on_leave:
-            continue
-
-        booked = {
-            appt.astimezone(tz).replace(second=0, microsecond=0)
-            for appt in Appointment.objects.filter(
-                clinic=clinic,
-                doctor=doctor,
-                start_time__gte=day_start,
-                start_time__lte=day_end,
-                status__in=[AppointmentStatus.PENDING, AppointmentStatus.CONFIRMED],
-            ).values_list("start_time", flat=True)
-        }
-
-        schedules = DoctorSchedule.objects.filter(
-            clinic=clinic,
-            doctor=doctor,
-            day_of_week=day_of_week,
-            is_active=True,
-        )
-        for sched in schedules:
-            slot_start = timezone.make_aware(
-                datetime.combine(target_date, sched.start_time),
-                tz,
-            )
-            slot_end = timezone.make_aware(
-                datetime.combine(target_date, sched.end_time),
-                tz,
-            )
-            current = slot_start
-            duration = timedelta(minutes=sched.slot_duration_min)
-            while current + duration <= slot_end:
-                normalized = current.replace(second=0, microsecond=0)
-                if normalized not in booked:
-                    slots.append(
-                        slot_to_dict(
-                            current,
-                            current + duration,
-                            doctor_name=doctor.full_name,
-                            doctor_id=str(doctor.id),
-                        )
-                    )
-                current += duration
-                if len(slots) >= 20:
-                    break
+    slots = compute_slots_for_day(
+        clinic,
+        target_date=target_date,
+        doctors=doctors,
+        max_slots=20,
+        excluded_keys=active_holds_for_date(clinic, target_date),
+    )
 
     found = bool(slots)
     summary = (

@@ -65,6 +65,19 @@ class RoutingEvalBatteryTests(SimpleTestCase):
         ]
         self.assertEqual(bad, [], msg=f"duration stolen by clinic_hours: {bad[:5]}")
 
+    def test_no_adversarial_case_becomes_emergency(self):
+        """Casual/slang phrasing about being sick, booking, or insurance must
+        never accidentally trip the safety-critical emergency lane — the one
+        hard invariant among the Gen-Z/slang adversarial batch (see
+        apps/chatbot/eval/cases.py's "Adversarial" section for how those
+        cases' expected/acceptable lanes were derived from actually running
+        this battery, not guessed)."""
+        cases = [c for c in build_eval_cases(target=520) if "adversarial" in c.tags]
+        self.assertTrue(cases, "adversarial cases were not generated")
+        report = evaluate_cases(cases)
+        bad = [r for r in report.results if r.predicted_lane == "emergency"]
+        self.assertEqual(bad, [], msg=f"adversarial phrasing misrouted to emergency: {bad[:5]}")
+
     def test_find_doctor_please_is_sql(self):
         from apps.chatbot.eval.cases import EvalCase
         from apps.chatbot.eval.runner import evaluate_routing_case

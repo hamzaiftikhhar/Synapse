@@ -7,11 +7,11 @@ LLM orchestration fields (needs_sql, needs_vector, needs_llm, sql_tool,
 document_needed) are deprecated: parser may still accept them, but this
 planner ignores them when choosing tasks.
 """
-#give me 3 lines about this file? this file is used to decide what the executor should do this turn. 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
 
 from apps.chatbot.nlu.schemas import Intent, NLUResult, Route
@@ -152,6 +152,17 @@ class PlannerScores:
         }
 
 
+class UIPriority(str, Enum):
+    """How much interactive chrome the renderer may attach this turn."""
+
+    NONE = "none"
+    INLINE = "inline"
+    OPTIONAL = "optional"
+    PRIMARY = "primary"
+    BOOKING = "booking"
+    EMERGENCY = "emergency"
+
+
 @dataclass(frozen=True)
 class ExecutionPlan:
     """Source of truth for what the executor should do this turn."""
@@ -199,6 +210,37 @@ class ExecutionPlan:
         """Alias for callers that still expect .lane."""
         return self.primary_lane
 
+    @property
+    def ui_priority(self) -> UIPriority:
+        """Backend-only UI density — cards/chips gated in ui_meta + message-parser."""
+        if self.emergency or self.direct_mode == "emergency":
+            return UIPriority.EMERGENCY
+        if self.booking:
+            return UIPriority.BOOKING
+        intent = str(self.facts.get("intent") or "")
+        if self.clarify and not (self.sql_tasks or self.vector_tasks or self.booking):
+            return UIPriority.INLINE
+        if intent in {
+            Intent.INSURANCE_ACCEPTED.value,
+            Intent.INSURANCE_VERIFICATION.value,
+            Intent.CLINIC_HOURS.value,
+            Intent.CLINIC_LOCATION.value,
+            Intent.FAQ.value,
+            Intent.PRICING.value,
+            Intent.MEMBERSHIP.value,
+        }:
+            return UIPriority.NONE
+        if intent in {
+            Intent.DOCTOR_SEARCH.value,
+            Intent.DOCTOR_AVAILABILITY.value,
+        }:
+            return UIPriority.PRIMARY
+        if intent == Intent.SERVICES_OFFERED.value and "services" in self.sql_tasks:
+            return UIPriority.NONE
+        if self.sql_tasks and not self.vector_tasks:
+            return UIPriority.OPTIONAL
+        return UIPriority.OPTIONAL
+
     def to_route(self) -> Route:
         if self.emergency or self.direct_mode == "emergency":
             return Route.EMERGENCY
@@ -235,6 +277,7 @@ class ExecutionPlan:
             "lane": self.primary_lane.value,
             "soft_medical": self.soft_medical,
             "doctor_followup": self.doctor_followup,
+            "ui_priority": self.ui_priority.value,
         }
 
     def to_planner_decision(self) -> PlannerDecision:

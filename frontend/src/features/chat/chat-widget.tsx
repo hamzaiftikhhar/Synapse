@@ -311,7 +311,20 @@ export function ChatWidget({
         if (bookingMeta && typeof bookingMeta === "object") {
           lastBookingMetaRef.current = bookingMeta as Record<string, unknown>;
         }
-        setMessages((prev) => [...prev, ...parsed.messages]);
+        const bookingUpdate = parsed.bookingUpdate;
+        setMessages((prev) => {
+          const next = [...prev, ...parsed.messages];
+          if (!bookingUpdate) return next;
+          // Booking already in progress — update the existing wizard card in
+          // place instead of the backend minting a second one.
+          return next.map((m) =>
+            m.type === "booking_wizard" &&
+            (m.payload as Record<string, unknown> | undefined)?.booking_id ===
+              bookingUpdate.bookingId
+              ? { ...m, payload: { ...(m.payload ?? {}), ...bookingUpdate.patch } }
+              : m
+          );
+        });
       } catch (err) {
         // Log timeout vs network for ops; user-facing copy stays friendly.
         const ax = err as { code?: string; message?: string; response?: { status?: number } };
@@ -361,6 +374,18 @@ export function ChatWidget({
 
   function handleBookingDismiss(messageId: string) {
     setDismissedWizards((prev) => new Set(prev).add(messageId));
+  }
+
+  function handleBookingStarted(messageId: string, bookingId: string) {
+    // Stamp the wizard card's own payload with its booking_id so a later
+    // turn's bookingUpdate (matched by booking_id) can find this message.
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.id === messageId && m.payload?.booking_id !== bookingId
+          ? { ...m, payload: { ...(m.payload ?? {}), booking_id: bookingId } }
+          : m
+      )
+    );
   }
 
   function handleAction(action: string, data?: unknown) {
@@ -424,6 +449,25 @@ export function ChatWidget({
         (doctor.name
           ? `I would like to book an appointment with ${doctor.name}`
           : "");
+      if (fallback) void sendText(fallback);
+      return;
+    }
+
+    if (action === "select_insurance") {
+      // InsuranceCards handles selection locally — no re-ask in chat
+      return;
+    }
+
+    if (action === "book_appointment") {
+      void sendText("I would like to book an appointment");
+      return;
+    }
+
+    if (action === "select_service") {
+      const service = data as { name?: string; select_message?: string };
+      const fallback =
+        service.select_message ||
+        (service.name ? `I would like to book ${service.name}` : "");
       if (fallback) void sendText(fallback);
       return;
     }
@@ -495,6 +539,7 @@ export function ChatWidget({
                 }
                 onBookingConfirmed={handleBookingConfirmed}
                 onBookingDismiss={handleBookingDismiss}
+                onBookingStarted={handleBookingStarted}
               />
             ))}
             {typing ? (
