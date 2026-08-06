@@ -147,6 +147,7 @@ class ChatEngine:
             is_specialty_list_query,
             is_urgent_availability_request,
             match_services_in_message,
+            mentions_doctor,
         )
         from apps.chatbot.nlu.resolvers import (
             did_you_mean_doctor_reply,
@@ -209,7 +210,19 @@ class ChatEngine:
             ctx.get("last_insurance") if isinstance(ctx.get("last_insurance"), dict) else None
         )
 
-        doctor_resolution = resolve_doctor_candidates(clinic, message)
+        # Only attempt fuzzy doctor resolution (DB query + scoring) when the
+        # message plausibly names a doctor — either a "dr"/"doctor"/"doc" cue
+        # word, or NLU already extracted a doctor_name entity by semantic
+        # understanding (e.g. "book with Aris Thorne", no literal "Dr.").
+        # resolve_doctor_candidates("") short-circuits to its own "nothing to
+        # resolve" result before touching the DB, so this reuses its own
+        # definition of that state rather than duplicating the literal here.
+        doctor_mentioned = mentions_doctor(message) or bool(
+            getattr(nlu_result.entities, "doctor_name", None)
+        )
+        doctor_resolution = resolve_doctor_candidates(
+            clinic, message if doctor_mentioned else ""
+        )
         if doctor_resolution.doctor and doctor_resolution.confidence_band == "high":
             doc = doctor_resolution.doctor
             last_doctor = doc

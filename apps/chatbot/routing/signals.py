@@ -367,6 +367,13 @@ def mentions_doctor_with_temporal(message: str) -> bool:
     return bool(_DOCTOR_CUE_RE.search(text) and _DAY_TOKEN_RE.search(text))
 
 
+def mentions_doctor(message: str) -> bool:
+    """Cheap pre-check: does this message plausibly name/reference a doctor
+    at all? Used to gate the fuzzy doctor-name resolver so it isn't run
+    (DB query + fuzzy scoring) on every single message regardless of intent."""
+    return bool(_DOCTOR_CUE_RE.search(message or ""))
+
+
 def is_business_hours_query(message: str) -> bool:
     text = (message or "").strip()
     if not text:
