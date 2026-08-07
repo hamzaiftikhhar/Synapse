@@ -22,6 +22,7 @@ import {
   insuranceSelectedMessage,
   parseChatResponse,
   systemErrorMessage,
+  systemNoticeMessage,
   userTextMessage,
 } from "@/features/chat/message-parser";
 import type { BackendAction } from "@/features/chat/types";
@@ -32,6 +33,7 @@ import {
   useStaffChat,
 } from "@/hooks/api";
 import { readSelectedInsurance } from "@/hooks/use-selected-insurance";
+import { widgetAppointmentsService } from "@/services";
 import { useAuth } from "@/providers/auth-provider";
 import { useWidget, type AssistantMode } from "@/providers/widget-provider";
 import type { BookingStepPayload } from "@/types/api";
@@ -375,6 +377,14 @@ export function ChatWidget({
     runBackendAction(action, (msg) => void sendText(msg));
   }
 
+  function handleIdentityVerified() {
+    // Continue exactly where the user left off — re-send the message that
+    // triggered verification (e.g. "cancel my appointment") now that
+    // session.is_authenticated is set, instead of asking them to repeat it.
+    const msg = lastUserMessageRef.current;
+    if (msg) void sendText(msg);
+  }
+
   function handleBookingConfirmed(_payload: BookingStepPayload) {
     // Confirmation stays inside the wizard card only — no duplicate chat message
     setMessages((prev) =>
@@ -503,6 +513,59 @@ export function ChatWidget({
       if (fallback) void sendText(fallback);
       return;
     }
+
+    if (action === "confirm_cancel_appointment") {
+      const appt = data as { id?: string; doctor?: string };
+      if (!appt.id) return;
+      const appointmentId = appt.id;
+      void (async () => {
+        try {
+          await widgetAppointmentsService.cancel({
+            clinic_slug: bookingClinicSlug,
+            session_token: widgetCtx.sessionToken || "",
+            appointment_id: appointmentId,
+          });
+          setMessages((prev) => [
+            ...prev,
+            systemNoticeMessage(
+              appt.doctor
+                ? `Your appointment with ${appt.doctor} has been cancelled.`
+                : "Your appointment has been cancelled."
+            ),
+          ]);
+        } catch {
+          setMessages((prev) => [
+            ...prev,
+            systemErrorMessage("Couldn't cancel that appointment — please try again."),
+          ]);
+        }
+      })();
+      return;
+    }
+
+    if (action === "confirm_reschedule_appointment") {
+      const appt = data as { id?: string };
+      if (!appt.id) return;
+      const appointmentId = appt.id;
+      void (async () => {
+        try {
+          const result = await widgetAppointmentsService.reschedule({
+            clinic_slug: bookingClinicSlug,
+            session_token: widgetCtx.sessionToken || "",
+            appointment_id: appointmentId,
+          });
+          void sendText(
+            `I would like to book an appointment with ${result.doctor_name}`
+          );
+        } catch {
+          setMessages((prev) => [
+            ...prev,
+            systemErrorMessage("Couldn't start rescheduling — please try again."),
+          ]);
+        }
+      })();
+      return;
+    }
   }
 
   function closeAll() {
@@ -563,6 +626,7 @@ export function ChatWidget({
                 showContextActions={m.id === lastActionMessageId && !typing}
                 assistantName={`${displayName} Assistant`}
                 clinicSlug={canBook ? bookingClinicSlug : undefined}
+                sessionToken={widgetCtx.sessionToken}
                 bookingWizardActive={
                   m.type === "booking_wizard" &&
                   m.id === activeWizardId &&
@@ -572,6 +636,7 @@ export function ChatWidget({
                 onBookingConfirmed={handleBookingConfirmed}
                 onBookingDismiss={handleBookingDismiss}
                 onBookingStarted={handleBookingStarted}
+                onIdentityVerified={handleIdentityVerified}
               />
             ))}
             {typing ? (

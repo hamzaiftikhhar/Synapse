@@ -135,7 +135,7 @@ class OTPSendIn(Schema):
 class OTPSendOut(Schema):
     message: str
     session_token: str
-    patient_id: int
+    patient_id: UUID
     expires_in_minutes: int
     channel: str = "sms"
     debug_code: str | None = None
@@ -152,7 +152,7 @@ class OTPVerifyIn(Schema):
 
 
 class PatientAuthOut(Schema):
-    id: int
+    id: UUID
     phone: str
     first_name: str
     last_name: str

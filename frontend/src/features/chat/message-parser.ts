@@ -133,6 +133,25 @@ function appendMetaComponents(
     });
   }
 
+  if (Array.isArray(meta.appointments) && meta.appointments.length && allow("appointments")) {
+    messages.push({
+      id: uid("appt"),
+      role,
+      type: "appointments",
+      createdAt: now,
+      payload: { appointments: meta.appointments },
+    });
+  }
+
+  if (meta.verify_identity && allow("verify_identity")) {
+    messages.push({
+      id: uid("verify"),
+      role,
+      type: "verify_identity",
+      createdAt: now,
+    });
+  }
+
   if (Array.isArray(meta.hours) && meta.hours.length) {
     messages.push({
       id: uid("hours"),
@@ -306,6 +325,17 @@ export function userTextMessage(content: string): ChatMessage {
 export function systemErrorMessage(content: string): ChatMessage {
   return {
     id: uid("err"),
+    role: "system",
+    type: "system",
+    content,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+/** Local success/status notice — e.g. after cancelling an appointment. */
+export function systemNoticeMessage(content: string): ChatMessage {
+  return {
+    id: uid("notice"),
     role: "system",
     type: "system",
     content,

@@ -13,6 +13,8 @@ export { CalendarMessage } from "./calendar-message";
 export { DatePickerMessage } from "./date-picker-message";
 export { TimeSlotsMessage } from "./time-slots-message";
 export { AppointmentFormMessage } from "./appointment-form-message";
+export { AppointmentCards } from "./appointment-card";
+export { VerifyIdentity } from "./verify-identity";
 export { ConfirmationCard } from "./confirmation-card";
 export { ClinicLocationCard } from "./clinic-location-card";
 export { ImageMessage } from "./image-message";

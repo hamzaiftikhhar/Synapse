@@ -19,6 +19,8 @@ import { CalendarMessage } from "./calendar-message";
 import { DatePickerMessage } from "./date-picker-message";
 import { TimeSlotsMessage } from "./time-slots-message";
 import { AppointmentFormMessage } from "./appointment-form-message";
+import { AppointmentCards } from "./appointment-card";
+import { VerifyIdentity } from "./verify-identity";
 import { ConfirmationCard } from "./confirmation-card";
 import { ClinicLocationCard } from "./clinic-location-card";
 import { ImageMessage } from "./image-message";
@@ -30,10 +32,12 @@ export function MessageRenderer({
   showContextActions,
   assistantName,
   clinicSlug,
+  sessionToken,
   bookingWizardActive,
   onBookingConfirmed,
   onBookingDismiss,
   onBookingStarted,
+  onIdentityVerified,
   typingHint,
 }: {
   message: ChatMessage;
@@ -42,10 +46,12 @@ export function MessageRenderer({
   showContextActions?: boolean;
   assistantName?: string;
   clinicSlug?: string;
+  sessionToken?: string | null;
   bookingWizardActive?: boolean;
   onBookingConfirmed?: (payload: BookingStepPayload) => void;
   onBookingDismiss?: (messageId: string) => void;
   onBookingStarted?: (messageId: string, bookingId: string) => void;
+  onIdentityVerified?: () => void;
   /** Last user message — used for calm typing status copy. */
   typingHint?: string;
 }) {
@@ -115,6 +121,23 @@ export function MessageRenderer({
       break;
     case "appointment_form":
       body = <AppointmentFormMessage message={message} onAction={onAction} />;
+      break;
+    case "appointments":
+      body = (
+        <AppointmentCards
+          appointments={(message.payload?.appointments as never[]) || []}
+          onAction={onAction}
+        />
+      );
+      break;
+    case "verify_identity":
+      body = clinicSlug ? (
+        <VerifyIdentity
+          clinicSlug={clinicSlug}
+          sessionToken={sessionToken ?? null}
+          onVerified={() => onIdentityVerified?.()}
+        />
+      ) : null;
       break;
     case "booking_wizard":
       body = clinicSlug ? (

@@ -66,6 +66,69 @@ class UiOrchestratorTests(SimpleTestCase):
         self.assertIn("booking", meta)
         self.assertTrue(meta["booking"]["launch"])
 
+    @patch("apps.chatbot.booking.discovery.suggest_specialties", return_value=([], ""))
+    def test_unauthenticated_cancel_shows_verify_identity(self, _mock_suggest):
+        """patient_appointments returns meta={requires_auth: True} when
+        ctx.patient is None (apps/chatbot/sql_tool/handlers/appointments.py)
+        — that must surface as a structured verify_identity card, not just
+        prose the user has to read, and it must win primary_component.
+
+        Regression: "I want to cancel my appointment" is a *transactional*
+        cancel, so planner.py also sets exec_plan.booking=True — and
+        build_ui_meta's booking-card branch used to `return` before the
+        sql_results loop that reads patient_appointments ever ran, so
+        verify_identity was silently dropped whenever this happened
+        together with a real cancel/reschedule request (i.e. always, since
+        patient_appointments only ever fires for those two intents)."""
+        meta = build_ui_meta(
+            clinic=type("C", (), {"name": "Test", "phone": ""})(),
+            intent="cancel_appointment",
+            route="sql_fast",
+            sql_results=[
+                {
+                    "handler": "patient_appointments",
+                    "found": False,
+                    "rows": [],
+                    "meta": {"requires_auth": True, "auth_prompt": True},
+                }
+            ],
+            message="I want to cancel my appointment",
+            ui_priority="booking",
+            exec_plan_booking=True,
+        )
+        self.assertTrue(meta.get("verify_identity"))
+        self.assertEqual(meta.get("primary_component"), "verify_identity")
+
+    def test_authenticated_cancel_shows_appointment_cards(self):
+        meta = build_ui_meta(
+            clinic=type("C", (), {"name": "Test", "phone": ""})(),
+            intent="cancel_appointment",
+            route="sql_fast",
+            sql_results=[
+                {
+                    "handler": "patient_appointments",
+                    "found": True,
+                    "rows": [
+                        {
+                            "id": "a1",
+                            "doctor": "Dr. Thorne",
+                            "doctor_id": "d1",
+                            "service": "Cleaning",
+                            "start_time": "2026-08-10T09:00:00",
+                            "end_time": "2026-08-10T09:30:00",
+                            "status": "confirmed",
+                            "confirmation_code": "ABC123",
+                        }
+                    ],
+                }
+            ],
+            ui_priority="booking",
+        )
+        self.assertNotIn("verify_identity", meta)
+        self.assertEqual(meta.get("primary_component"), "appointments")
+        self.assertEqual(meta["appointments"][0]["doctor"], "Dr. Thorne")
+        self.assertEqual(meta["appointments"][0]["id"], "a1")
+
     def test_cancel_appointment_knowledge_question_gets_no_booking_card(self):
         """The planner deliberately keeps exec_plan.booking=False for a
         knowledge-only cancel question (e.g. "what's your cancellation fee?")

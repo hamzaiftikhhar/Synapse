@@ -227,6 +227,35 @@ export const widgetService = {
   },
 };
 
+/* ─── Appointments (widget, OTP-verified session) ──────────── */
+
+export const widgetAppointmentsService = {
+  async cancel(input: {
+    clinic_slug: string;
+    session_token: string;
+    appointment_id: string;
+  }) {
+    const { data } = await widgetApi.post<{ detail: string; appointment_id: string }>(
+      "/widget/appointments/cancel",
+      input
+    );
+    return data;
+  },
+  async reschedule(input: {
+    clinic_slug: string;
+    session_token: string;
+    appointment_id: string;
+  }) {
+    const { data } = await widgetApi.post<{
+      detail: string;
+      appointment_id: string;
+      doctor_id: string;
+      doctor_name: string;
+    }>("/widget/appointments/reschedule", input);
+    return data;
+  },
+};
+
 /* ─── Booking wizard ───────────────────────────────────────── */
 
 export const bookingService = {

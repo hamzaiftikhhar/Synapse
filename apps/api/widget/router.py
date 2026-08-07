@@ -38,6 +38,24 @@ class MarketingChatIn(Schema):
     message: str
 
 
+class AppointmentActionIn(Schema):
+    clinic_slug: str
+    session_token: str
+    appointment_id: str
+
+
+class AppointmentCancelOut(Schema):
+    detail: str
+    appointment_id: str
+
+
+class AppointmentRescheduleOut(Schema):
+    detail: str
+    appointment_id: str
+    doctor_id: str
+    doctor_name: str
+
+
 def _resolve_clinic(slug: str) -> Clinic:
     try:
         clinic = Clinic.objects.get(slug=slug)
@@ -92,13 +110,14 @@ def guest_chat_message(request, payload: WidgetChatIn):
         raise HttpError(422, "Message too long")
 
     session = _resolve_guest_session(clinic, payload.session_token)
+    patient = session.patient if session.is_authenticated else None
 
     try:
         result = ChatEngine().process(
             clinic=clinic,
             message=message,
             session=session,
-            patient=None,
+            patient=patient,
         )
     except Exception as exc:
         logger.exception("Guest chat failed clinic=%s", clinic.id)
@@ -109,6 +128,55 @@ def guest_chat_message(request, payload: WidgetChatIn):
     out = _to_out(result)
     out.meta = {**out.meta, "session_token": session.session_token}
     return out
+
+
+@router.post("/appointments/cancel", response=AppointmentCancelOut, auth=None)
+def cancel_appointment(request, payload: AppointmentActionIn):
+    """Cancel a patient's own appointment — requires an OTP-verified session."""
+    from apps.appointments.models import Appointment, AppointmentStatus
+
+    clinic = _resolve_clinic(payload.clinic_slug)
+    session = _resolve_authenticated_session(clinic, payload.session_token)
+    try:
+        appt = Appointment.objects.get(
+            id=payload.appointment_id, clinic=clinic, patient=session.patient
+        )
+    except (Appointment.DoesNotExist, ValueError):
+        raise HttpError(404, "Appointment not found") from None
+
+    appt.status = AppointmentStatus.CANCELLED
+    appt.save(update_fields=["status", "updated_at"])
+    return AppointmentCancelOut(detail="Appointment cancelled", appointment_id=str(appt.id))
+
+
+@router.post("/appointments/reschedule", response=AppointmentRescheduleOut, auth=None)
+def reschedule_appointment(request, payload: AppointmentActionIn):
+    """
+    Cancel a patient's own appointment to make way for a new one with the
+    same doctor — the frontend follows this with the existing "book with
+    doctor X" chat flow to pick a new date/time (booking wizard, unchanged).
+    """
+    from apps.appointments.models import Appointment, AppointmentStatus
+
+    clinic = _resolve_clinic(payload.clinic_slug)
+    session = _resolve_authenticated_session(clinic, payload.session_token)
+    try:
+        appt = Appointment.objects.select_related("doctor").get(
+            id=payload.appointment_id, clinic=clinic, patient=session.patient
+        )
+    except (Appointment.DoesNotExist, ValueError):
+        raise HttpError(404, "Appointment not found") from None
+
+    doctor_id = str(appt.doctor_id)
+    doctor_name = appt.doctor.full_name
+    appt.status = AppointmentStatus.CANCELLED
+    appt.save(update_fields=["status", "updated_at"])
+    return AppointmentRescheduleOut(
+        detail="Appointment cancelled — let's find a new time",
+        appointment_id=str(appt.id),
+        doctor_id=doctor_id,
+        doctor_name=doctor_name,
+    )
 
 
 @router.post("/chat/marketing", response=ChatMessageOut, auth=None)
@@ -145,3 +213,22 @@ def _resolve_guest_session(clinic: Clinic, session_token: str | None):
         status=ChatSessionStatus.ACTIVE,
         last_active_at=timezone.now(),
     )
+
+
+def _resolve_authenticated_session(clinic: Clinic, session_token: str):
+    """A chat session that has already completed OTP verification
+    (apps/api/auth/patient_router.py's /otp/verify sets session.patient +
+    is_authenticated when given this same session_token)."""
+    from apps.chatbot.models import ChatSession, ChatSessionStatus
+
+    try:
+        session = ChatSession.objects.get(
+            clinic=clinic,
+            session_token=session_token,
+            status=ChatSessionStatus.ACTIVE,
+        )
+    except ChatSession.DoesNotExist:
+        raise HttpError(404, "Session not found") from None
+    if not session.is_authenticated or session.patient_id is None:
+        raise HttpError(401, "Verification required")
+    return session

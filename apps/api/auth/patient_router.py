@@ -13,7 +13,9 @@ from apps.api.auth.schemas import (
     PatientAuthOut,
     PatientTokenOut,
 )
-from apps.chatbot.services.otp_service import OTPError, send_otp, verify_otp
+from apps.chatbot.services.otp_service import OTPError
+from apps.chatbot.services.otp_service import send_otp as send_otp_service
+from apps.chatbot.services.otp_service import verify_otp as verify_otp_service
 from apps.clinics.models import Clinic, ClinicStatus
 
 router = Router(tags=["Auth — Patient (Widget)"])
@@ -58,7 +60,7 @@ def send_otp(request, payload: OTPSendIn):
     """
     clinic = _resolve_clinic(payload.clinic_slug)
     try:
-        result = send_otp(
+        result = send_otp_service(
             clinic=clinic,
             phone=payload.phone or "",
             email=payload.email or "",
@@ -85,7 +87,7 @@ def verify_otp(request, payload: OTPVerifyIn):
     """Verify OTP and issue a short-lived patient JWT."""
     clinic = _resolve_clinic(payload.clinic_slug)
     try:
-        result = verify_otp(
+        result = verify_otp_service(
             clinic=clinic,
             phone=payload.phone or "",
             email=payload.email or "",

@@ -10,6 +10,8 @@ export type ChatMessageType =
   | "date_picker"
   | "time_slots"
   | "appointment_form"
+  | "appointments"
+  | "verify_identity"
   | "booking_wizard"
   | "confirmation"
   | "clinic_location"
@@ -68,6 +70,17 @@ export type TimeSlotData = {
   id: string;
   label: string;
   start: string;
+};
+
+export type AppointmentCardData = {
+  id: string;
+  doctor: string;
+  doctor_id?: string;
+  service?: string;
+  start_time: string;
+  end_time?: string;
+  status?: string;
+  confirmation_code?: string;
 };
 
 export type MainMenuItem = {

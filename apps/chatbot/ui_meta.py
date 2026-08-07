@@ -43,6 +43,19 @@ def build_ui_meta(
         ),
     }
 
+    # patient_appointments must be handled before the booking-card early
+    # return below (a transactional cancel/reschedule also sets
+    # exec_plan.booking=True, e.g. "book a new visit instead") — otherwise
+    # that return skips it before the main sql_results loop ever runs it.
+    for block in sql_results:
+        if block.get("handler") == "patient_appointments":
+            appt_rows = block.get("rows") or []
+            if appt_rows:
+                meta["appointments"] = [_map_appointment(r) for r in appt_rows]
+            elif (block.get("meta") or {}).get("requires_auth"):
+                meta["verify_identity"] = True
+            break
+
     # Book appointment / reschedule → embed wizard in chat (Homey-style).
     # Cancel only gets the wizard when planner.py's `booking` flag is set —
     # it turns transactional cancel requests into booking=True but leaves
@@ -205,8 +218,8 @@ def build_ui_meta(
                     }
                 )
 
-        elif handler == "patient_appointments" and rows:
-            meta["appointments"] = rows
+        # patient_appointments already handled above, before the
+        # booking-card early return.
 
     meta["actions"] = _contextual_actions(
         intent,
@@ -256,6 +269,8 @@ def orchestrate_ui_meta(
 
 
 def _pick_primary_component(meta: dict[str, Any], *, intent: str) -> str | None:
+    if meta.get("verify_identity"):
+        return "verify_identity"
     if meta.get("booking", {}).get("launch"):
         return "booking"
     if meta.get("time_slots"):
@@ -459,6 +474,19 @@ def _map_slot(row: dict[str, Any]) -> dict[str, Any]:
         "start": row.get("start", ""),
         "doctor": row.get("doctor", ""),
         "doctor_id": row.get("doctor_id"),
+    }
+
+
+def _map_appointment(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row.get("id"),
+        "doctor": row.get("doctor", ""),
+        "doctor_id": row.get("doctor_id"),
+        "service": row.get("service", ""),
+        "start_time": row.get("start_time", ""),
+        "end_time": row.get("end_time", ""),
+        "status": row.get("status", ""),
+        "confirmation_code": row.get("confirmation_code", ""),
     }
 
 
