@@ -27,6 +27,11 @@ class BookingStartIn(Schema):
     specialty_name: str | None = None
     doctor_id: str | None = None
     doctor_name: str | None = None
+    service_id: str | None = None
+    service_name: str | None = None
+    slot_start: str | None = None
+    slot_end: str | None = None
+    insurance_name: str | None = None
 
 
 class BookingStepIn(Schema):
@@ -111,6 +116,11 @@ def booking_start(request, payload: BookingStartIn):
             specialty_name=payload.specialty_name,
             doctor_id=payload.doctor_id,
             doctor_name=payload.doctor_name,
+            service_id=payload.service_id,
+            service_name=payload.service_name,
+            slot_start=payload.slot_start,
+            slot_end=payload.slot_end,
+            insurance_name=payload.insurance_name,
         )
     except BookingError as exc:
         raise HttpError(exc.status_code, str(exc)) from exc

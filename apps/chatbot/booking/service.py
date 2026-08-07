@@ -49,9 +49,14 @@ class BookingService:
         doctor_name: str | None = None,
         service_id: str | None = None,
         service_name: str | None = None,
+        slot_start: str | None = None,
+        slot_end: str | None = None,
+        insurance_name: str | None = None,
     ) -> dict[str, Any]:
         cfg = get_booking_config(clinic)
         text = (reason or message or "").strip()
+        if insurance_name and insurance_name not in text:
+            text = f"{text} (insurance: {insurance_name})".strip() if text else f"Book with {insurance_name}"
 
         existing = cls._load_active(chat_session)
         resuming = existing is not None
@@ -83,6 +88,14 @@ class BookingService:
             resuming=resuming,
         )
         cls._apply_date_time_hint(session, clinic, text)
+        cls._apply_slot_prefill(
+            session,
+            clinic,
+            slot_start=slot_start,
+            slot_end=slot_end,
+            doctor_id=doctor_id or session.doctor_id,
+            doctor_name=doctor_name or session.doctor_name,
+        )
 
         cls._touch(session)
         cls._save(chat_session, session)
@@ -232,6 +245,46 @@ class BookingService:
             BookingStep.DATE.value,
         }:
             session.step = BookingStep.TIME.value
+
+    @classmethod
+    def _apply_slot_prefill(
+        cls,
+        session: BookingSession,
+        clinic: Any,
+        *,
+        slot_start: str | None,
+        slot_end: str | None,
+        doctor_id: str | None,
+        doctor_name: str | None,
+    ) -> None:
+        """Jump straight to details when the patient tapped a concrete slot."""
+        start = (slot_start or "").strip()
+        end = (slot_end or "").strip()
+        did = str(doctor_id or session.doctor_id or "").strip()
+        if not start or not end or not did:
+            return
+
+        session.mode = "choose_doctor"
+        session.doctor_id = did
+        session.doctor_name = doctor_name or cls._doctor_name(clinic, did) or session.doctor_name
+        try:
+            parsed = datetime.fromisoformat(start.replace("Z", "+00:00"))
+            session.date = parsed.date().isoformat()
+        except Exception:
+            pass
+
+        if cls._slot_still_open(clinic, doctor_id=did, start=start):
+            session.slot_start = start
+            session.slot_end = end
+            cls._hold_internal(session, clinic)
+            session.step = BookingStep.DETAILS.value
+            return
+
+        # Slot taken — keep doctor, ask for another time
+        session.slot_start = None
+        session.slot_end = None
+        session.show_all_times = False
+        session.step = BookingStep.DATE.value
 
     @classmethod
     def apply_step(

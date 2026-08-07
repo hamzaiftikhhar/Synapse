@@ -26,6 +26,11 @@ export type BookingWizardProps = {
   specialtyName?: string | null;
   doctorId?: string | null;
   doctorName?: string | null;
+  serviceId?: string | null;
+  serviceName?: string | null;
+  slotStart?: string | null;
+  slotEnd?: string | null;
+  insuranceName?: string | null;
   /** When false, wizard is read-only / collapsed after confirm or dismiss. */
   active?: boolean;
   onConfirmed?: (payload: BookingStepPayload) => void;
@@ -42,6 +47,11 @@ export function BookingWizard({
   specialtyName = null,
   doctorId = null,
   doctorName = null,
+  serviceId = null,
+  serviceName = null,
+  slotStart = null,
+  slotEnd = null,
+  insuranceName = null,
   active = true,
   onConfirmed,
   onDismiss,
@@ -91,6 +101,11 @@ export function BookingWizard({
         specialty_name: specialtyName,
         doctor_id: doctorId,
         doctor_name: doctorName,
+        service_id: serviceId,
+        service_name: serviceName,
+        slot_start: slotStart,
+        slot_end: slotEnd,
+        insurance_name: insuranceName,
       });
       syncToken(payload);
       setState(payload);
@@ -109,6 +124,11 @@ export function BookingWizard({
     specialtyName,
     doctorId,
     doctorName,
+    serviceId,
+    serviceName,
+    slotStart,
+    slotEnd,
+    insuranceName,
     syncToken,
     onStarted,
   ]);
@@ -122,18 +142,25 @@ export function BookingWizard({
   // Chat resolved a new doctor/specialty for this same booking (e.g. "actually
   // Dr. Y") — re-call start() so the (now resume-safe) backend updates the
   // existing draft in place rather than the UI going stale.
-  const prevHints = useRef({ specialtyId, doctorId });
+  const prevHints = useRef({
+    specialtyId,
+    doctorId,
+    serviceId,
+    slotStart,
+  });
   useEffect(() => {
     if (!started) return;
     if (
       prevHints.current.specialtyId === specialtyId &&
-      prevHints.current.doctorId === doctorId
+      prevHints.current.doctorId === doctorId &&
+      prevHints.current.serviceId === serviceId &&
+      prevHints.current.slotStart === slotStart
     ) {
       return;
     }
-    prevHints.current = { specialtyId, doctorId };
+    prevHints.current = { specialtyId, doctorId, serviceId, slotStart };
     void start();
-  }, [started, specialtyId, doctorId, start]);
+  }, [started, specialtyId, doctorId, serviceId, slotStart, start]);
 
   const runStep = useCallback(
     async (action: string, value: Record<string, unknown> = {}) => {

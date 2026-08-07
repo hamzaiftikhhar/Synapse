@@ -105,6 +105,15 @@ class RuleClassifierTests(SimpleTestCase):
             self.assertIsNotNone(hit, msg)
             self.assertEqual(hit["intent"], "greeting", msg)
 
+    def test_fast_path_does_not_steal_booking_with_schedule(self):
+        """Booking language must reach Small LLM — rules_fast used to return
+        book_appointment with empty entities and dump the discovery wizard."""
+        hit = try_rule_classify(
+            "can you please help me to book a slot of doctor for 9 pm wednesday",
+            tier="fast",
+        )
+        self.assertIsNone(hit)
+
     def test_negation_blocks_reschedule(self):
         hit = try_rule_classify("I dont want to reschedule it", tier="strong")
         self.assertIsNone(hit)

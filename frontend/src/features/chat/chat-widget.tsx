@@ -19,6 +19,7 @@ import {
 import { MessageRenderer } from "@/features/chat/messages";
 import {
   CONNECTION_ERROR,
+  bookingWizardMessage,
   insuranceSelectedMessage,
   parseChatResponse,
   systemErrorMessage,
@@ -37,7 +38,7 @@ import { widgetAppointmentsService } from "@/services";
 import { useAuth } from "@/providers/auth-provider";
 import { useWidget, type AssistantMode } from "@/providers/widget-provider";
 import type { BookingStepPayload } from "@/types/api";
-import type { ChatMessage } from "@/types/chat";
+import type { ChatMessage, TimeSlotData } from "@/types/chat";
 import { waitForNaturalReplyPace } from "@/features/chat/natural-pace";
 
 export type ChatWidgetProps = {
@@ -470,47 +471,95 @@ export function ChatWidget({
         select_message?: string;
         message?: string;
       };
-      const fallback =
-        doctor.select_message ||
-        doctor.message ||
-        (doctor.name
-          ? `I would like to book an appointment with ${doctor.name}`
-          : "");
-      if (fallback) void sendText(fallback);
+      setMessages((prev) => [
+        ...prev,
+        bookingWizardMessage({
+          reason: doctor.name
+            ? `I would like to book an appointment with ${doctor.name}`
+            : "I would like to book an appointment",
+          doctor_id: doctor.id || undefined,
+          doctor_name: doctor.name || undefined,
+        }),
+      ]);
       return;
     }
 
     if (action === "select_slot") {
-      // TODO: this re-derives a chat message from a UI click because the
-      // booking wizard has no way to accept a prefilled slot today (no
-      // backend support for launching it pre-selected at a specific time).
-      // Replace with a real prefill-and-launch action once that exists —
-      // for now this reuses the doctor-only booking phrasing, the same
-      // already-proven path select_doctor uses above.
-      const slot = data as { doctor?: string };
-      const msg = slot.doctor
-        ? `I would like to book an appointment with ${slot.doctor}`
-        : "I would like to book an appointment";
-      void sendText(msg);
+      const slot = data as TimeSlotData;
+      if (!slot.start || !slot.doctor_id) {
+        setMessages((prev) => [
+          ...prev,
+          bookingWizardMessage({
+            reason: slot.doctor
+              ? `I would like to book an appointment with ${slot.doctor}`
+              : "I would like to book an appointment",
+            doctor_id: slot.doctor_id || undefined,
+            doctor_name: slot.doctor || undefined,
+          }),
+        ]);
+        return;
+      }
+      // Prefer a matching end; if missing, assume 30-minute slot
+      let end = slot.end || "";
+      if (!end && slot.start) {
+        const startMs = Date.parse(slot.start);
+        if (!Number.isNaN(startMs)) {
+          end = new Date(startMs + 30 * 60 * 1000).toISOString();
+        }
+      }
+      setMessages((prev) => [
+        ...prev,
+        bookingWizardMessage({
+          reason: `Book ${slot.label || slot.time || "this time"}`,
+          doctor_id: slot.doctor_id,
+          doctor_name: slot.doctor,
+          slot_start: slot.start,
+          slot_end: end,
+        }),
+      ]);
       return;
     }
 
     if (action === "book_appointment") {
-      const payload = data as { service?: string; insurance?: string };
-      if (payload?.service) {
-        void sendText(`I would like to book ${payload.service}`);
-        return;
-      }
-      void sendText("I would like to book an appointment");
+      const payload = data as {
+        service?: string;
+        service_id?: string;
+        insurance?: string;
+      };
+      const insurance =
+        payload?.insurance ||
+        readSelectedInsurance(bookingClinicSlug)?.name ||
+        undefined;
+      setMessages((prev) => [
+        ...prev,
+        bookingWizardMessage({
+          reason: payload?.service
+            ? `I would like to book ${payload.service}`
+            : "I would like to book an appointment",
+          service_name: payload?.service,
+          service_id: payload?.service_id,
+          insurance_name: insurance,
+        }),
+      ]);
       return;
     }
 
     if (action === "select_service") {
-      const service = data as { name?: string; select_message?: string };
-      const fallback =
-        service.select_message ||
-        (service.name ? `I would like to book ${service.name}` : "");
-      if (fallback) void sendText(fallback);
+      const service = data as {
+        id?: string;
+        name?: string;
+        select_message?: string;
+      };
+      setMessages((prev) => [
+        ...prev,
+        bookingWizardMessage({
+          reason: service.name
+            ? `I would like to book ${service.name}`
+            : "I would like to book an appointment",
+          service_id: service.id,
+          service_name: service.name,
+        }),
+      ]);
       return;
     }
 
@@ -554,9 +603,14 @@ export function ChatWidget({
             session_token: widgetCtx.sessionToken || "",
             appointment_id: appointmentId,
           });
-          void sendText(
-            `I would like to book an appointment with ${result.doctor_name}`
-          );
+          setMessages((prev) => [
+            ...prev,
+            bookingWizardMessage({
+              reason: `Reschedule with ${result.doctor_name}`,
+              doctor_id: result.doctor_id,
+              doctor_name: result.doctor_name,
+            }),
+          ]);
         } catch {
           setMessages((prev) => [
             ...prev,

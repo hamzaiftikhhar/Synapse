@@ -176,7 +176,7 @@ def try_rule_classify(
     if tier in {"fast", "all"}:
         hit = _match_fast(text)
         if hit:
-            return hit
+            return _with_entities(message, hit)
 
     if tier in {"safety", "all", "strong", "fallback"}:
         hit = _match_safety(message, text)
@@ -236,10 +236,11 @@ def _match_fast(text: str) -> dict[str, Any] | None:
             _classifier_source="rules_fast",
         )
 
-    # Deterministic structured lookups — skip Small LLM wait
+    # Hours only — booking/cancel/reschedule must reach Small LLM so date/time
+    # entities are extracted. Fast-path book with empty entities was dumping
+    # discovery wizard + unfiltered earliest slots.
     from apps.chatbot.routing.signals import (
         is_business_hours_query,
-        is_transactional_booking,
         looks_like_knowledge_question,
     )
 
@@ -251,23 +252,6 @@ def _match_fast(text: str) -> dict[str, Any] | None:
             can_respond_directly=False,
             reasoning_short="Clinic hours (rule fast-path)",
             topic="hours",
-            _classifier_source="rules_fast",
-        )
-
-    if is_transactional_booking(text) and not looks_like_knowledge_question(text):
-        # Reschedule / cancel-my-appointment still transactional scheduling UX
-        if re.search(r"\breschedul", text, re.I):
-            intent = Intent.RESCHEDULE_APPOINTMENT.value
-        elif re.search(r"\bcancel\b.*\bappointment\b|\bappointment\b.*\bcancel\b", text, re.I):
-            intent = Intent.CANCEL_APPOINTMENT.value
-        else:
-            intent = Intent.BOOK_APPOINTMENT.value
-        return _base_payload(
-            intent=intent,
-            confidence=0.94,
-            needs_sql=False,
-            can_respond_directly=False,
-            reasoning_short="Transactional booking (rule fast-path)",
             _classifier_source="rules_fast",
         )
 

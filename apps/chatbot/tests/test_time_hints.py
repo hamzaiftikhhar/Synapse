@@ -30,6 +30,20 @@ class ParseTimeFloorTests(SimpleTestCase):
         self.assertEqual(parse_time_floor(["morning"]), time(8, 0))
         self.assertEqual(parse_time_floor(["evening"]), time(17, 0))
 
+    def test_clock_times(self):
+        self.assertEqual(parse_time_floor(["9 pm"]), time(21, 0))
+        self.assertEqual(parse_time_floor(["10:30"]), time(10, 30))
+        self.assertEqual(parse_time_floor(["3 pm"]), time(15, 0))
+        # Clock wins over vague period when both present
+        self.assertEqual(parse_time_floor(["evening", "12 pm"]), time(12, 0))
+
+    def test_time_of_day_ceiling(self):
+        from apps.chatbot.sql_tool.utils import parse_time_ceiling
+
+        self.assertEqual(parse_time_ceiling(["morning"]), time(12, 0))
+        self.assertEqual(parse_time_ceiling(["afternoon"]), time(17, 0))
+        self.assertIsNone(parse_time_ceiling(["9 pm"]))
+
     def test_empty_returns_none(self):
         self.assertIsNone(parse_time_floor([]))
         self.assertIsNone(parse_time_floor(None))
@@ -51,6 +65,13 @@ class EntityExtractDateTimePatternsTests(SimpleTestCase):
         entities = extract_entities("I want to book Botox Friday after 5")
         self.assertIn("friday", entities["date"])
         self.assertTrue(any("after 5" in t for t in entities["time"]))
+
+    def test_extracts_clock_times(self):
+        entities = extract_entities(
+            "can you please help me to book a slot of doctor for 9 pm wednesday"
+        )
+        self.assertIn("wednesday", entities["date"])
+        self.assertTrue(any("9" in t and "pm" in t for t in entities["time"]))
 
     def test_extracts_after_work(self):
         entities = extract_entities("can I come in after work tomorrow")

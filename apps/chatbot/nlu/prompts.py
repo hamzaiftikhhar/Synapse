@@ -20,6 +20,7 @@ topic: hours|location|insurance|doctors|specialties|services|pricing|membership|
 Deprecated (optional, ignored for routing): needs_sql,needs_vector,needs_llm,sql_tool,document_needed
 Rules: arrays for multi-value entities. Compound→secondary_intents.
 Transactional book/schedule/reschedule→book_appointment|reschedule_appointment.
+Soft day/time interest ("thinking about booking Thursday", "hoping to come in next week")→book_appointment or doctor_availability with date/time entities — not faq.
 Policy/cancel fee/membership/billing→faq + topic=cancellation|membership|billing_policy.
 Emergency→emergency+is_emergency. Off-topic/chemistry→off_topic.
 Medical advice (pregnant+procedure, blood thinners+Botox, lupus+procedure)→medical_question.

@@ -30,6 +30,19 @@ def _slot_at_or_after(slot: dict, floor_time) -> bool:
         return True
 
 
+def _slot_before(slot: dict, ceiling_time) -> bool:
+    start = slot.get("start") or ""
+    if not start or ceiling_time is None:
+        return True
+    try:
+        from datetime import datetime
+
+        dt = datetime.fromisoformat(str(start).replace("Z", "+00:00"))
+        return dt.time() < ceiling_time
+    except Exception:
+        return True
+
+
 def search_doctors(ctx: SQLContext) -> SQLResult:
     from apps.doctors.models import Doctor
 
@@ -45,15 +58,19 @@ def search_doctors(ctx: SQLContext) -> SQLResult:
         qs = qs.filter(id__in=doctor_ids)
     else:
         names = entity_list(nlu.entities.doctor_name)
-        # Ignore politeness / filler tokens mistaken for names
+        # Ignore politeness / filler / availability tokens mistaken for names
+        # e.g. "is any dr free on tuesday" → "free" must not filter doctors
+        _NAME_NOISE = {
+            "please", "doctor", "doctors", "dentist", "help", "find",
+            "me", "a", "the", "good", "best", "free", "available", "open",
+            "any", "some", "all", "on", "in", "at", "morning", "afternoon",
+            "evening", "slot", "slots",
+        }
         names = [
             n
             for n in names
-            if n.lower()
-            not in {
-                "please", "doctor", "doctors", "dentist", "help", "find",
-                "me", "a", "the", "good", "best",
-            }
+            if n.lower() not in _NAME_NOISE
+            and not all(tok in _NAME_NOISE for tok in n.lower().split())
         ]
         if names:
             qs = qs.filter(build_name_filter("full_name", names))
@@ -120,7 +137,7 @@ def list_specialties(ctx: SQLContext) -> SQLResult:
 def doctor_availability(ctx: SQLContext) -> SQLResult:
     from apps.chatbot.booking.slots import active_holds_for_date, compute_slots_for_day
     from apps.doctors.models import Doctor
-    from apps.chatbot.sql_tool.utils import parse_time_floor
+    from apps.chatbot.sql_tool.utils import parse_time_ceiling, parse_time_floor
 
     clinic = ctx.clinic
     nlu = ctx.nlu
@@ -131,7 +148,9 @@ def doctor_availability(ctx: SQLContext) -> SQLResult:
     if target_date is None:
         target_date = timezone.now().astimezone(tz).date() + timedelta(days=1)
 
-    time_floor = parse_time_floor(entity_list(nlu.entities.time))
+    time_entities = entity_list(nlu.entities.time)
+    time_floor = parse_time_floor(time_entities)
+    time_ceiling = parse_time_ceiling(time_entities)
 
     doctor_qs = Doctor.objects.filter(
         clinic=clinic,
@@ -144,6 +163,18 @@ def doctor_availability(ctx: SQLContext) -> SQLResult:
         doctor_qs = doctor_qs.filter(id__in=doctor_ids)
     else:
         names = entity_list(nlu.entities.doctor_name)
+        _NAME_NOISE = {
+            "please", "doctor", "doctors", "dentist", "help", "find",
+            "me", "a", "the", "good", "best", "free", "available", "open",
+            "any", "some", "all", "on", "in", "at", "morning", "afternoon",
+            "evening", "slot", "slots",
+        }
+        names = [
+            n
+            for n in names
+            if n.lower() not in _NAME_NOISE
+            and not all(tok in _NAME_NOISE for tok in n.lower().split())
+        ]
         if names:
             doctor_qs = doctor_qs.filter(build_name_filter("full_name", names))
 
@@ -178,16 +209,28 @@ def doctor_availability(ctx: SQLContext) -> SQLResult:
             for s in slots
             if _slot_at_or_after(s, time_floor)
         ]
+    if time_ceiling is not None:
+        slots = [
+            s
+            for s in slots
+            if _slot_before(s, time_ceiling)
+        ]
 
     found = bool(slots)
-    summary = (
-        f"Found {len(slots)} available slot(s) on {target_date.strftime('%A, %B %d')}."
-        if found
-        else (
-            f"No available slots found on {target_date.strftime('%A, %B %d')}. "
-            "Try another day, or tap Start Booking to pick a time."
+    day_label = target_date.strftime("%A, %B %d")
+    if found:
+        summary = f"Found {len(slots)} available slot(s) on {day_label}."
+    elif time_entities:
+        wanted = ", ".join(time_entities)
+        summary = (
+            f"No available slots on {day_label} for {wanted}. "
+            "Try another day or time."
         )
-    )
+    else:
+        summary = (
+            f"No available slots found on {day_label}. "
+            "Try another day, or tap Book Appointment to pick a time."
+        )
     return SQLResult(
         handler="doctor_availability",
         found=found,

@@ -155,3 +155,44 @@ class UiOrchestratorTests(SimpleTestCase):
             exec_plan_booking=False,
         )
         self.assertNotIn("booking", meta)
+
+    def test_book_with_schedule_constraints_shows_slots_not_wizard(self):
+        """Book + day/time must surface availability slots, not discovery wizard."""
+        nlu = type(
+            "N",
+            (),
+            {
+                "entities": type(
+                    "E",
+                    (),
+                    {"date": ["wednesday"], "time": ["9 pm"]},
+                )(),
+                "service_filter_mode": None,
+            },
+        )()
+        meta = build_ui_meta(
+            clinic=type("C", (), {"name": "Test", "phone": ""})(),
+            intent="book_appointment",
+            route="sql_only",
+            sql_results=[
+                {
+                    "handler": "doctor_availability",
+                    "found": True,
+                    "rows": [
+                        {
+                            "doctor": "Julian Reyes",
+                            "time": "09:00 AM",
+                            "start": "2026-08-12T09:00:00",
+                            "doctor_id": "1",
+                        }
+                    ],
+                }
+            ],
+            message="book a slot for 9 pm wednesday",
+            nlu=nlu,
+            ui_priority="booking",
+            exec_plan_booking=True,
+        )
+        self.assertNotIn("booking", meta)
+        self.assertTrue(meta.get("time_slots"))
+        self.assertEqual(meta.get("primary_component"), "time_slots")

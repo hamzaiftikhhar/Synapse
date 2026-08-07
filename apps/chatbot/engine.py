@@ -945,7 +945,25 @@ class ChatEngine:
 
         booking_text = ""
         if exec_plan.booking:
-            if booking_commit:
+            has_schedule = False
+            ents = getattr(nlu, "entities", None)
+            if ents is not None:
+                date_v = getattr(ents, "date", None)
+                time_v = getattr(ents, "time", None)
+                has_schedule = date_v not in (None, "", [], ()) or time_v not in (
+                    None,
+                    "",
+                    [],
+                    (),
+                )
+            has_availability = any(
+                isinstance(block, dict) and block.get("handler") == "doctor_availability"
+                for block in sql_rows
+            )
+            # Day/time already given → slots speak; don't dump discovery prompt.
+            if has_schedule or has_availability:
+                booking_text = ""
+            elif booking_commit:
                 booking_text = "Choose a time below."
             elif matched_services or last_doctor or last_specialty:
                 booking_text = "Pick a time below to continue."

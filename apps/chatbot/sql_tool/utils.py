@@ -92,6 +92,11 @@ _TIME_FLOOR_AFTER_RE = re.compile(r"\bafter\s+(\d{1,2})\s*(am|pm)?\b", re.I)
 _AFTER_WORK_RE = re.compile(r"\bafter\s+work\b", re.I)
 _ASAP_RE = re.compile(r"\basap\b|\bas\s+soon\s+as\s+possible\b|\bnext\s+available\b", re.I)
 _SAME_DAY_RE = re.compile(r"\bsame\s+day\b", re.I)
+_CLOCK_RE = re.compile(
+    r"\b(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)\b",
+    re.I,
+)
+_CLOCK_HM_RE = re.compile(r"\b(\d{1,2}):(\d{2})\b")
 
 _TIME_OF_DAY_FLOORS: dict[str, time] = {
     "morning": time(8, 0),
@@ -101,19 +106,56 @@ _TIME_OF_DAY_FLOORS: dict[str, time] = {
     "night": time(19, 0),
 }
 
+_TIME_OF_DAY_CEILINGS: dict[str, time] = {
+    "morning": time(12, 0),
+    "afternoon": time(17, 0),
+    "evening": time(21, 0),
+    "noon": time(13, 0),
+    "night": time(23, 0),
+}
+
+
+def _parse_clock_time(text: str) -> time | None:
+    """Parse '9 pm', '9:30am', '10:30' into a time. Prefer meridiem forms."""
+    text = (text or "").strip().lower()
+    if not text:
+        return None
+    match = _CLOCK_RE.search(text)
+    if match:
+        hour = int(match.group(1))
+        minute = int(match.group(2) or 0)
+        meridiem = re.sub(r"\.", "", match.group(3)).lower()
+        if meridiem == "pm" and hour != 12:
+            hour += 12
+        elif meridiem == "am" and hour == 12:
+            hour = 0
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return time(hour, minute)
+        return None
+    if text.startswith("after"):
+        return None
+    match = _CLOCK_HM_RE.fullmatch(text.strip())
+    if match:
+        hour = int(match.group(1))
+        minute = int(match.group(2))
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return time(hour, minute)
+    return None
+
 
 def parse_time_floor(time_entities: list[str] | None) -> time | None:
     """Interpret already-extracted time-entity strings into a floor time
-    (earliest acceptable slot start). Deliberately simple, not a general NLP
-    time parser: "after work" -> 17:00; "after N[am/pm]" -> N, with colloquial
-    "after 5" (no am/pm) assumed evening (hours 1-7 and 12 -> PM, hours 8-11
-    -> AM); morning/afternoon/evening/noon/night -> a sane floor for that
-    period.
+    (earliest acceptable slot start). Clock times win over vague periods;
+    "after work" -> 17:00; "after N[am/pm]" -> N; morning/afternoon/evening
+    -> period floor.
     """
-    for raw in time_entities or []:
+    entities = [raw for raw in (time_entities or []) if (raw or "").strip()]
+    for raw in entities:
+        clock = _parse_clock_time(raw)
+        if clock is not None:
+            return clock
+    for raw in entities:
         text = (raw or "").strip().lower()
-        if not text:
-            continue
         if _AFTER_WORK_RE.search(text):
             return time(17, 0)
         match = _TIME_FLOOR_AFTER_RE.search(text)
@@ -131,6 +173,17 @@ def parse_time_floor(time_entities: list[str] | None) -> time | None:
             return time(hour % 24, 0)
         if text in _TIME_OF_DAY_FLOORS:
             return _TIME_OF_DAY_FLOORS[text]
+    return None
+
+
+def parse_time_ceiling(time_entities: list[str] | None) -> time | None:
+    """Upper bound for vague periods. Clock times have no ceiling."""
+    for raw in time_entities or []:
+        text = (raw or "").strip().lower()
+        if not text or _parse_clock_time(text) is not None:
+            continue
+        if text in _TIME_OF_DAY_CEILINGS:
+            return _TIME_OF_DAY_CEILINGS[text]
     return None
 
 

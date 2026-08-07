@@ -53,6 +53,23 @@ export function BookingInlineCard({
         doctorName={
           typeof payload?.doctor_name === "string" ? payload.doctor_name : null
         }
+        serviceId={
+          typeof payload?.service_id === "string" ? payload.service_id : null
+        }
+        serviceName={
+          typeof payload?.service_name === "string" ? payload.service_name : null
+        }
+        slotStart={
+          typeof payload?.slot_start === "string" ? payload.slot_start : null
+        }
+        slotEnd={
+          typeof payload?.slot_end === "string" ? payload.slot_end : null
+        }
+        insuranceName={
+          typeof payload?.insurance_name === "string"
+            ? payload.insurance_name
+            : null
+        }
         active={active}
         onConfirmed={onConfirmed}
         onDismiss={onDismiss}

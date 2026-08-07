@@ -23,6 +23,10 @@ _DATE_PATTERNS = [
 ]
 
 _TIME_PATTERNS = [
+    # Clock times first so they win over vague "evening" when both appear
+    r"\b\d{1,2}:\d{2}\s*(?:a\.?m\.?|p\.?m\.?)\b",
+    r"\b\d{1,2}\s*(?:a\.?m\.?|p\.?m\.?)\b",
+    r"\b\d{1,2}:\d{2}\b",
     r"\bmorning\b",
     r"\bafternoon\b",
     r"\bevening\b",
@@ -208,6 +212,10 @@ _DOCTOR_NAME_STOPWORDS = frozenset(
         "near", "for", "me", "my", "our", "your", "today", "tomorrow", "now",
         "who", "that", "this", "with", "and", "or", "to", "from", "about",
         "list", "find", "help", "need", "want", "looking", "good", "best",
+        # Availability phrasing mistaken for names: "is any dr free on tuesday"
+        "free", "open", "any", "some", "all", "on", "in", "at", "by",
+        "morning", "afternoon", "evening", "tonight", "slot", "slots",
+        "appointment", "appointments", "schedule", "scheduling",
     }
 )
 

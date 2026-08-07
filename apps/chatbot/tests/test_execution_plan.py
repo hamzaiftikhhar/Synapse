@@ -199,3 +199,31 @@ class ExecutionPlanTests(SimpleTestCase):
         )
         self.assertNotIn("hours", plan.sql_tasks)
         self.assertTrue(plan.vector_tasks)
+
+    def test_soft_schedule_faq_routes_to_availability_not_rag(self):
+        nlu = parse_nlu_payload(
+            {
+                "intent": "faq",
+                "confidence": 0.85,
+                "entities": {
+                    "date": ["Thursday"],
+                    "time": ["afternoon", "night"],
+                },
+                "topic": "general_faq",
+            }
+        )
+        plan = build_execution_plan(
+            nlu=nlu,
+            facts=_facts(
+                nlu=nlu,
+                message=(
+                    "i was thinking about booking a slot for me "
+                    "on thursday afternoon or might be night"
+                ),
+                knowledge_q=False,
+                has_catalog=True,
+            ),
+        )
+        self.assertIn("availability", plan.sql_tasks)
+        self.assertNotIn("general_faq", plan.vector_tasks)
+        self.assertFalse(plan.booking)

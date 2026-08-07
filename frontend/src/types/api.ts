@@ -407,6 +407,11 @@ export type BookingStartInput = {
   specialty_name?: string | null;
   doctor_id?: string | null;
   doctor_name?: string | null;
+  service_id?: string | null;
+  service_name?: string | null;
+  slot_start?: string | null;
+  slot_end?: string | null;
+  insurance_name?: string | null;
 };
 
 export type BookingStepInput = {

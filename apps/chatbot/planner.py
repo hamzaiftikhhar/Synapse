@@ -144,6 +144,26 @@ _CHECK_APPOINTMENT_RE = re.compile(
     re.I,
 )
 
+# Soft scheduling language with date/time — route to availability, not FAQ RAG.
+_SCHEDULING_CUE_RE = re.compile(
+    r"\b("
+    r"book|booking|slot|slots|appointment|appointments|"
+    r"schedule|scheduling|come\s+in|available|availability|"
+    r"opening|openings|see\s+(?:a|the)\s+doctor"
+    r")\b",
+    re.I,
+)
+
+
+def _nlu_has_schedule_entities(nlu: NLUResult) -> bool:
+    ents = nlu.entities
+    for attr in ("date", "time"):
+        value = getattr(ents, attr, None)
+        if value in (None, "", [], ()):
+            continue
+        return True
+    return False
+
 VALID_TOPICS = frozenset(
     {
         "hours",
@@ -639,6 +659,33 @@ def build_execution_plan(*, nlu: NLUResult, facts: PlannerFacts) -> ExecutionPla
     # Soft medical with docs may want vector; without → soft medical direct
     if facts.soft_medical and facts.doc_match and facts.has_catalog:
         add_vector("general_faq")
+
+    # Date/time + scheduling language → availability (even if NLU said faq).
+    # Do not invent more regex intents — only override the dump-to-RAG path.
+    if (
+        _nlu_has_schedule_entities(nlu)
+        and _SCHEDULING_CUE_RE.search(message)
+        and not facts.knowledge_q
+    ):
+        add_sql("availability")
+        sql_tasks = [t for t in sql_tasks if t != "hours"]
+        if nlu.intent in {
+            Intent.FAQ,
+            Intent.UNKNOWN,
+            Intent.FOLLOW_UP,
+            Intent.MEDICAL_QUESTION,
+        }:
+            vector_tasks = [
+                t
+                for t in vector_tasks
+                if t
+                not in {
+                    "general_faq",
+                    "cancellation",
+                    "membership",
+                    "billing_policy",
+                }
+            ]
 
     booking = bool(facts.is_booking_intent) and not facts.unknown_doctor_requested
 

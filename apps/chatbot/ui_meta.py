@@ -12,6 +12,25 @@ from typing import Any
 from apps.chatbot.nlu.schemas import Intent
 
 
+def _entity_nonempty(value: Any) -> bool:
+    return value not in (None, "", [], ())
+
+
+def _nlu_has_schedule_constraints(nlu: Any) -> bool:
+    if nlu is None:
+        return False
+    ents = getattr(nlu, "entities", None)
+    if ents is None:
+        return False
+    return _entity_nonempty(getattr(ents, "date", None)) or _entity_nonempty(
+        getattr(ents, "time", None)
+    )
+
+
+def _has_availability_handler(sql_results: list[dict[str, Any]]) -> bool:
+    return any(block.get("handler") == "doctor_availability" for block in sql_results)
+
+
 def build_ui_meta(
     *,
     clinic: Any,
@@ -62,10 +81,25 @@ def build_ui_meta(
     # knowledge-only cancel questions (e.g. "what's your cancellation fee")
     # as booking=False, and the card must follow that same decision or the
     # composed reply's "How would you like to book?" tail has no card behind it.
-    if intent in (
+    #
+    # Exception: when the patient already gave a day/time (or availability SQL
+    # ran), show slots — do NOT open the discovery path picker.
+    schedule_first = _nlu_has_schedule_constraints(nlu) or _has_availability_handler(
+        sql_results
+    )
+    wants_booking_wizard = intent in (
         Intent.BOOK_APPOINTMENT.value,
         Intent.RESCHEDULE_APPOINTMENT.value,
-    ) or (intent == Intent.CANCEL_APPOINTMENT.value and exec_plan_booking):
+    ) or (intent == Intent.CANCEL_APPOINTMENT.value and exec_plan_booking)
+
+    if wants_booking_wizard and not (
+        schedule_first
+        and intent
+        in {
+            Intent.BOOK_APPOINTMENT.value,
+            Intent.RESCHEDULE_APPOINTMENT.value,
+        }
+    ):
         booking_in_progress = bool(active_booking) and active_booking.get("step") != "confirmed"
 
         suggested, guidance = ([], "")
@@ -477,6 +511,9 @@ def _map_slot(row: dict[str, Any]) -> dict[str, Any]:
         "id": f"{row.get('doctor_id', '')}_{row.get('start', '')}",
         "label": f"{row.get('doctor', 'Doctor')} — {row.get('time', '')}",
         "start": row.get("start", ""),
+        "end": row.get("end", ""),
+        "date": row.get("date", ""),
+        "time": row.get("time", ""),
         "doctor": row.get("doctor", ""),
         "doctor_id": row.get("doctor_id"),
     }
@@ -504,7 +541,8 @@ def _map_insurance(row: dict[str, Any]) -> dict[str, Any]:
         "plan": plan,
         "notes": row.get("notes", ""),
         "is_accepted": row.get("is_accepted", True),
-        "select_message": f"Do you accept {provider}" + (f" {plan}" if plan else "") + "?",
+        "select_message": f"Continue booking with {provider}"
+        + (f" {plan}" if plan else ""),
     }
 
 

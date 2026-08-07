@@ -358,3 +358,20 @@ export function insuranceSelectedMessage(): ChatMessage {
     payload: { plans: [] },
   };
 }
+
+/** Launch the booking wizard in-chat without a new NLU round-trip. */
+export function bookingWizardMessage(
+  payload: Record<string, unknown> = {}
+): ChatMessage {
+  return {
+    id: uid("booking_wizard"),
+    role: "assistant",
+    type: "booking_wizard",
+    createdAt: new Date().toISOString(),
+    payload: {
+      launch: true,
+      reason: "I would like to book an appointment",
+      ...payload,
+    },
+  };
+}

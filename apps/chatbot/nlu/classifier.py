@@ -60,7 +60,7 @@ def classify_message(
     if getattr(settings, "NLU_ENABLE_RULES", True):
         safety = try_rule_classify(message, tier="safety")
         if safety is not None:
-            return _finalize_rules(safety, started)
+            return _finalize_rules(safety, started, message=message)
         if has_symptom_cues(message) and extract_emergency_symptoms(message):
             symptoms = extract_emergency_symptoms(message)
             return _finalize_rules(
@@ -81,16 +81,17 @@ def classify_message(
                     "_classifier_source": "rules_safety",
                 },
                 started,
+                message=message,
             )
 
         fast = try_rule_classify(message, tier="fast")
         if fast is not None:
-            return _finalize_rules(fast, started)
+            return _finalize_rules(fast, started, message=message)
 
         if getattr(settings, "NLU_RULES_BEFORE_LLM", False):
             strong = try_rule_classify(message, tier="strong")
             if strong is not None:
-                return _finalize_rules(strong, started)
+                return _finalize_rules(strong, started, message=message)
 
     timeout = float(getattr(settings, "NLU_API_TIMEOUT_SECONDS", 3.5))
     last_error: NLUError | None = None
@@ -161,13 +162,14 @@ def classify_message(
                 "_classifier_source": "rules_safety",
             },
             started,
+            message=message,
         )
 
     if getattr(settings, "NLU_ENABLE_RULES", True):
         fallback_rule = try_rule_classify(message, tier="fallback")
         if fallback_rule is not None:
             logger.info("NLU using rules fallback after provider failure")
-            return _finalize_rules(fallback_rule, started)
+            return _finalize_rules(fallback_rule, started, message=message)
 
     logger.info("NLU returning clarify fallback after provider failure: %s", last_error)
     return _finalize_rules(
@@ -189,6 +191,7 @@ def classify_message(
             "_degraded": True,
         },
         started,
+        message=message,
     )
 
 
@@ -244,10 +247,20 @@ def _provider_attempts(override: NLUProvider | None) -> list[dict[str, Any]]:
     return out
 
 
-def _finalize_rules(payload: dict[str, Any], started: float) -> dict[str, Any]:
+def _finalize_rules(
+    payload: dict[str, Any],
+    started: float,
+    *,
+    message: str = "",
+) -> dict[str, Any]:
     elapsed = (time.perf_counter() - started) * 1000
     source = payload.pop("_classifier_source", "rules")
     payload["_classifier_source"] = source
+    # Always merge local date/time/etc. — rules historically returned empty entities.
+    payload["entities"] = merge_entities(
+        payload.get("entities") if isinstance(payload.get("entities"), dict) else {},
+        extract_entities(message) if message else {},
+    )
     payload["_usage"] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
     payload["_timings"] = NLUTimings(
         api_call_ms=0.0,

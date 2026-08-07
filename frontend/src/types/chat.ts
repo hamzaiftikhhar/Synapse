@@ -70,6 +70,11 @@ export type TimeSlotData = {
   id: string;
   label: string;
   start: string;
+  end?: string;
+  date?: string;
+  time?: string;
+  doctor?: string;
+  doctor_id?: string;
 };
 
 export type AppointmentCardData = {
