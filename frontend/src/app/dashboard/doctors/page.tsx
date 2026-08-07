@@ -139,7 +139,7 @@ export default function DoctorsPage() {
         title="Doctors"
         description="Manage providers available for booking and chatbot discovery."
         actions={
-          <Button className="rounded-[6px]" onClick={openCreate}>
+          <Button onClick={openCreate}>
             <Plus className="size-4" /> Add doctor
           </Button>
         }
@@ -150,7 +150,7 @@ export default function DoctorsPage() {
             placeholder="Search doctors…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="h-8 w-56 rounded-[6px]"
+            className="h-8 w-56"
           />
         }
       >
@@ -175,11 +175,11 @@ export default function DoctorsPage() {
                   <TableCell className="text-muted-foreground">{d.title || "—"}</TableCell>
                   <TableCell>
                     <div className="flex gap-1">
-                      <Badge variant="secondary" className="rounded-[6px]">
+                      <Badge variant="secondary">
                         {d.is_active ? "Active" : "Inactive"}
                       </Badge>
                       {d.is_accepting_patients ? (
-                        <Badge className="rounded-[6px]">Accepting</Badge>
+                        <Badge>Accepting</Badge>
                       ) : null}
                     </div>
                   </TableCell>
@@ -201,26 +201,26 @@ export default function DoctorsPage() {
       </DataTableShell>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="rounded-[6px] sm:max-w-md">
+        <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>{editing ? "Edit doctor" : "Add doctor"}</DialogTitle>
           </DialogHeader>
           <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-3">
             <div className="space-y-1.5">
               <Label>Full name</Label>
-              <Input {...form.register("full_name")} className="rounded-[6px]" />
+              <Input {...form.register("full_name")} />
             </div>
             <div className="space-y-1.5">
               <Label>Title</Label>
-              <Input {...form.register("title")} className="rounded-[6px]" placeholder="MD, Cardiologist" />
+              <Input {...form.register("title")} placeholder="MD, Cardiologist" />
             </div>
             <div className="space-y-1.5">
               <Label>Bio</Label>
-              <Textarea {...form.register("bio")} className="rounded-[6px]" rows={3} />
+              <Textarea {...form.register("bio")} rows={3} />
             </div>
             <div className="space-y-1.5">
               <Label>Languages (comma-separated)</Label>
-              <Input {...form.register("languages")} className="rounded-[6px]" placeholder="English, Spanish" />
+              <Input {...form.register("languages")} placeholder="English, Spanish" />
             </div>
             <label className="flex items-center gap-2 text-sm">
               <Checkbox
@@ -237,10 +237,10 @@ export default function DoctorsPage() {
               Accepting patients
             </label>
             <DialogFooter>
-              <Button type="button" variant="outline" className="rounded-[6px]" onClick={() => setOpen(false)}>
+              <Button type="button" variant="outline" onClick={() => setOpen(false)}>
                 Cancel
               </Button>
-              <Button type="submit" className="rounded-[6px]" disabled={create.isPending || update.isPending}>
+              <Button type="submit" disabled={create.isPending || update.isPending}>
                 Save
               </Button>
             </DialogFooter>

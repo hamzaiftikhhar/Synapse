@@ -114,7 +114,7 @@ export default function PatientsPage() {
         title="Patients"
         description="Clinic patient records used for appointments and widget OTP identity."
         actions={
-          <Button className="rounded-[6px]" onClick={openCreate}>
+          <Button onClick={openCreate}>
             <Plus className="size-4" /> Add patient
           </Button>
         }
@@ -125,7 +125,7 @@ export default function PatientsPage() {
             placeholder="Search patients…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="h-8 w-56 rounded-[6px]"
+            className="h-8 w-56"
           />
         }
       >
@@ -151,7 +151,7 @@ export default function PatientsPage() {
                   <TableCell>{p.phone}</TableCell>
                   <TableCell className="text-muted-foreground">{p.email || "—"}</TableCell>
                   <TableCell>
-                    <Badge variant="secondary" className="rounded-[6px]">
+                    <Badge variant="secondary">
                       {p.is_verified ? "Yes" : "No"}
                     </Badge>
                   </TableCell>
@@ -173,7 +173,7 @@ export default function PatientsPage() {
       </DataTableShell>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="rounded-[6px] sm:max-w-md">
+        <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>{editing ? "Edit patient" : "Add patient"}</DialogTitle>
           </DialogHeader>
@@ -181,26 +181,26 @@ export default function PatientsPage() {
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <Label>First name</Label>
-                <Input {...form.register("first_name")} className="rounded-[6px]" />
+                <Input {...form.register("first_name")} />
               </div>
               <div className="space-y-1.5">
                 <Label>Last name</Label>
-                <Input {...form.register("last_name")} className="rounded-[6px]" />
+                <Input {...form.register("last_name")} />
               </div>
             </div>
             <div className="space-y-1.5">
               <Label>Phone</Label>
-              <Input {...form.register("phone")} className="rounded-[6px]" placeholder="+12125550999" />
+              <Input {...form.register("phone")} placeholder="+12125550999" />
             </div>
             <div className="space-y-1.5">
               <Label>Email</Label>
-              <Input {...form.register("email")} className="rounded-[6px]" />
+              <Input {...form.register("email")} />
             </div>
             <DialogFooter>
-              <Button type="button" variant="outline" className="rounded-[6px]" onClick={() => setOpen(false)}>
+              <Button type="button" variant="outline" onClick={() => setOpen(false)}>
                 Cancel
               </Button>
-              <Button type="submit" className="rounded-[6px]">Save</Button>
+              <Button type="submit">Save</Button>
             </DialogFooter>
           </form>
         </DialogContent>
