@@ -271,6 +271,13 @@ def orchestrate_ui_meta(
 def _pick_primary_component(meta: dict[str, Any], *, intent: str) -> str | None:
     if meta.get("verify_identity"):
         return "verify_identity"
+    # A cancel/reschedule request that resolves real appointments must show
+    # those (with their own Cancel/Reschedule actions) ahead of the "start a
+    # new booking" wizard — the wizard also gets attached for these intents
+    # (see build_ui_meta's booking-card branch, "book a new visit instead"),
+    # but it isn't the thing the patient actually asked for.
+    if meta.get("appointments"):
+        return "appointments"
     if meta.get("booking", {}).get("launch"):
         return "booking"
     if meta.get("time_slots"):
@@ -283,8 +290,6 @@ def _pick_primary_component(meta: dict[str, Any], *, intent: str) -> str | None:
         return "insurance"
     if meta.get("location"):
         return "location"
-    if meta.get("appointments"):
-        return "appointments"
     return None
 
 

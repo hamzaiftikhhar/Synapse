@@ -99,7 +99,15 @@ class UiOrchestratorTests(SimpleTestCase):
         self.assertTrue(meta.get("verify_identity"))
         self.assertEqual(meta.get("primary_component"), "verify_identity")
 
-    def test_authenticated_cancel_shows_appointment_cards(self):
+    @patch("apps.chatbot.booking.discovery.suggest_specialties", return_value=([], ""))
+    def test_authenticated_cancel_shows_appointment_cards(self, _mock_suggest):
+        """Regression: real appointments must win primary_component over the
+        "book a new visit instead" wizard card — both get attached together
+        for a transactional cancel (exec_plan_booking=True), but the wizard
+        used to be checked first in _pick_primary_component, so an
+        authenticated patient asking to cancel would see a "start a new
+        booking" wizard instead of their actual appointment with Cancel/
+        Reschedule buttons — the opposite of what they asked for."""
         meta = build_ui_meta(
             clinic=type("C", (), {"name": "Test", "phone": ""})(),
             intent="cancel_appointment",
@@ -122,9 +130,12 @@ class UiOrchestratorTests(SimpleTestCase):
                     ],
                 }
             ],
+            message="I want to cancel my appointment",
             ui_priority="booking",
+            exec_plan_booking=True,
         )
         self.assertNotIn("verify_identity", meta)
+        self.assertIn("booking", meta)
         self.assertEqual(meta.get("primary_component"), "appointments")
         self.assertEqual(meta["appointments"][0]["doctor"], "Dr. Thorne")
         self.assertEqual(meta["appointments"][0]["id"], "a1")
