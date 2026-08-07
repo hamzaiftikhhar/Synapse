@@ -312,3 +312,19 @@ export function systemErrorMessage(content: string): ChatMessage {
     createdAt: new Date().toISOString(),
   };
 }
+
+/**
+ * Locally-synthesized card for "Check Insurance" when a plan is already
+ * selected — no backend round-trip, no re-asking a question we already
+ * answered. payload.plans is empty on purpose: InsuranceCards' selected
+ * branch never reads it, it renders straight from useSelectedInsurance.
+ */
+export function insuranceSelectedMessage(): ChatMessage {
+  return {
+    id: uid("ins"),
+    role: "assistant",
+    type: "insurance_cards",
+    createdAt: new Date().toISOString(),
+    payload: { plans: [] },
+  };
+}

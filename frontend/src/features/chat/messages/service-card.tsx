@@ -1,5 +1,6 @@
 "use client";
 
+import { ChatInlineCard } from "@/features/chat/components/chat-inline-card";
 import type { ChatActionHandler, ServiceCardData } from "@/types/chat";
 
 function price(cents?: number | null) {
@@ -43,10 +44,10 @@ export function ServiceCards({
   onAction?: ChatActionHandler;
 }) {
   return (
-    <div className="flex snap-x snap-mandatory gap-2 overflow-x-auto pb-1 [-webkit-overflow-scrolling:touch] [scrollbar-width:thin]">
+    <ChatInlineCard className="flex snap-x snap-mandatory gap-2 overflow-x-auto pb-1 [-webkit-overflow-scrolling:touch] [scrollbar-width:thin]">
       {services.map((s, i) => (
         <ServiceCard key={s.id || i} service={s} onAction={onAction} />
       ))}
-    </div>
+    </ChatInlineCard>
   );
 }

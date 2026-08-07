@@ -2,6 +2,7 @@
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
+import { ChatInlineCard } from "@/features/chat/components/chat-inline-card";
 import type { ChatActionHandler, DoctorCardData } from "@/types/chat";
 
 function initials(name: string): string {
@@ -61,10 +62,10 @@ export function DoctorCards({
   onAction?: ChatActionHandler;
 }) {
   return (
-    <div className="grid gap-2">
+    <ChatInlineCard className="grid gap-2">
       {doctors.map((d, i) => (
         <DoctorCard key={d.id || i} doctor={d} onAction={onAction} />
       ))}
-    </div>
+    </ChatInlineCard>
   );
 }

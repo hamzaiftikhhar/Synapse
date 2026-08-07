@@ -19,6 +19,7 @@ import {
 import { MessageRenderer } from "@/features/chat/messages";
 import {
   CONNECTION_ERROR,
+  insuranceSelectedMessage,
   parseChatResponse,
   systemErrorMessage,
   userTextMessage,
@@ -30,6 +31,7 @@ import {
   usePatientChat,
   useStaffChat,
 } from "@/hooks/api";
+import { readSelectedInsurance } from "@/hooks/use-selected-insurance";
 import { useAuth } from "@/providers/auth-provider";
 import { useWidget, type AssistantMode } from "@/providers/widget-provider";
 import type { BookingStepPayload } from "@/types/api";
@@ -355,6 +357,21 @@ export function ChatWidget({
   );
 
   function handleBackendAction(action: BackendAction) {
+    // "Check Insurance" already has an answer once the patient picked a
+    // plan this session — don't re-ask the backend a question we already
+    // know. Surface the existing selection as widget state instead of a
+    // fresh chat round-trip; skip if it's already the most recent message
+    // so repeat clicks don't stack up duplicate cards.
+    if (action.id === "insurance" && canBook) {
+      const existing = readSelectedInsurance(bookingClinicSlug);
+      if (existing) {
+        const last = messages[messages.length - 1];
+        if (last?.type !== "insurance_cards") {
+          setMessages((prev) => [...prev, insuranceSelectedMessage()]);
+        }
+        return;
+      }
+    }
     runBackendAction(action, (msg) => void sendText(msg));
   }
 
@@ -453,6 +470,21 @@ export function ChatWidget({
       return;
     }
 
+    if (action === "select_slot") {
+      // TODO: this re-derives a chat message from a UI click because the
+      // booking wizard has no way to accept a prefilled slot today (no
+      // backend support for launching it pre-selected at a specific time).
+      // Replace with a real prefill-and-launch action once that exists —
+      // for now this reuses the doctor-only booking phrasing, the same
+      // already-proven path select_doctor uses above.
+      const slot = data as { doctor?: string };
+      const msg = slot.doctor
+        ? `I would like to book an appointment with ${slot.doctor}`
+        : "I would like to book an appointment";
+      void sendText(msg);
+      return;
+    }
+
     if (action === "book_appointment") {
       const payload = data as { service?: string; insurance?: string };
       if (payload?.service) {
@@ -460,15 +492,6 @@ export function ChatWidget({
         return;
       }
       void sendText("I would like to book an appointment");
-      return;
-    }
-
-    if (action === "select_insurance") {
-      const ins = data as { name?: string; select_message?: string };
-      const msg =
-        ins.select_message ||
-        (ins.name ? `I have ${ins.name} — continue to book` : "");
-      if (msg) void sendText(msg);
       return;
     }
 

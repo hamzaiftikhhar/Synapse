@@ -1,6 +1,7 @@
 "use client";
 
 import { BookingWizard } from "@/features/booking/booking-wizard";
+import { ChatInlineCard } from "@/features/chat/components/chat-inline-card";
 import type { BookingStepPayload } from "@/types/api";
 import { cn } from "@/lib/utils";
 
@@ -27,9 +28,9 @@ export function BookingInlineCard({
     "I would like to book an appointment";
 
   return (
-    <div
+    <ChatInlineCard
       className={cn(
-        "synapse-chat-msg ml-9 max-w-[min(100%,28rem)] overflow-hidden rounded-[18px] border border-border/80 bg-white shadow-[0_2px_12px_rgb(11_14_46/0.06)]",
+        "overflow-hidden rounded-[18px] border border-border/80 bg-white shadow-[0_2px_12px_rgb(11_14_46/0.06)]",
         !active && "opacity-90"
       )}
     >
@@ -57,6 +58,6 @@ export function BookingInlineCard({
         onDismiss={onDismiss}
         onStarted={onStarted}
       />
-    </div>
+    </ChatInlineCard>
   );
 }

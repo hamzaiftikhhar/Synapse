@@ -1,11 +1,12 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Search } from "lucide-react";
+import { Check, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { useSelectedInsurance } from "@/hooks/use-selected-insurance";
+import { ChatInlineCard } from "@/features/chat/components/chat-inline-card";
 import type { ChatActionHandler, InsuranceCardData } from "@/types/chat";
 
 export function InsuranceCard({
@@ -30,6 +31,11 @@ export function InsuranceCard({
       <p className="text-sm font-medium text-foreground">{plan.name}</p>
       {plan.plan ? (
         <p className="text-xs text-muted-foreground">{plan.plan}</p>
+      ) : null}
+      {accepted ? (
+        <span className="mt-1 inline-flex items-center gap-1 text-[10px] font-medium text-emerald-600">
+          <Check className="size-3" /> Accepted
+        </span>
       ) : null}
     </button>
   );
@@ -56,26 +62,36 @@ export function InsuranceCards({
     );
   }, [plans, query]);
 
+  // Selecting a plan from our own accepted-plans list is a state change, not
+  // a new question — we already know the answer, so this never sends a chat
+  // message (see chat-widget.tsx's now-removed select_insurance handler).
   const handleSelect = (plan: InsuranceCardData) => {
     setSelected(plan);
-    onAction?.("select_insurance", plan);
   };
 
   if (selected) {
     return (
-      <div className="space-y-2">
+      <ChatInlineCard className="space-y-2.5 rounded-[18px] border border-border/80 bg-white p-3 shadow-[0_2px_12px_rgb(11_14_46/0.06)]">
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Selected Insurance
+        </p>
         <div className="flex items-center justify-between gap-2 rounded-full border border-primary/25 bg-primary/[0.05] px-3 py-1.5">
-          <p className="truncate text-xs font-medium text-foreground">
-            {selected.name}
-            {selected.plan ? ` · ${selected.plan}` : ""}
+          <p className="flex min-w-0 items-center gap-1.5 truncate text-xs font-medium text-foreground">
+            <Check className="size-3.5 shrink-0 text-primary" />
+            <span className="truncate">
+              {selected.name}
+              {selected.plan ? ` · ${selected.plan}` : ""}
+            </span>
           </p>
-          <button
+          <Button
             type="button"
+            variant="outline"
+            size="xs"
+            className="shrink-0 rounded-full"
             onClick={() => setSelected(null)}
-            className="shrink-0 text-[11px] font-medium text-primary hover:underline"
           >
             Change
-          </button>
+          </Button>
         </div>
         <Button
           type="button"
@@ -85,12 +101,12 @@ export function InsuranceCards({
         >
           Continue to book
         </Button>
-      </div>
+      </ChatInlineCard>
     );
   }
 
   return (
-    <div className="space-y-2">
+    <ChatInlineCard className="space-y-2">
       <div className="relative">
         <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
         <Input
@@ -114,6 +130,6 @@ export function InsuranceCards({
           </p>
         ) : null}
       </div>
-    </div>
+    </ChatInlineCard>
   );
 }

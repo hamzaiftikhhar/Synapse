@@ -38,3 +38,22 @@ export function useSelectedInsurance(clinicSlug: string | null | undefined) {
 
   return { selected, setSelected };
 }
+
+/**
+ * One-off synchronous read, for callers that can't hold a live subscription
+ * (e.g. a component mounted long before a selection exists — this hook's
+ * useState only initializes from sessionStorage once, on mount, and has no
+ * cross-instance sync, so a long-lived subscriber would miss later writes
+ * from a different component). Reads the same storage bucket the hook does.
+ */
+export function readSelectedInsurance(
+  clinicSlug: string | null | undefined
+): InsuranceCardData | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = sessionStorage.getItem(`${STORAGE_PREFIX}:${clinicSlug || "default"}`);
+    return raw ? (JSON.parse(raw) as InsuranceCardData) : null;
+  } catch {
+    return null;
+  }
+}
