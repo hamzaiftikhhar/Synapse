@@ -62,7 +62,7 @@ export default function PlatformOverviewPage() {
             {cards.map((c) => (
               <div
                 key={c.label}
-                className="rounded-[6px] border border-border bg-white px-4 py-3"
+                className="rounded-2xl border border-border bg-white px-4 py-3 shadow-soft"
               >
                 <p className="text-xs text-muted-foreground">{c.label}</p>
                 <p className="mt-1 text-2xl font-semibold tracking-tight">
@@ -73,7 +73,7 @@ export default function PlatformOverviewPage() {
           </div>
 
           <div className="mt-8 grid gap-6 lg:grid-cols-2">
-            <div className="rounded-[6px] border border-border bg-white p-4">
+            <div className="rounded-2xl border border-border bg-white p-5 shadow-soft">
               <div className="mb-3 flex items-center justify-between">
                 <h2 className="text-sm font-semibold">Top clinics by AI usage</h2>
                 <Link
@@ -105,24 +105,24 @@ export default function PlatformOverviewPage() {
                 ) : null}
               </ul>
             </div>
-            <div className="rounded-[6px] border border-border bg-white p-4">
+            <div className="rounded-2xl border border-border bg-white p-5 shadow-soft">
               <h2 className="mb-3 text-sm font-semibold">Quick actions</h2>
               <div className="flex flex-col gap-2">
                 <Link
                   href="/dashboard/platform/clinics"
-                  className="rounded-[6px] border border-border px-3 py-2 text-sm hover:bg-muted"
+                  className="rounded-xl border border-border px-3 py-2.5 text-sm hover:bg-muted"
                 >
                   View all clinics →
                 </Link>
                 <Link
                   href="/dashboard/platform/ai-usage"
-                  className="rounded-[6px] border border-border px-3 py-2 text-sm hover:bg-muted"
+                  className="rounded-xl border border-border px-3 py-2.5 text-sm hover:bg-muted"
                 >
                   AI usage & costs →
                 </Link>
                 <Link
                   href="/dashboard/platform/audit"
-                  className="rounded-[6px] border border-border px-3 py-2 text-sm hover:bg-muted"
+                  className="rounded-xl border border-border px-3 py-2.5 text-sm hover:bg-muted"
                 >
                   Audit logs →
                 </Link>

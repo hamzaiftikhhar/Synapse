@@ -48,7 +48,7 @@ export function ViewingClinicBanner() {
           type="button"
           variant="outline"
           size="sm"
-          className="rounded-[6px] border-amber-300 bg-white"
+          className="border-amber-300 bg-white"
           onClick={() => router.push("/dashboard/platform/clinics")}
         >
           Switch clinic
@@ -56,7 +56,6 @@ export function ViewingClinicBanner() {
         <Button
           type="button"
           size="sm"
-          className="rounded-[6px]"
           disabled={exiting}
           onClick={() => void handleExit()}
         >

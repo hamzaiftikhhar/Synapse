@@ -11,9 +11,9 @@ export function DataTableShell({
   children: ReactNode;
 }) {
   return (
-    <Card className="rounded-[6px] border-border shadow-none">
+    <Card>
       {(title || toolbar) && (
-        <CardHeader className="flex flex-row items-center justify-between gap-3 space-y-0 border-b border-border py-3">
+        <CardHeader className="flex flex-row items-center justify-between gap-3 space-y-0 border-b border-border py-3.5">
           {title ? (
             <CardTitle className="text-sm font-medium">{title}</CardTitle>
           ) : (
@@ -49,7 +49,7 @@ export function EmptyState({
 
 export function TodoBackendNotice({ feature }: { feature: string }) {
   return (
-    <div className="rounded-[6px] border border-dashed border-border bg-muted/40 px-5 py-8">
+    <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-5 py-8">
       <p className="text-sm font-medium text-navy">{feature}</p>
       <p className="mt-2 text-sm text-muted-foreground">
         <span className="font-mono text-xs text-primary">

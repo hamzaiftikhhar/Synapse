@@ -32,7 +32,7 @@ export function DashboardTopbar() {
       <div className="flex items-center gap-2">
         <Sheet open={open} onOpenChange={setOpen}>
           <SheetTrigger
-            className="inline-flex size-8 items-center justify-center rounded-[6px] border border-transparent hover:bg-muted lg:hidden"
+            className="inline-flex size-8 items-center justify-center rounded-lg border border-transparent hover:bg-muted lg:hidden"
             aria-label="Open menu"
           >
             <Menu className="size-4" />
@@ -60,13 +60,13 @@ export function DashboardTopbar() {
       </div>
 
       <DropdownMenu>
-        <DropdownMenuTrigger className="inline-flex h-8 items-center gap-2 rounded-[6px] border border-border bg-background px-2.5 text-sm hover:bg-muted">
+        <DropdownMenuTrigger className="inline-flex h-8 items-center gap-2 rounded-full border border-border bg-background px-3 text-sm hover:bg-muted">
           <User className="size-3.5" />
           <span className="hidden sm:inline">
             {user?.first_name || user?.email}
           </span>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-52 rounded-[6px]">
+        <DropdownMenuContent align="end" className="w-52">
           <DropdownMenuLabel className="font-normal">
             <div className="flex flex-col gap-0.5">
               <span className="text-sm font-medium">

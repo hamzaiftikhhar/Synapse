@@ -7,13 +7,12 @@ import {
   Stethoscope,
   Users,
   BriefcaseMedical,
-  ArrowUpRight,
 } from "lucide-react";
 import { format } from "date-fns";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { DataTableShell, EmptyState } from "@/components/dashboard/shell";
+import { StatCard } from "@/components/dashboard/stat-card";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Table,
   TableBody,
@@ -31,40 +30,6 @@ import {
 } from "@/hooks/api";
 import { useAuth } from "@/providers/auth-provider";
 
-function StatCard({
-  label,
-  value,
-  href,
-  icon: Icon,
-}: {
-  label: string;
-  value: string | number;
-  href: string;
-  icon: React.ComponentType<{ className?: string }>;
-}) {
-  return (
-    <Card className="rounded-[6px] border-border shadow-none">
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-        <CardTitle className="text-sm font-medium text-muted-foreground">
-          {label}
-        </CardTitle>
-        <Icon className="size-4 text-primary/70" />
-      </CardHeader>
-      <CardContent>
-        <div className="text-2xl font-semibold tracking-tight text-navy">
-          {value}
-        </div>
-        <Link
-          href={href}
-          className="mt-2 inline-flex items-center gap-1 text-xs text-primary hover:underline"
-        >
-          View all <ArrowUpRight className="size-3" />
-        </Link>
-      </CardContent>
-    </Card>
-  );
-}
-
 export default function DashboardHomePage() {
   const { clinic, user } = useAuth();
   const doctors = useDoctors({ limit: 1 });
@@ -81,14 +46,14 @@ export default function DashboardHomePage() {
         actions={
           <Link
             href="/dashboard/chatbot"
-            className="inline-flex h-8 items-center rounded-[6px] bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            className="inline-flex h-8 items-center rounded-lg bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
           >
             Open chatbot QA
           </Link>
         }
       />
 
-      <div className="relative mb-6 overflow-hidden rounded-[6px] border border-border bg-white p-5">
+      <div className="relative mb-6 overflow-hidden rounded-2xl border border-border bg-white p-5 shadow-soft">
         <div className="glow-purple pointer-events-none absolute inset-0 opacity-70" />
         <div className="relative">
           <p className="text-xs font-medium uppercase tracking-wider text-primary">
@@ -140,7 +105,7 @@ export default function DashboardHomePage() {
           toolbar={
             <Link
               href="/dashboard/appointments"
-              className="inline-flex h-7 items-center rounded-[6px] border border-border px-2.5 text-[0.8rem] hover:bg-muted"
+              className="inline-flex h-7 items-center rounded-lg border border-border px-2.5 text-[0.8rem] hover:bg-muted"
             >
               Manage
             </Link>
@@ -170,7 +135,7 @@ export default function DashboardHomePage() {
                       {format(new Date(a.start_time), "MMM d, yyyy · h:mm a")}
                     </TableCell>
                     <TableCell>
-                      <Badge variant="secondary" className="rounded-[6px] capitalize">
+                      <Badge variant="secondary" className="capitalize">
                         {a.status}
                       </Badge>
                     </TableCell>

@@ -28,7 +28,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
 
   return (
     <DashboardWidgetProvider>
-      <div className="flex min-h-screen bg-muted/30">
+      <div className="flex min-h-screen bg-dashboard-ambient">
         <div className="hidden lg:block">
           <div className="sticky top-0 h-screen">
             <DashboardSidebar />
