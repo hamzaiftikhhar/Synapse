@@ -149,20 +149,41 @@ export function BookingWizard({
           value,
         });
         syncToken(payload);
-        setState(payload);
         if (payload.stale_hero) {
           setError("That time was just taken — pick another below.");
         }
         if (payload.step === "confirmed") {
+          setState(payload);
           onConfirmed?.(payload);
         } else if (action === "submit_details" && payload.step === "otp") {
-          const otp = await bookingService.sendOtp({
-            clinic_slug: clinicSlug,
-            session_token: payload.session_token || sessionToken || "",
-            booking_id: payload.booking_id,
-          });
-          setOtpSent(true);
-          setDebugCode(otp.debug_code ?? null);
+          // Only advance to OTP UI after the code is actually sent
+          try {
+            const otp = await bookingService.sendOtp({
+              clinic_slug: clinicSlug,
+              session_token: payload.session_token || sessionToken || "",
+              booking_id: payload.booking_id,
+            });
+            setState(payload);
+            setOtpSent(true);
+            setDebugCode(otp.debug_code ?? null);
+          } catch (otpErr) {
+            setError(getApiErrorMessage(otpErr));
+            // Roll booking step back to details so the user can fix contact
+            try {
+              const back = await bookingService.step({
+                clinic_slug: clinicSlug,
+                session_token: payload.session_token || sessionToken || "",
+                booking_id: payload.booking_id,
+                action: "back",
+              });
+              syncToken(back);
+              setState(back);
+            } catch {
+              // Keep current details form state if back fails
+            }
+          }
+        } else {
+          setState(payload);
         }
       } catch (e) {
         setError(getApiErrorMessage(e));
@@ -336,7 +357,7 @@ export function BookingWizard({
             options={state.options}
             details={details}
             onChange={setDetails}
-            onSubmit={() => void runStep("submit_details", details)}
+            onSubmit={(d) => void runStep("submit_details", d)}
             loading={loading}
             verificationMode={
               (state.options.verification_mode as string) || verificationMode
@@ -368,7 +389,6 @@ export function BookingWizard({
               details.first_name || state.confirmation.first_name || ""
             }
             brandColor={brandColor}
-            onClose={onDismiss}
           />
         ) : null}
 
@@ -798,6 +818,58 @@ function TimeStep({
   );
 }
 
+function isValidEmail(value: string): boolean {
+  // Simple production-ready check — not a library, rejects spaces and requires TLD
+  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/i.test(value.trim());
+}
+
+function isValidPhone(value: string): boolean {
+  // Digits only after stripping common formatting; 7–15 digits (E.164 range)
+  const digits = value.replace(/[^\d]/g, "");
+  return digits.length >= 7 && digits.length <= 15;
+}
+
+function classifyContact(
+  raw: string,
+  verificationMode: string
+): { phone: string; email: string; error: string | null } {
+  const value = raw.trim();
+  if (!value) {
+    return { phone: "", email: "", error: "Enter an email or phone number for verification" };
+  }
+
+  if (verificationMode === "email") {
+    if (!isValidEmail(value)) {
+      return { phone: "", email: value, error: "Enter a valid email address" };
+    }
+    return { phone: "", email: value.toLowerCase(), error: null };
+  }
+
+  if (verificationMode === "sms") {
+    if (!isValidPhone(value)) {
+      return { phone: value, email: "", error: "Enter a valid phone number" };
+    }
+    return { phone: value, email: "", error: null };
+  }
+
+  // sms_or_email | none — accept either, classify by @
+  if (value.includes("@")) {
+    if (!isValidEmail(value)) {
+      return { phone: "", email: value, error: "Enter a valid email address" };
+    }
+    return { phone: "", email: value.toLowerCase(), error: null };
+  }
+
+  if (!isValidPhone(value)) {
+    return {
+      phone: value,
+      email: "",
+      error: "Enter a valid phone number or email address",
+    };
+  }
+  return { phone: value, email: "", error: null };
+}
+
 function DetailsStep({
   options,
   details,
@@ -819,26 +891,53 @@ function DetailsStep({
     phone: string;
     email: string;
   }) => void;
-  onSubmit: () => void;
+  onSubmit: (d: {
+    first_name: string;
+    last_name: string;
+    phone: string;
+    email: string;
+  }) => void;
   loading: boolean;
   verificationMode?: string;
 }) {
-  const needPhone =
-    verificationMode === "sms" ||
-    verificationMode === "sms_or_email" ||
-    verificationMode === "none";
-  const needEmail =
-    verificationMode === "email" ||
-    verificationMode === "sms_or_email" ||
-    verificationMode === "none";
-  const phoneRequired = verificationMode === "sms";
-  const emailRequired = verificationMode === "email";
-  const contactOk =
-    (phoneRequired ? details.phone.trim() : true) &&
-    (emailRequired ? details.email.trim() : true) &&
-    (verificationMode === "sms_or_email" || verificationMode === "none"
-      ? Boolean(details.phone.trim() || details.email.trim())
-      : true);
+  const [contactDraft, setContactDraft] = useState(
+    () => details.email || details.phone
+  );
+  const [contactError, setContactError] = useState<string | null>(null);
+
+  const contactLabel = "Email or phone number for verification";
+  const contactPlaceholder = "name@example.com or +1 555 123 4567";
+  // Always accept either contact; backend picks SMS vs email OTP channel
+  const effectiveMode = "sms_or_email";
+
+  function handleContactChange(raw: string) {
+    setContactDraft(raw);
+    setContactError(null);
+    const classified = classifyContact(raw, effectiveMode);
+    onChange({
+      ...details,
+      phone: classified.phone,
+      email: classified.email,
+    });
+  }
+
+  function handleSubmit() {
+    const classified = classifyContact(contactDraft, effectiveMode);
+    const next = {
+      ...details,
+      phone: classified.phone,
+      email: classified.email,
+    };
+    onChange(next);
+    if (classified.error) {
+      setContactError(classified.error);
+      return;
+    }
+    if (!next.first_name.trim()) return;
+    onSubmit(next);
+  }
+
+  const contactOk = !classifyContact(contactDraft, effectiveMode).error;
 
   return (
     <div className="space-y-4">
@@ -872,37 +971,30 @@ function DetailsStep({
           />
         </div>
       </div>
-      {needPhone ? (
-        <div className="space-y-1">
-          <Label className="text-xs">
-            Phone{phoneRequired ? "" : " (optional if email provided)"}
-          </Label>
-          <Input
-            value={details.phone}
-            onChange={(e) => onChange({ ...details, phone: e.target.value })}
-            placeholder="+1…"
-            className="h-9 rounded-xl"
-          />
-        </div>
-      ) : null}
-      {needEmail ? (
-        <div className="space-y-1">
-          <Label className="text-xs">
-            Email{emailRequired ? "" : " (optional if phone provided)"}
-          </Label>
-          <Input
-            type="email"
-            value={details.email}
-            onChange={(e) => onChange({ ...details, email: e.target.value })}
-            className="h-9 rounded-xl"
-          />
-        </div>
-      ) : null}
+      <div className="space-y-1">
+        <Label className="text-xs">{contactLabel}</Label>
+        <Input
+          type="text"
+          inputMode="text"
+          autoComplete="username"
+          value={contactDraft}
+          onChange={(e) => handleContactChange(e.target.value)}
+          placeholder={contactPlaceholder}
+          className={cn(
+            "h-9 rounded-xl",
+            contactError && "border-destructive focus-visible:ring-destructive"
+          )}
+          aria-invalid={Boolean(contactError)}
+        />
+        {contactError ? (
+          <p className="text-xs text-destructive">{contactError}</p>
+        ) : null}
+      </div>
       <Button
         type="button"
         className="w-full rounded-xl"
         disabled={loading || !details.first_name.trim() || !contactOk}
-        onClick={onSubmit}
+        onClick={handleSubmit}
       >
         {verificationMode === "none"
           ? "Confirm appointment"
@@ -935,18 +1027,14 @@ function OtpStep({
   otpSent: boolean;
   loading: boolean;
 }) {
-  const dest =
-    verificationMode === "email"
-      ? email || "your email"
-      : verificationMode === "sms_or_email"
-        ? phone || email || "your contact"
-        : phone || "your phone";
+  const dest = phone || email || "your contact";
+  const viaEmail = Boolean(email && !phone);
 
   return (
     <div className="space-y-4">
       <div>
         <p className="text-sm font-semibold text-foreground">
-          Verify your {verificationMode === "email" ? "email" : "identity"}
+          Verify your {viaEmail ? "email" : "identity"}
         </p>
         <p className="mt-1 text-xs text-muted-foreground">
           We sent a code to {dest}.
@@ -984,12 +1072,10 @@ function ConfirmedStep({
   confirmation,
   patientFirstName,
   brandColor,
-  onClose,
 }: {
   confirmation: NonNullable<BookingStepPayload["confirmation"]>;
   patientFirstName?: string;
   brandColor?: string;
-  onClose?: () => void;
 }) {
   const accent = brandColor || "var(--primary)";
   const name = (patientFirstName || confirmation.first_name || "").trim();
@@ -1032,16 +1118,6 @@ function ConfirmedStep({
           </p>
         ) : null}
       </div>
-      {onClose ? (
-        <Button
-          type="button"
-          className="mt-1 w-full rounded-xl text-primary-foreground"
-          style={{ backgroundColor: brandColor || undefined }}
-          onClick={onClose}
-        >
-          Done
-        </Button>
-      ) : null}
     </div>
   );
 }

@@ -88,21 +88,30 @@ def resolve_otp_channel(clinic: Clinic, requested: str | None = None) -> str:
         raise OTPError("Verification is disabled for this clinic", status_code=400)
 
     if mode == "sms":
+        # Unified contact field may collect email; honor it when email OTP is enabled
+        if req == "email" and flags.get("email_otp", True):
+            return "email"
         if not flags.get("sms_otp", True):
             raise OTPError("SMS verification is disabled", status_code=400)
         return "sms"
     if mode == "email":
+        if req == "sms" and flags.get("sms_otp", True):
+            return "sms"
         if not flags.get("email_otp", True):
             raise OTPError("Email verification is disabled", status_code=400)
         return "email"
-    # sms_or_email
+    # sms_or_email — honor explicit request; otherwise prefer sms when available
     if req in {"sms", "email"}:
         if req == "sms" and not flags.get("sms_otp", True):
             raise OTPError("SMS verification is disabled", status_code=400)
         if req == "email" and not flags.get("email_otp", True):
             raise OTPError("Email verification is disabled", status_code=400)
         return req
-    return "sms" if flags.get("sms_otp", True) else "email"
+    if flags.get("sms_otp", True):
+        return "sms"
+    if flags.get("email_otp", True):
+        return "email"
+    raise OTPError("No verification channel is enabled", status_code=400)
 
 
 def send_otp(
@@ -118,16 +127,27 @@ def send_otp(
     """
     Ensure Patient exists, store OTP, deliver via SMS or email.
     """
-    channel_resolved = resolve_otp_channel(clinic, channel)
     phone = (phone or "").strip()
     email = (email or "").strip().lower()
+
+    # Prefer explicit channel; otherwise infer from which contact was provided.
+    requested = (channel or "").lower().strip()
+    if not requested:
+        if email and not phone:
+            requested = "email"
+        elif phone and not email:
+            requested = "sms"
+        elif email and phone:
+            requested = "sms"
+
+    channel_resolved = resolve_otp_channel(clinic, requested or None)
 
     if channel_resolved == "sms" and not phone:
         raise OTPError("Phone is required for SMS verification")
     if channel_resolved == "email" and not email:
         raise OTPError("Email is required for email verification")
 
-    if phone:
+    if channel_resolved == "sms" and phone:
         patient, _ = patient_service.get_or_create_by_phone(
             clinic=clinic,
             phone=phone,
@@ -138,11 +158,9 @@ def send_otp(
             patient.email = email
             patient.save(update_fields=["email", "updated_at"])
     else:
-        # Email-only path — still need a patient; use email as unique key via phone placeholder
-        # Prefer existing by email
+        # Email channel — look up / create by email
         patient = Patient.objects.filter(clinic=clinic, email=email).first()
         if patient is None:
-            # Synthesize a stable phone placeholder for unique constraint
             placeholder = f"email:{email}"[:20]
             patient, _ = patient_service.get_or_create_by_phone(
                 clinic=clinic,
@@ -176,15 +194,20 @@ def send_otp(
             logger.exception("SMS OTP failed")
             raise OTPError(str(exc), status_code=503) from exc
         debug_code = code if settings.DEBUG else None
-        # Always expose debug when console SMS provider
         from apps.chatbot.integrations import twilio_sms
 
         if not twilio_sms.is_configured():
             debug_code = code
     else:
-        NotificationService.send_patient_otp_email(
-            to=email, code=code, clinic_name=clinic.name
-        )
+        try:
+            NotificationService.send_patient_otp_email(
+                to=email, code=code, clinic_name=clinic.name
+            )
+        except Exception as exc:
+            logger.exception("Email OTP failed")
+            # In development still return the code so booking can proceed
+            if not settings.DEBUG:
+                raise OTPError(str(exc), status_code=503) from exc
         debug_code = code if settings.DEBUG else None
 
     return OTPSendResult(

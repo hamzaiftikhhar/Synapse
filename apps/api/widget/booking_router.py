@@ -162,6 +162,9 @@ def booking_otp_send(request, payload: BookingOtpSendIn):
     if not phone and not email:
         raise HttpError(400, "Patient contact missing — submit details first")
 
+    # Pick channel from the contact the patient actually entered
+    channel = "email" if (email and not phone) else "sms"
+
     try:
         result = send_otp(
             clinic=clinic,
@@ -170,6 +173,7 @@ def booking_otp_send(request, payload: BookingOtpSendIn):
             session_token=session.session_token,
             first_name=booking.get("patient_first_name") or "",
             last_name=booking.get("patient_last_name") or "",
+            channel=channel,
         )
     except OTPError as exc:
         raise HttpError(exc.status_code, str(exc)) from exc

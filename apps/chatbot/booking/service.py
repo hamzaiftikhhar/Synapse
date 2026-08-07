@@ -440,12 +440,23 @@ class BookingService:
             vmode = cfg.get("verification_mode") or "sms"
             if not first:
                 raise BookingError("First name is required")
-            if vmode == "sms" and not phone:
-                raise BookingError("Phone is required")
-            if vmode == "email" and not email:
-                raise BookingError("Email is required")
-            if vmode in {"sms_or_email", "none"} and not phone and not email:
-                raise BookingError("Phone or email is required")
+
+            # Normalize: if a single contact was mis-filed, classify by @
+            if phone and "@" in phone and not email:
+                email = phone.lower()
+                phone = ""
+            if email and "@" not in email and not phone:
+                phone = email
+                email = ""
+
+            if email and ("@" not in email or "." not in email.split("@")[-1]):
+                raise BookingError("Enter a valid email address")
+            if phone:
+                digits = "".join(ch for ch in phone if ch.isdigit())
+                if len(digits) < 7 or len(digits) > 15:
+                    raise BookingError("Enter a valid phone number")
+            if not phone and not email:
+                raise BookingError("Phone or email is required for verification")
             if not session.slot_start or not session.doctor_id:
                 raise BookingError("Select a time slot first")
             cls._ensure_hold(session)

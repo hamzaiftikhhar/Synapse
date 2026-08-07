@@ -10,7 +10,7 @@ from apps.chatbot.routing.signals import (
     catalog_overlap_score,
     is_phatic_farewell,
     is_phatic_greeting,
-    is_price_or_duration_query,
+    is_price_or_duration_query,   
     is_service_list_query,
     is_specialty_list_query,
     is_transactional_booking,

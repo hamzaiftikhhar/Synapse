@@ -71,36 +71,49 @@ export function InsuranceCards({
 
   if (selected) {
     return (
-      <ChatInlineCard className="space-y-2.5 rounded-[18px] border border-border/80 bg-white p-3 shadow-[0_2px_12px_rgb(11_14_46/0.06)]">
-        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          Selected Insurance
-        </p>
-        <div className="flex items-center justify-between gap-2 rounded-full border border-primary/25 bg-primary/[0.05] px-3 py-1.5">
-          <p className="flex min-w-0 items-center gap-1.5 truncate text-xs font-medium text-foreground">
-            <Check className="size-3.5 shrink-0 text-primary" />
-            <span className="truncate">
-              {selected.name}
-              {selected.plan ? ` · ${selected.plan}` : ""}
-            </span>
-          </p>
-          <Button
-            type="button"
-            variant="outline"
-            size="xs"
-            className="shrink-0 rounded-full"
-            onClick={() => setSelected(null)}
-          >
-            Change
-          </Button>
+      <ChatInlineCard className="rounded-[18px] border border-border/80 bg-white p-3 shadow-[0_2px_12px_rgb(11_14_46/0.06)]">
+        <div className="flex items-start gap-2.5">
+          <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+            <Check className="size-3.5" strokeWidth={2.5} />
+          </span>
+          <div className="min-w-0 flex-1 space-y-2.5">
+            <div className="min-w-0">
+              <p className="text-[11px] font-medium text-muted-foreground">
+                Selected insurance
+              </p>
+              <p className="truncate text-sm font-semibold leading-snug text-foreground">
+                {selected.name}
+                {selected.plan ? (
+                  <span className="font-normal text-muted-foreground">
+                    {" "}
+                    · {selected.plan}
+                  </span>
+                ) : null}
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-8 rounded-full px-3 text-xs text-muted-foreground hover:text-foreground"
+                onClick={() => setSelected(null)}
+              >
+                Change
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                className="h-8 flex-1 rounded-full text-xs font-medium"
+                onClick={() =>
+                  onAction?.("book_appointment", { insurance: selected.name })
+                }
+              >
+                Continue to book
+              </Button>
+            </div>
+          </div>
         </div>
-        <Button
-          type="button"
-          size="sm"
-          className="w-full rounded-lg"
-          onClick={() => onAction?.("book_appointment", { insurance: selected.name })}
-        >
-          Continue to book
-        </Button>
       </ChatInlineCard>
     );
   }
