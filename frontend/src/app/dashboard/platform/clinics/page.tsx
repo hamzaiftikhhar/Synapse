@@ -100,7 +100,7 @@ export default function PlatformClinicsPage() {
         description="Create, suspend, and enter any clinic. Entering opens the clinic portal; your role stays Super Admin."
       />
       {canExitClinic && activeSlug ? (
-        <div className="mb-4 rounded-[6px] border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+        <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
           Currently viewing{" "}
           <span className="font-semibold">{clinic?.name ?? activeSlug}</span>.
           Use Exit on that row, or Enter another clinic to switch.
@@ -116,7 +116,6 @@ export default function PlatformClinicsPage() {
         <Button
           type="button"
           variant="outline"
-          className="rounded-[6px]"
           onClick={() => void load()}
         >
           Search
@@ -125,7 +124,7 @@ export default function PlatformClinicsPage() {
       {loading ? (
         <p className="text-sm text-muted-foreground">Loading clinics…</p>
       ) : (
-        <div className="overflow-x-auto rounded-[6px] border border-border bg-white">
+        <div className="overflow-x-auto rounded-2xl border border-border bg-white shadow-soft">
           <table className="w-full min-w-[720px] text-left text-sm">
             <thead className="border-b border-border bg-muted/40 text-xs text-muted-foreground">
               <tr>
@@ -171,18 +170,14 @@ export default function PlatformClinicsPage() {
                         {isActive ? (
                           <Button
                             size="sm"
-                            variant="outline"
-                            className="rounded-[6px]"
-                            disabled={busySlug === c.slug}
+                            variant="outline"                            disabled={busySlug === c.slug}
                             onClick={() => void exit(c.slug)}
                           >
                             {busySlug === c.slug ? "…" : "Exit"}
                           </Button>
                         ) : (
                           <Button
-                            size="sm"
-                            className="rounded-[6px]"
-                            disabled={busySlug === c.slug}
+                            size="sm"                            disabled={busySlug === c.slug}
                             onClick={() => void enter(c.slug)}
                           >
                             {busySlug === c.slug ? "…" : "Enter"}
@@ -191,18 +186,14 @@ export default function PlatformClinicsPage() {
                         {c.status !== "suspended" ? (
                           <Button
                             size="sm"
-                            variant="outline"
-                            className="rounded-[6px]"
-                            onClick={() => void setStatus(c.id, "suspended")}
+                            variant="outline"                            onClick={() => void setStatus(c.id, "suspended")}
                           >
                             Suspend
                           </Button>
                         ) : (
                           <Button
                             size="sm"
-                            variant="outline"
-                            className="rounded-[6px]"
-                            onClick={() => void setStatus(c.id, "active")}
+                            variant="outline"                            onClick={() => void setStatus(c.id, "active")}
                           >
                             Activate
                           </Button>

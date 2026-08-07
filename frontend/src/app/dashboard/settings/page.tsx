@@ -33,7 +33,7 @@ export default function SettingsPage() {
               type="button"
               onClick={() => setSection(s.id)}
               className={cn(
-                "rounded-[6px] px-3 py-2 text-left text-sm whitespace-nowrap",
+                "rounded-xl px-3 py-2 text-left text-sm whitespace-nowrap",
                 section === s.id
                   ? "bg-primary/10 font-medium text-primary"
                   : "text-muted-foreground hover:bg-muted"
@@ -43,7 +43,7 @@ export default function SettingsPage() {
             </button>
           ))}
         </nav>
-        <div className="min-w-0 flex-1 rounded-[6px] border border-border bg-white p-5">
+        <div className="min-w-0 flex-1 rounded-2xl border border-border bg-white p-5 shadow-soft">
           {section === "general" ? (
             <div className="space-y-3">
               <h2 className="text-sm font-semibold">General</h2>
@@ -53,7 +53,7 @@ export default function SettingsPage() {
               </p>
               <a
                 href="/dashboard/clinic"
-                className="inline-flex h-8 items-center rounded-[6px] border border-border px-3 text-sm hover:bg-muted"
+                className="inline-flex h-8 items-center rounded-lg border border-border px-3 text-sm hover:bg-muted"
               >
                 Open clinic profile
               </a>
@@ -102,7 +102,7 @@ export default function SettingsPage() {
               </p>
               <a
                 href="/dashboard/profile"
-                className="inline-flex h-8 items-center rounded-[6px] border border-border px-3 text-sm hover:bg-muted"
+                className="inline-flex h-8 items-center rounded-lg border border-border px-3 text-sm hover:bg-muted"
               >
                 Open profile
               </a>

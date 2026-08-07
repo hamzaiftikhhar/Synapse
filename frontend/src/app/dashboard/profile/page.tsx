@@ -12,7 +12,7 @@ export default function ProfilePage() {
         title="Profile"
         description="Your staff account details from /auth/me."
       />
-      <Card className="max-w-lg rounded-[6px] border-border shadow-none">
+      <Card className="max-w-lg">
         <CardContent className="space-y-3 p-5 text-sm">
           <div className="flex justify-between gap-4 border-b border-border py-2">
             <span className="text-muted-foreground">Name</span>

@@ -71,7 +71,7 @@ export default function AppointmentsPage() {
                     {format(new Date(a.start_time), "MMM d, yyyy · h:mm a")}
                   </TableCell>
                   <TableCell>
-                    <Badge variant="secondary" className="rounded-[6px] capitalize">
+                    <Badge variant="secondary" className="capitalize">
                       {a.status}
                     </Badge>
                   </TableCell>
@@ -83,7 +83,6 @@ export default function AppointmentsPage() {
                       <Button
                         variant="outline"
                         size="sm"
-                        className="rounded-[6px]"
                         onClick={() => onCancel(a.id)}
                       >
                         Cancel

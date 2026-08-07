@@ -23,11 +23,11 @@ export default function ChatbotQaPage() {
         description="Test and configure your clinic assistant. Use the floating widget in the bottom-right corner — the same experience patients see on your website."
       />
 
-      <div className="relative mb-6 overflow-hidden rounded-[6px] border border-border bg-navy p-6 text-white">
+      <div className="relative mb-6 overflow-hidden rounded-2xl border border-border bg-navy p-6 text-white shadow-soft-lg">
         <div className="glow-navy pointer-events-none absolute inset-0 opacity-60" />
         <div className="relative flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-start gap-3">
-            <span className="flex size-10 items-center justify-center rounded-[6px] bg-white/10">
+            <span className="flex size-10 items-center justify-center rounded-xl bg-white/10">
               <MessageCircle className="size-5" />
             </span>
             <div>
@@ -42,14 +42,14 @@ export default function ChatbotQaPage() {
               </p>
             </div>
           </div>
-          <Badge className="w-fit rounded-[6px] border-0 bg-emerald-500/20 text-emerald-200 hover:bg-emerald-500/20">
+          <Badge className="w-fit border-0 bg-emerald-500/20 text-emerald-200 hover:bg-emerald-500/20">
             Online
           </Badge>
         </div>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2">
-        <Card className="rounded-[6px] border-border shadow-none">
+        <Card>
           <CardHeader className="pb-2">
             <CardTitle className="flex items-center gap-2 text-sm font-medium">
               <Bot className="size-4 text-primary" />
@@ -67,7 +67,7 @@ export default function ChatbotQaPage() {
           </CardContent>
         </Card>
 
-        <Card className="rounded-[6px] border-border shadow-none">
+        <Card>
           <CardHeader className="pb-2">
             <CardTitle className="flex items-center gap-2 text-sm font-medium">
               <Sparkles className="size-4 text-primary" />
@@ -83,7 +83,7 @@ export default function ChatbotQaPage() {
           </CardContent>
         </Card>
 
-        <Card className="rounded-[6px] border-border shadow-none sm:col-span-2">
+        <Card className="sm:col-span-2">
           <CardHeader className="pb-2">
             <CardTitle className="flex items-center gap-2 text-sm font-medium">
               <Shield className="size-4 text-primary" />

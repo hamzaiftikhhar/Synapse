@@ -132,7 +132,7 @@ export default function ServicesPage() {
         title="Services"
         description="Procedures and visit types patients can ask about or book."
         actions={
-          <Button className="rounded-[6px]" onClick={openCreate}>
+          <Button onClick={openCreate}>
             <Plus className="size-4" /> Add service
           </Button>
         }
@@ -143,7 +143,7 @@ export default function ServicesPage() {
             placeholder="Search services…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="h-8 w-56 rounded-[6px]"
+            className="h-8 w-56"
           />
         }
       >
@@ -169,7 +169,7 @@ export default function ServicesPage() {
                   <TableCell>{s.duration_min} min</TableCell>
                   <TableCell>{formatPrice(s.price_cents)}</TableCell>
                   <TableCell>
-                    <Badge variant="secondary" className="rounded-[6px]">
+                    <Badge variant="secondary">
                       {s.is_active ? "Active" : "Inactive"}
                     </Badge>
                   </TableCell>
@@ -191,27 +191,27 @@ export default function ServicesPage() {
       </DataTableShell>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="rounded-[6px] sm:max-w-md">
+        <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>{editing ? "Edit service" : "Add service"}</DialogTitle>
           </DialogHeader>
           <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-3">
             <div className="space-y-1.5">
               <Label>Name</Label>
-              <Input {...form.register("name")} className="rounded-[6px]" />
+              <Input {...form.register("name")} />
             </div>
             <div className="space-y-1.5">
               <Label>Description</Label>
-              <Textarea {...form.register("description")} className="rounded-[6px]" rows={3} />
+              <Textarea {...form.register("description")} rows={3} />
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <Label>Duration (min)</Label>
-                <Input type="number" {...form.register("duration_min")} className="rounded-[6px]" />
+                <Input type="number" {...form.register("duration_min")} />
               </div>
               <div className="space-y-1.5">
                 <Label>Price (USD)</Label>
-                <Input {...form.register("price_dollars")} className="rounded-[6px]" placeholder="150.00" />
+                <Input {...form.register("price_dollars")} placeholder="150.00" />
               </div>
             </div>
             <label className="flex items-center gap-2 text-sm">
@@ -222,10 +222,10 @@ export default function ServicesPage() {
               Active
             </label>
             <DialogFooter>
-              <Button type="button" variant="outline" className="rounded-[6px]" onClick={() => setOpen(false)}>
+              <Button type="button" variant="outline" onClick={() => setOpen(false)}>
                 Cancel
               </Button>
-              <Button type="submit" className="rounded-[6px]">Save</Button>
+              <Button type="submit">Save</Button>
             </DialogFooter>
           </form>
         </DialogContent>
