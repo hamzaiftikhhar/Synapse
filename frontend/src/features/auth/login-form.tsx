@@ -63,7 +63,7 @@ export function LoginForm() {
         return;
       }
       if (data.clinic) {
-        router.replace("/dashboard");
+        router.replace(data.clinic.status === "active" ? "/dashboard" : "/onboarding");
         return;
       }
       const tenants = data.tenants ?? [];

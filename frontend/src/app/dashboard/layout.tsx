@@ -24,6 +24,14 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
     // Super Admin without a clinic → stay on platform portal
     if (isSuper && !clinic && !onPlatform && !onProfile) {
       router.replace("/dashboard/platform");
+      return;
+    }
+
+    // Clinic owner/staff with unfinished setup → resume onboarding.
+    // Re-checked from real clinic state on every dashboard visit (not a
+    // client-side flag), so this holds across refresh/logout/login too.
+    if (!isSuper && clinic && clinic.status !== "active") {
+      router.replace("/onboarding");
     }
   }, [user, clinic, isLoading, pathname, router]);
 

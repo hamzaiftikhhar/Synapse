@@ -2,9 +2,6 @@
 
 import { useState } from "react";
 import { toast } from "sonner";
-import { PageHeader } from "@/components/dashboard/page-header";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import {
   businessHoursToWeekly,
   WeeklyScheduleEditor,
@@ -12,15 +9,17 @@ import {
 } from "@/components/dashboard/weekly-schedule-editor";
 import { useBusinessHours, useUpdateBusinessHours } from "@/hooks/api";
 import { getApiErrorMessage } from "@/lib/api/client";
+import { ONBOARDING_FORM_ID, type OnboardingStepProps } from "../steps";
 
-export default function BusinessHoursPage() {
+export function HoursStep({ onNext }: OnboardingStepProps) {
   const { data, isLoading } = useBusinessHours();
   const update = useUpdateBusinessHours();
   const [rows, setRows] = useState<WeeklyDayValue[] | null>(null);
 
   const value = rows ?? businessHoursToWeekly(data);
 
-  async function onSave() {
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
     const openWithoutRange = value.find(
       (row) => row.isOpen && (!row.start || !row.end || row.end <= row.start)
     );
@@ -37,32 +36,19 @@ export default function BusinessHoursPage() {
           close_time: row.isOpen ? `${row.end}:00` : null,
         }))
       );
-      toast.success("Business hours saved");
+      onNext();
     } catch (err) {
       toast.error(getApiErrorMessage(err));
     }
   }
 
+  if (isLoading && !rows) {
+    return <p className="text-sm text-muted-foreground">Loading…</p>;
+  }
+
   return (
-    <div>
-      <PageHeader
-        title="Business Hours"
-        description="Weekly open/close schedule for the clinic. Used as the default for booking availability."
-        actions={
-          <Button onClick={onSave} disabled={update.isPending}>
-            {update.isPending ? "Saving…" : "Save"}
-          </Button>
-        }
-      />
-      <Card>
-        <CardContent>
-          {isLoading && !rows ? (
-            <p className="text-sm text-muted-foreground">Loading…</p>
-          ) : (
-            <WeeklyScheduleEditor value={value} onChange={setRows} />
-          )}
-        </CardContent>
-      </Card>
-    </div>
+    <form id={ONBOARDING_FORM_ID} onSubmit={onSubmit}>
+      <WeeklyScheduleEditor value={value} onChange={setRows} />
+    </form>
   );
 }

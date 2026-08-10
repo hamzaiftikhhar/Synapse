@@ -4,17 +4,27 @@ import type {
   Appointment,
   AppointmentInput,
   AppointmentUpdateInput,
+  BusinessHour,
+  BusinessHourInput,
   ChatMessageInput,
   ChatMessageResponse,
+  ClinicProfile,
+  ClinicProfileUpdateInput,
   Doctor,
   DoctorInput,
+  DoctorScheduleInput,
+  DoctorScheduleSlot,
   DoctorUpdateInput,
   DocumentChunk,
   DocumentUpdateInput,
+  InsurancePlan,
+  InsurancePlanInput,
+  InsurancePlanUpdateInput,
   KnowledgeDocument,
   ListParams,
   MeResponse,
   MessageOut,
+  OnboardingStatus,
   OTPSendInput,
   OTPSendResponse,
   OTPVerifyInput,
@@ -26,10 +36,15 @@ import type {
   Service,
   ServiceInput,
   ServiceUpdateInput,
+  Specialty,
+  SpecialtyInput,
+  SpecialtyUpdateInput,
   StaffLoginInput,
   StaffRegisterInput,
   StaffTokenResponse,
   Tenant,
+  WidgetSettingsOut,
+  WidgetSettingsUpdateInput,
 } from "@/types/api";
 
 function listQuery(params?: ListParams & Record<string, unknown>) {
@@ -370,6 +385,17 @@ export const doctorsService = {
     const { data } = await api.delete<MessageOut>(`/doctors/${id}`);
     return data;
   },
+  async getSchedule(id: string) {
+    const { data } = await api.get<DoctorScheduleSlot[]>(`/doctors/${id}/schedule`);
+    return data;
+  },
+  async updateSchedule(id: string, input: DoctorScheduleInput[]) {
+    const { data } = await api.put<DoctorScheduleSlot[]>(
+      `/doctors/${id}/schedule`,
+      input
+    );
+    return data;
+  },
 };
 
 /* ─── Services ─────────────────────────────────────────────── */
@@ -396,6 +422,97 @@ export const servicesService = {
   },
   async remove(id: string) {
     const { data } = await api.delete<MessageOut>(`/services/${id}`);
+    return data;
+  },
+};
+
+/* ─── Clinic profile / business hours / widget settings / onboarding ── */
+
+export const clinicsService = {
+  async getMe() {
+    const { data } = await api.get<ClinicProfile>("/clinics/me");
+    return data;
+  },
+  async updateMe(input: ClinicProfileUpdateInput) {
+    const { data } = await api.patch<ClinicProfile>("/clinics/me", input);
+    return data;
+  },
+  async getBusinessHours() {
+    const { data } = await api.get<BusinessHour[]>("/clinics/me/business-hours");
+    return data;
+  },
+  async updateBusinessHours(input: BusinessHourInput[]) {
+    const { data } = await api.put<BusinessHour[]>(
+      "/clinics/me/business-hours",
+      input
+    );
+    return data;
+  },
+  async getWidgetSettings() {
+    const { data } = await api.get<WidgetSettingsOut>("/clinics/me/widget-settings");
+    return data;
+  },
+  async updateWidgetSettings(input: WidgetSettingsUpdateInput) {
+    const { data } = await api.patch<WidgetSettingsOut>(
+      "/clinics/me/widget-settings",
+      input
+    );
+    return data;
+  },
+  async getOnboardingStatus() {
+    const { data } = await api.get<OnboardingStatus>("/clinics/me/onboarding-status");
+    return data;
+  },
+  async completeOnboarding() {
+    const { data } = await api.post<ClinicProfile>("/clinics/me/onboarding/complete");
+    return data;
+  },
+};
+
+/* ─── Specialties ──────────────────────────────────────────── */
+
+export const specialtiesService = {
+  async list(params?: ListParams) {
+    const { data } = await api.get<Paginated<Specialty>>(
+      "/specialties",
+      listQuery(params)
+    );
+    return data;
+  },
+  async create(input: SpecialtyInput) {
+    const { data } = await api.post<Specialty>("/specialties", input);
+    return data;
+  },
+  async update(id: string, input: SpecialtyUpdateInput) {
+    const { data } = await api.patch<Specialty>(`/specialties/${id}`, input);
+    return data;
+  },
+  async remove(id: string) {
+    const { data } = await api.delete<MessageOut>(`/specialties/${id}`);
+    return data;
+  },
+};
+
+/* ─── Insurance ────────────────────────────────────────────── */
+
+export const insuranceService = {
+  async list(params?: ListParams) {
+    const { data } = await api.get<Paginated<InsurancePlan>>(
+      "/insurance",
+      listQuery(params)
+    );
+    return data;
+  },
+  async create(input: InsurancePlanInput) {
+    const { data } = await api.post<InsurancePlan>("/insurance", input);
+    return data;
+  },
+  async update(id: string, input: InsurancePlanUpdateInput) {
+    const { data } = await api.patch<InsurancePlan>(`/insurance/${id}`, input);
+    return data;
+  },
+  async remove(id: string) {
+    const { data } = await api.delete<MessageOut>(`/insurance/${id}`);
     return data;
   },
 };

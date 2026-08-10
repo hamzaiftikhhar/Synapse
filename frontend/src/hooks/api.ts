@@ -7,19 +7,27 @@ import {
   authService,
   bookingService,
   chatService,
+  clinicsService,
   doctorsService,
   documentsService,
+  insuranceService,
   patientsService,
   servicesService,
+  specialtiesService,
   widgetService,
 } from "@/services";
 import type {
   AppointmentInput,
   AppointmentUpdateInput,
+  BusinessHourInput,
   ChatMessageInput,
+  ClinicProfileUpdateInput,
   DocumentUpdateInput,
   DoctorInput,
+  DoctorScheduleInput,
   DoctorUpdateInput,
+  InsurancePlanInput,
+  InsurancePlanUpdateInput,
   KnowledgeDocument,
   ListParams,
   MarketingChatInput,
@@ -27,8 +35,11 @@ import type {
   PatientUpdateInput,
   ServiceInput,
   ServiceUpdateInput,
+  SpecialtyInput,
+  SpecialtyUpdateInput,
   StaffLoginInput,
   WidgetGuestChatInput,
+  WidgetSettingsUpdateInput,
 } from "@/types/api";
 
 function documentIsActive(doc: KnowledgeDocument) {
@@ -41,13 +52,20 @@ export const queryKeys = {
   patient: (id: string) => ["patients", id] as const,
   doctors: (p?: ListParams) => ["doctors", p] as const,
   doctor: (id: string) => ["doctors", id] as const,
+  doctorSchedule: (id: string) => ["doctors", id, "schedule"] as const,
   services: (p?: ListParams) => ["services", p] as const,
   service: (id: string) => ["services", id] as const,
+  specialties: (p?: ListParams) => ["specialties", p] as const,
+  insurancePlans: (p?: ListParams) => ["insurance", p] as const,
   appointments: (p?: AppointmentListParams) => ["appointments", p] as const,
   appointment: (id: string) => ["appointments", id] as const,
   documents: ["documents"] as const,
   document: (id: string) => ["documents", id] as const,
   chunks: (id: string) => ["documents", id, "chunks"] as const,
+  clinicProfile: ["clinic-profile"] as const,
+  businessHours: ["business-hours"] as const,
+  widgetSettings: ["widget-settings"] as const,
+  onboardingStatus: ["onboarding-status"] as const,
 };
 
 export function useMe(enabled = true) {
@@ -121,7 +139,10 @@ export function useCreateDoctor() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: DoctorInput) => doctorsService.create(input),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["doctors"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["doctors"] });
+      qc.invalidateQueries({ queryKey: queryKeys.onboardingStatus });
+    },
   });
 }
 
@@ -138,7 +159,30 @@ export function useDeleteDoctor() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => doctorsService.remove(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["doctors"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["doctors"] });
+      qc.invalidateQueries({ queryKey: queryKeys.onboardingStatus });
+    },
+  });
+}
+
+export function useDoctorSchedule(doctorId: string | null) {
+  return useQuery({
+    queryKey: queryKeys.doctorSchedule(doctorId ?? ""),
+    queryFn: () => doctorsService.getSchedule(doctorId!),
+    enabled: Boolean(doctorId),
+  });
+}
+
+export function useUpdateDoctorSchedule() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: DoctorScheduleInput[] }) =>
+      doctorsService.updateSchedule(id, input),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: queryKeys.doctorSchedule(vars.id) });
+      qc.invalidateQueries({ queryKey: queryKeys.onboardingStatus });
+    },
   });
 }
 
@@ -153,7 +197,10 @@ export function useCreateService() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: ServiceInput) => servicesService.create(input),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["services"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["services"] });
+      qc.invalidateQueries({ queryKey: queryKeys.onboardingStatus });
+    },
   });
 }
 
@@ -170,7 +217,156 @@ export function useDeleteService() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => servicesService.remove(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["services"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["services"] });
+      qc.invalidateQueries({ queryKey: queryKeys.onboardingStatus });
+    },
+  });
+}
+
+/* ─── Specialties ──────────────────────────────────────────── */
+
+export function useSpecialties(params?: ListParams) {
+  return useQuery({
+    queryKey: queryKeys.specialties(params),
+    queryFn: () => specialtiesService.list(params),
+  });
+}
+
+export function useCreateSpecialty() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: SpecialtyInput) => specialtiesService.create(input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["specialties"] }),
+  });
+}
+
+export function useUpdateSpecialty() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: SpecialtyUpdateInput }) =>
+      specialtiesService.update(id, input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["specialties"] }),
+  });
+}
+
+export function useDeleteSpecialty() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => specialtiesService.remove(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["specialties"] }),
+  });
+}
+
+/* ─── Insurance ────────────────────────────────────────────── */
+
+export function useInsurancePlans(params?: ListParams) {
+  return useQuery({
+    queryKey: queryKeys.insurancePlans(params),
+    queryFn: () => insuranceService.list(params),
+  });
+}
+
+export function useCreateInsurancePlan() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: InsurancePlanInput) => insuranceService.create(input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["insurance"] });
+      qc.invalidateQueries({ queryKey: queryKeys.onboardingStatus });
+    },
+  });
+}
+
+export function useUpdateInsurancePlan() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: InsurancePlanUpdateInput }) =>
+      insuranceService.update(id, input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["insurance"] }),
+  });
+}
+
+export function useDeleteInsurancePlan() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => insuranceService.remove(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["insurance"] }),
+  });
+}
+
+/* ─── Clinic profile / business hours / widget settings / onboarding ── */
+
+export function useClinicProfile(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.clinicProfile,
+    queryFn: () => clinicsService.getMe(),
+    enabled,
+  });
+}
+
+export function useUpdateClinicProfile() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: ClinicProfileUpdateInput) => clinicsService.updateMe(input),
+    onSuccess: (data) => {
+      qc.setQueryData(queryKeys.clinicProfile, data);
+      qc.invalidateQueries({ queryKey: queryKeys.onboardingStatus });
+      qc.invalidateQueries({ queryKey: queryKeys.me });
+    },
+  });
+}
+
+export function useBusinessHours() {
+  return useQuery({
+    queryKey: queryKeys.businessHours,
+    queryFn: () => clinicsService.getBusinessHours(),
+  });
+}
+
+export function useUpdateBusinessHours() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: BusinessHourInput[]) => clinicsService.updateBusinessHours(input),
+    onSuccess: (data) => {
+      qc.setQueryData(queryKeys.businessHours, data);
+      qc.invalidateQueries({ queryKey: queryKeys.onboardingStatus });
+    },
+  });
+}
+
+export function useWidgetSettings() {
+  return useQuery({
+    queryKey: queryKeys.widgetSettings,
+    queryFn: () => clinicsService.getWidgetSettings(),
+  });
+}
+
+export function useUpdateWidgetSettings() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: WidgetSettingsUpdateInput) =>
+      clinicsService.updateWidgetSettings(input),
+    onSuccess: (data) => qc.setQueryData(queryKeys.widgetSettings, data),
+  });
+}
+
+export function useOnboardingStatus(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.onboardingStatus,
+    queryFn: () => clinicsService.getOnboardingStatus(),
+    enabled,
+  });
+}
+
+export function useCompleteOnboarding() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => clinicsService.completeOnboarding(),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.me });
+      qc.invalidateQueries({ queryKey: queryKeys.clinicProfile });
+    },
   });
 }
 

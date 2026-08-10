@@ -11,6 +11,7 @@ import {
 import { format } from "date-fns";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { DataTableShell, EmptyState } from "@/components/dashboard/shell";
+import { SetupChecklistCard } from "@/components/dashboard/setup-checklist";
 import { StatCard } from "@/components/dashboard/stat-card";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -52,6 +53,8 @@ export default function DashboardHomePage() {
           </Link>
         }
       />
+
+      <SetupChecklistCard />
 
       <div className="relative mb-6 overflow-hidden rounded-2xl border border-border bg-card p-5">
         <div className="glow-purple pointer-events-none absolute inset-0 opacity-70" />

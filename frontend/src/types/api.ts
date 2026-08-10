@@ -2,13 +2,180 @@
 
 export type UserRole = "SUPER_ADMIN" | "CLINIC_ADMIN" | "STAFF";
 
+export type ClinicType =
+  | "dermatology"
+  | "dental"
+  | "aesthetics"
+  | "general_medicine"
+  | "urgent_care"
+  | "laboratory"
+  | "cosmetic_surgery"
+  | "multi_specialty"
+  | "other"
+  | "";
+
+export type ClinicAddress = {
+  line1?: string;
+  line2?: string;
+  city?: string;
+  state?: string;
+  postal_code?: string;
+  country?: string;
+};
+
 export type Clinic = {
   id: string;
   slug: string;
   name: string;
   timezone: string;
   status?: string;
+  clinic_type?: ClinicType;
+  phone?: string;
+  address?: ClinicAddress;
+  onboarding_step?: string;
+  onboarding_completed_at?: string | null;
 };
+
+export type ClinicProfile = Clinic & {
+  email: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ClinicProfileUpdateInput = {
+  name?: string;
+  clinic_type?: ClinicType;
+  email?: string;
+  phone?: string;
+  address?: ClinicAddress;
+  timezone?: string;
+  onboarding_step?: string;
+};
+
+export type BusinessHour = {
+  day_of_week: number;
+  open_time: string | null;
+  close_time: string | null;
+  is_closed: boolean;
+};
+
+export type BusinessHourInput = {
+  day_of_week: number;
+  open_time?: string | null;
+  close_time?: string | null;
+  is_closed?: boolean;
+};
+
+export type DoctorScheduleSlot = {
+  id: string;
+  day_of_week: number;
+  start_time: string;
+  end_time: string;
+  slot_duration_min: number;
+  is_active: boolean;
+};
+
+export type DoctorScheduleInput = {
+  day_of_week: number;
+  start_time: string;
+  end_time: string;
+  slot_duration_min?: number;
+  is_active?: boolean;
+};
+
+export type WidgetSettingsConfig = {
+  widget?: {
+    primary_color?: string;
+    position?: string;
+    greeting?: string;
+  };
+  ai?: Record<string, unknown>;
+  booking?: {
+    mode?: string;
+    ai_discovery?: boolean;
+    require_auth?: boolean;
+    verification_mode?: "sms" | "email" | "sms_or_email" | "none";
+    max_slots_preview?: number;
+    date_horizon_days?: number;
+    slot_hold_minutes?: number;
+    slot_duration_min?: number;
+    lead_time_hours?: number;
+    cancellation_policy?: string;
+  };
+  feature_flags?: Record<string, boolean>;
+};
+
+export type WidgetSettingsOut = {
+  configuration: WidgetSettingsConfig;
+};
+
+export type WidgetSettingsUpdateInput = {
+  configuration: Partial<WidgetSettingsConfig>;
+};
+
+export type OnboardingChecklist = {
+  clinic: boolean;
+  location: boolean;
+  providers: boolean;
+  services: boolean;
+  hours: boolean;
+  availability: boolean;
+};
+
+export type OnboardingCounts = {
+  providers: number;
+  services: number;
+  specialties: number;
+  insurance_plans: number;
+};
+
+export type OnboardingStatus = {
+  ready: boolean;
+  checklist: OnboardingChecklist;
+  counts: OnboardingCounts;
+};
+
+export type Specialty = {
+  id: string;
+  name: string;
+  slug: string;
+  description: string;
+  is_active: boolean;
+  is_deleted: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SpecialtyInput = {
+  name: string;
+  slug?: string;
+  description?: string;
+  is_active?: boolean;
+};
+
+export type SpecialtyUpdateInput = Partial<SpecialtyInput>;
+
+export type InsurancePlan = {
+  id: string;
+  provider_name: string;
+  plan_name: string;
+  plan_type: string;
+  is_accepted: boolean;
+  notes: string;
+  is_deleted: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type InsurancePlanInput = {
+  provider_name: string;
+  plan_name?: string;
+  plan_type?: string;
+  is_accepted?: boolean;
+  notes?: string;
+};
+
+export type InsurancePlanUpdateInput = Partial<InsurancePlanInput>;
 
 export type User = {
   id: number;

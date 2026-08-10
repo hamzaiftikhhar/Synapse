@@ -78,7 +78,7 @@ function CreateClinicForm() {
               placeholder="acme-cardiology"
             />
           </div>
-          <Button className="w-full rounded-[6px]" disabled={submitting}>
+          <Button type="submit" className="w-full rounded-[6px]" disabled={submitting}>
             {submitting ? "Creating…" : "Create clinic"}
           </Button>
         </form>

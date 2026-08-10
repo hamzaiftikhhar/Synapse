@@ -1,63 +1,45 @@
 "use client";
 
-import Link from "next/link";
+import { useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { ProtectedRoute } from "@/components/auth/protected-route";
+import { OnboardingFlow } from "@/features/onboarding/onboarding-flow";
 import { useAuth } from "@/providers/auth-provider";
 
-const STEPS = [
-  { title: "Clinic profile", href: "/dashboard/clinic" },
-  { title: "Doctors & specialties", href: "/dashboard/doctors" },
-  { title: "Services", href: "/dashboard/services" },
-  { title: "Knowledge base", href: "/dashboard/knowledge" },
-  { title: "Widget & booking", href: "/dashboard/settings" },
-];
+function OnboardingGuard() {
+  const { clinic, tenants, user, isLoading } = useAuth();
+  const router = useRouter();
 
-function OnboardingInner() {
-  const { clinic } = useAuth();
+  useEffect(() => {
+    if (isLoading) return;
+    if (user?.role === "SUPER_ADMIN" && !clinic) {
+      router.replace("/dashboard/platform");
+      return;
+    }
+    if (clinic?.status === "active") {
+      router.replace("/dashboard");
+      return;
+    }
+    if (!clinic && (tenants?.length ?? 0) === 0) {
+      router.replace("/onboarding/create-clinic");
+    }
+  }, [clinic, tenants, user, isLoading, router]);
 
-  return (
-    <div className="mx-auto max-w-2xl px-6 py-12">
-      <h1 className="text-2xl font-semibold tracking-tight">
-        Welcome{clinic?.name ? ` to ${clinic.name}` : ""}
-      </h1>
-      <p className="mt-2 text-sm text-muted-foreground">
-        Finish these steps to go live. You can skip and complete them later from
-        Settings.
-      </p>
-      <ol className="mt-8 space-y-3">
-        {STEPS.map((step, i) => (
-          <li
-            key={step.href}
-            className="flex items-center justify-between rounded-[6px] border border-border bg-white px-4 py-3"
-          >
-            <p className="text-sm font-medium">
-              {i + 1}. {step.title}
-            </p>
-            <Link
-              href={step.href}
-              className="inline-flex h-8 items-center rounded-[6px] border border-border px-3 text-sm hover:bg-muted"
-            >
-              Open
-            </Link>
-          </li>
-        ))}
-      </ol>
-      <div className="mt-8">
-        <Link
-          href="/dashboard"
-          className="inline-flex h-8 items-center rounded-[6px] bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-        >
-          Go to dashboard
-        </Link>
+  if (isLoading || !clinic || clinic.status === "active") {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background">
+        <div className="size-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
       </div>
-    </div>
-  );
+    );
+  }
+
+  return <OnboardingFlow />;
 }
 
 export default function OnboardingPage() {
   return (
     <ProtectedRoute>
-      <OnboardingInner />
+      <OnboardingGuard />
     </ProtectedRoute>
   );
 }

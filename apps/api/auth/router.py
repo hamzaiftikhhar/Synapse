@@ -400,9 +400,15 @@ def select_tenant(request, payload: SelectTenantIn):
 
 
 @router.post("/clinics", response=ClinicOut, auth=staff_jwt_auth)
-@transaction.atomic
 def create_clinic(request, payload: CreateClinicIn):
-    """Verified owner creates their clinic (after email verify)."""
+    """Verified owner creates their clinic (after email verify).
+
+    Atomicity is applied inline (not via @transaction.atomic on the view)
+    because Django Ninja introspects the view's signature to resolve the
+    request body model, and a function-decorator here breaks that
+    resolution (`QueryParams is not fully defined`) on this ninja/pydantic
+    version combo.
+    """
     user = request.auth.user
     if user.role == UserRole.SUPER_ADMIN:
         raise HttpError(400, "Use platform clinic create for super admin")
@@ -415,24 +421,25 @@ def create_clinic(request, payload: CreateClinicIn):
     if Clinic.objects.filter(slug=slug).exists():
         raise HttpError(400, "Clinic slug already taken")
 
-    clinic = Clinic.objects.create(
-        slug=slug,
-        name=payload.name.strip(),
-        email=(payload.email or user.email).strip(),
-        phone=(payload.phone or "").strip(),
-        timezone=payload.timezone or "America/New_York",
-        status=ClinicStatus.ONBOARDING,
-    )
-    ClinicStaff.objects.create(user=user, clinic=clinic, is_active=True)
-    user.role = UserRole.CLINIC_ADMIN
-    user.is_clinic_owner = True
-    user.save(update_fields=["role", "is_clinic_owner"])
+    with transaction.atomic():
+        clinic = Clinic.objects.create(
+            slug=slug,
+            name=payload.name.strip(),
+            email=(payload.email or user.email).strip(),
+            phone=(payload.phone or "").strip(),
+            timezone=payload.timezone or "America/New_York",
+            status=ClinicStatus.ONBOARDING,
+        )
+        ClinicStaff.objects.create(user=user, clinic=clinic, is_active=True)
+        user.role = UserRole.CLINIC_ADMIN
+        user.is_clinic_owner = True
+        user.save(update_fields=["role", "is_clinic_owner"])
 
-    from apps.widget.models import WidgetSettings
+        from apps.widget.models import WidgetSettings
 
-    WidgetSettings.objects.create(
-        clinic=clinic, configuration=default_widget_configuration()
-    )
+        WidgetSettings.objects.create(
+            clinic=clinic, configuration=default_widget_configuration()
+        )
     write_audit(
         action=AuditAction.CLINIC_CREATE,
         actor=user,
