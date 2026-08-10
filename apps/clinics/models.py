@@ -13,6 +13,18 @@ class ClinicStatus(models.TextChoices):
     CANCELLED = "cancelled", "Cancelled"
 
 
+class ClinicType(models.TextChoices):
+    DERMATOLOGY = "dermatology", "Dermatology"
+    DENTAL = "dental", "Dental"
+    AESTHETICS = "aesthetics", "Aesthetics / Med Spa"
+    GENERAL_MEDICINE = "general_medicine", "General Medicine"
+    URGENT_CARE = "urgent_care", "Urgent Care"
+    LABORATORY = "laboratory", "Laboratory"
+    COSMETIC_SURGERY = "cosmetic_surgery", "Cosmetic / Plastic Surgery"
+    MULTI_SPECIALTY = "multi_specialty", "Multi-Specialty"
+    OTHER = "other", "Other"
+
+
 class Clinic(UUIDModel, TimestampedModel):
     slug = models.SlugField(max_length=64, unique=True)
     name = models.CharField(max_length=255)
@@ -25,6 +37,13 @@ class Clinic(UUIDModel, TimestampedModel):
         choices=ClinicStatus.choices,
         default=ClinicStatus.ONBOARDING,
     )
+    clinic_type = models.CharField(
+        max_length=32, choices=ClinicType.choices, blank=True, default=""
+    )
+    # Resume cursor for the onboarding wizard — one of the step slugs it defines.
+    # Empty + status=onboarding means onboarding hasn't been started yet.
+    onboarding_step = models.CharField(max_length=32, blank=True, default="")
+    onboarding_completed_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         db_table = "clinics"

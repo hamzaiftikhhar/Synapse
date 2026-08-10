@@ -12,8 +12,14 @@ from ninja.errors import HttpError
 
 from apps.api.auth.deps import clinic_from, jwt_auth
 from apps.api.common.schemas import MessageOut, PaginatedOut
-from apps.api.doctors.schemas import DoctorIn, DoctorOut, DoctorUpdateIn
-from apps.doctors.models import Doctor, DoctorService, DoctorSpecialty
+from apps.api.doctors.schemas import (
+    DoctorIn,
+    DoctorOut,
+    DoctorScheduleIn,
+    DoctorScheduleOut,
+    DoctorUpdateIn,
+)
+from apps.doctors.models import Doctor, DoctorSchedule, DoctorService, DoctorSpecialty
 from apps.services.models import Service
 from apps.specialties.models import Specialty
 
@@ -152,3 +158,60 @@ def delete_doctor(request, doctor_id: UUID):
     doctor.is_active = False
     doctor.save(update_fields=["is_deleted", "deleted_at", "is_active", "updated_at"])
     return MessageOut(detail="Doctor soft-deleted")
+
+
+def _serialize_schedule(row: DoctorSchedule) -> DoctorScheduleOut:
+    return DoctorScheduleOut(
+        id=row.id,
+        day_of_week=row.day_of_week,
+        start_time=row.start_time,
+        end_time=row.end_time,
+        slot_duration_min=row.slot_duration_min,
+        is_active=row.is_active,
+    )
+
+
+@router.get(
+    "/{doctor_id}/schedule", response=list[DoctorScheduleOut], auth=jwt_auth
+)
+def get_doctor_schedule(request, doctor_id: UUID):
+    clinic = clinic_from(request)
+    _get_doctor(clinic.id, doctor_id)  # 404s if not found / wrong tenant
+    rows = DoctorSchedule.objects.filter(
+        clinic=clinic, doctor_id=doctor_id
+    ).order_by("day_of_week", "start_time")
+    return [_serialize_schedule(r) for r in rows]
+
+
+@router.put(
+    "/{doctor_id}/schedule", response=list[DoctorScheduleOut], auth=jwt_auth
+)
+def update_doctor_schedule(request, doctor_id: UUID, payload: list[DoctorScheduleIn]):
+    """Bulk replace — same delete+recreate pattern as specialty/service sync."""
+    clinic = clinic_from(request)
+    doctor = _get_doctor(clinic.id, doctor_id)
+    for row in payload:
+        if not (0 <= row.day_of_week <= 6):
+            raise HttpError(400, "day_of_week must be between 0 (Monday) and 6 (Sunday)")
+        if row.end_time <= row.start_time:
+            raise HttpError(400, "End time must be after start time")
+
+    DoctorSchedule.objects.filter(clinic=clinic, doctor=doctor).delete()
+    DoctorSchedule.objects.bulk_create(
+        [
+            DoctorSchedule(
+                clinic=clinic,
+                doctor=doctor,
+                day_of_week=row.day_of_week,
+                start_time=row.start_time,
+                end_time=row.end_time,
+                slot_duration_min=row.slot_duration_min,
+                is_active=row.is_active,
+            )
+            for row in payload
+        ]
+    )
+    rows = DoctorSchedule.objects.filter(
+        clinic=clinic, doctor=doctor
+    ).order_by("day_of_week", "start_time")
+    return [_serialize_schedule(r) for r in rows]

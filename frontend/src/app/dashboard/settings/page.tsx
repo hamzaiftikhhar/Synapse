@@ -43,7 +43,7 @@ export default function SettingsPage() {
             </button>
           ))}
         </nav>
-        <div className="min-w-0 flex-1 rounded-2xl border border-border bg-white p-5 shadow-soft">
+        <div className="min-w-0 flex-1 rounded-2xl border border-border bg-card p-5">
           {section === "general" ? (
             <div className="space-y-3">
               <h2 className="text-sm font-semibold">General</h2>

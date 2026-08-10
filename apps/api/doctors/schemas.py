@@ -1,6 +1,6 @@
 """Doctor API schemas."""
 
-from datetime import datetime
+from datetime import datetime, time
 from uuid import UUID
 
 from ninja import Schema
@@ -44,3 +44,20 @@ class DoctorUpdateIn(Schema):
     is_accepting_patients: bool | None = None
     specialty_ids: list[UUID] | None = None
     service_ids: list[UUID] | None = None
+
+
+class DoctorScheduleOut(Schema):
+    id: UUID
+    day_of_week: int
+    start_time: time
+    end_time: time
+    slot_duration_min: int
+    is_active: bool
+
+
+class DoctorScheduleIn(Schema):
+    day_of_week: int
+    start_time: time
+    end_time: time
+    slot_duration_min: int = 30
+    is_active: bool = True

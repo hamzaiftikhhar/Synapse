@@ -70,6 +70,11 @@ class ClinicOut(Schema):
     name: str
     timezone: str
     status: str = "active"
+    clinic_type: str = ""
+    phone: str = ""
+    address: dict = {}
+    onboarding_step: str = ""
+    onboarding_completed_at: datetime | None = None
 
 
 class UserOut(Schema):

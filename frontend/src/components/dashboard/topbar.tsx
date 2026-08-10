@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { DashboardSidebar } from "@/components/dashboard/sidebar";
+import { ThemeToggle } from "@/components/dashboard/theme-toggle";
 import { useAuth } from "@/providers/auth-provider";
 
 export function DashboardTopbar() {
@@ -28,7 +29,7 @@ export function DashboardTopbar() {
   }
 
   return (
-    <header className="flex h-14 items-center justify-between border-b border-border bg-white px-4 lg:px-6">
+    <header className="flex h-14 items-center justify-between border-b border-border bg-sidebar px-4 lg:px-6">
       <div className="flex items-center gap-2">
         <Sheet open={open} onOpenChange={setOpen}>
           <SheetTrigger
@@ -59,54 +60,57 @@ export function DashboardTopbar() {
         </div>
       </div>
 
-      <DropdownMenu>
-        <DropdownMenuTrigger className="inline-flex h-8 items-center gap-2 rounded-full border border-border bg-background px-3 text-sm hover:bg-muted">
-          <User className="size-3.5" />
-          <span className="hidden sm:inline">
-            {user?.first_name || user?.email}
-          </span>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-52">
-          <DropdownMenuLabel className="font-normal">
-            <div className="flex flex-col gap-0.5">
-              <span className="text-sm font-medium">
-                {user?.first_name} {user?.last_name}
-              </span>
-              <span className="text-xs text-muted-foreground">{user?.email}</span>
-              <span className="text-[10px] uppercase text-muted-foreground">
-                {user?.role}
-              </span>
-            </div>
-          </DropdownMenuLabel>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem onClick={() => router.push("/dashboard/profile")}>
-            Profile
-          </DropdownMenuItem>
-          {isSuper && !inClinicAsSuper ? (
-            <DropdownMenuItem
-              onClick={() => router.push("/dashboard/platform/settings")}
-            >
-              Platform settings
+      <div className="flex items-center gap-1">
+        <ThemeToggle />
+        <DropdownMenu>
+          <DropdownMenuTrigger className="inline-flex h-8 items-center gap-2 rounded-full border border-border bg-background px-3 text-sm hover:bg-muted">
+            <User className="size-3.5" />
+            <span className="hidden sm:inline">
+              {user?.first_name || user?.email}
+            </span>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-52">
+            <DropdownMenuLabel className="font-normal">
+              <div className="flex flex-col gap-0.5">
+                <span className="text-sm font-medium">
+                  {user?.first_name} {user?.last_name}
+                </span>
+                <span className="text-xs text-muted-foreground">{user?.email}</span>
+                <span className="text-[10px] uppercase text-muted-foreground">
+                  {user?.role}
+                </span>
+              </div>
+            </DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={() => router.push("/dashboard/profile")}>
+              Profile
             </DropdownMenuItem>
-          ) : (
-            <DropdownMenuItem onClick={() => router.push("/dashboard/settings")}>
-              Settings
+            {isSuper && !inClinicAsSuper ? (
+              <DropdownMenuItem
+                onClick={() => router.push("/dashboard/platform/settings")}
+              >
+                Platform settings
+              </DropdownMenuItem>
+            ) : (
+              <DropdownMenuItem onClick={() => router.push("/dashboard/settings")}>
+                Settings
+              </DropdownMenuItem>
+            )}
+            {isSuper ? (
+              <DropdownMenuItem
+                onClick={() => router.push("/dashboard/platform")}
+              >
+                Platform overview
+              </DropdownMenuItem>
+            ) : null}
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={handleLogout}>
+              <LogOut className="size-3.5" />
+              Log out
             </DropdownMenuItem>
-          )}
-          {isSuper ? (
-            <DropdownMenuItem
-              onClick={() => router.push("/dashboard/platform")}
-            >
-              Platform overview
-            </DropdownMenuItem>
-          ) : null}
-          <DropdownMenuSeparator />
-          <DropdownMenuItem onClick={handleLogout}>
-            <LogOut className="size-3.5" />
-            Log out
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
     </header>
   );
 }

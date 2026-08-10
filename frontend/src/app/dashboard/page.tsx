@@ -53,7 +53,7 @@ export default function DashboardHomePage() {
         }
       />
 
-      <div className="relative mb-6 overflow-hidden rounded-2xl border border-border bg-white p-5 shadow-soft">
+      <div className="relative mb-6 overflow-hidden rounded-2xl border border-border bg-card p-5">
         <div className="glow-purple pointer-events-none absolute inset-0 opacity-70" />
         <div className="relative">
           <p className="text-xs font-medium uppercase tracking-wider text-primary">

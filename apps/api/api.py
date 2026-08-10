@@ -9,11 +9,14 @@ from apps.api.widget.router import router as widget_public_router
 from apps.api.widget.booking_router import router as widget_booking_router
 from apps.api.auth.router import router as auth_router
 from apps.api.chat.router import router as chat_router
+from apps.api.clinics.router import router as clinics_router
 from apps.api.doctors.router import router as doctors_router
+from apps.api.insurance.router import router as insurance_router
 from apps.api.knowledge.router import router as knowledge_router
 from apps.api.patients.router import router as patients_router
 from apps.api.platform.router import router as platform_router
 from apps.api.services.router import router as services_router
+from apps.api.specialties.router import router as specialties_router
 
 api = NinjaAPI(
     title="Synapse API",
@@ -38,8 +41,11 @@ api.add_router("/widget", widget_booking_router)
 api.add_router("/chat", chat_router)
 api.add_router("/documents", knowledge_router)
 api.add_router("/patients", patients_router)
+api.add_router("/clinics", clinics_router)
 api.add_router("/doctors", doctors_router)
 api.add_router("/services", services_router)
+api.add_router("/specialties", specialties_router)
+api.add_router("/insurance", insurance_router)
 api.add_router("/appointments", appointments_router)
 
 if settings.DEBUG:

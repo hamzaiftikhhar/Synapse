@@ -35,6 +35,8 @@ def default_widget_configuration() -> dict[str, Any]:
             "date_horizon_days": 14,
             "slot_hold_minutes": 10,
             "slot_duration_min": 30,
+            "lead_time_hours": 24,
+            "cancellation_policy": "",
         },
         "feature_flags": dict(DEFAULT_FEATURE_FLAGS),
     }

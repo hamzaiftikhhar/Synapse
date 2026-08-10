@@ -44,13 +44,18 @@
   --color-navy-foreground: var(--navy-foreground);
   --color-lavender: var(--lavender);
   --color-glow: var(--glow);
-  --radius-sm: 8px;
-  --radius-md: 10px;
-  --radius-lg: 12px;
-  --radius-xl: 16px;
-  --radius-2xl: 20px;
-  --radius-3xl: 24px;
-  --radius-4xl: 9999px;
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-info: var(--info);
+  /* indirected so .theme-instrument (dashboard) can scope its own radius
+     role-system without touching the global scale marketing/auth still use */
+  --radius-sm: var(--radius-sm-val);
+  --radius-md: var(--radius-md-val);
+  --radius-lg: var(--radius-lg-val);
+  --radius-xl: var(--radius-xl-val);
+  --radius-2xl: var(--radius-2xl-val);
+  --radius-3xl: var(--radius-3xl-val);
+  --radius-4xl: var(--radius-4xl-val);
 }
 
 :root {
@@ -91,6 +96,18 @@
   --sidebar-accent-foreground: #2e1065;
   --sidebar-border: #e8e7ef;
   --sidebar-ring: #8b5cf6;
+  --success: #16a34a;
+  --warning: #d97706;
+  --info: #2563eb;
+
+  /* global radius scale — unchanged, still what marketing/auth/onboarding render with */
+  --radius-sm-val: 8px;
+  --radius-md-val: 10px;
+  --radius-lg-val: 12px;
+  --radius-xl-val: 16px;
+  --radius-2xl-val: 20px;
+  --radius-3xl-val: 24px;
+  --radius-4xl-val: 9999px;
 }
 
 .dark {
@@ -124,6 +141,117 @@
   --sidebar-accent-foreground: #e9e5ff;
   --sidebar-border: rgb(255 255 255 / 10%);
   --sidebar-ring: #8b5cf6;
+}
+
+/* ==========================================================================
+   Instrument — scoped design language for the clinic/platform dashboard.
+   Applied via the `.theme-instrument` wrapper in app/dashboard/layout.tsx.
+   Dark is the product default; `.theme-light` is opt-in via the topbar
+   toggle. Deliberately does not touch :root/.dark above, which marketing,
+   auth, and onboarding still render with.
+   ========================================================================== */
+.theme-instrument {
+  color-scheme: dark;
+
+  --background: #0a0a0c;
+  --foreground: #ededf1;
+  --card: #15161b;
+  --card-foreground: #ededf1;
+  --popover: #1b1c23;
+  --popover-foreground: #ededf1;
+  --primary: #7b7fe0;
+  --primary-foreground: #0a0a0c;
+  --secondary: #1b1c23;
+  --secondary-foreground: #ededf1;
+  --muted: #101114;
+  --muted-foreground: #a3a5b0;
+  --accent: #1b1c23;
+  --accent-foreground: #ededf1;
+  --destructive: #e2585f;
+  --border: rgb(255 255 255 / 8%);
+  --input: rgb(255 255 255 / 14%);
+  --ring: #7b7fe0;
+  --chart-1: #7b7fe0;
+  --chart-2: #4e9fe3;
+  --chart-3: #3fbf8a;
+  --chart-4: #d9a441;
+  --chart-5: #a3a6f5;
+  --navy: #ededf1;
+  --navy-foreground: #0a0a0c;
+  --lavender: #a3a6f5;
+  --glow: #7b7fe0;
+  --sidebar: #101114;
+  --sidebar-foreground: #ededf1;
+  --sidebar-primary: #7b7fe0;
+  --sidebar-primary-foreground: #0a0a0c;
+  --sidebar-accent: #1b1c23;
+  --sidebar-accent-foreground: #ededf1;
+  --sidebar-border: rgb(255 255 255 / 8%);
+  --sidebar-ring: #7b7fe0;
+  --success: #3fbf8a;
+  --warning: #d9a441;
+  --info: #4e9fe3;
+
+  /* radius — role-based, mostly tight; only dialogs and pills feel soft */
+  --radius-sm-val: 6px;
+  --radius-md-val: 7px;
+  --radius-lg-val: 9px;   /* control: buttons, inputs, dropdown items, nav */
+  --radius-xl-val: 11px;  /* card: stat cards, list rows, chips */
+  --radius-2xl-val: 14px; /* panel: hero banners, larger content panels */
+  --radius-3xl-val: 18px; /* dialog: modals, sheets */
+  --radius-4xl-val: 9999px; /* pill: status badges only */
+
+  background-color: var(--background);
+  background-image:
+    radial-gradient(ellipse 55% 40% at 8% -10%, rgb(123 127 224 / 10%), transparent 60%),
+    radial-gradient(ellipse 45% 35% at 100% 0%, rgb(123 127 224 / 7%), transparent 60%);
+}
+
+.theme-instrument.theme-light {
+  color-scheme: light;
+
+  --background: #f2f1f5;
+  --foreground: #16161d;
+  --card: #ffffff;
+  --card-foreground: #16161d;
+  --popover: #ffffff;
+  --popover-foreground: #16161d;
+  --primary: #5457c9;
+  --primary-foreground: #fbfbff;
+  --secondary: #eceaf5;
+  --secondary-foreground: #16161d;
+  --muted: #eae9ef;
+  --muted-foreground: #55565f;
+  --accent: #eceaf5;
+  --accent-foreground: #16161d;
+  --destructive: #c93a41;
+  --border: rgb(20 20 26 / 9%);
+  --input: rgb(20 20 26 / 14%);
+  --ring: #5457c9;
+  --chart-1: #5457c9;
+  --chart-2: #2b7fc4;
+  --chart-3: #1f9d6c;
+  --chart-4: #b9791e;
+  --chart-5: #3d3fa8;
+  --navy: #16161d;
+  --navy-foreground: #ffffff;
+  --lavender: #3d3fa8;
+  --glow: #5457c9;
+  --sidebar: #eae9ef;
+  --sidebar-foreground: #16161d;
+  --sidebar-primary: #5457c9;
+  --sidebar-primary-foreground: #fbfbff;
+  --sidebar-accent: #eceaf5;
+  --sidebar-accent-foreground: #16161d;
+  --sidebar-border: rgb(20 20 26 / 9%);
+  --sidebar-ring: #5457c9;
+  --success: #1f9d6c;
+  --warning: #b9791e;
+  --info: #2b7fc4;
+
+  background-image:
+    radial-gradient(ellipse 55% 40% at 8% -10%, rgb(84 87 201 / 6%), transparent 60%),
+    radial-gradient(ellipse 45% 35% at 100% 0%, rgb(84 87 201 / 4%), transparent 60%);
 }
 
 @layer base {
@@ -174,40 +302,4 @@
 @utility section-navy {
   background-color: #0b0e2e;
   color: #f5f3ff;
-}
-
-/* Soft, ambient card elevation — premium enterprise feel, no glass/heavy blur */
-@utility shadow-soft {
-  box-shadow:
-    0 1px 2px 0 rgb(11 14 46 / 4%),
-    0 8px 24px -8px rgb(91 33 182 / 14%);
-  .dark & {
-    box-shadow:
-      0 1px 2px 0 rgb(0 0 0 / 20%),
-      0 8px 24px -8px rgb(139 92 246 / 25%);
-  }
-}
-
-@utility shadow-soft-lg {
-  box-shadow:
-    0 2px 6px 0 rgb(11 14 46 / 5%),
-    0 20px 48px -14px rgb(91 33 182 / 18%);
-  .dark & {
-    box-shadow:
-      0 2px 6px 0 rgb(0 0 0 / 24%),
-      0 20px 48px -14px rgb(139 92 246 / 30%);
-  }
-}
-
-/* Barely-there purple wash for large app backgrounds (dashboard shell) */
-@utility bg-dashboard-ambient {
-  background-color: var(--background);
-  background-image:
-    radial-gradient(ellipse 55% 40% at 8% -10%, rgb(139 92 246 / 8%), transparent 60%),
-    radial-gradient(ellipse 45% 35% at 100% 0%, rgb(124 58 237 / 6%), transparent 60%);
-  .dark & {
-    background-image:
-      radial-gradient(ellipse 55% 40% at 8% -10%, rgb(139 92 246 / 10%), transparent 60%),
-      radial-gradient(ellipse 45% 35% at 100% 0%, rgb(124 58 237 / 10%), transparent 60%);
-  }
 }

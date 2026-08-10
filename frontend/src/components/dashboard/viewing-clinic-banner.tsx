@@ -31,14 +31,14 @@ export function ViewingClinicBanner() {
   }
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-amber-200 bg-amber-50 px-4 py-2.5 lg:px-6">
+    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-warning/25 bg-warning/10 px-4 py-2.5 lg:px-6">
       <div className="min-w-0">
-        <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-800/80">
+        <p className="text-[10px] font-semibold uppercase tracking-wide text-warning">
           Viewing clinic
         </p>
-        <p className="truncate text-sm font-semibold text-amber-950">
+        <p className="truncate text-sm font-semibold text-foreground">
           {clinic.name}
-          <span className="ml-2 font-normal text-amber-800/80">
+          <span className="ml-2 font-normal text-muted-foreground">
             You are operating as Super Admin.
           </span>
         </p>
@@ -48,7 +48,7 @@ export function ViewingClinicBanner() {
           type="button"
           variant="outline"
           size="sm"
-          className="border-amber-300 bg-white"
+          className="border-warning/40 bg-card"
           onClick={() => router.push("/dashboard/platform/clinics")}
         >
           Switch clinic

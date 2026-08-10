@@ -10,8 +10,8 @@ class ClinicBusinessHoursInline(admin.TabularInline):
 
 @admin.register(Clinic)
 class ClinicAdmin(admin.ModelAdmin):
-    list_display = ("name", "slug", "email", "status", "timezone", "created_at")
-    list_filter = ("status",)
+    list_display = ("name", "slug", "email", "status", "clinic_type", "timezone", "created_at")
+    list_filter = ("status", "clinic_type")
     search_fields = ("name", "slug", "email")
     prepopulated_fields = {"slug": ("name",)}
     inlines = [ClinicBusinessHoursInline]

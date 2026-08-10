@@ -100,7 +100,7 @@ export default function PlatformClinicsPage() {
         description="Create, suspend, and enter any clinic. Entering opens the clinic portal; your role stays Super Admin."
       />
       {canExitClinic && activeSlug ? (
-        <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+        <div className="mb-4 rounded-xl border border-warning/25 bg-warning/10 px-3 py-2 text-sm text-foreground">
           Currently viewing{" "}
           <span className="font-semibold">{clinic?.name ?? activeSlug}</span>.
           Use Exit on that row, or Enter another clinic to switch.
@@ -124,7 +124,7 @@ export default function PlatformClinicsPage() {
       {loading ? (
         <p className="text-sm text-muted-foreground">Loading clinics…</p>
       ) : (
-        <div className="overflow-x-auto rounded-2xl border border-border bg-white shadow-soft">
+        <div className="overflow-x-auto rounded-2xl border border-border bg-card">
           <table className="w-full min-w-[720px] text-left text-sm">
             <thead className="border-b border-border bg-muted/40 text-xs text-muted-foreground">
               <tr>
@@ -145,7 +145,7 @@ export default function PlatformClinicsPage() {
                     key={c.id}
                     className={
                       isActive
-                        ? "border-b border-border bg-amber-50/60 last:border-0"
+                        ? "border-b border-border bg-warning/10 last:border-0"
                         : "border-b border-border last:border-0"
                     }
                   >
@@ -153,7 +153,7 @@ export default function PlatformClinicsPage() {
                       <p className="font-medium">
                         {c.name}
                         {isActive ? (
-                          <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-900">
+                          <span className="ml-2 rounded bg-warning/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-warning">
                             Viewing
                           </span>
                         ) : null}

@@ -55,7 +55,7 @@ export function DashboardSidebar({ onNavigate }: { onNavigate?: () => void }) {
   return (
     <aside className="flex h-full w-60 flex-col border-r border-border bg-sidebar">
       <div className="flex h-14 items-center gap-2 border-b border-border px-4">
-        <div className="flex size-7 items-center justify-center rounded-xl bg-navy text-xs font-bold text-white">
+        <div className="flex size-7 items-center justify-center rounded-xl bg-primary text-xs font-bold text-primary-foreground">
           S
         </div>
         <div className="min-w-0">
@@ -94,7 +94,7 @@ export function DashboardSidebar({ onNavigate }: { onNavigate?: () => void }) {
                 className={cn(
                   "flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-[13px] font-medium transition-colors",
                   active
-                    ? "bg-accent text-accent-foreground"
+                    ? "bg-accent text-primary"
                     : "text-muted-foreground hover:bg-muted hover:text-foreground"
                 )}
               >

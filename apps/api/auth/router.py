@@ -81,6 +81,11 @@ def _clinic_out(clinic: Clinic) -> ClinicOut:
         name=clinic.name,
         timezone=clinic.timezone,
         status=clinic.status,
+        clinic_type=clinic.clinic_type,
+        phone=clinic.phone,
+        address=clinic.address or {},
+        onboarding_step=clinic.onboarding_step,
+        onboarding_completed_at=clinic.onboarding_completed_at,
     )
 
 
