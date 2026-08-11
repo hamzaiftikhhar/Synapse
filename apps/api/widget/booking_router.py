@@ -32,6 +32,7 @@ class BookingStartIn(Schema):
     slot_start: str | None = None
     slot_end: str | None = None
     insurance_name: str | None = None
+    replaces_appointment_id: str | None = None
 
 
 class BookingStepIn(Schema):
@@ -106,6 +107,16 @@ def _wrap(payload: dict, session) -> dict:
 def booking_start(request, payload: BookingStartIn):
     clinic = _resolve_clinic(payload.clinic_slug)
     session = _resolve_session(clinic, payload.session_token)
+    if payload.replaces_appointment_id:
+        from apps.appointments.models import Appointment
+
+        owns_appointment = bool(session.patient_id) and Appointment.objects.filter(
+            id=payload.replaces_appointment_id,
+            clinic=clinic,
+            patient_id=session.patient_id,
+        ).exists()
+        if not owns_appointment:
+            raise HttpError(403, "That appointment isn't available to reschedule")
     try:
         result = BookingService.start(
             clinic=clinic,
@@ -121,6 +132,7 @@ def booking_start(request, payload: BookingStartIn):
             slot_start=payload.slot_start,
             slot_end=payload.slot_end,
             insurance_name=payload.insurance_name,
+            replaces_appointment_id=payload.replaces_appointment_id,
         )
     except BookingError as exc:
         raise HttpError(exc.status_code, str(exc)) from exc

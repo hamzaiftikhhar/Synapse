@@ -266,6 +266,10 @@ export const widgetAppointmentsService = {
       appointment_id: string;
       doctor_id: string;
       doctor_name: string;
+      service_id: string | null;
+      service_name: string | null;
+      start_time: string;
+      end_time: string;
     }>("/widget/appointments/reschedule", input);
     return data;
   },

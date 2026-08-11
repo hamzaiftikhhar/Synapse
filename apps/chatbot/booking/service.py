@@ -52,6 +52,7 @@ class BookingService:
         slot_start: str | None = None,
         slot_end: str | None = None,
         insurance_name: str | None = None,
+        replaces_appointment_id: str | None = None,
     ) -> dict[str, Any]:
         cfg = get_booking_config(clinic)
         text = (reason or message or "").strip()
@@ -96,6 +97,8 @@ class BookingService:
             doctor_id=doctor_id or session.doctor_id,
             doctor_name=doctor_name or session.doctor_name,
         )
+        if replaces_appointment_id:
+            session.replaces_appointment_id = replaces_appointment_id
 
         cls._touch(session)
         cls._save(chat_session, session)
@@ -643,6 +646,12 @@ class BookingService:
 
         code = _confirmation_code()
         try:
+            # `confirm` is itself @transaction.atomic (class decorator above),
+            # so the create below and the reschedule-cancel that follows it
+            # already commit-or-rollback together — the patient is never left
+            # with neither appointment if this fails partway, and the old
+            # appointment stays live (bookable fallback) through the whole
+            # wizard right up until this exact point.
             appt = Appointment.objects.create(
                 clinic=clinic,
                 doctor=doctor,
@@ -654,6 +663,33 @@ class BookingService:
                 notes=session.reason[:500] if session.reason else "",
                 source=AppointmentSource.CHATBOT,
             )
+            if session.replaces_appointment_id:
+                # Ownership is the chat session's original OTP-verified
+                # patient (already re-validated in booking_start), not the
+                # `patient` resolved just now from whatever the wizard's own
+                # contact step collected — that can legitimately produce a
+                # second Patient row for the same person (e.g. phone typed
+                # without the "+1" the SMS-verified record was saved with),
+                # which would silently fail to match here and leave both
+                # appointments active.
+                owner_patient_id = getattr(chat_session, "patient_id", None) or patient.id
+                updated = (
+                    Appointment.objects.filter(
+                        id=session.replaces_appointment_id,
+                        clinic=clinic,
+                        patient_id=owner_patient_id,
+                    )
+                    .exclude(id=appt.id)
+                    .update(status=AppointmentStatus.CANCELLED, updated_at=timezone.now())
+                )
+                if not updated:
+                    logger.warning(
+                        "Reschedule: old appointment %s not found/owned for "
+                        "patient %s — new appointment %s created anyway",
+                        session.replaces_appointment_id,
+                        patient.id,
+                        appt.id,
+                    )
         except IntegrityError as exc:
             raise BookingError(
                 "Could not create appointment — slot may have been taken.",

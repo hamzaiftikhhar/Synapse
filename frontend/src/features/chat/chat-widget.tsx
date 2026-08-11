@@ -36,12 +36,12 @@ import {
   useStaffChat,
 } from "@/hooks/api";
 import { readSelectedInsurance } from "@/hooks/use-selected-insurance";
-import { getActiveTenant } from "@/lib/api/client";
+import { getActiveTenant, getApiErrorMessage } from "@/lib/api/client";
 import { widgetAppointmentsService } from "@/services";
 import { useAuth } from "@/providers/auth-provider";
 import { useWidget, type AssistantMode } from "@/providers/widget-provider";
 import type { BookingStepPayload } from "@/types/api";
-import type { ChatMessage, TimeSlotData } from "@/types/chat";
+import type { AppointmentCardData, ChatMessage, TimeSlotData } from "@/types/chat";
 import { waitForNaturalReplyPace } from "@/features/chat/natural-pace";
 
 export type ChatWidgetProps = {
@@ -605,28 +605,50 @@ export function ChatWidget({
             session_token: widgetCtx.sessionToken || "",
             appointment_id: appointmentId,
           });
+          // Drop it from any appointments card already on screen — otherwise
+          // the just-cancelled appointment keeps showing Reschedule/Cancel
+          // buttons as if it were still active.
+          setMessages((prev) =>
+            prev.map((m) => {
+              if (m.type !== "appointments") return m;
+              const list = (m.payload?.appointments as AppointmentCardData[]) ?? [];
+              return {
+                ...m,
+                payload: {
+                  ...m.payload,
+                  appointments: list.filter((a) => a.id !== appointmentId),
+                },
+              };
+            })
+          );
           setMessages((prev) => [
             ...prev,
             systemNoticeMessage(
               appt.doctor
-                ? `Your appointment with ${appt.doctor} has been cancelled.`
-                : "Your appointment has been cancelled."
+                ? `Appointment cancelled. Your appointment with ${appt.doctor} has been cancelled.`
+                : "Appointment cancelled."
             ),
           ]);
-        } catch {
+        } catch (err) {
           setMessages((prev) => [
             ...prev,
-            systemErrorMessage("Couldn't cancel that appointment — please try again."),
+            systemErrorMessage(getApiErrorMessage(err, "Couldn't cancel that appointment — please try again.")),
           ]);
         }
       })();
       return;
     }
 
-    if (action === "confirm_reschedule_appointment") {
-      const appt = data as { id?: string };
+    if (action === "start_reschedule") {
+      const appt = data as {
+        id?: string;
+        doctor?: string;
+        service?: string;
+        changeDoctor?: boolean;
+      };
       if (!appt.id) return;
       const appointmentId = appt.id;
+      const keepDoctor = !appt.changeDoctor;
       void (async () => {
         try {
           const result = await widgetAppointmentsService.reschedule({
@@ -634,18 +656,33 @@ export function ChatWidget({
             session_token: widgetCtx.sessionToken || "",
             appointment_id: appointmentId,
           });
+          const currentWhen = new Date(result.start_time).toLocaleString(undefined, {
+            weekday: "short",
+            month: "short",
+            day: "numeric",
+            hour: "numeric",
+            minute: "2-digit",
+          });
           setMessages((prev) => [
             ...prev,
+            systemNoticeMessage(
+              `Current appointment: ${result.doctor_name} · ${currentWhen}. Choose a new time below — your current appointment stays booked until you confirm.`
+            ),
             bookingWizardMessage({
-              reason: `Reschedule with ${result.doctor_name}`,
-              doctor_id: result.doctor_id,
-              doctor_name: result.doctor_name,
+              reason: keepDoctor
+                ? `Reschedule with ${result.doctor_name}`
+                : "I would like to reschedule with a different doctor",
+              doctor_id: keepDoctor ? result.doctor_id : undefined,
+              doctor_name: keepDoctor ? result.doctor_name : undefined,
+              service_id: result.service_id || undefined,
+              service_name: result.service_name || undefined,
+              replaces_appointment_id: appointmentId,
             }),
           ]);
-        } catch {
+        } catch (err) {
           setMessages((prev) => [
             ...prev,
-            systemErrorMessage("Couldn't start rescheduling — please try again."),
+            systemErrorMessage(getApiErrorMessage(err, "Couldn't start rescheduling — please try again.")),
           ]);
         }
       })();

@@ -54,6 +54,10 @@ class AppointmentRescheduleOut(Schema):
     appointment_id: str
     doctor_id: str
     doctor_name: str
+    service_id: str | None = None
+    service_name: str | None = None
+    start_time: str
+    end_time: str
 
 
 def _resolve_clinic(slug: str) -> Clinic:
@@ -152,30 +156,35 @@ def cancel_appointment(request, payload: AppointmentActionIn):
 @router.post("/appointments/reschedule", response=AppointmentRescheduleOut, auth=None)
 def reschedule_appointment(request, payload: AppointmentActionIn):
     """
-    Cancel a patient's own appointment to make way for a new one with the
-    same doctor — the frontend follows this with the existing "book with
-    doctor X" chat flow to pick a new date/time (booking wizard, unchanged).
+    Fetch reschedule context for a patient's own appointment — does NOT
+    cancel it. The appointment stays live (and bookable as a fallback) for
+    the entire time the patient is picking a new slot in the booking wizard;
+    it's only cancelled atomically alongside the new appointment's creation,
+    in BookingService.confirm (see `replaces_appointment_id`).
     """
     from apps.appointments.models import Appointment, AppointmentStatus
 
     clinic = _resolve_clinic(payload.clinic_slug)
     session = _resolve_authenticated_session(clinic, payload.session_token)
     try:
-        appt = Appointment.objects.select_related("doctor").get(
-            id=payload.appointment_id, clinic=clinic, patient=session.patient
+        appt = Appointment.objects.select_related("doctor", "service").get(
+            id=payload.appointment_id,
+            clinic=clinic,
+            patient=session.patient,
+            status__in=[AppointmentStatus.PENDING, AppointmentStatus.CONFIRMED],
         )
     except (Appointment.DoesNotExist, ValueError):
         raise HttpError(404, "Appointment not found") from None
 
-    doctor_id = str(appt.doctor_id)
-    doctor_name = appt.doctor.full_name
-    appt.status = AppointmentStatus.CANCELLED
-    appt.save(update_fields=["status", "updated_at"])
     return AppointmentRescheduleOut(
-        detail="Appointment cancelled — let's find a new time",
+        detail="ok",
         appointment_id=str(appt.id),
-        doctor_id=doctor_id,
-        doctor_name=doctor_name,
+        doctor_id=str(appt.doctor_id),
+        doctor_name=appt.doctor.full_name,
+        service_id=str(appt.service_id) if appt.service_id else None,
+        service_name=appt.service.name if appt.service else None,
+        start_time=appt.start_time.isoformat(),
+        end_time=appt.end_time.isoformat(),
     )
 
 

@@ -43,6 +43,10 @@ class BookingSession:
     hold_expires_at: str | None = None
     confirmation_code: str | None = None
     appointment_id: str | None = None
+    # Reschedule flow: the appointment this booking replaces, if any. Kept
+    # active until this new booking is confirmed — cancelled atomically with
+    # the new appointment's creation in BookingService.confirm, never eagerly.
+    replaces_appointment_id: str | None = None
     suggested_specialty_ids: list[str] = field(default_factory=list)
     show_all_times: bool = False
     time_hint: str | None = None  # ISO time floor, e.g. "17:00:00" — filters TIME step options

@@ -579,6 +579,9 @@ export type BookingStartInput = {
   slot_start?: string | null;
   slot_end?: string | null;
   insurance_name?: string | null;
+  /** Reschedule flow: the appointment this new booking replaces. It stays
+   * live until BookingService.confirm atomically swaps it for the new one. */
+  replaces_appointment_id?: string | null;
 };
 
 export type BookingStepInput = {

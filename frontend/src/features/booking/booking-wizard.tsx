@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import { getApiErrorMessage } from "@/lib/api/client";
+import { classifyContact } from "@/lib/contact-validation";
 import { bookingService } from "@/services";
 import type {
   BookingDateDensity,
@@ -31,6 +32,9 @@ export type BookingWizardProps = {
   slotStart?: string | null;
   slotEnd?: string | null;
   insuranceName?: string | null;
+  /** Reschedule flow: the appointment this booking replaces. Stays booked
+   * until this new one is actually confirmed (see BookingService.confirm). */
+  replacesAppointmentId?: string | null;
   /** When false, wizard is read-only / collapsed after confirm or dismiss. */
   active?: boolean;
   onConfirmed?: (payload: BookingStepPayload) => void;
@@ -52,6 +56,7 @@ export function BookingWizard({
   slotStart = null,
   slotEnd = null,
   insuranceName = null,
+  replacesAppointmentId = null,
   active = true,
   onConfirmed,
   onDismiss,
@@ -106,6 +111,7 @@ export function BookingWizard({
         slot_start: slotStart,
         slot_end: slotEnd,
         insurance_name: insuranceName,
+        replaces_appointment_id: replacesAppointmentId,
       });
       syncToken(payload);
       setState(payload);
@@ -129,6 +135,7 @@ export function BookingWizard({
     slotStart,
     slotEnd,
     insuranceName,
+    replacesAppointmentId,
     syncToken,
     onStarted,
   ]);
@@ -843,58 +850,6 @@ function TimeStep({
       ) : null}
     </div>
   );
-}
-
-function isValidEmail(value: string): boolean {
-  // Simple production-ready check — not a library, rejects spaces and requires TLD
-  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/i.test(value.trim());
-}
-
-function isValidPhone(value: string): boolean {
-  // Digits only after stripping common formatting; 7–15 digits (E.164 range)
-  const digits = value.replace(/[^\d]/g, "");
-  return digits.length >= 7 && digits.length <= 15;
-}
-
-function classifyContact(
-  raw: string,
-  verificationMode: string
-): { phone: string; email: string; error: string | null } {
-  const value = raw.trim();
-  if (!value) {
-    return { phone: "", email: "", error: "Enter an email or phone number for verification" };
-  }
-
-  if (verificationMode === "email") {
-    if (!isValidEmail(value)) {
-      return { phone: "", email: value, error: "Enter a valid email address" };
-    }
-    return { phone: "", email: value.toLowerCase(), error: null };
-  }
-
-  if (verificationMode === "sms") {
-    if (!isValidPhone(value)) {
-      return { phone: value, email: "", error: "Enter a valid phone number" };
-    }
-    return { phone: value, email: "", error: null };
-  }
-
-  // sms_or_email | none — accept either, classify by @
-  if (value.includes("@")) {
-    if (!isValidEmail(value)) {
-      return { phone: "", email: value, error: "Enter a valid email address" };
-    }
-    return { phone: "", email: value.toLowerCase(), error: null };
-  }
-
-  if (!isValidPhone(value)) {
-    return {
-      phone: value,
-      email: "",
-      error: "Enter a valid phone number or email address",
-    };
-  }
-  return { phone: value, email: "", error: null };
 }
 
 function DetailsStep({

@@ -69,10 +69,14 @@ def build_ui_meta(
     for block in sql_results:
         if block.get("handler") == "patient_appointments":
             appt_rows = block.get("rows") or []
-            if appt_rows:
-                meta["appointments"] = [_map_appointment(r) for r in appt_rows]
-            elif (block.get("meta") or {}).get("requires_auth"):
+            if (block.get("meta") or {}).get("requires_auth"):
                 meta["verify_identity"] = True
+            else:
+                # Authenticated with zero rows still needs to reach the
+                # frontend as an (empty) appointments list — that's what
+                # renders the "No upcoming appointments" card instead of
+                # silently falling through to a generic text reply.
+                meta["appointments"] = [_map_appointment(r) for r in appt_rows]
             break
 
     # Book appointment / reschedule → embed wizard in chat (Homey-style).

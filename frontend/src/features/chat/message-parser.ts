@@ -139,7 +139,7 @@ function appendMetaComponents(
     });
   }
 
-  if (Array.isArray(meta.appointments) && meta.appointments.length && allow("appointments")) {
+  if (Array.isArray(meta.appointments) && allow("appointments")) {
     messages.push({
       id: uid("appt"),
       role,

@@ -70,6 +70,11 @@ export function BookingInlineCard({
             ? payload.insurance_name
             : null
         }
+        replacesAppointmentId={
+          typeof payload?.replaces_appointment_id === "string"
+            ? payload.replaces_appointment_id
+            : null
+        }
         active={active}
         onConfirmed={onConfirmed}
         onDismiss={onDismiss}

@@ -133,17 +133,21 @@ api.interceptors.response.use(
   }
 );
 
-export function getApiErrorMessage(error: unknown): string {
+export function getApiErrorMessage(
+  error: unknown,
+  fallback = "Something went wrong"
+): string {
   if (axios.isAxiosError(error)) {
     const data = error.response?.data as
       | { detail?: string; message?: string }
       | undefined;
     if (typeof data?.detail === "string") return data.detail;
     if (typeof data?.message === "string") return data.message;
+    if (!error.response) return fallback; // network failure — backend gave no message
     if (error.message) return error.message;
   }
   if (error instanceof Error) return error.message;
-  return "Something went wrong";
+  return fallback;
 }
 
 /** Separate client for patient/widget JWT (not staff). */
