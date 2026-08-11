@@ -26,11 +26,15 @@ function formatContact(method: "phone" | "email", contact: string): string {
 export function VerifyIdentity({
   clinicSlug,
   sessionToken,
+  onSessionToken,
   onVerified,
 }: {
   clinicSlug: string;
   sessionToken: string | null;
-  onVerified: () => void;
+  /** Persist the chat session token returned by OTP send so verify +
+   * appointment CRUD hit the same ChatSession. */
+  onSessionToken?: (token: string) => void;
+  onVerified: (sessionToken: string) => void;
 }) {
   const [method, setMethod] = useState<"phone" | "email">("phone");
   const [contact, setContact] = useState("");
@@ -42,6 +46,21 @@ export function VerifyIdentity({
   const [resending, setResending] = useState(false);
   const [debugCode, setDebugCode] = useState<string | null>(null);
   const [cooldown, setCooldown] = useState(0);
+  // Prefer the live token from OTP send over the prop — send may mint a
+  // session when the parent still has null (e.g. staff chat before first OTP).
+  const [activeSessionToken, setActiveSessionToken] = useState<string | null>(
+    sessionToken
+  );
+
+  useEffect(() => {
+    if (sessionToken) setActiveSessionToken(sessionToken);
+  }, [sessionToken]);
+
+  function rememberSessionToken(token: string | null | undefined) {
+    if (!token) return;
+    setActiveSessionToken(token);
+    onSessionToken?.(token);
+  }
 
   useEffect(() => {
     if (cooldown <= 0) return;
@@ -70,10 +89,11 @@ export function VerifyIdentity({
     try {
       const result = await widgetAuthService.sendOtp({
         clinic_slug: clinicSlug,
-        session_token: sessionToken,
+        session_token: activeSessionToken,
         phone: method === "phone" ? contact : undefined,
         email: method === "email" ? contact : undefined,
       });
+      rememberSessionToken(result.session_token);
       setDebugCode(result.debug_code ?? null);
       setCode("");
       setStage("code");
@@ -96,14 +116,21 @@ export function VerifyIdentity({
     setError(null);
     setLoading(true);
     try {
-      await widgetAuthService.verifyOtp({
+      const result = await widgetAuthService.verifyOtp({
         clinic_slug: clinicSlug,
-        session_token: sessionToken,
+        session_token: activeSessionToken,
         phone: method === "phone" ? contact : undefined,
         email: method === "email" ? contact : undefined,
         code: code.trim(),
       });
-      onVerified();
+      const token =
+        result.session_token || activeSessionToken || "";
+      rememberSessionToken(token);
+      if (!token) {
+        setError("Verification succeeded but no session was created. Please try again.");
+        return;
+      }
+      onVerified(token);
     } catch (err) {
       setError(getApiErrorMessage(err));
       setCode("");

@@ -38,6 +38,7 @@ export function MessageRenderer({
   onBookingDismiss,
   onBookingStarted,
   onIdentityVerified,
+  onSessionToken,
   typingHint,
 }: {
   message: ChatMessage;
@@ -51,7 +52,8 @@ export function MessageRenderer({
   onBookingConfirmed?: (payload: BookingStepPayload) => void;
   onBookingDismiss?: (messageId: string) => void;
   onBookingStarted?: (messageId: string, bookingId: string) => void;
-  onIdentityVerified?: () => void;
+  onIdentityVerified?: (sessionToken: string) => void;
+  onSessionToken?: (token: string) => void;
   /** Last user message — used for calm typing status copy. */
   typingHint?: string;
 }) {
@@ -135,7 +137,8 @@ export function MessageRenderer({
         <VerifyIdentity
           clinicSlug={clinicSlug}
           sessionToken={sessionToken ?? null}
-          onVerified={() => onIdentityVerified?.()}
+          onSessionToken={onSessionToken}
+          onVerified={(token) => onIdentityVerified?.(token)}
         />
       ) : null;
       break;

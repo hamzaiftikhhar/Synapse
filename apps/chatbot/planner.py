@@ -30,6 +30,7 @@ _INTENT_SQL_TASKS: dict[Intent, list[str]] = {
     Intent.PRICING: ["pricing"],
     Intent.CANCEL_APPOINTMENT: ["appointments"],
     Intent.RESCHEDULE_APPOINTMENT: ["appointments"],
+    Intent.VIEW_APPOINTMENTS: ["appointments"],
 }
 
 _TOPIC_SQL_TASKS: dict[str, list[str]] = {
@@ -694,6 +695,12 @@ def build_execution_plan(*, nlu: NLUResult, facts: PlannerFacts) -> ExecutionPla
         Intent.RESCHEDULE_APPOINTMENT,
         Intent.CANCEL_APPOINTMENT,
     }:
+        # A bare "do I have an appointment" / "check my appointment" match
+        # may not carry an appointment-management intent from the LLM (it
+        # can land on unknown/faq/etc.) — always run the actual lookup so
+        # the regex match has real data behind it instead of forcing
+        # booking=True with nothing to show for it.
+        add_sql("appointments")
         if not facts.knowledge_q or nlu.intent in {
             Intent.RESCHEDULE_APPOINTMENT,
             Intent.CANCEL_APPOINTMENT,
@@ -701,6 +708,11 @@ def build_execution_plan(*, nlu: NLUResult, facts: PlannerFacts) -> ExecutionPla
             booking = True
             if nlu.intent == Intent.CANCEL_APPOINTMENT and facts.knowledge_q:
                 booking = False  # cancel FEE / policy stays vector
+
+    # Viewing appointments is a pure lookup, not a booking-workflow entry —
+    # never attach the "how would you like to book?" booking framing to it.
+    if nlu.intent == Intent.VIEW_APPOINTMENTS:
+        booking = False
 
     # Aesthetic / cosmetic SKUs questions → services SQL (+ booking if transactional)
     if _AESTHETIC_RE.search(message):

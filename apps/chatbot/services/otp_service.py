@@ -123,9 +123,16 @@ def send_otp(
     first_name: str = "",
     last_name: str = "",
     channel: str | None = None,
+    require_existing_patient: bool = False,
 ) -> OTPSendResult:
     """
     Ensure Patient exists, store OTP, deliver via SMS or email.
+
+    require_existing_patient: for flows that verify identity against an
+    already-registered patient (e.g. viewing/managing existing appointments)
+    — raises instead of silently creating a new Patient record for an
+    unrecognized phone/email. The default (False) preserves the new-patient
+    booking flow's behavior.
     """
     phone = (phone or "").strip()
     email = (email or "").strip().lower()
@@ -148,12 +155,20 @@ def send_otp(
         raise OTPError("Email is required for email verification")
 
     if channel_resolved == "sms" and phone:
-        patient, _ = patient_service.get_or_create_by_phone(
-            clinic=clinic,
-            phone=phone,
-            first_name=first_name,
-            last_name=last_name,
-        )
+        if require_existing_patient:
+            patient = patient_service.get_by_phone(clinic=clinic, phone=phone)
+            if patient is None:
+                raise OTPError(
+                    "We couldn't find a patient account with that phone number.",
+                    status_code=404,
+                )
+        else:
+            patient, _ = patient_service.get_or_create_by_phone(
+                clinic=clinic,
+                phone=phone,
+                first_name=first_name,
+                last_name=last_name,
+            )
         if email and not patient.email:
             patient.email = email
             patient.save(update_fields=["email", "updated_at"])
@@ -161,7 +176,12 @@ def send_otp(
         # Email channel — look up / create by email
         patient = Patient.objects.filter(clinic=clinic, email=email).first()
         if patient is None:
-            placeholder = f"email:{email}"[:20]
+            if require_existing_patient:
+                raise OTPError(
+                    "We couldn't find a patient account with that email address.",
+                    status_code=404,
+                )
+            placeholder = patient_service.email_placeholder_phone(email)
             patient, _ = patient_service.get_or_create_by_phone(
                 clinic=clinic,
                 phone=placeholder,
@@ -285,6 +305,13 @@ def verify_otp(
         )
 
     patient_service.mark_phone_verified(patient)
+
+    # If the client omitted session_token on verify but the OTP row was
+    # minted against a ChatSession (the common path — send always creates
+    # one), authenticate *that* session. Otherwise appointment list/cancel
+    # get an empty token and 404 "Session not found".
+    if session is None and otp.session_id:
+        session = otp.session
 
     if session is not None:
         session.patient = patient

@@ -1,6 +1,13 @@
 """Reschedule must never leave a patient with neither appointment, nor with
 both — the old one stays live until the new one is actually confirmed, then
-both changes land atomically in BookingService.confirm."""
+both changes land atomically in BookingService.confirm.
+
+When the chat session is already OTP-authenticated, picking a concrete slot
+(select_time / select_hero / start with slot_*) calls confirm immediately —
+that *is* the confirm step, so the old appointment is cancelled in that same
+request. Intermediate wizard steps (start without a slot, select_date) must
+still leave the old appointment untouched.
+"""
 
 from __future__ import annotations
 
@@ -11,7 +18,8 @@ from django.test import TestCase
 from django.utils import timezone
 
 from apps.appointments.models import Appointment, AppointmentStatus
-from apps.chatbot.booking.service import BookingService
+from apps.chatbot.booking.service import BookingError, BookingService
+from apps.chatbot.booking.state import BookingStep
 from apps.chatbot.models import ChatSession, ChatSessionStatus
 from apps.clinics.models import Clinic
 from apps.doctors.models import Doctor, DoctorSchedule
@@ -70,7 +78,22 @@ class RescheduleAtomicSwapTests(TestCase):
             patient=self.patient,
         )
 
-    def _start_and_hold_new_slot(self, new_start):
+    def _start_reschedule_wizard(self):
+        """Open the reschedule wizard without a concrete slot — date/time still pending."""
+        result = BookingService.start(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            reason="Reschedule",
+            doctor_id=str(self.doctor.id),
+            doctor_name=self.doctor.full_name,
+            replaces_appointment_id=str(self.old_appt.id),
+        )
+        self.chat_session.refresh_from_db()
+        return result["booking_id"]
+
+    def test_authenticated_slot_prefill_confirms_and_cancels_old_together(self):
+        """Authenticated start(slot_*) is the confirm step — create+cancel atomically."""
+        new_start = self.old_start.replace(hour=11)
         new_end = new_start + timedelta(minutes=30)
         result = BookingService.start(
             clinic=self.clinic,
@@ -82,27 +105,8 @@ class RescheduleAtomicSwapTests(TestCase):
             slot_end=new_end.isoformat(),
             replaces_appointment_id=str(self.old_appt.id),
         )
-        self.chat_session.refresh_from_db()
-        BookingService.hold_slot(
-            clinic=self.clinic,
-            chat_session=self.chat_session,
-            booking_id=result["booking_id"],
-        )
-        self.chat_session.refresh_from_db()
-        return result["booking_id"]
 
-    def test_confirm_creates_new_and_cancels_old_together(self):
-        new_start = self.old_start.replace(hour=11)
-        booking_id = self._start_and_hold_new_slot(new_start)
-
-        BookingService.confirm(
-            clinic=self.clinic,
-            chat_session=self.chat_session,
-            booking_id=booking_id,
-            patient=self.patient,
-            otp_verified=True,
-        )
-
+        self.assertEqual(result["step"], BookingStep.CONFIRMED.value)
         self.old_appt.refresh_from_db()
         self.assertEqual(self.old_appt.status, AppointmentStatus.CANCELLED)
 
@@ -112,15 +116,21 @@ class RescheduleAtomicSwapTests(TestCase):
         self.assertEqual(new_appts.count(), 1)
         self.assertEqual(new_appts.first().start_time, new_start)
 
-    def test_old_appointment_stays_active_until_confirm(self):
-        """Starting/holding a new slot must not touch the old appointment —
-        only an actual confirm() should cancel it."""
-        new_start = self.old_start.replace(hour=13)
-        self._start_and_hold_new_slot(new_start)
+    def test_old_appointment_stays_active_until_slot_is_chosen(self):
+        """Opening the wizard / picking a date must not touch the old appointment —
+        only confirming a new slot (explicit confirm, or auth-skip on select_time)
+        should cancel it."""
+        booking_id = self._start_reschedule_wizard()
+        BookingService.apply_step(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            booking_id=booking_id,
+            action="select_date",
+            value={"date": self.old_start.date().isoformat()},
+        )
 
         self.old_appt.refresh_from_db()
         self.assertEqual(self.old_appt.status, AppointmentStatus.CONFIRMED)
-        # No new appointment exists yet either — nothing was created early.
         self.assertEqual(
             Appointment.objects.filter(clinic=self.clinic, patient=self.patient).count(), 1
         )
@@ -130,13 +140,35 @@ class RescheduleAtomicSwapTests(TestCase):
         appointment exactly as it was — never cancelled without a replacement.
 
         Simulates the race window between holding a slot and confirming it:
-        the hold succeeds first (slot is free), then someone else grabs the
-        same slot before this booking confirms — confirm()'s own re-check
-        must catch it."""
-        from apps.chatbot.booking.service import BookingError
+        hold succeeds first (slot is free), then someone else grabs the same
+        slot before confirm() — confirm()'s own re-check must catch it.
+
+        Uses an unauthenticated wizard so start(slot_*) lands on DETAILS
+        (hold without confirm); authenticated sessions confirm in the same
+        request as the slot pick, so that race collapses into confirm().
+        """
+        self.chat_session.is_authenticated = False
+        self.chat_session.save(update_fields=["is_authenticated"])
 
         new_start = self.old_start.replace(hour=15)
-        booking_id = self._start_and_hold_new_slot(new_start)
+        new_end = new_start + timedelta(minutes=30)
+        result = BookingService.start(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            reason="Reschedule",
+            doctor_id=str(self.doctor.id),
+            doctor_name=self.doctor.full_name,
+            slot_start=new_start.isoformat(),
+            slot_end=new_end.isoformat(),
+            replaces_appointment_id=str(self.old_appt.id),
+        )
+        self.assertEqual(result["step"], BookingStep.DETAILS.value)
+        self.chat_session.refresh_from_db()
+        BookingService.hold_slot(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            booking_id=result["booking_id"],
+        )
 
         other_patient = Patient.objects.create(
             clinic=self.clinic, phone="+15550002222", first_name="Other", last_name="One"
@@ -146,7 +178,7 @@ class RescheduleAtomicSwapTests(TestCase):
             doctor=self.doctor,
             patient=other_patient,
             start_time=new_start,
-            end_time=new_start + timedelta(minutes=30),
+            end_time=new_end,
             status=AppointmentStatus.CONFIRMED,
             confirmation_code="TAKEN1",
         )
@@ -155,7 +187,7 @@ class RescheduleAtomicSwapTests(TestCase):
             BookingService.confirm(
                 clinic=self.clinic,
                 chat_session=self.chat_session,
-                booking_id=booking_id,
+                booking_id=result["booking_id"],
                 patient=self.patient,
                 otp_verified=True,
             )
@@ -193,20 +225,8 @@ class RescheduleAtomicSwapTests(TestCase):
             slot_end=new_end.isoformat(),
             replaces_appointment_id=str(others_appt.id),
         )
-        self.chat_session.refresh_from_db()
-        BookingService.hold_slot(
-            clinic=self.clinic, chat_session=self.chat_session, booking_id=result["booking_id"]
-        )
-        self.chat_session.refresh_from_db()
 
-        BookingService.confirm(
-            clinic=self.clinic,
-            chat_session=self.chat_session,
-            booking_id=result["booking_id"],
-            patient=self.patient,
-            otp_verified=True,
-        )
-
+        self.assertEqual(result["step"], BookingStep.CONFIRMED.value)
         others_appt.refresh_from_db()
         self.assertEqual(others_appt.status, AppointmentStatus.CONFIRMED)
         self.old_appt.refresh_from_db()
@@ -225,13 +245,36 @@ class RescheduleAtomicSwapTests(TestCase):
         )
         self.assertNotEqual(duplicate_patient.id, self.patient.id)
 
+        # Force the DETAILS path (no auth-skip) so we can call confirm() with
+        # a different Patient row than chat_session.patient — matching the
+        # production mismatch this regression covers.
+        self.chat_session.is_authenticated = False
+        self.chat_session.save(update_fields=["is_authenticated"])
+
         new_start = self.old_start.replace(hour=14)
-        booking_id = self._start_and_hold_new_slot(new_start)
+        new_end = new_start + timedelta(minutes=30)
+        result = BookingService.start(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            reason="Reschedule",
+            doctor_id=str(self.doctor.id),
+            doctor_name=self.doctor.full_name,
+            slot_start=new_start.isoformat(),
+            slot_end=new_end.isoformat(),
+            replaces_appointment_id=str(self.old_appt.id),
+        )
+        self.assertEqual(result["step"], BookingStep.DETAILS.value)
+        self.chat_session.refresh_from_db()
+
+        # Restore auth linkage used by confirm()'s owner check, without
+        # re-triggering auth-skip (booking is already at DETAILS).
+        self.chat_session.is_authenticated = True
+        self.chat_session.save(update_fields=["is_authenticated"])
 
         BookingService.confirm(
             clinic=self.clinic,
             chat_session=self.chat_session,
-            booking_id=booking_id,
+            booking_id=result["booking_id"],
             patient=duplicate_patient,  # what the details-step contact resolved to
             otp_verified=True,
         )

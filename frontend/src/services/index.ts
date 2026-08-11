@@ -245,6 +245,12 @@ export const widgetService = {
 /* ─── Appointments (widget, OTP-verified session) ──────────── */
 
 export const widgetAppointmentsService = {
+  async list(input: { clinic_slug: string; session_token: string }) {
+    const { data } = await widgetApi.post<{
+      appointments: import("@/types/chat").AppointmentCardData[];
+    }>("/widget/appointments/list", input);
+    return data;
+  },
   async cancel(input: {
     clinic_slug: string;
     session_token: string;

@@ -26,6 +26,7 @@ import {
   parseChatResponse,
   systemErrorMessage,
   systemNoticeMessage,
+  uid,
   userTextMessage,
 } from "@/features/chat/message-parser";
 import type { BackendAction } from "@/features/chat/types";
@@ -163,6 +164,24 @@ export function ChatWidget({
   const resolvedMode = assistantMode ?? widgetCtx.mode;
   const clinicSlug = clinicSlugProp ?? widgetCtx.clinicSlug;
   const widgetConfig = widgetCtx.config;
+  // Own copy of the patient chat session token. GlobalChatWidget used to sit
+  // outside WidgetProvider, so setSessionToken was a no-op and cancel/reschedule
+  // posted session_token:"" even after a successful verify+list. Keep a local
+  // ref so appointment CRUD never depends solely on context wiring.
+  const sessionTokenRef = useRef<string | null>(widgetCtx.sessionToken);
+  useEffect(() => {
+    if (widgetCtx.sessionToken) sessionTokenRef.current = widgetCtx.sessionToken;
+  }, [widgetCtx.sessionToken]);
+
+  function rememberSessionToken(token: string | null | undefined) {
+    if (!token) return;
+    sessionTokenRef.current = token;
+    widgetCtx.setSessionToken(token);
+  }
+
+  function patientSessionToken(): string {
+    return sessionTokenRef.current || widgetCtx.sessionToken || "";
+  }
 
   const displayName =
     clinicName ||
@@ -298,21 +317,26 @@ export function ChatWidget({
             ]);
             return;
           }
-          res = await staffChat.mutateAsync({ message: trimmed });
+          res = await staffChat.mutateAsync({
+            message: trimmed,
+            session_token: patientSessionToken() || null,
+          });
+          const staffToken = res.meta?.session_token;
+          if (typeof staffToken === "string") rememberSessionToken(staffToken);
         } else if (resolvedMode === "marketing") {
           res = await marketingChat.mutateAsync({ message: trimmed });
         } else if (resolvedMode === "clinic" && clinicSlug) {
           res = await guestChat.mutateAsync({
             clinic_slug: clinicSlug,
             message: trimmed,
-            session_token: widgetCtx.sessionToken,
+            session_token: patientSessionToken() || null,
           });
           const token = res.meta?.session_token;
-          if (typeof token === "string") widgetCtx.setSessionToken(token);
+          if (typeof token === "string") rememberSessionToken(token);
         } else {
           res = await patientChat.mutateAsync({
             message: trimmed,
-            session_token: widgetCtx.sessionToken,
+            session_token: patientSessionToken() || null,
           });
         }
 
@@ -409,12 +433,40 @@ export function ChatWidget({
     runBackendAction(action, (msg) => void sendText(msg));
   }
 
-  function handleIdentityVerified() {
-    // Continue exactly where the user left off — re-send the message that
-    // triggered verification (e.g. "cancel my appointment") now that
-    // session.is_authenticated is set, instead of asking them to repeat it.
-    const msg = lastUserMessageRef.current;
-    if (msg) void sendText(msg);
+  function handleIdentityVerified(sessionToken: string) {
+    // OTP verification is a state transition, not a new chat turn — fetch
+    // the now-authenticated patient's appointments directly instead of
+    // re-sending the triggering message (which would duplicate the user's
+    // message and re-run intent classification for no reason).
+    // Prefer the token just returned by verify — React state may not have
+    // flushed widgetCtx.sessionToken yet.
+    const token = sessionToken || patientSessionToken();
+    if (token) rememberSessionToken(token);
+    void (async () => {
+      try {
+        const result = await widgetAppointmentsService.list({
+          clinic_slug: bookingClinicSlug,
+          session_token: token,
+        });
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: uid("appt"),
+            role: "assistant",
+            type: "appointments",
+            createdAt: new Date().toISOString(),
+            payload: { appointments: result.appointments },
+          },
+        ]);
+      } catch (err) {
+        setMessages((prev) => [
+          ...prev,
+          systemErrorMessage(
+            getApiErrorMessage(err, "Couldn't load your appointments — please try again.")
+          ),
+        ]);
+      }
+    })();
   }
 
   function handleBookingConfirmed(_payload: BookingStepPayload) {
@@ -602,7 +654,7 @@ export function ChatWidget({
         try {
           await widgetAppointmentsService.cancel({
             clinic_slug: bookingClinicSlug,
-            session_token: widgetCtx.sessionToken || "",
+            session_token: patientSessionToken(),
             appointment_id: appointmentId,
           });
           // Drop it from any appointments card already on screen — otherwise
@@ -653,7 +705,7 @@ export function ChatWidget({
         try {
           const result = await widgetAppointmentsService.reschedule({
             clinic_slug: bookingClinicSlug,
-            session_token: widgetCtx.sessionToken || "",
+            session_token: patientSessionToken(),
             appointment_id: appointmentId,
           });
           const currentWhen = new Date(result.start_time).toLocaleString(undefined, {
@@ -748,7 +800,7 @@ export function ChatWidget({
                 showContextActions={m.id === lastActionMessageId && !typing}
                 assistantName={`${displayName} Assistant`}
                 clinicSlug={canBook ? bookingClinicSlug : undefined}
-                sessionToken={widgetCtx.sessionToken}
+                sessionToken={patientSessionToken() || widgetCtx.sessionToken}
                 bookingWizardActive={
                   m.type === "booking_wizard" &&
                   m.id === activeWizardId &&
@@ -759,6 +811,7 @@ export function ChatWidget({
                 onBookingDismiss={handleBookingDismiss}
                 onBookingStarted={handleBookingStarted}
                 onIdentityVerified={handleIdentityVerified}
+                onSessionToken={rememberSessionToken}
               />
             ))}
             {typing ? (

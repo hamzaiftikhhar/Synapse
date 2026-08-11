@@ -170,3 +170,7 @@ class PatientTokenOut(Schema):
     expires_in_minutes: int
     patient: PatientAuthOut
     clinic: ClinicOut
+    # ChatSession token to use for appointment CRUD after verify. Always
+    # prefer this over inventing a new guest session — it is the same row
+    # OTP send/verify authenticated.
+    session_token: str | None = None

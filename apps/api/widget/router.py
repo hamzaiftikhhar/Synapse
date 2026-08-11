@@ -44,6 +44,26 @@ class AppointmentActionIn(Schema):
     appointment_id: str
 
 
+class AppointmentsListIn(Schema):
+    clinic_slug: str
+    session_token: str
+
+
+class AppointmentCardOut(Schema):
+    id: str
+    doctor: str
+    doctor_id: str | None = None
+    service: str = ""
+    start_time: str
+    end_time: str = ""
+    status: str = ""
+    confirmation_code: str = ""
+
+
+class AppointmentsListOut(Schema):
+    appointments: list[AppointmentCardOut]
+
+
 class AppointmentCancelOut(Schema):
     detail: str
     appointment_id: str
@@ -185,6 +205,47 @@ def reschedule_appointment(request, payload: AppointmentActionIn):
         service_name=appt.service.name if appt.service else None,
         start_time=appt.start_time.isoformat(),
         end_time=appt.end_time.isoformat(),
+    )
+
+
+@router.post("/appointments/list", response=AppointmentsListOut, auth=None)
+def list_appointments(request, payload: AppointmentsListIn):
+    """
+    A patient's own upcoming appointments for an OTP-verified session.
+
+    Used right after identity verification to render appointment cards as a
+    direct state transition — not a new chat turn, no re-classification.
+    """
+    from apps.appointments.models import Appointment, AppointmentStatus
+
+    clinic = _resolve_clinic(payload.clinic_slug)
+    session = _resolve_authenticated_session(clinic, payload.session_token)
+
+    upcoming = (
+        Appointment.objects.filter(
+            clinic=clinic,
+            patient=session.patient,
+            start_time__gte=timezone.now(),
+            status__in=[AppointmentStatus.PENDING, AppointmentStatus.CONFIRMED],
+        )
+        .select_related("doctor", "service")
+        .order_by("start_time")[:10]
+    )
+
+    return AppointmentsListOut(
+        appointments=[
+            AppointmentCardOut(
+                id=str(a.id),
+                doctor=a.doctor.full_name,
+                doctor_id=str(a.doctor_id),
+                service=a.service.name if a.service else "",
+                start_time=a.start_time.isoformat(),
+                end_time=a.end_time.isoformat(),
+                status=a.status,
+                confirmation_code=a.confirmation_code,
+            )
+            for a in upcoming
+        ]
     )
 
 

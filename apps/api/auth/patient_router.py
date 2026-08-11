@@ -54,9 +54,10 @@ def _patient_out(patient) -> PatientAuthOut:
 @router.post("/otp/send", response=OTPSendOut, auth=None)
 def send_otp(request, payload: OTPSendIn):
     """
-    Send OTP to verify a patient's phone.
-
-    Ensures a Patient profile exists first; OTP only verifies the phone on that record.
+    Send OTP to verify an existing patient's identity for the appointment
+    management flow (view/reschedule/cancel) — this endpoint never creates a
+    new Patient record. (New-patient booking has its own OTP endpoint at
+    /widget/booking/otp/send, which is unaffected by this.)
     """
     clinic = _resolve_clinic(payload.clinic_slug)
     try:
@@ -68,6 +69,7 @@ def send_otp(request, payload: OTPSendIn):
             session_token=payload.session_token,
             first_name=payload.first_name or "",
             last_name=payload.last_name or "",
+            require_existing_patient=True,
         )
     except OTPError as exc:
         raise HttpError(exc.status_code, str(exc)) from exc
@@ -110,4 +112,5 @@ def verify_otp(request, payload: OTPVerifyIn):
         expires_in_minutes=settings.JWT_PATIENT_ACCESS_TOKEN_EXPIRE_MINUTES,
         patient=_patient_out(result.patient),
         clinic=_clinic_out(clinic),
+        session_token=result.session.session_token if result.session else None,
     )

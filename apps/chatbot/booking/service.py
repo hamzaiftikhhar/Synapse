@@ -100,6 +100,17 @@ class BookingService:
         if replaces_appointment_id:
             session.replaces_appointment_id = replaces_appointment_id
 
+        # Hero/availability taps prefill a concrete slot and land on DETAILS.
+        # If this chat session already verified a patient (view/reschedule/
+        # prior book), skip re-collecting contact + OTP — same short-circuit
+        # as select_time / select_hero.
+        if session.step == BookingStep.DETAILS.value:
+            skip = cls._confirm_if_already_authenticated(
+                clinic=clinic, chat_session=chat_session, session=session
+            )
+            if skip is not None:
+                return skip
+
         cls._touch(session)
         cls._save(chat_session, session)
         payload = serialize_step(clinic, session)
@@ -443,6 +454,11 @@ class BookingService:
             session.doctor_name = doctor_name or cls._doctor_name(clinic, doctor_id)
             # Hold immediately when selecting time (before details)
             cls._hold_internal(session, clinic)
+            skip = cls._confirm_if_already_authenticated(
+                clinic=clinic, chat_session=chat_session, session=session
+            )
+            if skip is not None:
+                return skip
             session.step = BookingStep.DETAILS.value
             cls._touch(session)
             cls._save(chat_session, session)
@@ -466,6 +482,11 @@ class BookingService:
                 session.slot_start = start
                 session.slot_end = end
                 cls._hold_internal(session, clinic)
+                skip = cls._confirm_if_already_authenticated(
+                    clinic=clinic, chat_session=chat_session, session=session
+                )
+                if skip is not None:
+                    return skip
                 session.step = BookingStep.DETAILS.value
                 cls._touch(session)
                 cls._save(chat_session, session)
@@ -537,6 +558,54 @@ class BookingService:
         raise BookingError(f"Unknown action: {action}")
 
     @classmethod
+    def _confirm_if_already_authenticated(
+        cls,
+        *,
+        clinic: Any,
+        chat_session: Any,
+        session: BookingSession,
+    ) -> dict[str, Any] | None:
+        """
+        Skip the details/OTP steps and confirm immediately when this chat
+        session already has a verified patient — e.g. the patient verified
+        earlier this session to view/reschedule/cancel an appointment, or
+        booked one already. Re-collecting their name and contact info and
+        sending them a second OTP would be asking them to authenticate a
+        second time for no reason; `chat_session.is_authenticated` /
+        `.patient` is already the source of truth. Mirrors the existing
+        verification_mode == "none" short-circuit in submit_details, just
+        gated on session auth instead of clinic config.
+
+        Returns the confirm() payload if it confirmed, else None (meaning:
+        proceed to the normal details/OTP step).
+        """
+        if not getattr(chat_session, "is_authenticated", False):
+            return None
+        patient = getattr(chat_session, "patient", None)
+        if patient is None:
+            return None
+        # The confirmation card reads these off the session, not the Patient
+        # row — populate them since we're skipping the details step that
+        # would normally have set them. Email-only patients store a hashed
+        # placeholder in Patient.phone (`email:<digest>`); never surface that
+        # internal stand-in as a real phone number.
+        phone = (patient.phone or "").strip()
+        if phone.startswith("email:"):
+            phone = ""
+        session.patient_first_name = patient.first_name
+        session.patient_last_name = patient.last_name
+        session.patient_phone = phone
+        session.patient_email = patient.email or ""
+        cls._save(chat_session, session)
+        return cls.confirm(
+            clinic=clinic,
+            chat_session=chat_session,
+            booking_id=session.booking_id,
+            patient=chat_session.patient,
+            otp_verified=True,
+        )
+
+    @classmethod
     def hold_slot(
         cls,
         *,
@@ -567,6 +636,7 @@ class BookingService:
         from apps.appointments.models import Appointment, AppointmentSource, AppointmentStatus
         from apps.doctors.models import Doctor
         from apps.patients.models import Patient
+        from apps.patients.services import patient_service
 
         session = cls._load(chat_session, booking_id)
         cfg = get_booking_config(clinic)
@@ -595,7 +665,7 @@ class BookingService:
                 if patient is None:
                     patient = Patient.objects.create(
                         clinic=clinic,
-                        phone=f"email:{email}"[:20],
+                        phone=patient_service.email_placeholder_phone(email),
                         email=email,
                         first_name=session.patient_first_name,
                         last_name=session.patient_last_name,

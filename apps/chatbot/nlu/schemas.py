@@ -16,6 +16,7 @@ class Intent(str, Enum):
     BOOK_APPOINTMENT = "book_appointment"
     CANCEL_APPOINTMENT = "cancel_appointment"
     RESCHEDULE_APPOINTMENT = "reschedule_appointment"
+    VIEW_APPOINTMENTS = "view_appointments"
     DOCTOR_AVAILABILITY = "doctor_availability"
     DOCTOR_SEARCH = "doctor_search"
     INSURANCE_VERIFICATION = "insurance_verification"

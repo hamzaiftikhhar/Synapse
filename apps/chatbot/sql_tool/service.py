@@ -28,6 +28,7 @@ _INTENT_HANDLERS: dict[Intent, SQLHandler] = {
     # BOOK_APPOINTMENT is handled by the booking wizard — no SQL dump
     Intent.CANCEL_APPOINTMENT: patient_appointments,
     Intent.RESCHEDULE_APPOINTMENT: patient_appointments,
+    Intent.VIEW_APPOINTMENTS: patient_appointments,
     Intent.INSURANCE_ACCEPTED: insurance_accepted,
     Intent.INSURANCE_VERIFICATION: insurance_accepted,
     Intent.CLINIC_HOURS: clinic_hours,

@@ -975,8 +975,15 @@ class ChatEngine:
                 isinstance(block, dict) and block.get("handler") == "doctor_availability"
                 for block in sql_rows
             )
+            # An appointment-management response (view/cancel/reschedule) already
+            # shows the patient's real appointment(s) with their own actions —
+            # appending generic new-booking framing here mixes the two flows.
+            has_patient_appointments = any(
+                isinstance(block, dict) and block.get("handler") == "patient_appointments"
+                for block in sql_rows
+            )
             # Day/time already given → slots speak; don't dump discovery prompt.
-            if has_schedule or has_availability:
+            if has_schedule or has_availability or has_patient_appointments:
                 booking_text = ""
             elif booking_commit:
                 booking_text = "Choose a time below."

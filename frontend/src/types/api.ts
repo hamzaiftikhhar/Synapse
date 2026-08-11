@@ -639,10 +639,11 @@ export type PatientAuth = {
 
 export type PatientTokenResponse = {
   access_token: string;
-  token_type: string;
+  token_type?: string;
   expires_in_minutes: number;
   patient: PatientAuth;
   clinic: Clinic;
+  session_token?: string | null;
 };
 
 export type ListParams = {

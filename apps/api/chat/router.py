@@ -68,7 +68,9 @@ def staff_chat_message(request, payload: ChatMessageIn) -> ChatMessageOut:
     """
     Process a message in the context of the staff's clinic.
 
-    Auth: staff_access JWT. No patient context. Useful for QA and Swagger.
+    Auth: staff_access JWT. Useful for QA and Swagger. Still uses a real
+    ChatSession (returned as meta.session_token) so verify-identity →
+    appointment list/cancel/reschedule work the same as the public widget.
     """
     clinic = clinic_from(request)
 
@@ -78,22 +80,49 @@ def staff_chat_message(request, payload: ChatMessageIn) -> ChatMessageOut:
     if len(message) > 2000:
         raise HttpError(422, "Message too long (max 2000 characters)")
 
+    session = _resolve_staff_test_session(clinic, payload.session_token)
+
     from apps.chatbot.engine import ChatEngine
     try:
         result = ChatEngine().process(
             clinic=clinic,
             message=message,
-            session=None,
-            patient=None,
+            session=session,
+            patient=session.patient if session.is_authenticated else None,
         )
     except Exception as exc:
         logger.exception("ChatEngine (staff) failed for clinic=%s", clinic.id)
-        return _fallback_out()
+        out = _fallback_out()
+        out.meta = {**out.meta, "session_token": session.session_token}
+        return out
 
-    return _to_out(result)
+    out = _to_out(result)
+    out.meta = {**out.meta, "session_token": session.session_token}
+    return out
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _resolve_staff_test_session(clinic: object, session_token: str | None) -> object:
+    """Guest-style ChatSession for staff portal QA of patient flows."""
+    import secrets
+
+    from apps.chatbot.models import ChatSession, ChatSessionStatus
+    from django.utils import timezone
+
+    if session_token:
+        try:
+            return ChatSession.objects.get(clinic=clinic, session_token=session_token)
+        except ChatSession.DoesNotExist:
+            pass
+
+    return ChatSession.objects.create(
+        clinic=clinic,
+        session_token=secrets.token_urlsafe(32),
+        status=ChatSessionStatus.ACTIVE,
+        last_active_at=timezone.now(),
+    )
+
 
 def _resolve_session(clinic: object, patient: object, session_token: str | None) -> object | None:
     """Load or create a ChatSession for this patient."""
