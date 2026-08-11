@@ -1,4 +1,9 @@
-"""Short-TTL cache for stable clinic SQL facts (hours, doctors, insurance, services)."""
+"""Short-TTL cache for stable, clinic-scoped SQL facts (hours, location).
+
+Parameterized handlers (doctors, insurance, services, etc.) are intentionally
+excluded: their results depend on NLU entities and query parameters, so a
+clinic_id + task key would return stale/wrong answers across different requests.
+"""
 
 from __future__ import annotations
 
@@ -10,9 +15,8 @@ from django.core.cache import cache
 
 logger = logging.getLogger(__name__)
 
-_CACHEABLE = frozenset(
-    {"hours", "location", "insurance", "doctors", "specialties", "services", "pricing"}
-)
+# Only clinic-static facts — never tasks whose results vary by NLU entities/filters.
+_CACHEABLE = frozenset({"hours", "location"})
 
 
 def cache_key(clinic_id: Any, task: str) -> str:
