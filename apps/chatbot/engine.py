@@ -103,6 +103,7 @@ class ChatEngine:
             merge_turn_context,
             recovery_reply,
             save_timeline,
+            should_apply_recovery_override,
         )
 
         timeline = load_timeline(ctx)
@@ -138,6 +139,14 @@ class ChatEngine:
             nlu=nlu_result,
             document_catalog=doc_catalog,
             service_catalog=service_catalog,
+        )
+
+        from apps.chatbot.nlu.resolvers import resolve_entities
+        from dataclasses import replace
+
+        nlu_result = replace(
+            nlu_result,
+            resolved_ids=resolve_entities(clinic, nlu_result.entities),
         )
 
         from apps.chatbot.routing.signals import (
@@ -547,7 +556,13 @@ class ChatEngine:
 
         recovery_text = recovery_reply(recovery, timeline) if recovery.kind != "none" else None
         clarify_text = did_you_mean_doctor_reply(doctor_resolution)
-        if recovery_text and recovery.kind == "reverse":
+        if (
+            recovery_text
+            and recovery.kind == "reverse"
+            and should_apply_recovery_override(
+                recovery, sql_found=self._sql_found(sql_rows)
+            )
+        ):
             response_text = recovery_text
         elif clarify_text and doctor_resolution.status == "clarify" and not exec_plan.booking:
             if response_text and clarify_text not in response_text:

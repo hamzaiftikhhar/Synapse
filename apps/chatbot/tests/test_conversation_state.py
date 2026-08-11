@@ -45,3 +45,16 @@ class ConversationStateTests(SimpleTestCase):
         action = detect_recovery("never mind", tl)
         tl = apply_recovery(action, tl)
         self.assertIsNone(tl.insurance)
+
+    def test_nah_fr_not_recovery_on_empty_timeline(self):
+        action = detect_recovery("nah fr who are ur doctors rn", ConversationTimeline())
+        self.assertEqual(action.kind, "none")
+
+    def test_or_nah_rhetorical_not_recovery(self):
+        action = detect_recovery("do you have dr hamza or nah", ConversationTimeline())
+        self.assertEqual(action.kind, "none")
+
+    def test_nah_forget_it_is_strong_cancel(self):
+        action = detect_recovery("nah forget it", ConversationTimeline())
+        self.assertEqual(action.kind, "reverse")
+        self.assertTrue(action.strong_cancel)

@@ -159,6 +159,27 @@ _SPECIALTY_LIST_RE = re.compile(
     re.I,
 )
 
+# Doctor browse/list — must not inherit catalog specialty/service filters
+_DOCTOR_BROWSE_RE = re.compile(
+    r"\b("
+    r"which doctors?|what doctors?|how many doctors?|"
+    r"who (?:are|is) (?:your|the|ur) doctors?|"
+    r"list (?:of )?doctors?|"
+    r"(?:doctors?|dentists?) (?:do you )?(?:have|got)|"
+    r"do you have any doctors?"
+    r")\b",
+    re.I,
+)
+
+_DOCTOR_BROWSE_FILTER_CUE_RE = re.compile(
+    r"\b("
+    r"cardiolog\w*|dermatolog\w*|pediatric\w*|surgeon\w*|specialist\w*|"
+    r"offer(?:s|ing)?|specializ\w*|who does|heart surgery|"
+    r"dr\.?\s+\w|doctor\s+\w"
+    r")\b",
+    re.I,
+)
+
 _PHATIC_GREETING_RE = re.compile(
     r"^\s*(?:(?:hey|hi|hello|yo|hiya|howdy)\s+)*"
     r"(?:hi|hello|hey|hiya|howdy|yo|good\s+(?:morning|afternoon|evening))"
@@ -320,6 +341,16 @@ def is_service_list_query(message: str) -> bool:
 
 def is_specialty_list_query(message: str) -> bool:
     return bool(_SPECIALTY_LIST_RE.search(message or ""))
+
+
+def is_doctor_browse_query(message: str) -> bool:
+    """Browse all doctors — no specialty/service filter unless named in message."""
+    text = message or ""
+    if not _DOCTOR_BROWSE_RE.search(text):
+        return False
+    if _DOCTOR_BROWSE_FILTER_CUE_RE.search(text):
+        return False
+    return True
 
 
 def service_filter_mode(

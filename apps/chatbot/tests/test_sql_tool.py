@@ -235,12 +235,12 @@ class SQLToolDispatcherTests(SQLToolTestBase):
         self.assertEqual(results[0].handler, "insurance_accepted")
         self.assertTrue(results[0].found)
 
-    def test_dispatch_doctor_search_includes_specialties(self):
+    def test_dispatch_doctor_search_runs_search_doctors(self):
         nlu = _nlu(Intent.DOCTOR_SEARCH)
         results = SQLTool.run(self.clinic, nlu)
         handlers = {r.handler for r in results}
         self.assertIn("search_doctors", handlers)
-        self.assertIn("list_specialties", handlers)
+        self.assertNotIn("list_specialties", handlers)
 
 
 class SQLFormatterTests(SQLToolTestBase):
@@ -248,5 +248,5 @@ class SQLFormatterTests(SQLToolTestBase):
         ctx = SQLContext(clinic=self.clinic, nlu=_nlu(Intent.CLINIC_HOURS))
         result = clinic_hours(ctx)
         text = format_sql_results([result.to_dict()])
-        self.assertIn("clinic hours", text.lower())
+        self.assertIn("we're open", text.lower())
         self.assertIn("Monday", text)

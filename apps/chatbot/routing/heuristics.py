@@ -5,9 +5,11 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
+from apps.chatbot.nlu.entity_guard import sanitize_entities
 from apps.chatbot.nlu.schemas import Intent, NLUResult
 from apps.chatbot.routing.signals import (
     catalog_overlap_score,
+    is_doctor_browse_query,
     is_phatic_farewell,
     is_phatic_greeting,
     is_price_or_duration_query,   
@@ -217,6 +219,16 @@ def apply_routing_heuristics(
 
     if needs_llm and not needs_vector:
         needs_llm = False
+
+    if is_doctor_browse_query(message):
+        entities = replace(entities, specialty=None, service=None)
+        resolved_ids = replace(
+            resolved_ids,
+            specialty_id=None,
+            service_id=None,
+        )
+
+    entities = sanitize_entities(message, entities)
 
     return _result(
         nlu,

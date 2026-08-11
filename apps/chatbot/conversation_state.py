@@ -6,14 +6,16 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-_CHANGE_MIND_RE = re.compile(
+_STRONG_CANCEL_RE = re.compile(
     r"\b("
-    r"nah|nope|never\s*mind|nevermind|changed?\s+my\s+mind|"
+    r"never\s*mind|nevermind|changed?\s+my\s+mind|"
     r"actually\s+no|forget\s+(?:it|that)|not\s+anymore|"
     r"don'?t\s+(?:want|need)\b|scratch\s+that"
     r")\b",
     re.I,
 )
+_WEAK_CANCEL_RE = re.compile(r"\b(nah|nope)\b", re.I)
+_RHETORICAL_NAH_RE = re.compile(r"\bor\s+nah\b", re.I)
 _CONTINUE_RE = re.compile(
     r"\b("
     r"actually\s+continue|keep\s+going|go\s+on|"
@@ -64,6 +66,7 @@ class RecoveryAction:
     kind: str  # reverse | continue | same_doctor | none
     thread: str | None = None
     message_hint: str | None = None
+    strong_cancel: bool = False
 
 
 def load_timeline(ctx: dict[str, Any] | None) -> ConversationTimeline:
@@ -106,6 +109,20 @@ def save_timeline(ctx: dict[str, Any], timeline: ConversationTimeline) -> dict[s
     return out
 
 
+def _active_thread(timeline: ConversationTimeline) -> str | None:
+    if timeline.intent_thread:
+        return timeline.intent_thread
+    if timeline.booking_stage:
+        return "booking"
+    if timeline.insurance:
+        return "insurance"
+    if timeline.service:
+        return "service"
+    if timeline.pending_clarification:
+        return timeline.pending_clarification.get("type") or "clarify"
+    return None
+
+
 def detect_recovery(message: str, timeline: ConversationTimeline) -> RecoveryAction:
     text = (message or "").strip()
     if not text:
@@ -122,11 +139,14 @@ def detect_recovery(message: str, timeline: ConversationTimeline) -> RecoveryAct
         if timeline.doctor:
             return RecoveryAction(kind="same_doctor", thread="booking")
 
-    if _CHANGE_MIND_RE.search(text):
-        thread = timeline.intent_thread or (
-            "booking" if timeline.booking_stage else "insurance" if timeline.insurance else None
-        )
-        return RecoveryAction(kind="reverse", thread=thread)
+    thread = _active_thread(timeline)
+
+    if _STRONG_CANCEL_RE.search(text):
+        return RecoveryAction(kind="reverse", thread=thread, strong_cancel=True)
+
+    if _WEAK_CANCEL_RE.search(text) and not _RHETORICAL_NAH_RE.search(text):
+        if thread is not None:
+            return RecoveryAction(kind="reverse", thread=thread, strong_cancel=False)
 
     return RecoveryAction(kind="none")
 
@@ -145,6 +165,28 @@ def apply_recovery(
     elif recovery.kind == "continue":
         timeline.last_reversed_thread = None
     return timeline
+
+
+def should_apply_recovery_override(
+    recovery: RecoveryAction,
+    *,
+    sql_found: bool,
+) -> bool:
+    """
+    Whether recovery copy should replace the composed SQL/LLM response.
+
+    Strong cancels always win. Weak cancels only override when there is an
+    active thread, or when SQL did not produce a useful answer.
+    """
+    if recovery.kind != "reverse":
+        return False
+    if recovery.strong_cancel:
+        return True
+    if recovery.thread is not None:
+        return True
+    if sql_found:
+        return False
+    return True
 
 
 def merge_turn_context(

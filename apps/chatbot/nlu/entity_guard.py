@@ -1,0 +1,81 @@
+"""Conservative post-NLU entity sanitization — drop catalog-only hallucinations."""
+
+from __future__ import annotations
+
+import re
+from dataclasses import replace
+from typing import Any
+
+from apps.chatbot.nlu.schemas import ExtractedEntities
+
+_GROUNDED_ENTITY_FIELDS = (
+    "doctor_name",
+    "specialty",
+    "service",
+    "insurance_provider",
+)
+
+
+def sanitize_entities(message: str, entities: ExtractedEntities) -> ExtractedEntities:
+    """
+    Keep entity values only when grounded in the user's message.
+
+    Does not strip date/time/symptom — those use separate extractors.
+    """
+    msg = (message or "").strip()
+    if not msg:
+        return entities
+
+    updates: dict[str, Any] = {}
+    for field in _GROUNDED_ENTITY_FIELDS:
+        raw = getattr(entities, field, None)
+        if raw is None:
+            continue
+        kept = _filter_grounded_values(raw, msg)
+        if not kept:
+            updates[field] = None
+        elif kept != raw:
+            updates[field] = kept
+
+    if not updates:
+        return entities
+    return replace(entities, **updates)
+
+
+def entity_grounded_in_message(value: str, message: str) -> bool:
+    """True when value is plausibly mentioned in the user message."""
+    val = _normalize(value)
+    msg = _normalize(message)
+    if not val or not msg:
+        return False
+    if val in msg:
+        return True
+    val_tokens = [t for t in re.findall(r"[a-z0-9']+", val) if len(t) >= 3]
+    msg_tokens = set(re.findall(r"[a-z0-9']+", msg))
+    if not val_tokens:
+        return False
+    significant = [t for t in val_tokens if len(t) >= 4]
+    check_tokens = significant or val_tokens
+    matched = sum(1 for t in check_tokens if t in msg_tokens)
+    if matched >= max(1, len(check_tokens) // 2):
+        return True
+    for t in check_tokens:
+        for m in msg_tokens:
+            if len(t) >= 4 and len(m) >= 4 and (m in t or t in m):
+                return True
+    return False
+
+
+def _filter_grounded_values(value: str | list[str], message: str) -> str | list[str] | None:
+    if isinstance(value, list):
+        kept = [v for v in value if entity_grounded_in_message(str(v), message)]
+        if not kept:
+            return None
+        return kept if len(kept) > 1 else kept[0]
+    if entity_grounded_in_message(str(value), message):
+        return value
+    return None
+
+
+def _normalize(text: str) -> str:
+    return " ".join(text.lower().split())

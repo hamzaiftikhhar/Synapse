@@ -48,6 +48,11 @@ def confidence_band(score: float) -> str:
     return "low"
 
 
+def _clinic_id(clinic: Any) -> Any:
+    """ORM clinic FK — accepts Clinic instance or any object with .id."""
+    return getattr(clinic, "id", clinic)
+
+
 def resolve_entities(
     clinic: Clinic,
     entities: ExtractedEntities,
@@ -170,7 +175,7 @@ def resolve_doctor_candidates(
     from apps.doctors.models import Doctor
 
     doctors = list(
-        Doctor.objects.filter(clinic=clinic, is_deleted=False, is_active=True)
+        Doctor.objects.filter(clinic_id=_clinic_id(clinic), is_deleted=False, is_active=True)
         .only("id", "full_name", "title", "bio")[:100]
     )
     lower = query.lower()
@@ -305,7 +310,7 @@ def resolve_specialty_for_service(clinic: Clinic, service_id: str | None) -> str
 
     hit = (
         Specialty.objects.filter(
-            clinic=clinic,
+            clinic_id=_clinic_id(clinic),
             is_deleted=False,
             is_active=True,
             doctors__is_deleted=False,
@@ -326,7 +331,7 @@ def _match_doctor(clinic: Clinic, name: str | None) -> str | None:
     from apps.doctors.models import Doctor
 
     qs = Doctor.objects.filter(
-        clinic=clinic,
+        clinic_id=_clinic_id(clinic),
         is_deleted=False,
         is_active=True,
     ).only("id", "full_name")[:100]
@@ -368,7 +373,7 @@ def _match_specialty(clinic: Clinic, name: str | None) -> str | None:
     }
     needle = aliases.get(needle, needle)
 
-    qs = Specialty.objects.filter(clinic=clinic, is_deleted=False, is_active=True)
+    qs = Specialty.objects.filter(clinic_id=_clinic_id(clinic), is_deleted=False, is_active=True)
     hit = (
         qs.filter(Q(name__icontains=needle) | Q(slug__icontains=needle.replace(" ", "-")))
         .order_by("name")
@@ -393,7 +398,7 @@ def _match_insurance(clinic: Clinic, name: str | None) -> str | None:
 
     needle = name.strip()
     # Include rejected plans — otherwise "Medicaid" fuzzy-matches "Medicare"
-    qs = InsurancePlan.objects.filter(clinic=clinic, is_deleted=False)
+    qs = InsurancePlan.objects.filter(clinic_id=_clinic_id(clinic), is_deleted=False)
 
     # Exact provider/plan name (case-insensitive) first
     exact = (
@@ -451,7 +456,7 @@ def _match_service(clinic: Clinic, name: str | None) -> str | None:
     from apps.services.models import Service
 
     needle = name.strip()
-    qs = Service.objects.filter(clinic=clinic, is_deleted=False, is_active=True)
+    qs = Service.objects.filter(clinic_id=_clinic_id(clinic), is_deleted=False, is_active=True)
     hit = qs.filter(name__icontains=needle).order_by("name").first()
     if hit:
         return str(hit.id)

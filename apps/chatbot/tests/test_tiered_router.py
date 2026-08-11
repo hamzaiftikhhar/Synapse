@@ -9,7 +9,7 @@ from django.test import SimpleTestCase
 
 from apps.chatbot.nlu.decision import DecisionEngine
 from apps.chatbot.nlu.rules import try_rule_classify
-from apps.chatbot.nlu.schemas import Intent, Route, parse_nlu_payload
+from apps.chatbot.nlu.schemas import Intent, ResolvedIds, Route, parse_nlu_payload
 from apps.chatbot.routing.heuristics import apply_routing_heuristics
 from apps.chatbot.routing.lanes import Lane, resolve_lane
 from apps.chatbot.sql_tool.formatter import (
@@ -377,7 +377,7 @@ class SqlHonestyTests(SimpleTestCase):
         )
         self.assertEqual(text, EMPTY_AVAILABILITY)
 
-    def test_services_include_duration(self):
+    def test_services_cards_use_minimal_prose(self):
         text = format_sql_results(
             [
                 {
@@ -394,8 +394,7 @@ class SqlHonestyTests(SimpleTestCase):
                 }
             ]
         )
-        self.assertIn("60 min", text)
-        self.assertIn("$350.00", text)
+        self.assertIn("Pick a service below.", text)
 
 
 class EngineLaneIsolationTests(SimpleTestCase):
@@ -403,21 +402,28 @@ class EngineLaneIsolationTests(SimpleTestCase):
 
     def _clinic(self):
         return SimpleNamespace(
-            id="c1",
+            id="019fead4-29d9-7531-b855-9845a9033188",
             name="Acme",
             phone="555",
             slug="acme-cardiology",
         )
 
+    @patch("apps.chatbot.nlu.resolvers.resolve_doctor_candidates")
+    @patch("apps.chatbot.nlu.resolvers.resolve_entities", return_value=ResolvedIds())
     @patch("apps.chatbot.routing.build_service_catalog", return_value=[])
     @patch("apps.chatbot.routing.build_document_catalog", return_value=[])
     @patch("apps.chatbot.response_llm.synthesize_clinic_reply")
     @patch("apps.chatbot.engine.ChatEngine._run_sql_tasks")
     @patch("apps.chatbot.nlu.intent_entity.IntentEntityService.analyze")
     def test_sql_lane_never_calls_large_llm(
-        self, mock_analyze, mock_sql, mock_synth, _catalog, _services
+        self, mock_analyze, mock_sql, mock_synth, _catalog, _services, _resolve, mock_doctors
     ):
         from apps.chatbot.engine import ChatEngine
+        from apps.chatbot.nlu.resolvers import DoctorResolution
+
+        mock_doctors.return_value = DoctorResolution(
+            status="unknown", doctor=None, candidates=(), confidence_band="low"
+        )
 
         mock_analyze.return_value = parse_nlu_payload(
             {
@@ -502,6 +508,7 @@ class EngineLaneIsolationTests(SimpleTestCase):
         self.assertTrue(result.needs_llm)
         self.assertIn("Policy", result.response)
 
+    @patch("apps.chatbot.nlu.resolvers.resolve_entities", return_value=ResolvedIds())
     @patch("apps.chatbot.nlu.resolvers.resolve_specialty_for_service", return_value=None)
     @patch("apps.chatbot.booking.discovery.suggest_specialties", return_value=([], ""))
     @patch(
@@ -511,7 +518,7 @@ class EngineLaneIsolationTests(SimpleTestCase):
     @patch("apps.chatbot.routing.build_document_catalog", return_value=[])
     @patch("apps.chatbot.nlu.intent_entity.IntentEntityService.analyze")
     def test_booking_from_free_text_does_not_crash(
-        self, mock_analyze, _catalog, _services, _suggest, _resolve_specialty
+        self, mock_analyze, _catalog, _services, _suggest, _resolve_specialty, _resolve
     ):
         """Regression: naming a known service in a booking request used to
         raise NameError inside _compose_from_plan (matched_services/
