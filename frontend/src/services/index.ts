@@ -325,7 +325,8 @@ export const chatService = {
   async sendStaffMessage(input: ChatMessageInput) {
     const { data } = await api.post<ChatMessageResponse>(
       "/chat/message/staff",
-      input
+      input,
+      { timeout: 90_000 }
     );
     return data;
   },

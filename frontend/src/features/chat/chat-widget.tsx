@@ -18,6 +18,8 @@ import {
 } from "@/features/chat/components/robot-avatar";
 import { MessageRenderer } from "@/features/chat/messages";
 import {
+  CHAT_TIMEOUT_ERROR,
+  CLINIC_CONTEXT_ERROR,
   CONNECTION_ERROR,
   bookingWizardMessage,
   insuranceSelectedMessage,
@@ -34,6 +36,7 @@ import {
   useStaffChat,
 } from "@/hooks/api";
 import { readSelectedInsurance } from "@/hooks/use-selected-insurance";
+import { getActiveTenant } from "@/lib/api/client";
 import { widgetAppointmentsService } from "@/services";
 import { useAuth } from "@/providers/auth-provider";
 import { useWidget, type AssistantMode } from "@/providers/widget-provider";
@@ -286,6 +289,15 @@ export function ChatWidget({
       try {
         let res;
         if (staffMode) {
+          const activeTenant =
+            getActiveTenant() || clinic?.slug || clinicSlug || null;
+          if (!activeTenant) {
+            setMessages((prev) => [
+              ...prev,
+              systemErrorMessage(CLINIC_CONTEXT_ERROR),
+            ]);
+            return;
+          }
           res = await staffChat.mutateAsync({ message: trimmed });
         } else if (resolvedMode === "marketing") {
           res = await marketingChat.mutateAsync({ message: trimmed });
@@ -332,16 +344,34 @@ export function ChatWidget({
         });
       } catch (err) {
         // Log timeout vs network for ops; user-facing copy stays friendly.
-        const ax = err as { code?: string; message?: string; response?: { status?: number } };
+        const ax = err as {
+          code?: string;
+          message?: string;
+          response?: { status?: number; data?: { detail?: string } };
+        };
         console.warn("chat_request_failed", {
           code: ax?.code,
           status: ax?.response?.status,
           message: ax?.message,
+          detail: ax?.response?.data?.detail,
         });
         if (reqId !== requestIdRef.current) return;
         await waitForNaturalReplyPace(startedAt);
         if (reqId !== requestIdRef.current) return;
-        setMessages((prev) => [...prev, systemErrorMessage(CONNECTION_ERROR)]);
+        const detail = String(ax?.response?.data?.detail || "").toLowerCase();
+        const isTimeout =
+          ax?.code === "ECONNABORTED" ||
+          /timeout/i.test(ax?.message || "") ||
+          ax?.response?.status === 504;
+        const needsClinic =
+          ax?.response?.status === 400 &&
+          (detail.includes("clinic context") || detail.includes("clinic"));
+        const friendly = needsClinic
+          ? CLINIC_CONTEXT_ERROR
+          : isTimeout
+            ? CHAT_TIMEOUT_ERROR
+            : CONNECTION_ERROR;
+        setMessages((prev) => [...prev, systemErrorMessage(friendly)]);
       } finally {
         if (reqId === requestIdRef.current) setTyping(false);
       }
@@ -351,6 +381,7 @@ export function ChatWidget({
       staffMode,
       resolvedMode,
       clinicSlug,
+      clinic,
       staffChat,
       patientChat,
       guestChat,

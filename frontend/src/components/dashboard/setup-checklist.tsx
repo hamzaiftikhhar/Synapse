@@ -21,12 +21,13 @@ const REQUIRED_ITEMS: Array<{ key: keyof OnboardingChecklist; label: string; hre
 export function SetupChecklistCard() {
   const { clinic } = useAuth();
   const { data: status } = useOnboardingStatus(Boolean(clinic));
-  const [dismissed, setDismissed] = useState(true);
+  const [dismissedAtCount, setDismissedAtCount] = useState<number | null>(null);
   const storageKey = clinic ? `synapse_setup_dismissed_${clinic.id}` : null;
 
   useEffect(() => {
     if (!storageKey) return;
-    setDismissed(localStorage.getItem(storageKey) === "1");
+    const raw = localStorage.getItem(storageKey);
+    setDismissedAtCount(raw ? Number(raw) : null);
   }, [storageKey]);
 
   if (!status) return null;
@@ -34,17 +35,22 @@ export function SetupChecklistCard() {
   const missing = REQUIRED_ITEMS.filter((item) => !status.checklist[item.key]);
   const insuranceMissing = status.counts.insurance_plans === 0;
   const fullyReady = missing.length === 0 && !insuranceMissing;
+  const pendingCount = missing.length + (insuranceMissing ? 1 : 0);
+
+  // A dismissal only holds while things haven't gotten worse since — if
+  // readiness regresses (e.g. the owner deletes their only provider), the
+  // card reappears rather than staying hidden forever.
+  const dismissed = dismissedAtCount !== null && pendingCount <= dismissedAtCount;
 
   if (dismissed || fullyReady) return null;
 
   const percent = Math.round(
     ((REQUIRED_ITEMS.length - missing.length) / REQUIRED_ITEMS.length) * 100
   );
-  const pendingCount = missing.length + (insuranceMissing ? 1 : 0);
 
   function dismiss() {
-    if (storageKey) localStorage.setItem(storageKey, "1");
-    setDismissed(true);
+    if (storageKey) localStorage.setItem(storageKey, String(pendingCount));
+    setDismissedAtCount(pendingCount);
   }
 
   return (

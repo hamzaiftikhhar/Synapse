@@ -5,6 +5,12 @@ import type { BackendAction } from "./types";
 export const CONNECTION_ERROR =
   "Unable to connect to the clinic assistant. Please try again.";
 
+export const CLINIC_CONTEXT_ERROR =
+  "No clinic selected. Enter a clinic from Platform → Clinics, then try again.";
+
+export const CHAT_TIMEOUT_ERROR =
+  "That took too long. Please try again — shorter questions usually respond faster.";
+
 export function uid(prefix = "m") {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
 }

@@ -95,6 +95,24 @@ class ClinicProfileTests(TestCase):
         )
         self.assertEqual(resp.status_code, 400)
 
+    def test_patch_rejects_oversized_onboarding_step(self):
+        resp = self.client.patch(
+            "/api/v1/clinics/me",
+            data={"onboarding_step": "x" * 64},
+            content_type="application/json",
+            headers=self.headers,
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_patch_rejects_invalid_onboarding_step_characters(self):
+        resp = self.client.patch(
+            "/api/v1/clinics/me",
+            data={"onboarding_step": "not a valid slug!"},
+            content_type="application/json",
+            headers=self.headers,
+        )
+        self.assertEqual(resp.status_code, 400)
+
     def test_cannot_access_another_clinics_profile(self):
         _, _, other_headers = make_clinic_admin(
             email="owner2@other.test", clinic_slug="other-clinic"

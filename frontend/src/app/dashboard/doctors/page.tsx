@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { Plus, Pencil, Trash2 } from "lucide-react";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { DataTableShell, EmptyState } from "@/components/dashboard/shell";
+import { SpecialtyServicePicker } from "@/components/dashboard/specialty-service-picker";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -33,6 +34,8 @@ import {
   useCreateDoctor,
   useDeleteDoctor,
   useDoctors,
+  useServices,
+  useSpecialties,
   useUpdateDoctor,
 } from "@/hooks/api";
 import { getApiErrorMessage } from "@/lib/api/client";
@@ -45,6 +48,8 @@ const schema = z.object({
   languages: z.string().optional(),
   is_active: z.boolean(),
   is_accepting_patients: z.boolean(),
+  specialty_ids: z.array(z.string()),
+  service_ids: z.array(z.string()),
 });
 
 type FormValues = z.infer<typeof schema>;
@@ -54,9 +59,13 @@ export default function DoctorsPage() {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Doctor | null>(null);
   const { data, isLoading } = useDoctors({ search: search || undefined, limit: 100 });
+  const { data: specialtiesData } = useSpecialties({ limit: 100 });
+  const { data: servicesData } = useServices({ limit: 100 });
   const create = useCreateDoctor();
   const update = useUpdateDoctor();
   const remove = useDeleteDoctor();
+  const specialties = specialtiesData?.results ?? [];
+  const services = servicesData?.results ?? [];
 
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
@@ -67,6 +76,8 @@ export default function DoctorsPage() {
       languages: "",
       is_active: true,
       is_accepting_patients: true,
+      specialty_ids: [],
+      service_ids: [],
     },
   });
 
@@ -79,6 +90,8 @@ export default function DoctorsPage() {
       languages: "",
       is_active: true,
       is_accepting_patients: true,
+      specialty_ids: [],
+      service_ids: [],
     });
     setOpen(true);
   }
@@ -92,6 +105,8 @@ export default function DoctorsPage() {
       languages: d.languages?.join(", ") ?? "",
       is_active: d.is_active,
       is_accepting_patients: d.is_accepting_patients,
+      specialty_ids: d.specialty_ids,
+      service_ids: d.service_ids,
     });
     setOpen(true);
   }
@@ -106,6 +121,8 @@ export default function DoctorsPage() {
         : [],
       is_active: values.is_active,
       is_accepting_patients: values.is_accepting_patients,
+      specialty_ids: values.specialty_ids,
+      service_ids: values.service_ids,
     };
     try {
       if (editing) {
@@ -236,6 +253,31 @@ export default function DoctorsPage() {
               />
               Accepting patients
             </label>
+            {specialties.length > 0 || services.length > 0 ? (
+              <div className="space-y-1.5">
+                <Label>Specialties &amp; services offered</Label>
+                <SpecialtyServicePicker
+                  specialties={specialties}
+                  services={services}
+                  selectedSpecialtyIds={form.watch("specialty_ids")}
+                  selectedServiceIds={form.watch("service_ids")}
+                  onToggleSpecialty={(id) => {
+                    const current = form.getValues("specialty_ids");
+                    form.setValue(
+                      "specialty_ids",
+                      current.includes(id) ? current.filter((x) => x !== id) : [...current, id]
+                    );
+                  }}
+                  onToggleService={(id) => {
+                    const current = form.getValues("service_ids");
+                    form.setValue(
+                      "service_ids",
+                      current.includes(id) ? current.filter((x) => x !== id) : [...current, id]
+                    );
+                  }}
+                />
+              </div>
+            ) : null}
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setOpen(false)}>
                 Cancel

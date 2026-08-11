@@ -30,7 +30,13 @@ type AuthState = {
     remember?: boolean
   ) => Promise<Awaited<ReturnType<typeof authService.login>>>;
   logout: () => void;
-  refreshMe: () => Promise<void>;
+  /** Resolves `true` only if this call actually fetched and applied fresh
+   * state — `false` covers both "no token" and "request failed", in which
+   * case existing session state was deliberately left untouched (network
+   * blips shouldn't log someone out). Callers that need to *confirm* fresh
+   * state landed (e.g. right after an action that changed it server-side)
+   * should check this rather than assume a resolved promise means success. */
+  refreshMe: () => Promise<boolean>;
   selectTenant: (slug: string) => Promise<void>;
   enterClinic: (slug: string) => Promise<void>;
   exitClinic: () => Promise<void>;
@@ -82,7 +88,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setTenants([]);
       setCanExitClinic(false);
       setIsLoading(false);
-      return;
+      return false;
     }
     try {
       const data = await authService.me();
@@ -100,6 +106,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setActiveTenant(data.clinic.slug);
       }
       qc.setQueryData(queryKeys.me, data);
+      return true;
     } catch (err) {
       const status = axios.isAxiosError(err) ? err.response?.status : undefined;
       if (status === 401) {
@@ -111,6 +118,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setCanExitClinic(false);
       }
       // Non-401: keep session; caller can retry
+      return false;
     } finally {
       setIsLoading(false);
     }

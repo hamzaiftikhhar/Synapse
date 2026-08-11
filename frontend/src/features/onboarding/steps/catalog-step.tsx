@@ -13,17 +13,20 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { SpecialtyServicePicker } from "@/components/dashboard/specialty-service-picker";
 import {
   useCreateService,
   useCreateSpecialty,
   useDeleteService,
   useDeleteSpecialty,
+  useDoctors,
   useServices,
   useSpecialties,
+  useUpdateDoctor,
   useUpdateService,
 } from "@/hooks/api";
 import { getApiErrorMessage } from "@/lib/api/client";
-import type { Service } from "@/types/api";
+import type { Doctor, Service, Specialty } from "@/types/api";
 import { ONBOARDING_FORM_ID, type OnboardingStepProps } from "../steps";
 
 function formatPrice(cents: number | null) {
@@ -121,6 +124,7 @@ function ServicesSection() {
   const [editing, setEditing] = useState<Service | null>(null);
   const [form, setForm] = useState<ServiceForm>(EMPTY_SERVICE);
   const [nameError, setNameError] = useState("");
+  const [priceError, setPriceError] = useState("");
 
   const services = data?.results ?? [];
 
@@ -128,6 +132,7 @@ function ServicesSection() {
     setEditing(null);
     setForm(EMPTY_SERVICE);
     setNameError("");
+    setPriceError("");
     setOpen(true);
   }
 
@@ -140,6 +145,7 @@ function ServicesSection() {
       category: service.category ?? "",
     });
     setNameError("");
+    setPriceError("");
     setOpen(true);
   }
 
@@ -151,10 +157,20 @@ function ServicesSection() {
     }
     setNameError("");
     const price = form.price_dollars.trim();
+    let priceCents: number | null = null;
+    if (price) {
+      const parsed = Number(price);
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        setPriceError("Please enter a valid price, like 150.00.");
+        return;
+      }
+      priceCents = Math.round(parsed * 100);
+    }
+    setPriceError("");
     const payload = {
       name: form.name.trim(),
       duration_min: Math.max(5, parseInt(form.duration_min, 10) || 30),
-      price_cents: price ? Math.round(parseFloat(price) * 100) : null,
+      price_cents: priceCents,
       category: form.category.trim(),
     };
     try {
@@ -265,7 +281,9 @@ function ServicesSection() {
                   value={form.price_dollars}
                   onChange={(e) => setForm((f) => ({ ...f, price_dollars: e.target.value }))}
                   placeholder="150.00"
+                  aria-invalid={Boolean(priceError)}
                 />
+                {priceError ? <p className="text-xs text-destructive">{priceError}</p> : null}
               </div>
             </div>
             <div className="space-y-1.5">
@@ -294,10 +312,109 @@ function ServicesSection() {
   );
 }
 
+type DoctorLinks = { specialtyIds: string[]; serviceIds: string[] };
+
+/** Which providers offer what — closes the gap between "providers exist"
+ * and "providers are actually bookable". Default booking mode filters
+ * doctors by specialty (see apps/chatbot/booking/serializers.py), so a
+ * provider left unlinked to any specialty/service is invisible to patients
+ * even though onboarding shows both as "done". Untouched providers default
+ * to everything checked (most small clinics have every provider do
+ * everything) so simply clicking Continue still produces a bookable clinic;
+ * the owner only needs to uncheck what doesn't apply. */
+function ProviderLinksSection({
+  doctors,
+  specialties,
+  services,
+  edits,
+  setEdits,
+}: {
+  doctors: Doctor[];
+  specialties: Specialty[];
+  services: Service[];
+  edits: Record<string, DoctorLinks>;
+  setEdits: React.Dispatch<React.SetStateAction<Record<string, DoctorLinks>>>;
+}) {
+  function effectiveLinks(doctor: Doctor): DoctorLinks {
+    if (edits[doctor.id]) return edits[doctor.id];
+    if (doctor.specialty_ids.length || doctor.service_ids.length) {
+      return { specialtyIds: doctor.specialty_ids, serviceIds: doctor.service_ids };
+    }
+    return { specialtyIds: specialties.map((s) => s.id), serviceIds: services.map((s) => s.id) };
+  }
+
+  function toggle(doctor: Doctor, kind: "specialtyIds" | "serviceIds", id: string) {
+    const current = effectiveLinks(doctor);
+    const has = current[kind].includes(id);
+    const next = has ? current[kind].filter((x) => x !== id) : [...current[kind], id];
+    setEdits((prev) => ({ ...prev, [doctor.id]: { ...current, [kind]: next } }));
+  }
+
+  if (doctors.length === 0 || (specialties.length === 0 && services.length === 0)) return null;
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <Label className="text-sm font-medium text-navy">Which providers offer these?</Label>
+        <p className="mt-0.5 text-xs text-muted-foreground">
+          We&apos;ve checked everything by default — uncheck anything a provider doesn&apos;t offer.
+        </p>
+      </div>
+      <div className="space-y-3">
+        {doctors.map((doctor) => {
+          const links = effectiveLinks(doctor);
+          return (
+            <div key={doctor.id} className="rounded-xl border border-border p-4">
+              <p className="mb-2 text-sm font-medium text-navy">{doctor.full_name}</p>
+              <SpecialtyServicePicker
+                specialties={specialties}
+                services={services}
+                selectedSpecialtyIds={links.specialtyIds}
+                selectedServiceIds={links.serviceIds}
+                onToggleSpecialty={(id) => toggle(doctor, "specialtyIds", id)}
+                onToggleService={(id) => toggle(doctor, "serviceIds", id)}
+              />
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export function CatalogStep({ onNext }: OnboardingStepProps) {
-  function onContinue(e: React.FormEvent) {
+  const { data: doctorsData } = useDoctors({ limit: 100 });
+  const { data: specialtiesData } = useSpecialties({ limit: 100 });
+  const { data: servicesData } = useServices({ limit: 100 });
+  const updateDoctor = useUpdateDoctor();
+
+  const doctors = doctorsData?.results ?? [];
+  const specialties = specialtiesData?.results ?? [];
+  const services = servicesData?.results ?? [];
+
+  const [linkEdits, setLinkEdits] = useState<Record<string, DoctorLinks>>({});
+
+  async function onContinue(e: React.FormEvent) {
     e.preventDefault();
-    onNext();
+    try {
+      await Promise.all(
+        doctors.map((doctor) => {
+          const edited = linkEdits[doctor.id];
+          const links: DoctorLinks =
+            edited ??
+            (doctor.specialty_ids.length || doctor.service_ids.length
+              ? { specialtyIds: doctor.specialty_ids, serviceIds: doctor.service_ids }
+              : { specialtyIds: specialties.map((s) => s.id), serviceIds: services.map((s) => s.id) });
+          return updateDoctor.mutateAsync({
+            id: doctor.id,
+            input: { specialty_ids: links.specialtyIds, service_ids: links.serviceIds },
+          });
+        })
+      );
+      onNext();
+    } catch (err) {
+      toast.error(getApiErrorMessage(err));
+    }
   }
 
   return (
@@ -306,6 +423,18 @@ export function CatalogStep({ onNext }: OnboardingStepProps) {
       <SpecialtiesSection />
       <div className="h-px bg-border" />
       <ServicesSection />
+      {doctors.length > 0 && (specialties.length > 0 || services.length > 0) ? (
+        <>
+          <div className="h-px bg-border" />
+          <ProviderLinksSection
+            doctors={doctors}
+            specialties={specialties}
+            services={services}
+            edits={linkEdits}
+            setEdits={setLinkEdits}
+          />
+        </>
+      ) : null}
     </div>
   );
 }

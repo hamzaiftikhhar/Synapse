@@ -7,7 +7,8 @@ const API_BASE =
 export const api = axios.create({
   baseURL: API_BASE,
   headers: { "Content-Type": "application/json" },
-  timeout: 30_000,
+  // Match widget budget — staff chatbot also runs NLU + RAG + response LLM.
+  timeout: 90_000,
 });
 
 function getAccessToken(): string | null {

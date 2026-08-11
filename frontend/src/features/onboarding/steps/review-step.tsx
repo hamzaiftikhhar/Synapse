@@ -83,12 +83,26 @@ export function ReviewStep({
   async function onFinish() {
     try {
       await complete.mutateAsync();
-      await refreshMe();
-      toast.success("Your clinic is ready");
-      router.replace("/dashboard");
     } catch (err) {
       toast.error(getApiErrorMessage(err));
+      return;
     }
+    // Completion succeeded server-side at this point — refreshMe() itself
+    // never throws (it deliberately swallows transient failures elsewhere
+    // so a network blip doesn't log someone out), so success has to be read
+    // from its return value rather than a try/catch.
+    const refreshed = await refreshMe();
+    if (!refreshed) {
+      // Client's cached clinic.status is now stale ("onboarding"), which
+      // would bounce us straight back into onboarding via the dashboard
+      // layout guard on a plain client-side route change. Force a full
+      // reload instead — that re-derives auth state from scratch rather
+      // than trusting the failed refresh.
+      window.location.assign("/dashboard");
+      return;
+    }
+    toast.success("Your clinic is ready");
+    router.replace("/dashboard");
   }
 
   return (

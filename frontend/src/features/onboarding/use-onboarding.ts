@@ -25,25 +25,28 @@ export function useOnboarding() {
   const [stepSlug, setStepSlug] = useState<OnboardingStepSlug>(initialSlug);
   const index = ONBOARDING_STEPS.findIndex((s) => s.slug === stepSlug);
 
-  function persistStepPointer(slug: OnboardingStepSlug) {
-    // Best-effort resume-cursor tracking — not the source of truth for any
-    // actual clinic data, so it's fire-and-forget rather than blocking nav.
-    updateProfile.mutate({ onboarding_step: slug });
-  }
-
-  function goTo(slug: OnboardingStepSlug) {
+  async function goTo(slug: OnboardingStepSlug) {
+    // Wait for the resume-cursor save before showing the new step, so a
+    // refresh immediately after navigating can't land back one step behind.
+    // The actual step data was already saved (awaited) before this is
+    // called, so on failure we still advance locally rather than trap the
+    // user — worst case they resume one step early next time, not lose work.
+    try {
+      await updateProfile.mutateAsync({ onboarding_step: slug });
+    } catch {
+      // swallow — see comment above
+    }
     setStepSlug(slug);
-    persistStepPointer(slug);
   }
 
   function goNext() {
     const next = ONBOARDING_STEPS[index + 1];
-    if (next) goTo(next.slug);
+    if (next) void goTo(next.slug);
   }
 
   function goBack() {
     const prev = ONBOARDING_STEPS[index - 1];
-    if (prev) goTo(prev.slug);
+    if (prev) void goTo(prev.slug);
   }
 
   return {

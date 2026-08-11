@@ -7,6 +7,8 @@ ClinicBusinessHours/DoctorSchedule rows already owned by the clinic.
 
 from __future__ import annotations
 
+import re
+
 from django.utils import timezone
 from ninja import Router
 from ninja.errors import HttpError
@@ -33,6 +35,10 @@ from apps.specialties.models import Specialty
 router = Router(tags=["Clinics"])
 
 _DAYS = range(7)  # 0=Monday .. 6=Sunday
+# Not tied to the frontend's specific step slugs (that list can grow without
+# a backend release) — just a defensive shape check so a bad/rogue value
+# can't overflow the column and 500 instead of a clean 400.
+_ONBOARDING_STEP_RE = re.compile(r"^[a-z_]{1,32}$")
 
 
 def _serialize_clinic(clinic: Clinic) -> ClinicProfileOut:
@@ -68,6 +74,9 @@ def update_clinic_profile(request, payload: ClinicProfileUpdateIn):
             raise HttpError(400, "Unknown clinic type")
     if "name" in data and not (data["name"] or "").strip():
         raise HttpError(400, "Clinic name is required")
+    if "onboarding_step" in data and data["onboarding_step"]:
+        if not _ONBOARDING_STEP_RE.match(data["onboarding_step"]):
+            raise HttpError(400, "Invalid onboarding step")
     for field, value in data.items():
         setattr(clinic, field, value.strip() if isinstance(value, str) else value)
     clinic.save()

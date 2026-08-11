@@ -12,8 +12,12 @@ function OnboardingGuard() {
 
   useEffect(() => {
     if (isLoading) return;
-    if (user?.role === "SUPER_ADMIN" && !clinic) {
-      router.replace("/dashboard/platform");
+    if (user?.role === "SUPER_ADMIN") {
+      // Platform staff never go through a clinic's onboarding wizard —
+      // matches the dashboard layout guard, which never redirects them
+      // into it either, even while impersonating an onboarding-status
+      // clinic via "enter clinic".
+      router.replace(clinic ? "/dashboard" : "/dashboard/platform");
       return;
     }
     if (clinic?.status === "active") {
@@ -25,7 +29,7 @@ function OnboardingGuard() {
     }
   }, [clinic, tenants, user, isLoading, router]);
 
-  if (isLoading || !clinic || clinic.status === "active") {
+  if (isLoading || !clinic || clinic.status === "active" || user?.role === "SUPER_ADMIN") {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background">
         <div className="size-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
