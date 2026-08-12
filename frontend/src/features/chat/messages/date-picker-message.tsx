@@ -14,7 +14,7 @@ export function DatePickerMessage({
 }) {
   const [value, setValue] = useState(String(message.payload?.value || ""));
   return (
-    <div className="flex items-center gap-2 rounded-[6px] border border-border bg-white p-3">
+    <div className="flex items-center gap-2 rounded-[6px] border border-border bg-card p-3">
       <Input
         type="date"
         value={value}

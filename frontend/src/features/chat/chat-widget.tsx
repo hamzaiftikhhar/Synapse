@@ -764,7 +764,7 @@ export function ChatWidget({
         />
         <div className="min-w-0 max-w-[85%]">
           <BotMetaRow name={`${displayName} Assistant`} time="Just now" />
-          <div className="rounded-[18px] rounded-bl-md border border-border/80 bg-white px-3.5 py-2.5 text-sm leading-relaxed text-foreground shadow-[0_1px_3px_rgb(11_14_46/0.06)]">
+          <div className="rounded-[18px] rounded-bl-md border border-border/80 bg-card px-3.5 py-2.5 text-sm leading-relaxed text-foreground shadow-sm">
             {greeting}
           </div>
         </div>
@@ -777,7 +777,7 @@ export function ChatWidget({
   );
 
   const chatBody = (
-    <div className="relative flex min-h-0 flex-1 flex-col bg-[#f7f6fb]">
+    <div className="relative flex min-h-0 flex-1 flex-col bg-background">
       <div className="relative min-h-0 flex-1">
         <div
           ref={scrollRef}
@@ -833,7 +833,7 @@ export function ChatWidget({
           <button
             type="button"
             onClick={() => scrollToBottom(true)}
-            className="absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-full border border-border bg-white px-3 py-1.5 text-[11px] font-medium text-foreground shadow-sm transition-[background-color,box-shadow,transform] duration-150 hover:-translate-y-px hover:bg-accent"
+            className="absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-full border border-border bg-card px-3 py-1.5 text-[11px] font-medium text-foreground shadow-sm hover:bg-accent"
           >
             <ArrowDown className="size-3" />
             Latest
@@ -855,7 +855,7 @@ export function ChatWidget({
   const panel = (
     <div
       className={cn(
-        "synapse-chat-panel relative flex flex-col overflow-hidden border border-border/70 bg-white shadow-[0_18px_50px_-18px_rgba(11,14,46,0.28)]",
+        "synapse-chat-panel relative flex flex-col overflow-hidden border border-border/70 bg-card shadow-[0_18px_50px_-18px_rgba(11,14,46,0.28)]",
         mode === "embedded" && "h-full min-h-[420px] w-full rounded-[18px]",
         mode === "widget" &&
           !expanded &&
@@ -913,7 +913,7 @@ export function ChatWidget({
         <button
           type="button"
           onClick={() => (open ? closeAll() : setOpen(true))}
-          className="pointer-events-auto flex size-14 items-center justify-center rounded-full shadow-lg ring-2 ring-white transition-[transform,box-shadow] duration-150 hover:-translate-y-px"
+          className="pointer-events-auto flex size-14 items-center justify-center rounded-full shadow-lg ring-2 ring-background"
           aria-label={open ? "Close chat" : "Open Synapse Assistant"}
         >
           {open ? (

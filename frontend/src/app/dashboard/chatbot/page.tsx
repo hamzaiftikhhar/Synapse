@@ -6,7 +6,7 @@ import {
   Maximize2,
   MessageCircle,
   Shield,
-  Sparkles,
+  ListChecks,
 } from "lucide-react";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -23,9 +23,8 @@ export default function ChatbotQaPage() {
         description="Test and configure your clinic assistant. Use the floating widget in the bottom-right corner — the same experience patients see on your website."
       />
 
-      <div className="relative mb-6 overflow-hidden rounded-2xl border border-border bg-secondary p-6 text-foreground">
-        <div className="glow-navy pointer-events-none absolute inset-0 opacity-60" />
-        <div className="relative flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+      <div className="mb-6 overflow-hidden rounded-2xl border border-border bg-card p-6 text-foreground">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-start gap-3">
             <span className="flex size-10 items-center justify-center rounded-xl bg-foreground/10">
               <MessageCircle className="size-5" />
@@ -36,7 +35,7 @@ export default function ChatbotQaPage() {
               </p>
               <p className="mt-1 max-w-md text-sm text-muted-foreground">
                 Open the chat bubble to run live QA against{" "}
-                <code className="text-lavender">POST /chat/message/staff</code>.
+                <code className="text-primary">POST /chat/message/staff</code>.
                 Expand for a larger panel, or keep it compact like a typical
                 website widget.
               </p>
@@ -70,7 +69,7 @@ export default function ChatbotQaPage() {
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="flex items-center gap-2 text-sm font-medium">
-              <Sparkles className="size-4 text-primary" />
+              <ListChecks className="size-4 text-primary" />
               Backend-driven UI
             </CardTitle>
           </CardHeader>

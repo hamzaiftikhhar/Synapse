@@ -12,7 +12,7 @@ export function TimeSlotsMessage({
 }) {
   const slots = (message.payload?.slots as TimeSlotData[]) || [];
   return (
-    <ChatInlineCard className="rounded-[18px] border border-border/80 bg-white p-3 shadow-[0_2px_12px_rgb(11_14_46/0.06)]">
+    <ChatInlineCard className="rounded-[18px] border border-border/80 bg-card p-3 shadow-[0_2px_12px_rgb(11_14_46/0.06)]">
       <p className="mb-2 text-xs font-medium text-muted-foreground">
         Earliest openings
       </p>

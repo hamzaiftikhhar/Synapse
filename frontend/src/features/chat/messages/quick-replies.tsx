@@ -26,7 +26,7 @@ export function QuickReplies({
             key={key}
             type="button"
             onClick={() => onAction?.("quick_reply", reply)}
-            className="rounded-[6px] border border-border bg-white px-3 py-1.5 text-xs font-medium text-navy transition-colors hover:border-primary/40 hover:bg-accent"
+            className="rounded-[6px] border border-border bg-card px-3 py-1.5 text-xs font-medium text-navy transition-colors hover:border-primary/40 hover:bg-accent"
           >
             {label}
           </button>

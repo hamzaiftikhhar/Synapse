@@ -18,7 +18,7 @@ export function DoctorCard({
   onAction?: ChatActionHandler;
 }) {
   return (
-    <div className="rounded-[6px] border border-border bg-white p-3">
+    <div className="rounded-[6px] border border-border bg-card p-3">
       <div className="flex items-start gap-2.5">
         <Avatar>
           {doctor.photo_url ? (

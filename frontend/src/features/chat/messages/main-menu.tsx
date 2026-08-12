@@ -35,7 +35,7 @@ export function MainMenuMessage({
   if (!items.length) return null;
 
   return (
-    <div className="w-full overflow-hidden rounded-[6px] border border-border bg-white">
+    <div className="w-full overflow-hidden rounded-[6px] border border-border bg-card">
       <div className="border-b border-border px-3 py-2.5">
         <p className="text-xs font-semibold tracking-tight text-navy">
           How can we help?
@@ -49,7 +49,7 @@ export function MainMenuMessage({
               key={item.id}
               type="button"
               onClick={() => onAction?.("menu", item)}
-              className="flex items-start gap-2.5 bg-white px-3 py-3 text-left transition-colors hover:bg-accent/50"
+              className="flex items-start gap-2.5 bg-card px-3 py-3 text-left transition-colors hover:bg-accent/50"
             >
               <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-[6px] bg-accent text-primary">
                 <Icon className="size-3.5" />

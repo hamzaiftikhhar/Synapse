@@ -1,13 +1,13 @@
 "use client";
 
-import { Bar, BarChart, Cell, ResponsiveContainer, XAxis, YAxis } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { cn } from "@/lib/utils";
 
 export type StatusCount = {
   status: string;
   label: string;
   count: number;
-  color: string;
+  barClass: string;
 };
 
 export function StatusBreakdownCard({
@@ -23,47 +23,40 @@ export function StatusBreakdownCard({
   const rows = counts.filter((c) => c.count > 0);
 
   return (
-    <Card className="overflow-hidden border-transparent bg-gradient-to-br from-primary to-[#2a2470] text-primary-foreground shadow-lg shadow-primary/20">
+    <Card>
       <CardHeader>
-        <CardTitle className="text-primary-foreground">{title}</CardTitle>
+        <CardTitle>{title}</CardTitle>
         {subtitle ? (
-          <p className="mt-0.5 text-xs text-primary-foreground/70">{subtitle}</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">{subtitle}</p>
         ) : null}
       </CardHeader>
       <CardContent>
         {total === 0 ? (
-          <div className="flex h-40 flex-col items-center justify-center gap-1 text-center">
-            <p className="text-sm font-medium text-primary-foreground">No appointments yet</p>
-            <p className="text-xs text-primary-foreground/70">
+          <div className="flex h-44 flex-col items-center justify-center gap-1 text-center">
+            <p className="text-sm font-medium text-navy">No appointments yet</p>
+            <p className="text-xs text-muted-foreground">
               Status breakdown appears once appointments come in.
             </p>
           </div>
         ) : (
-          <div className="h-40 w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart
-                data={rows}
-                layout="vertical"
-                margin={{ top: 0, right: 16, left: 0, bottom: 0 }}
-                barCategoryGap={10}
-              >
-                <XAxis type="number" hide />
-                <YAxis
-                  dataKey="label"
-                  type="category"
-                  width={84}
-                  axisLine={false}
-                  tickLine={false}
-                  tick={{ fontSize: 12, fill: "var(--primary-foreground)" }}
-                />
-                <Bar dataKey="count" radius={[0, 8, 8, 0]} maxBarSize={18}>
-                  {rows.map((row) => (
-                    <Cell key={row.status} fill={row.color} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
+          <ul className="space-y-3">
+            {rows.map((row) => (
+              <li key={row.status}>
+                <div className="mb-1.5 flex items-baseline justify-between gap-3">
+                  <span className="text-[13px] text-foreground">{row.label}</span>
+                  <span className="text-[13px] font-medium tabular-nums text-navy">
+                    {row.count}
+                  </span>
+                </div>
+                <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+                  <div
+                    className={cn("h-full rounded-full", row.barClass)}
+                    style={{ width: `${Math.max((row.count / total) * 100, 4)}%` }}
+                  />
+                </div>
+              </li>
+            ))}
+          </ul>
         )}
       </CardContent>
     </Card>

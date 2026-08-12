@@ -62,7 +62,7 @@ export function ChatComposer({
   return (
     <form
       onSubmit={handleSubmit}
-      className="shrink-0 bg-[#f7f6fb] px-3 pb-2 pt-2 sm:px-4"
+      className="shrink-0 bg-background px-3 pb-2 pt-2 sm:px-4"
     >
       <div
         className={cn(
@@ -93,7 +93,7 @@ export function ChatComposer({
                 ? "bg-primary text-primary-foreground"
                 : canSend
                   ? "bg-primary text-primary-foreground"
-                  : "bg-neutral-200 text-neutral-400"
+                  : "bg-muted text-muted-foreground"
             )}
           >
             <span className="relative flex size-4 items-center justify-center">

@@ -582,7 +582,7 @@ function DoctorStep({
             key={d.id}
             type="button"
             onClick={() => onSelect(d)}
-            className="flex w-full items-center gap-3 rounded-xl border border-border bg-white px-3 py-2 text-left transition-[border-color,box-shadow] hover:border-primary/40 hover:shadow-sm"
+            className="flex w-full items-center gap-3 rounded-xl border border-border bg-card px-3 py-2 text-left transition-[border-color,box-shadow] hover:border-primary/40 hover:shadow-sm"
           >
             <Avatar>
               {d.photo_url ? <AvatarImage src={d.photo_url} alt={d.name} /> : null}

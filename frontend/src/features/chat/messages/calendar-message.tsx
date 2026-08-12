@@ -30,7 +30,7 @@ export function CalendarMessage({
   const labelDate = monthKey ? new Date(monthKey) : new Date();
 
   return (
-    <div className="rounded-[6px] border border-border bg-white p-3">
+    <div className="rounded-[6px] border border-border bg-card p-3">
       <p className="mb-2 text-xs font-medium text-navy">
         {format(labelDate, "MMMM yyyy")}
       </p>

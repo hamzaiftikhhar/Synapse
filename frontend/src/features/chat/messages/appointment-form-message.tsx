@@ -19,7 +19,7 @@ export function AppointmentFormMessage({
   const [notes, setNotes] = useState("");
 
   return (
-    <div className="space-y-3 rounded-[6px] border border-border bg-white p-3">
+    <div className="space-y-3 rounded-[6px] border border-border bg-card p-3">
       <p className="text-xs font-medium text-navy">
         {(message.payload?.title as string) || "Appointment details"}
       </p>

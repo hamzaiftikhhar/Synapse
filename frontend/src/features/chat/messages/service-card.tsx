@@ -26,7 +26,7 @@ export function ServiceCard({
     <button
       type="button"
       onClick={() => onAction?.("select_service", service)}
-      className="flex w-[140px] shrink-0 snap-start flex-col gap-1 rounded-lg border border-border bg-white p-2.5 text-left transition-colors hover:border-primary/30 hover:bg-accent/40"
+      className="flex w-[140px] shrink-0 snap-start flex-col gap-1 rounded-lg border border-border bg-card p-2.5 text-left transition-colors hover:border-primary/30 hover:bg-accent/40"
     >
       <p className="line-clamp-2 text-xs font-semibold leading-snug text-foreground">
         {service.name}

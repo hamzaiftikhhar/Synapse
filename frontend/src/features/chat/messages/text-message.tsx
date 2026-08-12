@@ -54,7 +54,7 @@ export function TextMessage({
             "px-3.5 py-2.5 text-sm leading-relaxed",
             isUser
               ? "rounded-[18px] rounded-br-md bg-primary text-primary-foreground shadow-sm"
-              : "rounded-[18px] rounded-bl-md border border-border/80 bg-white text-foreground shadow-[0_1px_3px_rgb(11_14_46/0.06)]",
+              : "rounded-[18px] rounded-bl-md border border-border/80 bg-card text-foreground shadow-sm",
             streaming && !isUser && "synapse-stream-cursor"
           )}
         >

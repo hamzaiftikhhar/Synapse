@@ -2,7 +2,6 @@
 
 import { useMemo } from "react";
 import Link from "next/link";
-import { motion } from "framer-motion";
 import {
   Calendar,
   FileText,
@@ -10,7 +9,7 @@ import {
   Users,
   BriefcaseMedical,
 } from "lucide-react";
-import { format } from "date-fns";
+import { format, subDays } from "date-fns";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { DataTableShell, EmptyState } from "@/components/dashboard/shell";
 import { SetupChecklistCard } from "@/components/dashboard/setup-checklist";
@@ -51,13 +50,13 @@ const STATUS_BADGE_VARIANT: Record<
   rescheduled: "secondary",
 };
 
-const STATUS_CHART_COLOR: Record<string, string> = {
-  confirmed: "var(--success)",
-  pending: "var(--warning)",
-  cancelled: "var(--destructive)",
-  completed: "var(--info)",
-  no_show: "var(--destructive)",
-  rescheduled: "var(--muted-foreground)",
+const STATUS_BAR: Record<string, string> = {
+  confirmed: "bg-success",
+  pending: "bg-warning",
+  cancelled: "bg-destructive",
+  completed: "bg-info",
+  no_show: "bg-destructive/70",
+  rescheduled: "bg-muted-foreground/50",
 };
 
 const STATUS_LABEL: Record<string, string> = {
@@ -69,44 +68,55 @@ const STATUS_LABEL: Record<string, string> = {
   rescheduled: "Rescheduled",
 };
 
-const fadeUp = {
-  hidden: { opacity: 0, y: 8 },
-  show: (i: number) => ({
-    opacity: 1,
-    y: 0,
-    transition: { delay: i * 0.05, duration: 0.35, ease: "easeOut" as const },
-  }),
-};
+const TREND_DAYS = 14;
 
 export default function DashboardHomePage() {
   const { clinic, user } = useAuth();
   const doctors = useDoctors({ limit: 1 });
   const services = useServices({ limit: 1 });
   const patients = usePatients({ limit: 1 });
-  const appointments = useAppointments({ limit: 8 });
-  const appointmentsForCharts = useAppointments({ limit: 200 });
+  const appointments = useAppointments({ limit: 100 });
   const documents = useDocuments();
 
-  const trend = useMemo<{ points: DailyPoint[]; total: number }>(() => {
-    const rows = appointmentsForCharts.data?.results ?? [];
-    if (rows.length === 0) return { points: [], total: 0 };
+  const rows = appointments.data?.results ?? [];
 
+  const trend = useMemo<{ points: DailyPoint[]; total: number }>(() => {
     const byDay = new Map<string, number>();
-    for (const a of rows) {
-      const d = new Date(a.start_time);
-      const key = format(d, "yyyy-MM-dd");
-      byDay.set(key, (byDay.get(key) ?? 0) + 1);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    for (let i = TREND_DAYS - 1; i >= 0; i--) {
+      byDay.set(format(subDays(today, i), "yyyy-MM-dd"), 0);
     }
-    const sortedKeys = Array.from(byDay.keys()).sort();
-    const points = sortedKeys.map((key) => ({
-      label: format(new Date(key), "MMM d"),
-      count: byDay.get(key) ?? 0,
+    for (const a of rows) {
+      const key = format(new Date(a.start_time), "yyyy-MM-dd");
+      if (byDay.has(key)) byDay.set(key, (byDay.get(key) ?? 0) + 1);
+    }
+    let points = Array.from(byDay.entries()).map(([key, count]) => ({
+      label: format(new Date(`${key}T12:00:00`), "MMM d"),
+      count,
     }));
-    return { points, total: rows.length };
-  }, [appointmentsForCharts.data]);
+    let total = points.reduce((sum, p) => sum + p.count, 0);
+
+    if (total === 0 && rows.length > 0) {
+      const historic = new Map<string, number>();
+      for (const a of rows) {
+        const key = format(new Date(a.start_time), "yyyy-MM-dd");
+        historic.set(key, (historic.get(key) ?? 0) + 1);
+      }
+      points = Array.from(historic.entries())
+        .sort(([a], [b]) => a.localeCompare(b))
+        .slice(-TREND_DAYS)
+        .map(([key, count]) => ({
+          label: format(new Date(`${key}T12:00:00`), "MMM d"),
+          count,
+        }));
+      total = points.reduce((sum, p) => sum + p.count, 0);
+    }
+
+    return { points, total };
+  }, [rows]);
 
   const statusCounts = useMemo<StatusCount[]>(() => {
-    const rows = appointmentsForCharts.data?.results ?? [];
     const byStatus = new Map<string, number>();
     for (const a of rows) {
       const key = String(a.status);
@@ -124,16 +134,18 @@ export default function DashboardHomePage() {
       status,
       label: STATUS_LABEL[status],
       count: byStatus.get(status) ?? 0,
-      color: STATUS_CHART_COLOR[status],
+      barClass: STATUS_BAR[status],
     }));
-  }, [appointmentsForCharts.data]);
+  }, [rows]);
+
+  const recent = rows.slice(0, 8);
 
   const statCards = [
-    { label: "Doctors", value: doctors.data?.count, href: "/dashboard/doctors", icon: Stethoscope, tone: "primary" as const },
-    { label: "Services", value: services.data?.count, href: "/dashboard/services", icon: BriefcaseMedical, tone: "info" as const },
-    { label: "Patients", value: patients.data?.count, href: "/dashboard/patients", icon: Users, tone: "success" as const },
-    { label: "Appointments", value: appointments.data?.count, href: "/dashboard/appointments", icon: Calendar, tone: "warning" as const },
-    { label: "Documents", value: documents.data?.length, href: "/dashboard/knowledge", icon: FileText, tone: "primary" as const },
+    { label: "Doctors", value: doctors.data?.count, href: "/dashboard/doctors", icon: Stethoscope },
+    { label: "Services", value: services.data?.count, href: "/dashboard/services", icon: BriefcaseMedical },
+    { label: "Patients", value: patients.data?.count, href: "/dashboard/patients", icon: Users },
+    { label: "Appointments", value: appointments.data?.count, href: "/dashboard/appointments", icon: Calendar },
+    { label: "Documents", value: documents.data?.length, href: "/dashboard/knowledge", icon: FileText },
   ];
 
   return (
@@ -154,57 +166,35 @@ export default function DashboardHomePage() {
       <SetupChecklistCard />
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
-        {statCards.map((c, i) => (
-          <motion.div
+        {statCards.map((c) => (
+          <StatCard
             key={c.label}
-            custom={i}
-            initial="hidden"
-            animate="show"
-            variants={fadeUp}
-          >
-            <StatCard
-              label={c.label}
-              value={c.value ?? "—"}
-              href={c.href}
-              icon={c.icon}
-              tone={c.tone}
-            />
-          </motion.div>
+            label={c.label}
+            value={c.value ?? "—"}
+            href={c.href}
+            icon={c.icon}
+          />
         ))}
       </div>
 
       <div className="mt-4 grid gap-4 lg:grid-cols-3">
-        <motion.div
-          className="lg:col-span-2"
-          custom={5}
-          initial="hidden"
-          animate="show"
-          variants={fadeUp}
-        >
+        <div className="lg:col-span-2">
           <TrendChartCard
             title="Appointment volume"
-            subtitle="Booked visits by day, across your most recent appointments"
+            subtitle="Booked visits by day over the last 14 days"
             data={trend.points}
-            totalLabel="Appointments in view"
+            totalLabel="Appointments in this window"
             total={trend.total}
           />
-        </motion.div>
-        <motion.div custom={6} initial="hidden" animate="show" variants={fadeUp}>
-          <StatusBreakdownCard
-            title="Appointment status"
-            subtitle="Where things stand right now"
-            counts={statusCounts}
-          />
-        </motion.div>
+        </div>
+        <StatusBreakdownCard
+          title="Appointment status"
+          subtitle="Where things stand right now"
+          counts={statusCounts}
+        />
       </div>
 
-      <motion.div
-        className="mt-4"
-        custom={7}
-        initial="hidden"
-        animate="show"
-        variants={fadeUp}
-      >
+      <div className="mt-4">
         <DataTableShell
           title="Recent appointments"
           toolbar={
@@ -216,7 +206,7 @@ export default function DashboardHomePage() {
             </Link>
           }
         >
-          {!appointments.data?.results.length ? (
+          {!recent.length ? (
             <EmptyState
               icon={Calendar}
               title="No appointments yet"
@@ -233,11 +223,11 @@ export default function DashboardHomePage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {appointments.data.results.map((a) => (
+                {recent.map((a) => (
                   <TableRow key={a.id}>
                     <TableCell className="font-medium">
                       <div className="flex items-center gap-2.5">
-                        <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-accent text-[11px] font-semibold text-accent-foreground">
+                        <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] font-semibold text-foreground">
                           {a.patient_name.slice(0, 1).toUpperCase()}
                         </span>
                         {a.patient_name}
@@ -261,7 +251,7 @@ export default function DashboardHomePage() {
             </Table>
           )}
         </DataTableShell>
-      </motion.div>
+      </div>
     </div>
   );
 }

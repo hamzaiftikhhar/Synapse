@@ -28,7 +28,7 @@ const ICONS: Record<string, LucideIcon> = {
 };
 
 const chipBase =
-  "synapse-chat-chip inline-flex items-center gap-2 rounded-full border bg-white px-3.5 py-2.5 text-sm font-medium";
+  "synapse-chat-chip inline-flex items-center gap-2 rounded-full border border-border bg-card px-3.5 py-2.5 text-sm font-medium";
 
 function ActionChipButton({
   action,
@@ -113,7 +113,7 @@ export function SamplePromptChips({
           key={item.id}
           type="button"
           onClick={() => onSelect(item.message)}
-          className="synapse-chat-chip rounded-full border border-dashed border-neutral-300 bg-white/80 px-2.5 py-1 text-[11px] font-medium text-neutral-600"
+          className="synapse-chat-chip rounded-full border border-dashed border-border bg-card px-2.5 py-1 text-[11px] font-medium text-muted-foreground"
         >
           {item.label}
         </button>

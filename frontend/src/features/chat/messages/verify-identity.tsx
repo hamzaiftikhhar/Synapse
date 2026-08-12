@@ -148,7 +148,7 @@ export function VerifyIdentity({
   }
 
   return (
-    <ChatInlineCard className="space-y-3 rounded-[18px] border border-border/80 bg-white p-3.5 shadow-[0_2px_12px_rgb(11_14_46/0.06)]">
+    <ChatInlineCard className="space-y-3 rounded-[18px] border border-border/80 bg-card p-3.5 shadow-[0_2px_12px_rgb(11_14_46/0.06)]">
       {stage === "contact" ? (
         <>
           <div>

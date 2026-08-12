@@ -25,7 +25,7 @@ export function CardsMessage({
               (c as { select_message?: string }).select_message;
             if (msg) onAction?.("suggested", msg);
           }}
-          className="rounded-[18px] border border-border/80 bg-white p-3 text-left shadow-[0_2px_12px_rgb(11_14_46/0.06)] hover:bg-accent/40"
+          className="rounded-[18px] border border-border/80 bg-card p-3 text-left shadow-[0_2px_12px_rgb(11_14_46/0.06)] hover:bg-accent/40"
         >
           <p className="text-sm font-semibold text-navy">{c.title}</p>
           {c.description ? (

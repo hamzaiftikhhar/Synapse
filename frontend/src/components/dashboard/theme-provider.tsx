@@ -18,12 +18,12 @@ const ThemeContext = createContext<{ theme: Theme; toggle: () => void } | null>(
 );
 
 /**
- * Scopes the Instrument design language to the dashboard subtree only —
+ * Scopes the dashboard design language to the clinic/platform subtree —
  * marketing, auth, and onboarding keep their existing look untouched.
- * Dark is the product default; light is opt-in and persisted locally.
+ * Light canvas + dark sidebar is the product default; dark is opt-in.
  */
 export function DashboardThemeProvider({ children }: { children: ReactNode }) {
-  const [theme, setTheme] = useState<Theme>("dark");
+  const [theme, setTheme] = useState<Theme>("light");
 
   useEffect(() => {
     const stored = window.localStorage.getItem(STORAGE_KEY);
@@ -36,13 +36,10 @@ export function DashboardThemeProvider({ children }: { children: ReactNode }) {
   // correctly. Removed on unmount so marketing/auth/onboarding are untouched.
   useEffect(() => {
     document.body.classList.add("theme-instrument");
+    document.body.classList.toggle("theme-light", theme === "light");
     return () => {
       document.body.classList.remove("theme-instrument", "theme-light");
     };
-  }, []);
-
-  useEffect(() => {
-    document.body.classList.toggle("theme-light", theme === "light");
   }, [theme]);
 
   function toggle() {

@@ -51,21 +51,20 @@ export function DashboardSidebar({ onNavigate }: { onNavigate?: () => void }) {
   const { clinic, user } = useAuth();
   const isSuper = user?.role === "SUPER_ADMIN";
   const onPlatformRoute = pathname.startsWith("/dashboard/platform");
-  // Platform portal: Super Admin with no clinic, or browsing platform while switching
   const showPlatformNav = isSuper && (!clinic || onPlatformRoute);
   const nav = showPlatformNav ? PLATFORM_NAV : DASHBOARD_NAV;
 
   return (
-    <aside className="flex h-full w-64 flex-col border-r border-border bg-sidebar">
-      <div className="flex h-14 items-center gap-2.5 border-b border-border px-4">
-        <div className="flex size-8 shrink-0 items-center justify-center rounded-xl bg-primary text-sm font-bold text-primary-foreground shadow-sm shadow-primary/30">
+    <aside className="flex h-full w-64 flex-col border-r border-white/10 bg-[#1a1e26] text-[#e8eaef]">
+      <div className="flex h-14 items-center gap-2.5 border-b border-white/10 px-4">
+        <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-[#5c67f2] text-sm font-bold text-white">
           S
         </div>
         <div className="min-w-0">
-          <p className="truncate text-sm font-semibold tracking-tight text-navy">
+          <p className="truncate text-sm font-semibold tracking-tight text-white">
             {APP_NAME}
           </p>
-          <p className="truncate text-[11px] text-muted-foreground">
+          <p className="truncate text-[11px] text-white/45">
             {showPlatformNav ? "Platform" : clinic?.name ?? "Clinic portal"}
           </p>
         </div>
@@ -73,11 +72,11 @@ export function DashboardSidebar({ onNavigate }: { onNavigate?: () => void }) {
       <ScrollArea className="flex-1 px-3 py-4">
         <nav className="space-y-0.5">
           {showPlatformNav ? (
-            <p className="mb-2 px-2.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+            <p className="mb-2 px-2.5 text-[10px] font-semibold uppercase tracking-wide text-white/35">
               Platform
             </p>
           ) : clinic && isSuper ? (
-            <p className="mb-2 px-2.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+            <p className="mb-2 px-2.5 text-[10px] font-semibold uppercase tracking-wide text-white/35">
               Clinic portal
             </p>
           ) : null}
@@ -93,20 +92,15 @@ export function DashboardSidebar({ onNavigate }: { onNavigate?: () => void }) {
                 href={item.href}
                 onClick={onNavigate}
                 className={cn(
-                  "relative flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-[13px] font-medium transition-colors",
+                  "flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-[13px] font-medium",
                   active
-                    ? "bg-accent text-primary"
-                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                    ? "bg-white/10 text-white"
+                    : "text-white/55 hover:bg-white/5 hover:text-white/90"
                 )}
               >
-                {active ? (
-                  <span className="absolute top-1/2 -left-3 h-4 w-1 -translate-y-1/2 rounded-full bg-primary" />
-                ) : null}
                 <Icon
-                  className={cn(
-                    "size-4 shrink-0",
-                    active ? "opacity-100" : "opacity-70"
-                  )}
+                  className="size-4 shrink-0"
+                  strokeWidth={1.75}
                 />
                 {item.label}
               </Link>
@@ -117,14 +111,14 @@ export function DashboardSidebar({ onNavigate }: { onNavigate?: () => void }) {
       <div className="p-3">
         <Link
           href="/contact"
-          className="group flex items-center gap-3 rounded-2xl border border-border bg-muted/40 px-3.5 py-3 transition-colors hover:border-primary/30 hover:bg-accent/60"
+          className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/5 px-3.5 py-3 hover:bg-white/10"
         >
-          <div className="flex size-8 shrink-0 items-center justify-center rounded-xl bg-primary/12 text-primary">
-            <LifeBuoy className="size-4" />
+          <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-white/10 text-white/80">
+            <LifeBuoy className="size-4" strokeWidth={1.75} />
           </div>
           <div className="min-w-0">
-            <p className="text-[13px] font-medium text-navy">Help Center</p>
-            <p className="truncate text-[11px] text-muted-foreground">
+            <p className="text-[13px] font-medium text-white">Help Center</p>
+            <p className="truncate text-[11px] text-white/45">
               Reach the Synapse team
             </p>
           </div>

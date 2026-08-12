@@ -30,7 +30,7 @@ function AppointmentCard({
 
   if (stage === "cancel-confirm") {
     return (
-      <div className="rounded-lg border border-border bg-white p-3">
+      <div className="rounded-lg border border-border bg-card p-3">
         <p className="text-sm font-medium text-foreground">Cancel appointment?</p>
         <p className="mt-0.5 text-xs text-muted-foreground">
           {appt.doctor} · {formatWhen(appt.start_time)}
@@ -64,7 +64,7 @@ function AppointmentCard({
 
   if (stage === "reschedule-confirm") {
     return (
-      <div className="rounded-lg border border-border bg-white p-3">
+      <div className="rounded-lg border border-border bg-card p-3">
         <p className="text-sm font-medium text-foreground">Reschedule appointment?</p>
         <p className="mt-0.5 text-xs text-muted-foreground">
           {appt.doctor} · {formatWhen(appt.start_time)}
@@ -94,7 +94,7 @@ function AppointmentCard({
 
   if (stage === "reschedule-options") {
     return (
-      <div className="rounded-lg border border-border bg-white p-3">
+      <div className="rounded-lg border border-border bg-card p-3">
         <p className="text-sm font-medium text-foreground">Current provider</p>
         <p className="mt-0.5 text-xs text-muted-foreground">{appt.doctor}</p>
         <div className="mt-2.5 flex flex-col gap-1.5">
@@ -119,7 +119,7 @@ function AppointmentCard({
   }
 
   return (
-    <div className="rounded-lg border border-border bg-white p-3">
+    <div className="rounded-lg border border-border bg-card p-3">
       <p className="text-sm font-semibold text-foreground">{appt.doctor}</p>
       {appt.service ? (
         <p className="text-xs text-muted-foreground">{appt.service}</p>

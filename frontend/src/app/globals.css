@@ -144,114 +144,114 @@
 }
 
 /* ==========================================================================
-   Instrument — scoped design language for the clinic/platform dashboard.
-   Applied via the `.theme-instrument` wrapper in app/dashboard/layout.tsx.
-   Dark is the product default; `.theme-light` is opt-in via the topbar
-   toggle. Deliberately does not touch :root/.dark above, which marketing,
-   auth, and onboarding still render with.
+   Clinic / platform dashboard — scoped via `.theme-instrument`.
+   Light canvas + dark navy sidebar is the product default; `.theme-light`
+   is applied for light, omitted for dark. Marketing / auth / onboarding
+   keep :root tokens above.
    ========================================================================== */
 .theme-instrument {
   color-scheme: dark;
 
-  --background: #0a0a0c;
-  --foreground: #ededf1;
-  --card: #15161b;
-  --card-foreground: #ededf1;
-  --popover: #1b1c23;
-  --popover-foreground: #ededf1;
-  --primary: #7b7fe0;
-  --primary-foreground: #0a0a0c;
-  --secondary: #1b1c23;
-  --secondary-foreground: #ededf1;
-  --muted: #101114;
-  --muted-foreground: #a3a5b0;
-  --accent: #1b1c23;
-  --accent-foreground: #ededf1;
-  --destructive: #e2585f;
+  --background: #12141a;
+  --foreground: #e8eaef;
+  --card: #1b1e26;
+  --card-foreground: #e8eaef;
+  --popover: #22262f;
+  --popover-foreground: #e8eaef;
+  --primary: #6b74f5;
+  --primary-foreground: #ffffff;
+  --secondary: #22262f;
+  --secondary-foreground: #e8eaef;
+  --muted: #16181f;
+  --muted-foreground: #9aa0ad;
+  --accent: #22262f;
+  --accent-foreground: #e8eaef;
+  --destructive: #d45a60;
   --border: rgb(255 255 255 / 8%);
-  --input: rgb(255 255 255 / 14%);
-  --ring: #7b7fe0;
-  --chart-1: #7b7fe0;
-  --chart-2: #4e9fe3;
-  --chart-3: #3fbf8a;
-  --chart-4: #d9a441;
-  --chart-5: #a3a6f5;
-  --navy: #ededf1;
-  --navy-foreground: #0a0a0c;
-  --lavender: #a3a6f5;
-  --glow: #7b7fe0;
-  --sidebar: #101114;
-  --sidebar-foreground: #ededf1;
-  --sidebar-primary: #7b7fe0;
-  --sidebar-primary-foreground: #0a0a0c;
-  --sidebar-accent: #1b1c23;
-  --sidebar-accent-foreground: #ededf1;
+  --input: rgb(255 255 255 / 12%);
+  --ring: #6b74f5;
+  --chart-1: #6b74f5;
+  --chart-2: #3b82c4;
+  --chart-3: #1f9d6c;
+  --chart-4: #c47a1a;
+  --chart-5: #8b90f0;
+  --navy: #e8eaef;
+  --navy-foreground: #12141a;
+  --lavender: #8b90f0;
+  --glow: #6b74f5;
+  --sidebar: #1a1e26;
+  --sidebar-foreground: #e8eaef;
+  --sidebar-primary: #5c67f2;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: rgb(255 255 255 / 8%);
+  --sidebar-accent-foreground: #ffffff;
   --sidebar-border: rgb(255 255 255 / 8%);
-  --sidebar-ring: #7b7fe0;
-  --success: #3fbf8a;
-  --warning: #d9a441;
-  --info: #4e9fe3;
+  --sidebar-ring: #5c67f2;
+  --success: #2bb07a;
+  --warning: #d4a03a;
+  --info: #5aa0d4;
 
-  /* radius — role-based, mostly tight; only dialogs and pills feel soft */
-  --radius-sm-val: 6px;
-  --radius-md-val: 7px;
-  --radius-lg-val: 9px;   /* control: buttons, inputs, dropdown items, nav */
-  --radius-xl-val: 11px;  /* card: stat cards, list rows, chips */
-  --radius-2xl-val: 14px; /* panel: hero banners, larger content panels */
-  --radius-3xl-val: 18px; /* dialog: modals, sheets */
-  --radius-4xl-val: 9999px; /* pill: status badges only */
+  --radius-sm-val: 8px;
+  --radius-md-val: 10px;
+  --radius-lg-val: 10px;
+  --radius-xl-val: 16px;
+  --radius-2xl-val: 18px;
+  --radius-3xl-val: 20px;
+  --radius-4xl-val: 9999px;
 
   background-color: var(--background);
-  background-image:
-    radial-gradient(ellipse 55% 40% at 8% -10%, rgb(123 127 224 / 10%), transparent 60%),
-    radial-gradient(ellipse 45% 35% at 100% 0%, rgb(123 127 224 / 7%), transparent 60%);
+  background-image: none;
 }
 
 .theme-instrument.theme-light {
   color-scheme: light;
 
-  --background: #f2f1f5;
-  --foreground: #16161d;
+  --background: #eef1f6;
+  --foreground: #1c1f26;
   --card: #ffffff;
-  --card-foreground: #16161d;
+  --card-foreground: #1c1f26;
   --popover: #ffffff;
-  --popover-foreground: #16161d;
-  --primary: #5457c9;
-  --primary-foreground: #fbfbff;
-  --secondary: #eceaf5;
-  --secondary-foreground: #16161d;
-  --muted: #eae9ef;
-  --muted-foreground: #55565f;
-  --accent: #eceaf5;
-  --accent-foreground: #16161d;
+  --popover-foreground: #1c1f26;
+  --primary: #5c67f2;
+  --primary-foreground: #ffffff;
+  --secondary: #e4e8f0;
+  --secondary-foreground: #1c1f26;
+  --muted: #e4e8f0;
+  --muted-foreground: #6b7285;
+  --accent: #e8ebf5;
+  --accent-foreground: #1c1f26;
   --destructive: #c93a41;
-  --border: rgb(20 20 26 / 9%);
-  --input: rgb(20 20 26 / 14%);
-  --ring: #5457c9;
-  --chart-1: #5457c9;
-  --chart-2: #2b7fc4;
+  --border: rgb(28 31 38 / 8%);
+  --input: rgb(28 31 38 / 12%);
+  --ring: #5c67f2;
+  --chart-1: #5c67f2;
+  --chart-2: #3b82c4;
   --chart-3: #1f9d6c;
-  --chart-4: #b9791e;
-  --chart-5: #3d3fa8;
-  --navy: #16161d;
+  --chart-4: #c47a1a;
+  --chart-5: #4a52d4;
+  --navy: #1c1f26;
   --navy-foreground: #ffffff;
-  --lavender: #3d3fa8;
-  --glow: #5457c9;
-  --sidebar: #eae9ef;
-  --sidebar-foreground: #16161d;
-  --sidebar-primary: #5457c9;
-  --sidebar-primary-foreground: #fbfbff;
-  --sidebar-accent: #eceaf5;
-  --sidebar-accent-foreground: #16161d;
-  --sidebar-border: rgb(20 20 26 / 9%);
-  --sidebar-ring: #5457c9;
+  --lavender: #4a52d4;
+  --glow: #5c67f2;
+  --sidebar: #1a1e26;
+  --sidebar-foreground: #e8eaef;
+  --sidebar-primary: #5c67f2;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: rgb(255 255 255 / 8%);
+  --sidebar-accent-foreground: #ffffff;
+  --sidebar-border: rgb(255 255 255 / 8%);
+  --sidebar-ring: #5c67f2;
   --success: #1f9d6c;
-  --warning: #b9791e;
-  --info: #2b7fc4;
+  --warning: #c47a1a;
+  --info: #3b82c4;
 
-  background-image:
-    radial-gradient(ellipse 55% 40% at 8% -10%, rgb(84 87 201 / 6%), transparent 60%),
-    radial-gradient(ellipse 45% 35% at 100% 0%, rgb(84 87 201 / 4%), transparent 60%);
+  background-image: none;
+}
+
+.theme-instrument.theme-light [data-slot="card"] {
+  box-shadow:
+    0 1px 2px rgb(28 31 38 / 4%),
+    0 8px 24px rgb(28 31 38 / 4%);
 }
 
 @layer base {

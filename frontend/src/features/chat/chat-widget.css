@@ -1,87 +1,21 @@
-/* Hubstaff-inspired chat chrome — transform/opacity only */
-
-.synapse-chat-panel {
-  animation: synapse-panel-in 180ms ease-out both;
-}
-
-.synapse-chat-msg {
-  animation: synapse-msg-in 180ms ease-out both;
-}
+/* Chat chrome — token-based so dashboard dark/light inherit correctly.
+   Marketing keeps :root (white cards). No decorative motion. */
 
 .synapse-chat-composer {
   position: relative;
-  border-radius: 18px;
+  border-radius: 16px;
   border: 1px solid var(--border);
-  background: #fff;
-  box-shadow: 0 4px 20px -8px rgb(11 14 46 / 12%);
-  transition:
-    box-shadow 150ms ease,
-    border-color 150ms ease;
+  background: var(--card);
+  box-shadow: 0 1px 2px rgb(28 31 38 / 6%);
 }
 
 .synapse-chat-composer:focus-within {
   border-color: color-mix(in oklab, var(--primary) 45%, var(--border));
-  box-shadow:
-    0 6px 24px -10px rgb(91 33 182 / 22%),
-    0 0 0 1px color-mix(in oklab, var(--primary) 18%, transparent);
-}
-
-/* Barely-there moving border reflection while typing */
-.synapse-chat-composer--typing::before {
-  content: "";
-  pointer-events: none;
-  position: absolute;
-  inset: -1px;
-  border-radius: inherit;
-  padding: 1px;
-  background: linear-gradient(
-    110deg,
-    transparent 0%,
-    transparent 38%,
-    rgb(167 139 250 / 28%) 50%,
-    transparent 62%,
-    transparent 100%
-  );
-  background-size: 220% 100%;
-  animation: synapse-input-glow 4.8s linear infinite;
-  -webkit-mask:
-    linear-gradient(#fff 0 0) content-box,
-    linear-gradient(#fff 0 0);
-  mask:
-    linear-gradient(#fff 0 0) content-box,
-    linear-gradient(#fff 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-  opacity: 0.55;
-}
-
-.synapse-chat-send {
-  transition:
-    background-color 150ms ease,
-    box-shadow 150ms ease,
-    transform 150ms ease;
-}
-
-.synapse-chat-send:hover:not(:disabled) {
-  transform: translateY(-1px);
-}
-
-.synapse-chat-send-icon {
-  transition: opacity 150ms ease, transform 150ms ease;
-}
-
-.synapse-chat-chip {
-  transition:
-    background-color 150ms ease,
-    border-color 150ms ease,
-    box-shadow 150ms ease,
-    transform 150ms ease,
-    color 150ms ease;
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--primary) 18%, transparent);
 }
 
 .synapse-chat-chip:hover:not(:disabled) {
-  transform: translateY(-1px);
-  background-color: #f4f2ff;
+  background-color: var(--accent);
   border-color: color-mix(in oklab, var(--primary) 28%, var(--border));
 }
 
@@ -89,7 +23,6 @@
   background-color: color-mix(in oklab, var(--primary) 92%, #000);
 }
 
-/* Thinking · · · CSS-only cycle (transform only) */
 .synapse-thinking-dots::after {
   content: "...";
   display: inline-block;
@@ -97,20 +30,18 @@
   overflow: hidden;
   vertical-align: bottom;
   letter-spacing: 0.5px;
-  transform-origin: left center;
   animation: synapse-thinking-dots 1.2s steps(4, end) infinite;
 }
 
 @keyframes synapse-thinking-dots {
   0% {
-    transform: scaleX(0);
+    max-width: 0;
   }
   100% {
-    transform: scaleX(1);
+    max-width: 1.2em;
   }
 }
 
-/* Streaming caret */
 .synapse-stream-cursor::after {
   content: "█";
   margin-left: 1px;
@@ -130,87 +61,45 @@
   }
 }
 
-@keyframes synapse-panel-in {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes synapse-msg-in {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes synapse-status-in {
-  from {
-    opacity: 0;
-    transform: translateY(3px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes synapse-input-glow {
-  0% {
-    background-position: 100% 0;
-  }
-  100% {
-    background-position: -100% 0;
-  }
-}
-
-/* Skeleton shimmer */
 .synapse-chat-skeleton {
   background: linear-gradient(
     90deg,
-    #f0eef8 0%,
-    #f7f5fc 45%,
-    #f0eef8 90%
+    var(--muted) 0%,
+    var(--accent) 45%,
+    var(--muted) 90%
   );
   background-size: 200% 100%;
-  animation: synapse-shimmer 1.4s ease-in-out infinite;
 }
 
-@keyframes synapse-shimmer {
-  0% {
-    background-position: 100% 0;
-  }
-  100% {
-    background-position: -100% 0;
-  }
+.theme-instrument:not(.theme-light) .synapse-chat-panel {
+  background: var(--card);
+  border-color: var(--border);
+  box-shadow: 0 18px 50px -18px rgb(0 0 0 / 55%);
+}
+
+.theme-instrument:not(.theme-light) .synapse-chat-panel .bg-white,
+.theme-instrument:not(.theme-light) .synapse-chat-panel [class*="bg-white"] {
+  background-color: var(--card) !important;
+}
+
+.theme-instrument:not(.theme-light) .synapse-chat-chip {
+  color: var(--foreground);
+  background-color: var(--card);
+  border-color: var(--border);
+}
+
+.theme-instrument:not(.theme-light) .synapse-chat-chip:hover:not(:disabled) {
+  background-color: var(--accent);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .synapse-chat-panel,
-  .synapse-chat-msg,
-  .synapse-chat-composer--typing::before,
   .synapse-thinking-dots::after,
-  .synapse-stream-cursor::after,
-  .synapse-chat-skeleton,
-  .motion-safe\:animate-\[synapse-status-in_220ms_ease-out\] {
+  .synapse-stream-cursor::after {
     animation: none !important;
   }
 
-  .synapse-chat-chip:hover:not(:disabled),
-  .synapse-chat-send:hover:not(:disabled) {
-    transform: none;
-  }
-
   .synapse-thinking-dots::after {
-    transform: none;
+    max-width: 1.2em;
   }
 
   .synapse-stream-cursor::after {

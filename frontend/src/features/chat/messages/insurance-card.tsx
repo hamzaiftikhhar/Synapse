@@ -24,7 +24,7 @@ export function InsuranceCard({
       className={cn(
         "w-full rounded-lg border p-2.5 text-left transition-colors",
         accepted
-          ? "border-border bg-white hover:border-primary/30 hover:bg-accent/40"
+          ? "border-border bg-card hover:border-primary/30 hover:bg-accent/40"
           : "border-destructive/20 bg-destructive/5 opacity-80"
       )}
     >
@@ -71,7 +71,7 @@ export function InsuranceCards({
 
   if (selected) {
     return (
-      <ChatInlineCard className="rounded-[18px] border border-border/80 bg-white p-3 shadow-[0_2px_12px_rgb(11_14_46/0.06)]">
+      <ChatInlineCard className="rounded-[18px] border border-border/80 bg-card p-3 shadow-[0_2px_12px_rgb(11_14_46/0.06)]">
         <div className="flex items-start gap-2.5">
           <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
             <Check className="size-3.5" strokeWidth={2.5} />

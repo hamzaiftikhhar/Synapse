@@ -30,7 +30,7 @@ export function BookingInlineCard({
   return (
     <ChatInlineCard
       className={cn(
-        "overflow-hidden rounded-[18px] border border-border/80 bg-white shadow-[0_2px_12px_rgb(11_14_46/0.06)]",
+        "overflow-hidden rounded-[18px] border border-border/80 bg-card shadow-sm",
         !active && "opacity-90"
       )}
     >

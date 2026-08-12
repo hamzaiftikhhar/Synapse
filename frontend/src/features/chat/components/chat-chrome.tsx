@@ -43,7 +43,7 @@ export function ChatHeader({
   const title = clinicName ? `${clinicName} Assistant` : "Synapse Assistant";
 
   return (
-    <div className="shrink-0 border-b border-border/70 bg-white px-4 py-3.5">
+    <div className="shrink-0 border-b border-border/70 bg-card px-4 py-3.5">
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-start gap-3">
           <RobotAvatar size="md" className="mt-0.5 rounded-full bg-primary shadow-sm" />
@@ -106,7 +106,7 @@ export function ChatHeader({
 
           {menuOpen ? (
             <div
-              className="absolute right-0 top-full z-20 mt-1 min-w-[148px] origin-top-right rounded-xl border border-border bg-white p-1 shadow-lg"
+              className="absolute right-0 top-full z-20 mt-1 min-w-[148px] origin-top-right rounded-xl border border-border bg-popover p-1 shadow-lg"
               style={{
                 animation: "synapse-panel-in 200ms ease-out both",
               }}
