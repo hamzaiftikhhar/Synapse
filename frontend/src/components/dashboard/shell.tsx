@@ -1,3 +1,5 @@
+import type { LucideIcon } from "lucide-react";
+import { Inbox } from "lucide-react";
 import type { ReactNode } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
@@ -31,14 +33,19 @@ export function EmptyState({
   title,
   description,
   action,
+  icon: Icon = Inbox,
 }: {
   title: string;
   description?: string;
   action?: ReactNode;
+  icon?: LucideIcon;
 }) {
   return (
     <div className="flex flex-col items-center justify-center px-6 py-16 text-center">
-      <p className="text-sm font-medium text-navy">{title}</p>
+      <div className="flex size-11 items-center justify-center rounded-full bg-muted text-muted-foreground">
+        <Icon className="size-5" />
+      </div>
+      <p className="mt-3 text-sm font-medium text-navy">{title}</p>
       {description ? (
         <p className="mt-1 max-w-sm text-sm text-muted-foreground">{description}</p>
       ) : null}

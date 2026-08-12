@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { LogOut, Menu, User } from "lucide-react";
+import { LogOut, Menu } from "lucide-react";
 import { useState } from "react";
 import {
   DropdownMenu,
@@ -29,7 +29,7 @@ export function DashboardTopbar() {
   }
 
   return (
-    <header className="flex h-14 items-center justify-between border-b border-border bg-sidebar px-4 lg:px-6">
+    <header className="sticky top-0 z-10 flex h-14 items-center justify-between border-b border-border bg-sidebar/80 px-4 backdrop-blur-md lg:px-6">
       <div className="flex items-center gap-2">
         <Sheet open={open} onOpenChange={setOpen}>
           <SheetTrigger
@@ -38,7 +38,7 @@ export function DashboardTopbar() {
           >
             <Menu className="size-4" />
           </SheetTrigger>
-          <SheetContent side="left" className="w-60 p-0">
+          <SheetContent side="left" className="w-64 p-0">
             <DashboardSidebar onNavigate={() => setOpen(false)} />
           </SheetContent>
         </Sheet>
@@ -63,8 +63,10 @@ export function DashboardTopbar() {
       <div className="flex items-center gap-1">
         <ThemeToggle />
         <DropdownMenu>
-          <DropdownMenuTrigger className="inline-flex h-8 items-center gap-2 rounded-full border border-border bg-background px-3 text-sm hover:bg-muted">
-            <User className="size-3.5" />
+          <DropdownMenuTrigger className="inline-flex h-8 items-center gap-2 rounded-full border border-border bg-background py-1 pr-3 pl-1 text-sm transition-colors hover:bg-muted">
+            <span className="flex size-6 items-center justify-center rounded-full bg-primary text-[11px] font-semibold text-primary-foreground">
+              {(user?.first_name?.[0] || user?.email?.[0] || "?").toUpperCase()}
+            </span>
             <span className="hidden sm:inline">
               {user?.first_name || user?.email}
             </span>
