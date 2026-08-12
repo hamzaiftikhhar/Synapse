@@ -6,7 +6,7 @@ const PLANS = [
   {
     slug: "starter",
     name: "Starter",
-    price: "$299",
+    price: "$29",
     featured: false,
     items: ["1 clinic tenant", "Staff portal", "Chatbot embed", "Core CRUD APIs"],
     cta: "Get Started",
@@ -15,7 +15,7 @@ const PLANS = [
   {
     slug: "growth",
     name: "Growth",
-    price: "$699",
+    price: "$49",
     featured: true,
     items: ["Higher chat volume", "Knowledge base", "Staff QA console", "Priority onboarding"],
     cta: "Get Started",

@@ -382,12 +382,12 @@ export default function LandingPage() {
             {[
               {
                 name: "Starter",
-                price: "$299",
+                price: "$29",
                 desc: "1 clinic · chatbot · core ops",
               },
               {
                 name: "Growth",
-                price: "$699",
+                price: "$49",
                 desc: "Higher volume · knowledge · QA tools",
                 featured: true,
               },
