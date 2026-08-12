@@ -88,6 +88,7 @@ class ClinicStaff(models.Model):
 class StaffAuthTokenPurpose(models.TextChoices):
     EMAIL_VERIFY = "email_verify", "Email verification"
     PASSWORD_RESET = "password_reset", "Password reset"
+    INVITE = "invite", "Clinic owner invitation"
 
 
 class StaffAuthToken(models.Model):
@@ -158,6 +159,12 @@ class AuditAction(models.TextChoices):
     APPOINTMENT_CANCEL = "appointment_cancel", "Appointment cancel"
     INSURANCE_UPDATE = "insurance_update", "Insurance update"
     TENANT_SELECT = "tenant_select", "Tenant select"
+    SUBSCRIPTION_CHECKOUT_STARTED = "subscription_checkout_started", "Subscription checkout started"
+    SUBSCRIPTION_CANCEL_REQUESTED = "subscription_cancel_requested", "Subscription cancel requested"
+    SUBSCRIPTION_CHANGE_REQUESTED = "subscription_change_requested", "Subscription change requested"
+    APPLICATION_APPROVED = "application_approved", "Clinic application approved"
+    APPLICATION_REJECTED = "application_rejected", "Clinic application rejected"
+    INVITE_ACCEPTED = "invite_accepted", "Invitation accepted"
 
 
 class AuditLog(models.Model):

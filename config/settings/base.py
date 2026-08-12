@@ -55,6 +55,7 @@ LOCAL_APPS = [
     "apps.ai.apps.AiConfig",
     "apps.widget.apps.WidgetConfig",
     "apps.notifications.apps.NotificationsConfig",
+    "apps.billing.apps.BillingConfig",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -185,6 +186,12 @@ TWILIO_AUTH_TOKEN = env("TWILIO_AUTH_TOKEN", default="")
 TWILIO_FROM_NUMBER = env("TWILIO_FROM_NUMBER", default="")
 OTP_CODE_LENGTH = env.int("OTP_CODE_LENGTH", default=6)
 OTP_EXPIRE_MINUTES = env.int("OTP_EXPIRE_MINUTES", default=10)
+
+# Paddle Billing — SaaS subscriptions (clinic owner → plan). Sandbox by
+# default so local/dev/test never accidentally talk to live Paddle.
+PADDLE_ENVIRONMENT = env("PADDLE_ENVIRONMENT", default="sandbox")  # "sandbox" | "live"
+PADDLE_API_KEY = env("PADDLE_API_KEY", default="")
+PADDLE_WEBHOOK_SECRET = env("PADDLE_WEBHOOK_SECRET", default="")
 
 # Frontend / email
 FRONTEND_URL = env("FRONTEND_URL", default="http://localhost:3000")

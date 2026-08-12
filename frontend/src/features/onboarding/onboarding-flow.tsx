@@ -2,6 +2,7 @@
 
 import { OnboardingShell } from "./onboarding-shell";
 import { AvailabilityStep } from "./steps/availability-step";
+import { BillingStep } from "./steps/billing-step";
 import { BookingStep } from "./steps/booking-step";
 import { CatalogStep } from "./steps/catalog-step";
 import { ClinicStep } from "./steps/clinic-step";
@@ -45,6 +46,10 @@ const STEP_COPY: Record<string, { title: string; subtitle: string }> = {
     title: "You're almost ready",
     subtitle: "Review your setup before we activate your clinic.",
   },
+  billing: {
+    title: "Activate your Synapse plan",
+    subtitle: "One last step — payment activates your clinic's subscription.",
+  },
 };
 
 export function OnboardingFlow() {
@@ -61,6 +66,20 @@ export function OnboardingFlow() {
         hideFooter
       >
         <ReviewStep onGoToStep={goTo} />
+      </OnboardingShell>
+    );
+  }
+
+  if (stepSlug === "billing") {
+    return (
+      <OnboardingShell
+        stageIndex={stageIndex}
+        title={copy.title}
+        subtitle={copy.subtitle}
+        onBack={goBack}
+        hideFooter
+      >
+        <BillingStep />
       </OnboardingShell>
     );
   }

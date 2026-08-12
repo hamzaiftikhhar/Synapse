@@ -5,6 +5,7 @@ import {
   appointmentsService,
   type AppointmentListParams,
   authService,
+  billingService,
   bookingService,
   chatService,
   clinicsService,
@@ -20,7 +21,10 @@ import type {
   AppointmentInput,
   AppointmentUpdateInput,
   BusinessHourInput,
+  CancelSubscriptionInput,
+  ChangePlanInput,
   ChatMessageInput,
+  CheckoutInput,
   ClinicProfileUpdateInput,
   DocumentUpdateInput,
   DoctorInput,
@@ -66,6 +70,8 @@ export const queryKeys = {
   businessHours: ["business-hours"] as const,
   widgetSettings: ["widget-settings"] as const,
   onboardingStatus: ["onboarding-status"] as const,
+  billingPlans: ["billing-plans"] as const,
+  billingSubscription: ["billing-subscription"] as const,
 };
 
 export function useMe(enabled = true) {
@@ -545,5 +551,44 @@ export function useBookingConfirm() {
   return useMutation({
     mutationFn: (input: import("@/types/api").BookingConfirmInput) =>
       bookingService.confirm(input),
+  });
+}
+
+/* ─── Billing (Paddle) ─────────────────────────────────────── */
+
+export function usePlans() {
+  return useQuery({
+    queryKey: queryKeys.billingPlans,
+    queryFn: () => billingService.listPlans(),
+  });
+}
+
+export function useSubscription() {
+  return useQuery({
+    queryKey: queryKeys.billingSubscription,
+    queryFn: () => billingService.getSubscription(),
+  });
+}
+
+export function useCreateCheckout() {
+  return useMutation({
+    mutationFn: (input: CheckoutInput) => billingService.createCheckout(input),
+  });
+}
+
+export function useCancelSubscription() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CancelSubscriptionInput) =>
+      billingService.cancelSubscription(input),
+    onSuccess: (data) => qc.setQueryData(queryKeys.billingSubscription, data),
+  });
+}
+
+export function useChangePlan() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: ChangePlanInput) => billingService.changePlan(input),
+    onSuccess: (data) => qc.setQueryData(queryKeys.billingSubscription, data),
   });
 }

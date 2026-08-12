@@ -229,6 +229,11 @@ export type StaffRegisterInput = {
   last_name?: string;
 };
 
+export type AcceptInviteInput = {
+  token: string;
+  password: string;
+};
+
 export type MessageOut = {
   message?: string;
   detail?: string;
@@ -652,4 +657,104 @@ export type ListParams = {
   offset?: number;
   is_active?: boolean;
   include_deleted?: boolean;
+};
+
+/* ─── Billing (Paddle) ──────────────────────────────────────── */
+
+export type SubscriptionStatus =
+  | "incomplete"
+  | "trialing"
+  | "active"
+  | "past_due"
+  | "paused"
+  | "canceled";
+
+export type Plan = {
+  id: string;
+  slug: string;
+  name: string;
+  billing_interval: "month" | "year";
+  display_price_cents: number | null;
+  display_currency: string;
+};
+
+export type Subscription = {
+  status: SubscriptionStatus;
+  plan: Plan | null;
+  current_period_start: string | null;
+  current_period_end: string | null;
+  cancel_at_period_end: boolean;
+  canceled_at: string | null;
+  has_access: boolean;
+};
+
+export type CheckoutInput = {
+  plan_slug: string;
+};
+
+export type CheckoutResponse = {
+  paddle_environment: "sandbox" | "live";
+  paddle_price_id: string;
+  paddle_customer_id: string;
+};
+
+export type CancelSubscriptionInput = {
+  at_period_end: boolean;
+};
+
+export type ChangePlanInput = {
+  plan_slug: string;
+};
+
+/* ─── Clinic applications (Get Started intake) ─────────────────── */
+
+export type ClinicApplicationStatus =
+  | "pending"
+  | "reviewing"
+  | "approved"
+  | "rejected"
+  | "converted";
+
+export type ClinicApplicationInput = {
+  clinic_name: string;
+  owner_name: string;
+  work_email: string;
+  phone?: string;
+  website?: string;
+  num_doctors?: number | null;
+  current_scheduling_system?: string;
+  plan_slug: string;
+  notes?: string;
+};
+
+export type ClinicApplicationSubmitResponse = {
+  id: string;
+  status: ClinicApplicationStatus;
+  created_at: string;
+};
+
+export type ClinicApplication = {
+  id: string;
+  clinic_name: string;
+  owner_name: string;
+  work_email: string;
+  phone: string;
+  website: string;
+  num_doctors: number | null;
+  current_scheduling_system: string;
+  notes: string;
+  plan_slug: string;
+  status: ClinicApplicationStatus;
+  rejection_reason: string;
+  converted_clinic_id: string | null;
+  created_at: string;
+};
+
+export type RejectApplicationInput = {
+  reason?: string;
+};
+
+export type ApplicationActionResponse = {
+  application: ClinicApplication;
+  clinic: Clinic | null;
 };

@@ -81,12 +81,24 @@ export function ReviewStep({
   const ready = Boolean(status?.ready);
 
   async function onFinish() {
+    let updated;
     try {
-      await complete.mutateAsync();
+      updated = await complete.mutateAsync();
     } catch (err) {
       toast.error(getApiErrorMessage(err));
       return;
     }
+
+    // A clinic provisioned from a paid application isn't activated by the
+    // checklist alone — the backend leaves it in onboarding and points the
+    // resume cursor at "billing" instead (see apps/api/clinics/router.py
+    // complete_onboarding). Continue into the wizard's payment step rather
+    // than trying to leave onboarding.
+    if (updated.status !== "active") {
+      onGoToStep("billing");
+      return;
+    }
+
     // Completion succeeded server-side at this point — refreshMe() itself
     // never throws (it deliberately swallows transient failures elsewhere
     // so a network blip doesn't log someone out), so success has to be read

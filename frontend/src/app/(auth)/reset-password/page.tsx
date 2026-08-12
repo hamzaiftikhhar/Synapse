@@ -78,7 +78,7 @@ function ResetPasswordInner() {
               required
             />
           </div>
-          <Button className="w-full rounded-[6px]" disabled={submitting || !token}>
+          <Button type="submit" className="w-full rounded-[6px]" disabled={submitting || !token}>
             {submitting ? "Saving…" : "Update password"}
           </Button>
         </form>

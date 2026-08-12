@@ -53,6 +53,36 @@ class NotificationService:
         )
 
     @classmethod
+    def send_clinic_owner_invite_email(
+        cls, *, to: str, token: str, clinic_name: str, first_name: str = ""
+    ) -> None:
+        base = getattr(settings, "FRONTEND_URL", "http://localhost:3000").rstrip("/")
+        link = f"{base}/accept-invite?token={token}"
+        name = first_name or "there"
+        cls.send_email(
+            to=to,
+            subject=f"Your Synapse workspace for {clinic_name} is ready",
+            body=(
+                f"Hi {name},\n\n"
+                f"Your Synapse clinic workspace for {clinic_name} is ready. "
+                f"Set up your account to get started:\n\n{link}\n\n"
+                f"This link expires in 7 days and can only be used once.\n"
+            ),
+        )
+
+    @classmethod
+    def send_application_received_email(cls, *, to: str, clinic_name: str) -> None:
+        cls.send_email(
+            to=to,
+            subject="We received your Synapse application",
+            body=(
+                f"Thanks for applying for Synapse on behalf of {clinic_name}.\n\n"
+                f"Our team will review your details and reach out shortly to "
+                f"prepare your workspace.\n"
+            ),
+        )
+
+    @classmethod
     def send_patient_otp_email(cls, *, to: str, code: str, clinic_name: str = "the clinic") -> None:
         cls.send_email(
             to=to,

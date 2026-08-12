@@ -9,6 +9,7 @@ import {
   BriefcaseMedical,
   Building2,
   Calendar,
+  ClipboardList,
   Clock,
   CreditCard,
   LayoutDashboard,
@@ -28,6 +29,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 const ICONS: Record<string, LucideIcon> = {
   LayoutDashboard,
   Building2,
+  ClipboardList,
   Stethoscope,
   BriefcaseMedical,
   Tags,

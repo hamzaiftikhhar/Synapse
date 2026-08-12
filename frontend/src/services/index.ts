@@ -61,6 +61,13 @@ export const authService = {
     else if (data.clinic?.slug) setActiveTenant(data.clinic.slug);
     return data;
   },
+  async acceptInvite(input: import("@/types/api").AcceptInviteInput) {
+    const { data } = await api.post<StaffTokenResponse>("/auth/accept-invite", input);
+    persistStaffTokens(data.access_token, data.refresh_token, true);
+    if (data.tenant) setActiveTenant(data.tenant);
+    else if (data.clinic?.slug) setActiveTenant(data.clinic.slug);
+    return data;
+  },
   async register(input: StaffRegisterInput) {
     const { data } = await api.post<MessageOut>("/auth/register", input);
     return data;
@@ -192,6 +199,33 @@ export const platformService = {
   },
   async patchClinic(id: string, input: { status?: string; name?: string }) {
     const { data } = await api.patch(`/platform/clinics/${id}`, input);
+    return data;
+  },
+  async listApplications(status = "") {
+    const { data } = await api.get<import("@/types/api").ClinicApplication[]>(
+      "/platform/applications",
+      { params: status ? { status } : undefined }
+    );
+    return data;
+  },
+  async getApplication(id: string) {
+    const { data } = await api.get<import("@/types/api").ClinicApplication>(
+      `/platform/applications/${id}`
+    );
+    return data;
+  },
+  async approveApplication(id: string, slug?: string) {
+    const { data } = await api.post<import("@/types/api").ApplicationActionResponse>(
+      `/platform/applications/${id}/approve`,
+      { slug: slug || null }
+    );
+    return data;
+  },
+  async rejectApplication(id: string, input: import("@/types/api").RejectApplicationInput) {
+    const { data } = await api.post<import("@/types/api").ClinicApplication>(
+      `/platform/applications/${id}/reject`,
+      input
+    );
     return data;
   },
 };
@@ -476,6 +510,54 @@ export const clinicsService = {
   },
   async completeOnboarding() {
     const { data } = await api.post<ClinicProfile>("/clinics/me/onboarding/complete");
+    return data;
+  },
+};
+
+/* ─── Billing (Paddle) ─────────────────────────────────────── */
+
+export const billingService = {
+  async listPlans() {
+    const { data } = await api.get<import("@/types/api").Plan[]>("/billing/plans");
+    return data;
+  },
+  async getSubscription() {
+    const { data } = await api.get<import("@/types/api").Subscription>(
+      "/billing/subscription"
+    );
+    return data;
+  },
+  async createCheckout(input: import("@/types/api").CheckoutInput) {
+    const { data } = await api.post<import("@/types/api").CheckoutResponse>(
+      "/billing/checkout",
+      input
+    );
+    return data;
+  },
+  async cancelSubscription(input: import("@/types/api").CancelSubscriptionInput) {
+    const { data } = await api.post<import("@/types/api").Subscription>(
+      "/billing/subscription/cancel",
+      input
+    );
+    return data;
+  },
+  async changePlan(input: import("@/types/api").ChangePlanInput) {
+    const { data } = await api.post<import("@/types/api").Subscription>(
+      "/billing/subscription/change-plan",
+      input
+    );
+    return data;
+  },
+};
+
+/* ─── Clinic applications (public "Get Started" intake) ───────── */
+
+export const applicationsService = {
+  async submit(input: import("@/types/api").ClinicApplicationInput) {
+    const { data } = await api.post<import("@/types/api").ClinicApplicationSubmitResponse>(
+      "/applications",
+      input
+    );
     return data;
   },
 };

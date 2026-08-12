@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -9,12 +10,18 @@ import { Textarea } from "@/components/ui/textarea";
 
 export default function ContactPage() {
   const [pending, setPending] = useState(false);
+  const isEnterprise = useSearchParams().get("interest") === "enterprise";
 
   return (
     <div className="mx-auto max-w-xl px-4 py-20 sm:px-6">
-      <h1 className="text-4xl font-semibold tracking-tight text-navy">Book a demo</h1>
+      <h1 className="text-4xl font-semibold tracking-tight text-navy">
+        {isEnterprise ? "Talk to us about Enterprise" : "Book a demo"}
+      </h1>
       <p className="mt-3 text-muted-foreground">
-        Tell us about your clinic. {/* TODO: Backend endpoint required — POST /contact */}
+        {isEnterprise
+          ? "Tell us about your clinics and requirements — our team will follow up to scope a custom plan."
+          : "Tell us about your clinic."}{" "}
+        {/* TODO: Backend endpoint required — POST /contact */}
         This form is UI-only until a contact API exists.
       </p>
       <form

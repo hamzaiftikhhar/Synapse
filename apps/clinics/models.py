@@ -80,3 +80,64 @@ class ClinicBusinessHours(TenantModel, TimestampedModel):
 
     def __str__(self) -> str:
         return f"{self.clinic} — day {self.day_of_week}"
+
+
+class ClinicApplicationStatus(models.TextChoices):
+    PENDING = "pending", "Pending"
+    REVIEWING = "reviewing", "Reviewing"
+    APPROVED = "approved", "Approved"
+    REJECTED = "rejected", "Rejected"
+    CONVERTED = "converted", "Converted"
+
+
+class ClinicApplication(UUIDModel, TimestampedModel):
+    """A prospective clinic's self-serve "Get Started" submission — the
+    pre-tenant intake record. Never the tenant itself; Super Admin review
+    turns an approved application into a real Clinic + owner ClinicStaff
+    + Subscription (see apps/api/platform/router.py `approve_application`).
+    """
+
+    clinic_name = models.CharField(max_length=255)
+    owner_name = models.CharField(max_length=255)
+    work_email = models.EmailField()
+    phone = models.CharField(max_length=20, blank=True, default="")
+    website = models.CharField(max_length=255, blank=True, default="")
+    num_doctors = models.PositiveSmallIntegerField(null=True, blank=True)
+    current_scheduling_system = models.CharField(max_length=255, blank=True, default="")
+    notes = models.TextField(blank=True, default="")
+    # The Plan slug requested at submission time (apps.billing.models.Plan) —
+    # stored as a slug, not a FK, so this pre-tenant model never depends on
+    # the billing app; resolved to a real Plan only at approval time.
+    plan_slug = models.CharField(max_length=64)
+
+    status = models.CharField(
+        max_length=16,
+        choices=ClinicApplicationStatus.choices,
+        default=ClinicApplicationStatus.PENDING,
+    )
+    reviewed_by = models.ForeignKey(
+        "accounts.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="reviewed_clinic_applications",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    rejection_reason = models.CharField(max_length=500, blank=True, default="")
+    converted_clinic = models.ForeignKey(
+        "clinics.Clinic",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="source_application",
+    )
+
+    class Meta:
+        db_table = "clinic_applications"
+        indexes = [
+            models.Index(fields=["status", "created_at"]),
+            models.Index(fields=["work_email"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.clinic_name} ({self.status})"

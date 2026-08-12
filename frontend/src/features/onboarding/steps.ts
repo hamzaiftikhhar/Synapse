@@ -25,6 +25,10 @@ export const ONBOARDING_STEPS = [
   { slug: "availability", stage: "availability" },
   { slug: "booking", stage: "booking" },
   { slug: "review", stage: "review" },
+  // Only ever reached when this clinic has a pending paid plan (provisioned
+  // from a Get Started application) — complete_onboarding() routes here
+  // instead of activating immediately. Plain self-serve clinics skip it.
+  { slug: "billing", stage: "review" },
 ] as const satisfies ReadonlyArray<{ slug: string; stage: OnboardingStageKey }>;
 
 export type OnboardingStepSlug = (typeof ONBOARDING_STEPS)[number]["slug"];

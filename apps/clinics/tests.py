@@ -259,3 +259,64 @@ class OnboardingStatusTests(TestCase):
     def test_unauthenticated_request_rejected(self):
         resp = self.client.get("/api/v1/clinics/me/onboarding-status")
         self.assertEqual(resp.status_code, 401)
+
+
+class OnboardingBillingGateTests(TestCase):
+    """A clinic provisioned from a paid application must not go `active`
+    on checklist-completion alone — it waits for a verified Paddle webhook
+    (see apps/billing/services/activation.py). Plain self-serve clinics
+    (no Subscription row) keep the original immediate-activation behavior,
+    covered by OnboardingStatusTests above."""
+
+    def setUp(self):
+        self.user, self.clinic, self.headers = make_clinic_admin(
+            email="owner@paid.test", clinic_slug="paid-clinic", clinic_name="Paid Clinic"
+        )
+        self.clinic.clinic_type = "dermatology"
+        self.clinic.phone = "555-0100"
+        self.clinic.address = {
+            "line1": "1 Main St", "city": "New York", "state": "NY",
+            "postal_code": "10001", "country": "US",
+        }
+        self.clinic.save()
+        doctor = Doctor.objects.create(clinic=self.clinic, full_name="Dr. Ready")
+        Service.objects.create(clinic=self.clinic, name="Consultation", duration_min=30)
+        ClinicBusinessHours.objects.create(
+            clinic=self.clinic, day_of_week=0, open_time="09:00", close_time="17:00"
+        )
+        DoctorSchedule.objects.create(
+            clinic=self.clinic, doctor=doctor, day_of_week=0,
+            start_time="09:00", end_time="17:00",
+        )
+
+    def test_complete_with_pending_subscription_stays_onboarding(self):
+        from apps.billing.models import Plan, Subscription
+
+        plan = Plan.objects.create(slug="starter", name="Starter")
+        Subscription.objects.create(clinic=self.clinic, plan=plan)  # default: INCOMPLETE
+
+        resp = self.client.post(
+            "/api/v1/clinics/me/onboarding/complete", headers=self.headers
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["status"], "onboarding")
+        self.assertEqual(resp.json()["onboarding_step"], "billing")
+        self.clinic.refresh_from_db()
+        self.assertEqual(self.clinic.status, ClinicStatus.ONBOARDING)
+        self.assertIsNone(self.clinic.onboarding_completed_at)
+
+    def test_complete_with_already_active_subscription_activates_immediately(self):
+        from apps.billing.models import Plan, Subscription, SubscriptionStatus
+
+        plan = Plan.objects.create(slug="starter", name="Starter")
+        Subscription.objects.create(
+            clinic=self.clinic, plan=plan, status=SubscriptionStatus.ACTIVE
+        )
+
+        resp = self.client.post(
+            "/api/v1/clinics/me/onboarding/complete", headers=self.headers
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["status"], "active")
+        self.clinic.refresh_from_db()
+        self.assertEqual(self.clinic.status, ClinicStatus.ACTIVE)

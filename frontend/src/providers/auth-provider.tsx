@@ -15,7 +15,7 @@ import { clearStaffTokens, getActiveTenant, setActiveTenant } from "@/lib/api/cl
 import { STORAGE_KEYS } from "@/constants";
 import { authService } from "@/services";
 import { queryKeys } from "@/hooks/api";
-import type { Clinic, StaffLoginInput, Tenant, User } from "@/types/api";
+import type { AcceptInviteInput, Clinic, StaffLoginInput, Tenant, User } from "@/types/api";
 
 type AuthState = {
   user: User | null;
@@ -29,6 +29,9 @@ type AuthState = {
     input: StaffLoginInput,
     remember?: boolean
   ) => Promise<Awaited<ReturnType<typeof authService.login>>>;
+  acceptInvite: (
+    input: AcceptInviteInput
+  ) => Promise<Awaited<ReturnType<typeof authService.acceptInvite>>>;
   logout: () => void;
   /** Resolves `true` only if this call actually fetched and applied fresh
    * state — `false` covers both "no token" and "request failed", in which
@@ -150,6 +153,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [qc]
   );
 
+  const acceptInvite = useCallback(
+    async (input: AcceptInviteInput) => {
+      const data = await authService.acceptInvite(input);
+      applyTokenResponse(data, {
+        setUser,
+        setClinic,
+        setTenant,
+        setTenants,
+        setCanExitClinic,
+      });
+      qc.setQueryData(queryKeys.me, {
+        user: data.user,
+        clinic: data.clinic,
+        tenant: data.tenant,
+        tenants: data.tenants ?? [],
+        can_exit_clinic: false,
+      });
+      return data;
+    },
+    [qc]
+  );
+
   const selectTenant = useCallback(async (slug: string) => {
     const data = await authService.selectTenant(slug);
     applyTokenResponse(data, {
@@ -217,6 +242,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isLoading,
       isAuthenticated: Boolean(user),
       login,
+      acceptInvite,
       logout,
       refreshMe,
       selectTenant,
@@ -231,6 +257,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       canExitClinic,
       isLoading,
       login,
+      acceptInvite,
       logout,
       refreshMe,
       selectTenant,

@@ -39,6 +39,11 @@ class ResetPasswordIn(Schema):
     password: str
 
 
+class AcceptInviteIn(Schema):
+    token: str
+    password: str
+
+
 class ChangePasswordIn(Schema):
     current_password: str
     new_password: str

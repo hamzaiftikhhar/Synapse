@@ -32,6 +32,7 @@ from apps.api.auth.jwt import (
     decode_staff_token,
 )
 from apps.api.auth.schemas import (
+    AcceptInviteIn,
     ChangePasswordIn,
     ClinicOut,
     CreateClinicIn,
@@ -264,6 +265,48 @@ def reset_password(request, payload: ResetPasswordIn):
         ip_address=client_ip(request),
     )
     return MessageOut(message="Password updated. You can sign in.")
+
+
+@router.post("/accept-invite", response=StaffTokenOut, auth=None)
+def accept_invite(request, payload: AcceptInviteIn):
+    """Owner accepts a clinic invitation (apps/api/platform/router.py
+    `approve_application`) — sets their own password, activates the account,
+    and auto-logs them in scoped to the clinic they were invited to. Unlike
+    the old owner_email/ChangeMe123! shortcut in `create_clinic`, this user
+    is never active with a placeholder password until they complete this."""
+    _validate_password(payload.password)
+    token_hash = StaffAuthToken.hash_token(payload.token.strip())
+    row = (
+        StaffAuthToken.objects.select_related("user")
+        .filter(token_hash=token_hash, purpose=StaffAuthTokenPurpose.INVITE)
+        .first()
+    )
+    if row is None or not row.is_valid:
+        raise HttpError(400, "Invalid or expired invitation link")
+
+    user = row.user
+    user.set_password(payload.password)
+    user.is_active = True
+    if not user.email_verified_at:
+        user.email_verified_at = timezone.now()
+    user.save(update_fields=["password", "is_active", "email_verified_at"])
+    row.mark_used()
+
+    membership = (
+        ClinicStaff.objects.select_related("clinic")
+        .filter(user=user, is_active=True)
+        .order_by("-created_at")
+        .first()
+    )
+    clinic = membership.clinic if membership else None
+
+    write_audit(
+        action=AuditAction.INVITE_ACCEPTED,
+        actor=user,
+        clinic=clinic,
+        ip_address=client_ip(request),
+    )
+    return _issue_tokens(user=user, clinic=clinic)
 
 
 @router.post("/change-password", response=MessageOut, auth=staff_jwt_auth)

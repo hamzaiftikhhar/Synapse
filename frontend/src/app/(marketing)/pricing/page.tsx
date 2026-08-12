@@ -4,22 +4,31 @@ export const metadata = { title: "Pricing" };
 
 const PLANS = [
   {
+    slug: "starter",
     name: "Starter",
     price: "$299",
     featured: false,
     items: ["1 clinic tenant", "Staff portal", "Chatbot embed", "Core CRUD APIs"],
+    cta: "Get Started",
+    href: "/get-started?plan=starter",
   },
   {
+    slug: "growth",
     name: "Growth",
     price: "$699",
     featured: true,
     items: ["Higher chat volume", "Knowledge base", "Staff QA console", "Priority onboarding"],
+    cta: "Get Started",
+    href: "/get-started?plan=growth",
   },
   {
+    slug: "enterprise",
     name: "Enterprise",
     price: "Custom",
     featured: false,
     items: ["Multi-location", "Custom SLAs", "Security review", "Dedicated success"],
+    cta: "Talk to Us",
+    href: "/contact?interest=enterprise",
   },
 ];
 
@@ -30,7 +39,8 @@ export default function PricingPage() {
         Pricing that scales with your clinics
       </h1>
       <p className="mx-auto mt-3 max-w-lg text-center text-muted-foreground">
-        Transparent monthly plans. Billing APIs are forthcoming — contact us to start.
+        Transparent monthly plans. Starter and Growth activate in days — our
+        team prepares your workspace, then you complete setup and payment.
       </p>
       <div className="mt-12 grid gap-4 md:grid-cols-3">
         {PLANS.map((p) => (
@@ -53,17 +63,14 @@ export default function PricingPage() {
               ))}
             </ul>
             <Link
-              href="/contact"
+              href={p.href}
               className="mt-6 inline-flex h-9 w-full items-center justify-center rounded-[6px] bg-navy text-sm font-medium text-white"
             >
-              Talk to sales
+              {p.cta}
             </Link>
           </div>
         ))}
       </div>
-      <p className="mt-8 text-center text-xs text-muted-foreground">
-        TODO: Backend endpoint required for self-serve billing checkout.
-      </p>
     </div>
   );
 }

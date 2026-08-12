@@ -3,7 +3,9 @@
 from django.conf import settings
 from ninja import NinjaAPI
 
+from apps.api.applications.router import router as applications_router
 from apps.api.appointments.router import router as appointments_router
+from apps.api.billing.router import router as billing_router
 from apps.api.auth.patient_router import router as patient_auth_router
 from apps.api.widget.router import router as widget_public_router
 from apps.api.widget.booking_router import router as widget_booking_router
@@ -47,6 +49,8 @@ api.add_router("/services", services_router)
 api.add_router("/specialties", specialties_router)
 api.add_router("/insurance", insurance_router)
 api.add_router("/appointments", appointments_router)
+api.add_router("/billing", billing_router)
+api.add_router("/applications", applications_router)
 
 if settings.DEBUG:
     from apps.api.debug.router import router as debug_router

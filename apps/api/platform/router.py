@@ -17,7 +17,7 @@ from apps.accounts.services.audit import write_audit
 from apps.api.auth.deps import client_ip, require_super_admin, staff_jwt_auth
 from apps.api.auth.schemas import ClinicOut
 from apps.clinics.features import default_widget_configuration
-from apps.clinics.models import Clinic, ClinicStatus
+from apps.clinics.models import Clinic, ClinicApplication, ClinicApplicationStatus, ClinicStatus
 from apps.notifications.service import NotificationService
 
 router = Router(tags=["Platform — Super Admin"])
@@ -63,6 +63,57 @@ class PlatformOverviewOut(Schema):
     documents: int = 0
     staff_users: int = 0
     top_clinics_by_tokens: list[dict] = []
+
+
+class ClinicApplicationOut(Schema):
+    id: UUID
+    clinic_name: str
+    owner_name: str
+    work_email: str
+    phone: str
+    website: str
+    num_doctors: int | None = None
+    current_scheduling_system: str
+    notes: str
+    plan_slug: str
+    status: str
+    rejection_reason: str = ""
+    converted_clinic_id: UUID | None = None
+    created_at: str
+
+
+class ApproveApplicationIn(Schema):
+    # Auto-derived from clinic_name if omitted — override only if the
+    # applicant's name collides or needs adjusting before provisioning.
+    slug: str | None = None
+
+
+class RejectApplicationIn(Schema):
+    reason: str = ""
+
+
+class ApplicationActionOut(Schema):
+    application: ClinicApplicationOut
+    clinic: ClinicOut | None = None
+
+
+def _application_out(app: ClinicApplication) -> ClinicApplicationOut:
+    return ClinicApplicationOut(
+        id=app.id,
+        clinic_name=app.clinic_name,
+        owner_name=app.owner_name,
+        work_email=app.work_email,
+        phone=app.phone,
+        website=app.website,
+        num_doctors=app.num_doctors,
+        current_scheduling_system=app.current_scheduling_system,
+        notes=app.notes,
+        plan_slug=app.plan_slug,
+        status=app.status,
+        rejection_reason=app.rejection_reason,
+        converted_clinic_id=app.converted_clinic_id,
+        created_at=app.created_at.isoformat(),
+    )
 
 
 def _require_platform(request):
@@ -259,3 +310,158 @@ def patch_clinic(request, clinic_id: UUID, payload: PlatformClinicPatchIn):
         timezone=clinic.timezone,
         status=clinic.status,
     )
+
+
+# ── Clinic applications (Get Started intake review) ─────────────────────────
+
+
+@router.get("/applications", response=list[ClinicApplicationOut], auth=staff_jwt_auth)
+def list_applications(request, status: str = ""):
+    _require_platform(request)
+    qs = ClinicApplication.objects.all().order_by("-created_at")
+    if status.strip():
+        qs = qs.filter(status=status.strip())
+    return [_application_out(a) for a in qs[:200]]
+
+
+@router.get("/applications/{application_id}", response=ClinicApplicationOut, auth=staff_jwt_auth)
+def get_application(request, application_id: UUID):
+    _require_platform(request)
+    try:
+        app = ClinicApplication.objects.get(pk=application_id)
+    except ClinicApplication.DoesNotExist:
+        raise HttpError(404, "Application not found") from None
+    return _application_out(app)
+
+
+def _unique_slug(base: str) -> str:
+    slug = slugify(base)[:60] or "clinic"
+    candidate = slug
+    n = 1
+    while Clinic.objects.filter(slug=candidate).exists():
+        candidate = f"{slug}-{n}"[:64]
+        n += 1
+    return candidate
+
+
+@router.post(
+    "/applications/{application_id}/approve", response=ApplicationActionOut, auth=staff_jwt_auth
+)
+def approve_application(request, application_id: UUID, payload: ApproveApplicationIn):
+    """Provision Clinic + owner ClinicStaff + a pending Subscription for the
+    requested plan, then invite the owner. Payment is NOT collected here —
+    the clinic stays `onboarding` until the owner completes onboarding AND
+    a verified Paddle webhook confirms payment (apps/billing/services/
+    activation.py). This never activates the paid subscription itself."""
+    auth = _require_platform(request)
+    try:
+        app = ClinicApplication.objects.get(pk=application_id)
+    except ClinicApplication.DoesNotExist:
+        raise HttpError(404, "Application not found") from None
+    if app.status in {ClinicApplicationStatus.CONVERTED, ClinicApplicationStatus.REJECTED}:
+        raise HttpError(400, f"Application is already {app.status}")
+
+    from apps.billing.models import Plan, Subscription
+
+    plan = Plan.objects.filter(slug=app.plan_slug, is_active=True).first()
+    if plan is None:
+        raise HttpError(400, "The plan requested on this application is no longer available")
+
+    slug = slugify(payload.slug)[:64] if payload.slug else ""
+    slug = slug or _unique_slug(app.clinic_name)
+    if Clinic.objects.filter(slug=slug).exists():
+        raise HttpError(400, "Clinic slug already taken")
+
+    clinic = Clinic.objects.create(
+        slug=slug,
+        name=app.clinic_name,
+        email=app.work_email,
+        phone=app.phone,
+        status=ClinicStatus.ONBOARDING,
+    )
+    from apps.widget.models import WidgetSettings
+
+    WidgetSettings.objects.create(clinic=clinic, configuration=default_widget_configuration())
+
+    Subscription.objects.create(clinic=clinic, plan=plan)
+
+    name_parts = app.owner_name.strip().split(maxsplit=1)
+    first_name = name_parts[0] if name_parts else ""
+    last_name = name_parts[1] if len(name_parts) > 1 else ""
+    owner, owner_created = User.objects.get_or_create(
+        email=app.work_email,
+        defaults={
+            "username": app.work_email.split("@")[0][:40],
+            "first_name": first_name,
+            "last_name": last_name,
+            "role": UserRole.CLINIC_ADMIN,
+            "is_clinic_owner": True,
+            "is_active": False,
+        },
+    )
+    ClinicStaff.objects.get_or_create(user=owner, clinic=clinic, defaults={"is_active": True})
+
+    if owner_created:
+        _, raw = StaffAuthToken.issue(
+            user=owner, purpose=StaffAuthTokenPurpose.INVITE, ttl_hours=24 * 7
+        )
+        NotificationService.send_clinic_owner_invite_email(
+            to=app.work_email, token=raw, clinic_name=clinic.name, first_name=first_name
+        )
+    # An existing (already-active) user simply gets clinic access added —
+    # they can just log in, no separate invite needed.
+
+    app.status = ClinicApplicationStatus.CONVERTED
+    app.reviewed_by = auth.user
+    app.reviewed_at = timezone.now()
+    app.converted_clinic = clinic
+    app.save(
+        update_fields=["status", "reviewed_by", "reviewed_at", "converted_clinic", "updated_at"]
+    )
+
+    write_audit(
+        action=AuditAction.APPLICATION_APPROVED,
+        actor=auth.user,
+        clinic=clinic,
+        object_type="clinic_application",
+        object_id=str(app.id),
+        metadata={"plan_slug": plan.slug},
+        ip_address=client_ip(request),
+    )
+
+    return ApplicationActionOut(
+        application=_application_out(app),
+        clinic=ClinicOut(
+            id=clinic.id, slug=clinic.slug, name=clinic.name, timezone=clinic.timezone,
+            status=clinic.status,
+        ),
+    )
+
+
+@router.post(
+    "/applications/{application_id}/reject", response=ClinicApplicationOut, auth=staff_jwt_auth
+)
+def reject_application(request, application_id: UUID, payload: RejectApplicationIn):
+    auth = _require_platform(request)
+    try:
+        app = ClinicApplication.objects.get(pk=application_id)
+    except ClinicApplication.DoesNotExist:
+        raise HttpError(404, "Application not found") from None
+    if app.status in {ClinicApplicationStatus.CONVERTED, ClinicApplicationStatus.REJECTED}:
+        raise HttpError(400, f"Application is already {app.status}")
+
+    app.status = ClinicApplicationStatus.REJECTED
+    app.rejection_reason = (payload.reason or "").strip()
+    app.reviewed_by = auth.user
+    app.reviewed_at = timezone.now()
+    app.save(update_fields=["status", "rejection_reason", "reviewed_by", "reviewed_at", "updated_at"])
+
+    write_audit(
+        action=AuditAction.APPLICATION_REJECTED,
+        actor=auth.user,
+        object_type="clinic_application",
+        object_id=str(app.id),
+        metadata={"reason": app.rejection_reason},
+        ip_address=client_ip(request),
+    )
+    return _application_out(app)

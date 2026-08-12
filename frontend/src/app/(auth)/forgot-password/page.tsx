@@ -56,7 +56,7 @@ export default function ForgotPasswordPage() {
                 placeholder="you@clinic.com"
               />
             </div>
-            <Button className="w-full rounded-[6px]" disabled={submitting}>
+            <Button type="submit" className="w-full rounded-[6px]" disabled={submitting}>
               {submitting ? "Sending…" : "Send reset link"}
             </Button>
           </form>

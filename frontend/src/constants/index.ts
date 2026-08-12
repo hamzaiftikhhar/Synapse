@@ -39,6 +39,11 @@ export const DASHBOARD_NAV = [
 /** Super Admin platform portal — shown when no clinic tenant is active. */
 export const PLATFORM_NAV = [
   { href: "/dashboard/platform", label: "Overview", icon: "LayoutDashboard" },
+  {
+    href: "/dashboard/platform/applications",
+    label: "Applications",
+    icon: "ClipboardList",
+  },
   { href: "/dashboard/platform/clinics", label: "Clinics", icon: "Building2" },
   { href: "/dashboard/platform/users", label: "Users", icon: "Users" },
   {

@@ -95,7 +95,7 @@ export default function RegisterPage() {
               </p>
             )}
           </div>
-          <Button className="w-full rounded-[6px]" disabled={submitting}>
+          <Button type="submit" className="w-full rounded-[6px]" disabled={submitting}>
             {submitting ? "Creating…" : "Create account"}
           </Button>
         </form>

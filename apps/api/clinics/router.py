@@ -254,6 +254,20 @@ def complete_onboarding(request):
         first_missing = next(key for key, ok in checklist.items() if not ok)
         raise HttpError(400, _MISSING_MESSAGES[first_missing])
 
+    # A clinic provisioned from a paid application (apps/api/platform/router.py
+    # `approve_application`) already has a Subscription row awaiting payment.
+    # The operational checklist passing is not enough to go live for those —
+    # activation is gated on a verified Paddle webhook instead (see
+    # apps/billing/services/activation.py). Plain self-serve clinics (no
+    # Subscription at all) keep the original immediate-activation behavior.
+    from apps.billing.models import Subscription
+
+    pending_subscription = Subscription.objects.filter(clinic=clinic).first()
+    if pending_subscription is not None and not pending_subscription.has_access:
+        clinic.onboarding_step = "billing"
+        clinic.save(update_fields=["onboarding_step", "updated_at"])
+        return _serialize_clinic(clinic)
+
     clinic.status = ClinicStatus.ACTIVE
     clinic.onboarding_completed_at = timezone.now()
     clinic.onboarding_step = "review"
