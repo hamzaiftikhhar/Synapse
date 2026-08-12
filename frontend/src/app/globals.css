@@ -303,3 +303,108 @@
   background-color: #0b0e2e;
   color: #f5f3ff;
 }
+
+/* Marketing pricing — glass cards. Scoped so dashboard/auth stay untouched. */
+.pricing-glass {
+  --plan-void: #070714;
+  --plan-violet: #8b5cff;
+}
+
+.glass-plan {
+  position: relative;
+  width: 100%;
+  border-radius: 28px;
+  padding: 1.5rem 1.4rem 1.25rem;
+  background: linear-gradient(
+    165deg,
+    rgb(255 255 255 / 9%) 0%,
+    rgb(18 16 40 / 62%) 42%,
+    rgb(10 9 24 / 78%) 100%
+  );
+  border: 1px solid rgb(255 255 255 / 10%);
+  box-shadow: 0 18px 50px rgb(0 0 0 / 35%);
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
+  transition: transform 220ms ease, box-shadow 220ms ease, border-color 220ms ease;
+}
+
+.glass-plan:hover {
+  transform: translateY(-6px);
+  border-color: rgb(255 255 255 / 16%);
+}
+
+.glass-plan-featured {
+  padding-top: 1.85rem;
+  border-color: rgb(167 139 250 / 55%);
+  box-shadow:
+    0 0 0 1px rgb(139 92 255 / 25%),
+    0 0 42px rgb(139 92 255 / 22%),
+    0 24px 60px rgb(0 0 0 / 45%);
+}
+
+.glass-plan-featured:hover {
+  box-shadow:
+    0 0 0 1px rgb(139 92 255 / 40%),
+    0 0 56px rgb(139 92 255 / 32%),
+    0 28px 70px rgb(0 0 0 / 50%);
+}
+
+.glass-plan-badge {
+  position: absolute;
+  top: -11px;
+  left: 50%;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  background: #8b5cff;
+  padding: 0.2rem 0.7rem;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: white;
+  box-shadow: 0 0 18px rgb(139 92 255 / 45%);
+  white-space: nowrap;
+}
+
+.plan-orb {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+}
+
+.plan-orb-core {
+  position: absolute;
+  inset: 4px;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 32% 28%, #d4c8ff 0%, #8b5cff 38%, #3b1d8f 78%, #1a0d3d 100%);
+  box-shadow:
+    0 8px 16px rgb(0 0 0 / 40%),
+    inset 0 -6px 10px rgb(20 8 50 / 45%);
+}
+
+.plan-orb-shine {
+  position: absolute;
+  top: 8px;
+  left: 11px;
+  width: 14px;
+  height: 9px;
+  border-radius: 50%;
+  background: rgb(255 255 255 / 55%);
+  filter: blur(1px);
+}
+
+.plan-orb-featured .plan-orb-core {
+  box-shadow:
+    0 0 18px rgb(139 92 255 / 55%),
+    0 8px 16px rgb(0 0 0 / 40%),
+    inset 0 -6px 10px rgb(20 8 50 / 45%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .glass-plan,
+  .glass-plan:hover {
+    transition: none;
+    transform: none;
+  }
+}
