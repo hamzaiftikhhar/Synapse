@@ -12,7 +12,11 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 export type DailyPoint = { label: string; count: number };
 
-function ChartTooltip({ active, payload, label }: TooltipContentProps<number, string>) {
+function ChartTooltip({
+  active,
+  payload,
+  label,
+}: Partial<TooltipContentProps<number, string>>) {
   if (!active || !payload?.length) return null;
   return (
     <div className="rounded-lg border border-border bg-popover px-3 py-2 text-xs shadow-md">

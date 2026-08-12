@@ -23,18 +23,18 @@ export function StatusBreakdownCard({
   const rows = counts.filter((c) => c.count > 0);
 
   return (
-    <Card>
+    <Card className="overflow-hidden border-transparent bg-gradient-to-br from-primary to-[#2a2470] text-primary-foreground shadow-lg shadow-primary/20">
       <CardHeader>
-        <CardTitle>{title}</CardTitle>
+        <CardTitle className="text-primary-foreground">{title}</CardTitle>
         {subtitle ? (
-          <p className="mt-0.5 text-xs text-muted-foreground">{subtitle}</p>
+          <p className="mt-0.5 text-xs text-primary-foreground/70">{subtitle}</p>
         ) : null}
       </CardHeader>
       <CardContent>
         {total === 0 ? (
           <div className="flex h-40 flex-col items-center justify-center gap-1 text-center">
-            <p className="text-sm font-medium text-navy">No appointments yet</p>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-sm font-medium text-primary-foreground">No appointments yet</p>
+            <p className="text-xs text-primary-foreground/70">
               Status breakdown appears once appointments come in.
             </p>
           </div>
@@ -54,7 +54,7 @@ export function StatusBreakdownCard({
                   width={84}
                   axisLine={false}
                   tickLine={false}
-                  tick={{ fontSize: 12, fill: "var(--foreground)" }}
+                  tick={{ fontSize: 12, fill: "var(--primary-foreground)" }}
                 />
                 <Bar dataKey="count" radius={[0, 8, 8, 0]} maxBarSize={18}>
                   {rows.map((row) => (
