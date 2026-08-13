@@ -49,10 +49,9 @@ export default function ClinicPage() {
   const { data, isLoading } = useClinicProfile();
   const update = useUpdateClinicProfile();
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
-  const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
-    if (!data || loaded) return;
+    if (!data) return;
     setForm({
       name: data.name,
       clinic_type: data.clinic_type ?? "",
@@ -65,8 +64,7 @@ export default function ClinicPage() {
       postal_code: data.address?.postal_code ?? "",
       country: data.address?.country ?? "",
     });
-    setLoaded(true);
-  }, [data, loaded]);
+  }, [data?.id]);
 
   function set<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -111,7 +109,7 @@ export default function ClinicPage() {
       />
       <Card>
         <CardContent className="space-y-5">
-          {isLoading && !loaded ? (
+          {isLoading && !data ? (
             <p className="text-sm text-muted-foreground">Loading…</p>
           ) : (
             <>
@@ -123,8 +121,9 @@ export default function ClinicPage() {
                 <div className="space-y-1.5">
                   <Label>Clinic type</Label>
                   <Select
-                    value={form.clinic_type || undefined}
+                    value={form.clinic_type || null}
                     onValueChange={(v) => v && set("clinic_type", v as ClinicType)}
+                    items={CLINIC_TYPE_OPTIONS}
                   >
                     <SelectTrigger className="w-full">
                       <SelectValue placeholder="Select a type" />

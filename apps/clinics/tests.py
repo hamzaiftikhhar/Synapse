@@ -52,6 +52,13 @@ class ClinicProfileTests(TestCase):
         self.assertEqual(resp.json()["status"], "onboarding")
         self.assertEqual(resp.json()["onboarding_step"], "")
 
+    def test_get_profile_includes_saved_clinic_type(self):
+        self.clinic.clinic_type = "cardiology"
+        self.clinic.save(update_fields=["clinic_type"])
+        resp = self.client.get("/api/v1/clinics/me", headers=self.headers)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["clinic_type"], "cardiology")
+
     def test_patch_profile_updates_fields_and_step(self):
         resp = self.client.patch(
             "/api/v1/clinics/me",
