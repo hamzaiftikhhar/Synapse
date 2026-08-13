@@ -60,6 +60,20 @@ class BookingService:
             text = f"{text} (insurance: {insurance_name})".strip() if text else f"Book with {insurance_name}"
 
         existing = cls._load_active(chat_session)
+        prefills = any([specialty_id, doctor_id, service_id, slot_start])
+        if existing and not prefills:
+            from apps.chatbot.routing.signals import is_generic_book_request
+
+            leftover = (
+                existing.step != BookingStep.PATH.value
+                or existing.doctor_id
+                or existing.service_id
+                or existing.date
+            )
+            if leftover and is_generic_book_request(text):
+                # Bare "book an appointment" must not dump the patient into a
+                # leftover TIME/DOCTOR step from an earlier draft.
+                existing = None
         resuming = existing is not None
         suggested, guidance = ([], "")
 
@@ -150,22 +164,22 @@ class BookingService:
         service_name: str | None = None,
         resuming: bool,
     ) -> None:
-        """Update the draft in place with newly-known specialty/doctor/service."""
-        if service_id and not specialty_id:
-            from apps.chatbot.nlu.resolvers import resolve_specialty_for_service
+        """Update the draft in place with newly-known service/doctor/specialty.
 
-            resolved_specialty_id = resolve_specialty_for_service(clinic, str(service_id))
-            if resolved_specialty_id:
-                specialty_id = resolved_specialty_id
-                specialty_name = specialty_name or cls._specialty_name(
-                    clinic, resolved_specialty_id
-                )
-
+        Service is the booking relationship (who can perform it). Specialty is
+        discovery metadata only and never skips the patient to a doctor list.
+        """
+        changed_service = bool(service_id) and str(service_id) != (session.service_id or "")
         changed_specialty = bool(specialty_id) and str(specialty_id) != (
             session.specialty_id or ""
         )
         changed_doctor = bool(doctor_id) and str(doctor_id) != (session.doctor_id or "")
 
+        if changed_service:
+            session.service_id = str(service_id)
+            session.service_name = service_name or cls._service_name(
+                clinic, str(service_id)
+            )
         if changed_specialty:
             session.specialty_id = str(specialty_id)
             session.specialty_name = specialty_name or cls._specialty_name(
@@ -174,10 +188,10 @@ class BookingService:
         if changed_doctor:
             session.doctor_id = str(doctor_id)
             session.doctor_name = doctor_name or cls._doctor_name(clinic, str(doctor_id))
-        if service_id:
-            session.reason = session.reason or service_name or session.reason
+        if session.service_name and not session.reason:
+            session.reason = session.service_name
 
-        if changed_doctor or changed_specialty:
+        if changed_doctor or changed_service:
             session.date = None
             session.slot_start = None
             session.slot_end = None
@@ -189,9 +203,12 @@ class BookingService:
             if session.doctor_id:
                 session.mode = "choose_doctor"
                 session.step = BookingStep.DATE.value
-            elif session.specialty_id:
-                session.mode = "specialty_first"
+            elif session.service_id:
+                session.mode = "service_first"
                 session.step = BookingStep.DOCTOR.value
+            elif session.specialty_id:
+                session.mode = "service_first"
+                session.step = BookingStep.SERVICE.value
             else:
                 # Patient chooses: First available / Help choose / Know doctor
                 session.step = BookingStep.PATH.value
@@ -199,6 +216,7 @@ class BookingService:
 
         if changed_doctor and session.step in {
             BookingStep.PATH.value,
+            BookingStep.SERVICE.value,
             BookingStep.SPECIALTY.value,
             BookingStep.TIME.value,
             BookingStep.DETAILS.value,
@@ -206,15 +224,17 @@ class BookingService:
         }:
             session.mode = "choose_doctor"
             session.step = BookingStep.DATE.value
-        elif changed_specialty and not doctor_id and session.step in {
+        elif changed_service and not doctor_id and session.step in {
             BookingStep.PATH.value,
+            BookingStep.SERVICE.value,
+            BookingStep.SPECIALTY.value,
             BookingStep.DOCTOR.value,
             BookingStep.DATE.value,
             BookingStep.TIME.value,
             BookingStep.DETAILS.value,
             BookingStep.OTP.value,
         }:
-            session.mode = "specialty_first"
+            session.mode = "service_first"
             session.step = BookingStep.DOCTOR.value
 
     @classmethod
@@ -254,6 +274,7 @@ class BookingService:
 
         if session.date and session.doctor_id and session.step in {
             BookingStep.PATH.value,
+            BookingStep.SERVICE.value,
             BookingStep.SPECIALTY.value,
             BookingStep.DOCTOR.value,
             BookingStep.DATE.value,
@@ -338,15 +359,16 @@ class BookingService:
             if path_id not in {"first_available", "help_choose", "know_doctor"}:
                 raise BookingError("Invalid booking path")
             session.mode = resolve_mode_from_path(path_id)
-            # Optional soft continue with a suggested specialty
-            sid = str(value.get("specialty_id") or "").strip()
-            sname = str(value.get("specialty_name") or "").strip()
+            sid = str(value.get("service_id") or "").strip()
+            sname = str(value.get("service_name") or "").strip()
             if sid and path_id == "help_choose":
-                session.specialty_id = sid
-                session.specialty_name = sname or cls._specialty_name(clinic, sid)
+                session.service_id = sid
+                session.service_name = sname or cls._service_name(clinic, sid)
                 session.step = BookingStep.DOCTOR.value
             else:
                 if path_id == "first_available":
+                    session.service_id = None
+                    session.service_name = None
                     session.specialty_id = None
                     session.specialty_name = None
                     session.doctor_id = None
@@ -360,20 +382,22 @@ class BookingService:
             cls._save(chat_session, session)
             return serialize_step(clinic, session)
 
-        if action == "clear_specialty":
+        if action in {"clear_specialty", "clear_service"}:
+            session.service_id = None
+            session.service_name = None
             session.specialty_id = None
             session.specialty_name = None
             if session.step == BookingStep.DOCTOR.value:
                 pass  # refresh doctors unfiltered
             elif session.step not in (
+                BookingStep.SERVICE.value,
                 BookingStep.SPECIALTY.value,
                 BookingStep.DOCTOR.value,
             ):
-                # Jump back to doctor/specialty for reselection
                 session.step = (
                     BookingStep.DOCTOR.value
                     if session.mode == "choose_doctor"
-                    else BookingStep.SPECIALTY.value
+                    else BookingStep.SERVICE.value
                 )
             cls._touch(session)
             cls._save(chat_session, session)
@@ -385,21 +409,23 @@ class BookingService:
             cls._save(chat_session, session)
             return serialize_step(clinic, session)
 
-        if action == "select_specialty":
+        if action in {"select_service", "select_specialty"}:
             sid = str(value.get("id") or "")
             name = str(value.get("name") or "")
             if not sid:
-                raise BookingError("Specialty id is required")
-            session.specialty_id = sid
-            session.specialty_name = name or cls._specialty_name(clinic, sid)
+                raise BookingError("Service id is required")
+            session.service_id = sid
+            session.service_name = name or cls._service_name(clinic, sid)
             session.doctor_id = None
             session.doctor_name = None
             session.date = None
             session.slot_start = None
             session.slot_end = None
             nxt = next_step(session.mode, session.step)
-            # From specialty always go to next in mode
-            if session.step == BookingStep.SPECIALTY.value and nxt:
+            if session.step in {
+                BookingStep.SERVICE.value,
+                BookingStep.SPECIALTY.value,
+            } and nxt:
                 session.step = nxt.value
             elif session.mode == "first_available":
                 session.step = BookingStep.DATE.value
@@ -726,6 +752,7 @@ class BookingService:
                 clinic=clinic,
                 doctor=doctor,
                 patient=patient,
+                service_id=session.service_id or None,
                 start_time=start,
                 end_time=end,
                 status=AppointmentStatus.CONFIRMED,
@@ -824,6 +851,15 @@ class BookingService:
             raise
         except Exception as exc:
             raise BookingError("Invalid slot hold") from exc
+
+    @staticmethod
+    def _service_name(clinic: Any, service_id: str) -> str:
+        from apps.services.models import Service
+
+        try:
+            return Service.objects.get(clinic=clinic, id=service_id).name
+        except Service.DoesNotExist:
+            return ""
 
     @staticmethod
     def _specialty_name(clinic: Any, specialty_id: str) -> str:

@@ -30,7 +30,7 @@ class PathOptionsTests(SimpleTestCase):
     def test_path_options_titles_are_short(self):
         titles = {p["id"]: p["title"] for p in PATH_OPTIONS}
         self.assertEqual(titles["first_available"], "First available")
-        self.assertEqual(titles["help_choose"], "Choose specialty")
+        self.assertEqual(titles["help_choose"], "Choose a service")
         self.assertEqual(titles["know_doctor"], "I know my doctor")
         for p in PATH_OPTIONS:
             self.assertNotIn("description", p)

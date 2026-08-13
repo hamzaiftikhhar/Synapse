@@ -20,7 +20,6 @@ import {
   useBusinessHours,
   useDoctors,
   useServices,
-  useSpecialties,
   useUpdateDoctor,
   useUpdateDoctorSchedule,
 } from "@/hooks/api";
@@ -69,13 +68,11 @@ function scheduleToWeekly(
 
 export function AvailabilityStep({ onNext }: OnboardingStepProps) {
   const { data: doctorsData, isLoading: doctorsLoading } = useDoctors({ limit: 100 });
-  const { data: specialtiesData } = useSpecialties({ limit: 100 });
   const { data: servicesData } = useServices({ limit: 100 });
   const { data: businessHours } = useBusinessHours();
   const updateSchedule = useUpdateDoctorSchedule();
   const updateDoctor = useUpdateDoctor();
   const doctors = useMemo(() => doctorsData?.results ?? [], [doctorsData]);
-  const specialties = specialtiesData?.results ?? [];
   const services = servicesData?.results ?? [];
   const clinicDefaults = useMemo(() => businessHoursToWeekly(businessHours), [businessHours]);
 
@@ -150,13 +147,13 @@ export function AvailabilityStep({ onNext }: OnboardingStepProps) {
         )
       );
       // Safety net: a provider added after catalog steps would otherwise
-      // stay unlinked and vanish from specialty_first booking.
+      // stay unlinked and vanish from service-first booking.
       await ensureDoctorCatalogLinks({
         doctors,
-        specialties,
+        specialties: [],
         services,
         updateDoctor: (args) => updateDoctor.mutateAsync(args),
-        kind: "both",
+        kind: "services",
       });
       onNext();
     } catch (err) {

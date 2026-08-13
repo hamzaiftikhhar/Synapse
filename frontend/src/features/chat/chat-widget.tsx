@@ -356,15 +356,32 @@ export function ChatWidget({
         setMessages((prev) => {
           const next = [...prev, ...parsed.messages];
           if (!bookingUpdate) return next;
-          // Booking already in progress — update the existing wizard card in
-          // place instead of the backend minting a second one.
-          return next.map((m) =>
-            m.type === "booking_wizard" &&
-            (m.payload as Record<string, unknown> | undefined)?.booking_id ===
-              bookingUpdate.bookingId
-              ? { ...m, payload: { ...(m.payload ?? {}), ...bookingUpdate.patch } }
-              : m
+          const visible = next.find(
+            (m) =>
+              m.type === "booking_wizard" &&
+              (m.payload as Record<string, unknown> | undefined)?.booking_id ===
+                bookingUpdate.bookingId &&
+              !dismissedWizards.has(m.id) &&
+              !m.payload?.completed
           );
+          if (visible) {
+            return next.map((m) =>
+              m.id === visible.id
+                ? { ...m, payload: { ...(m.payload ?? {}), ...bookingUpdate.patch } }
+                : m
+            );
+          }
+          // Draft exists on the session but the card isn't on screen
+          // (dismissed, reload, or staff view) — mint it so the reply
+          // isn't a dangling "choose below" with no UI.
+          return [
+            ...next,
+            bookingWizardMessage({
+              ...bookingUpdate.patch,
+              booking_id: bookingUpdate.bookingId,
+              launch: true,
+            }),
+          ];
         });
       } catch (err) {
         // Log timeout vs network for ops; user-facing copy stays friendly.
@@ -411,6 +428,7 @@ export function ChatWidget({
       guestChat,
       marketingChat,
       widgetCtx,
+      dismissedWizards,
     ]
   );
 
@@ -422,7 +440,7 @@ export function ChatWidget({
     // so repeat clicks don't stack up duplicate cards.
     if (action.id === "insurance" && canBook) {
       const existing = readSelectedInsurance(bookingClinicSlug);
-      if (existing) {
+      if (existing && existing.is_accepted !== false) {
         const last = messages[messages.length - 1];
         if (last?.type !== "insurance_cards") {
           setMessages((prev) => [...prev, insuranceSelectedMessage()]);
@@ -609,10 +627,10 @@ export function ChatWidget({
         service_id?: string;
         insurance?: string;
       };
+      const stored = readSelectedInsurance(bookingClinicSlug);
+      const usableStored = stored && stored.is_accepted !== false ? stored : null;
       const insurance =
-        payload?.insurance ||
-        readSelectedInsurance(bookingClinicSlug)?.name ||
-        undefined;
+        payload?.insurance || usableStored?.name || undefined;
       setMessages((prev) => [
         ...prev,
         bookingWizardMessage({

@@ -7,28 +7,22 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ImportGuide } from "@/features/importer/import-guide";
 import { ImportTriggerButton } from "@/features/importer/import-trigger-button";
-import { ensureDoctorCatalogLinks } from "@/features/onboarding/doctor-catalog-links";
 import { StepHint } from "@/features/onboarding/step-hint";
 import {
   useCreateSpecialty,
   useDeleteSpecialty,
-  useDoctors,
   useSpecialties,
-  useUpdateDoctor,
 } from "@/hooks/api";
 import { getApiErrorMessage } from "@/lib/api/client";
 import { ONBOARDING_FORM_ID, type OnboardingStepProps } from "../steps";
 
 export function SpecialtiesStep({ onNext }: OnboardingStepProps) {
   const { data } = useSpecialties({ limit: 100 });
-  const { data: doctorsData } = useDoctors({ limit: 100 });
   const create = useCreateSpecialty();
   const remove = useDeleteSpecialty();
-  const updateDoctor = useUpdateDoctor();
   const [draft, setDraft] = useState("");
 
   const specialties = data?.results ?? [];
-  const doctors = doctorsData?.results ?? [];
 
   async function addSpecialty() {
     const name = draft.trim();
@@ -43,18 +37,7 @@ export function SpecialtiesStep({ onNext }: OnboardingStepProps) {
 
   async function onContinue(e: React.FormEvent) {
     e.preventDefault();
-    try {
-      await ensureDoctorCatalogLinks({
-        doctors,
-        specialties,
-        services: [],
-        updateDoctor: (args) => updateDoctor.mutateAsync(args),
-        kind: "specialties",
-      });
-      onNext();
-    } catch (err) {
-      toast.error(getApiErrorMessage(err));
-    }
+    onNext();
   }
 
   return (

@@ -245,15 +245,25 @@ _GENERIC_DOCTOR_RE = re.compile(
 )
 
 
+def is_generic_book_request(message: str) -> bool:
+    """True for a bare "book an appointment" with no who/what/when.
+
+    These phrases classify as book_appointment (NLU fallback) but must open
+    the PATH picker — not resume a leftover TIME step or claim slots exist.
+    """
+    text = " ".join((message or "").lower().strip().rstrip("!.?").split())
+    if not text:
+        return False
+    return text in BOOKING_COMMIT_EXACT or text == "start booking"
+
+
 def is_booking_commit(message: str, *, doctor_name: Any = None) -> bool:
-    """True when the patient has given enough specificity (exact commit
-    phrase, or a named doctor + booking verb) to skip discovery and go
-    straight to doctor/slot resolution."""
+    """True when the patient named who to book with, so we can skip the
+    path picker and go to doctor/date/time. Generic "book an appointment"
+    is NOT a commit — that is the PATH step."""
     text = (message or "").lower().strip()
     if not text:
         return False
-    if text in BOOKING_COMMIT_EXACT or "start booking" in text:
-        return True
 
     if doctor_name and any(k in text for k in ("book", "schedule", "appointment")):
         return True

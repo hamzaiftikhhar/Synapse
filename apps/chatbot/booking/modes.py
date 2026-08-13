@@ -3,27 +3,31 @@
 Patient-facing booking paths (chosen on the PATH step) map to modes:
 
   first_available  → general         (date → time; doctor auto-assigned on slot)
-  help_choose      → specialty_first (specialty → doctor → date → time)
+  help_choose      → service_first   (service → doctor → date → time)
   know_doctor      → choose_doctor   (doctor → date → time)
 
 Clinic WidgetSettings.booking.mode remains a fallback default only.
+`specialty_first` is an alias of `service_first` for stored widget configs.
 """
 
 from __future__ import annotations
 
 from apps.chatbot.booking.state import BookingStep
 
+_SERVICE_FIRST_STEPS = [
+    BookingStep.SERVICE,
+    BookingStep.DOCTOR,
+    BookingStep.DATE,
+    BookingStep.TIME,
+    BookingStep.DETAILS,
+    BookingStep.OTP,
+    BookingStep.CONFIRMED,
+]
+
 # Ordered steps after PATH selection (PATH itself is shared / not in these lists).
 MODE_STEPS: dict[str, list[BookingStep]] = {
-    "specialty_first": [
-        BookingStep.SPECIALTY,
-        BookingStep.DOCTOR,
-        BookingStep.DATE,
-        BookingStep.TIME,
-        BookingStep.DETAILS,
-        BookingStep.OTP,
-        BookingStep.CONFIRMED,
-    ],
+    "service_first": list(_SERVICE_FIRST_STEPS),
+    "specialty_first": list(_SERVICE_FIRST_STEPS),
     "choose_doctor": [
         BookingStep.DOCTOR,
         BookingStep.DATE,
@@ -52,7 +56,7 @@ MODE_STEPS: dict[str, list[BookingStep]] = {
 # UI path key → internal mode
 PATH_TO_MODE: dict[str, str] = {
     "first_available": "general",
-    "help_choose": "specialty_first",
+    "help_choose": "service_first",
     "know_doctor": "choose_doctor",
 }
 
@@ -64,7 +68,7 @@ PATH_OPTIONS = [
     },
     {
         "id": "help_choose",
-        "title": "Choose specialty",
+        "title": "Choose a service",
         "recommended": False,
     },
     {
@@ -76,7 +80,7 @@ PATH_OPTIONS = [
 
 
 def steps_for_mode(mode: str) -> list[BookingStep]:
-    return list(MODE_STEPS.get(mode, MODE_STEPS["specialty_first"]))
+    return list(MODE_STEPS.get(mode, MODE_STEPS["service_first"]))
 
 
 def first_step(mode: str) -> BookingStep:
@@ -124,4 +128,4 @@ def step_index(mode: str, current: str) -> tuple[int, int]:
 
 def resolve_mode_from_path(path_id: str) -> str:
     key = (path_id or "").strip().lower()
-    return PATH_TO_MODE.get(key, "specialty_first")
+    return PATH_TO_MODE.get(key, "service_first")

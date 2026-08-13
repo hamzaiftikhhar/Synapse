@@ -396,7 +396,7 @@ class Command(BaseCommand):
                     "primary_color": "#0f766e",
                 },
                 "booking": {
-                    "mode": "specialty_first",
+                    "mode": "service_first",
                     "ai_discovery": True,
                     "slot_duration_min": 20,
                     "verification_mode": "sms",
@@ -633,7 +633,7 @@ class Command(BaseCommand):
                     "primary_color": "#1d4ed8",
                 },
                 "booking": {
-                    "mode": "specialty_first",
+                    "mode": "service_first",
                     "slot_duration_min": 30,
                     "date_horizon_days": 21,
                     "verification_mode": "sms",
@@ -840,7 +840,7 @@ class Command(BaseCommand):
                     "primary_color": "#7c3aed",
                 },
                 "booking": {
-                    "mode": "specialty_first",
+                    "mode": "service_first",
                     "slot_duration_min": 30,
                     "verification_mode": "sms_or_email",
                 },

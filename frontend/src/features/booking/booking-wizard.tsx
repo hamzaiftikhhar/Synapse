@@ -80,7 +80,7 @@ export function BookingWizard({
     phone: "",
     email: "",
   });
-  const [specialtyQuery, setSpecialtyQuery] = useState("");
+  const [serviceQuery, setServiceQuery] = useState("");
   const [started, setStarted] = useState(false);
 
   const syncToken = useCallback(
@@ -266,10 +266,13 @@ export function BookingWizard({
       <div className="flex items-start justify-between gap-2 border-b border-border/70 px-3.5 py-3">
         <div className="min-w-0">
           <p className="text-sm font-semibold text-foreground">Book Appointment</p>
-          {step !== "path" && (state?.options?.doctor_name || state?.specialty_chip) ? (
+          {step !== "path" &&
+          (state?.options?.doctor_name ||
+            state?.service_chip ||
+            state?.specialty_chip) ? (
             <p className="mt-0.5 text-xs text-muted-foreground">
               {[
-                state.specialty_chip?.name,
+                state.service_chip?.name || state.specialty_chip?.name,
                 (state.options as { doctor_name?: string })?.doctor_name,
               ]
                 .filter(Boolean)
@@ -298,14 +301,14 @@ export function BookingWizard({
         </div>
       </div>
 
-      {state?.specialty_chip && interactive ? (
+      {(state?.service_chip || state?.specialty_chip) && interactive ? (
         <div className="border-b border-border/50 px-3.5 py-2">
           <button
             type="button"
-            onClick={() => void runStep("clear_specialty")}
+            onClick={() => void runStep("clear_service")}
             className="inline-flex w-fit items-center gap-1 rounded-full border border-border bg-muted/50 px-2.5 py-1 text-xs font-medium text-foreground"
           >
-            {state.specialty_chip.name}
+            {(state.service_chip || state.specialty_chip)?.name}
             <X className="size-3" />
           </button>
         </div>
@@ -324,7 +327,7 @@ export function BookingWizard({
           </p>
         ) : null}
 
-        {state?.guidance && step === "specialty" ? (
+        {state?.guidance && (step === "service" || step === "specialty") ? (
           <p className="mb-3 text-xs leading-relaxed text-muted-foreground">
             {state.guidance}
           </p>
@@ -344,13 +347,13 @@ export function BookingWizard({
           />
         ) : null}
 
-        {step === "specialty" && state && interactive ? (
-          <SpecialtyStep
+        {(step === "service" || step === "specialty") && state && interactive ? (
+          <ServiceStep
             options={state.options}
-            query={specialtyQuery}
-            onQuery={setSpecialtyQuery}
+            query={serviceQuery}
+            onQuery={setServiceQuery}
             onSelect={(s) =>
-              void runStep("select_specialty", { id: s.id, name: s.name })
+              void runStep("select_service", { id: s.id, name: s.name })
             }
           />
         ) : null}
@@ -495,7 +498,7 @@ function PathStep({
   );
 }
 
-function SpecialtyStep({
+function ServiceStep({
   options,
   query,
   onQuery,
@@ -522,7 +525,7 @@ function SpecialtyStep({
   return (
     <div className="space-y-3">
       <p className="text-sm font-medium text-foreground">
-        {(options.title as string) || "Choose a specialty"}
+        {(options.title as string) || "Choose a service"}
       </p>
       <div className="relative">
         <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -769,6 +772,8 @@ function TimeStep({
   const hasMore = Boolean(options.has_more);
   const timeHintUnmet = Boolean(options.time_hint_unmet);
   const timeHint = (options.time_hint as string | null) || null;
+  const mixedDoctors =
+    new Set(slots.map((s) => s.doctor_id).filter(Boolean)).size > 1;
 
   const sections = useMemo(() => {
     const groups: BookingSlot[][] = [[], [], []];
@@ -821,13 +826,13 @@ function TimeStep({
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
               {section.slots.map((s) => (
                 <button
-                  key={s.id}
+                  key={s.id || `${s.doctor_id}-${s.start}`}
                   type="button"
                   onClick={() => onSelect(s)}
                   className="rounded-xl border border-border px-2 py-2.5 text-center text-xs font-medium transition-[border-color,background-color] hover:border-primary/40 hover:bg-accent"
                 >
                   <span className="block text-foreground">{s.label}</span>
-                  {s.doctor && !options.doctor_name ? (
+                  {s.doctor && (mixedDoctors || !options.doctor_name) ? (
                     <span className="mt-0.5 block text-[10px] font-normal text-muted-foreground">
                       {s.doctor}
                     </span>

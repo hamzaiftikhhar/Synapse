@@ -67,7 +67,7 @@ def insurance_accepted(ctx: SQLContext) -> SQLResult:
     if providers and rejected and not accepted:
         names = ", ".join(_label(r) for r in rejected[:5])
         notes = next((r["notes"] for r in rejected if r.get("notes")), "")
-        summary = f"No — we do not accept {names}."
+        summary = f"No — we currently don't accept {names}."
         if notes:
             summary += f" {notes}"
         else:
@@ -77,7 +77,7 @@ def insurance_accepted(ctx: SQLContext) -> SQLResult:
         summary = f"Yes — we accept {names}."
         if rejected:
             summary += (
-                " We do not accept "
+                " We currently don't accept "
                 + ", ".join(_label(r) for r in rejected[:3])
                 + "."
             )

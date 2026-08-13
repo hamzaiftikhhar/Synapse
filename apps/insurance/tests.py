@@ -424,3 +424,37 @@ class InsuranceChatbotWithoutDoctorLinkTests(TestCase):
         )
         self.assertTrue(result.found)
         self.assertIn("No", result.summary)
+        self.assertIn("currently don't accept", result.summary)
+
+    def test_named_mixed_accepted_and_rejected(self):
+        from apps.chatbot.nlu.schemas import ExtractedEntities, Intent, NLUResult
+        from apps.chatbot.sql_tool.base import SQLContext
+        from apps.chatbot.sql_tool.handlers.insurance import insurance_accepted
+        from apps.chatbot.sql_tool.formatter import format_sql_results
+        from apps.insurance.services.insurance_service import create_insurance_plan
+
+        self.aetna.is_accepted = False
+        self.aetna.plan_name = "HMO"
+        self.aetna.save(update_fields=["is_accepted", "plan_name"])
+        create_insurance_plan(
+            clinic=self.clinic,
+            provider_name="Aetna",
+            plan_name="PPO",
+            is_accepted=True,
+        )
+        result = insurance_accepted(
+            SQLContext(
+                clinic=self.clinic,
+                nlu=NLUResult(
+                    intent=Intent.INSURANCE_ACCEPTED,
+                    entities=ExtractedEntities(insurance_provider="Aetna"),
+                ),
+            )
+        )
+        self.assertTrue(result.found)
+        self.assertEqual(len(result.rows), 2)
+        self.assertIn("Yes", result.summary)
+        self.assertIn("currently don't accept", result.summary)
+        text = format_sql_results([result.to_dict()])
+        self.assertNotIn("Search your plan below", text)
+        self.assertIn("Yes", text)

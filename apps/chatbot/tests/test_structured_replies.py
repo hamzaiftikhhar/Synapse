@@ -31,3 +31,57 @@ class StructuredRepliesTests(SimpleTestCase):
         text = format_sql_results(rows)
         self.assertIn("Earliest opening", text)
         self.assertNotIn("- Dr.", text)
+
+    def test_rejected_insurance_uses_handler_summary_not_search_prompt(self):
+        text = format_sql_results(
+            [
+                {
+                    "handler": "insurance_accepted",
+                    "found": True,
+                    "summary": "No — we currently don't accept Aetna.",
+                    "rows": [
+                        {
+                            "provider_name": "Aetna",
+                            "plan_name": "Gold",
+                            "is_accepted": False,
+                        }
+                    ],
+                }
+            ]
+        )
+        self.assertIn("No — we currently don't accept Aetna", text)
+        self.assertNotIn("Search your plan below", text)
+
+    def test_mixed_insurance_uses_summary(self):
+        text = format_sql_results(
+            [
+                {
+                    "handler": "insurance_accepted",
+                    "found": True,
+                    "summary": "Yes — we accept Aetna (PPO). We currently don't accept Aetna (HMO).",
+                    "rows": [
+                        {"provider_name": "Aetna", "plan_name": "PPO", "is_accepted": True},
+                        {"provider_name": "Aetna", "plan_name": "HMO", "is_accepted": False},
+                    ],
+                }
+            ]
+        )
+        self.assertIn("Yes — we accept Aetna (PPO)", text)
+        self.assertIn("We currently don't accept Aetna (HMO)", text)
+        self.assertNotIn("Search your plan below", text)
+
+    def test_accepted_insurance_browse_keeps_search_prompt(self):
+        text = format_sql_results(
+            [
+                {
+                    "handler": "insurance_accepted",
+                    "found": True,
+                    "summary": "We accept plans including: Aetna, Cigna.",
+                    "rows": [
+                        {"provider_name": "Aetna", "is_accepted": True},
+                        {"provider_name": "Cigna", "is_accepted": True},
+                    ],
+                }
+            ]
+        )
+        self.assertEqual(text, "Search your plan below.")

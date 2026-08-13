@@ -12,7 +12,11 @@ from apps.chatbot.planner import ExecutionPlan, build_execution_plan, build_plan
 from apps.chatbot.providers import circuit_breaker
 from apps.chatbot.response_llm import ResponseLLMError, empty_rag_reply, synthesize_clinic_reply
 from apps.chatbot.routing.lanes import Lane
-from apps.chatbot.routing.signals import is_transactional_booking
+from apps.chatbot.routing.signals import (
+    is_booking_commit,
+    is_generic_book_request,
+    is_transactional_booking,
+)
 
 
 class CircuitBreakerTests(SimpleTestCase):
@@ -58,6 +62,13 @@ class PlannerStabilityTests(SimpleTestCase):
 
     def test_reschedule_is_transactional(self):
         self.assertTrue(is_transactional_booking("I want to reschedule my appointment"))
+
+    def test_generic_book_request_is_not_a_slot_commit(self):
+        msg = "i would like to book an appointment"
+        self.assertTrue(is_generic_book_request(msg))
+        self.assertTrue(is_generic_book_request("I would like to book an appointment!"))
+        self.assertFalse(is_booking_commit(msg))
+        self.assertTrue(is_booking_commit("book with Dr. Rostova"))
 
 
 class ResponseDeadlineTests(SimpleTestCase):
@@ -194,6 +205,22 @@ class ComposeFromPlanFallbackTests(SimpleTestCase):
     def test_empty_vector_prefers_sql_over_generic_apology(self):
         text = self._compose(vector_rows=[])
         self.assertNotIn("couldn't find clinic-specific information", text)
+
+    def test_generic_booking_does_not_claim_times_are_below(self):
+        from apps.chatbot.planner import ExecutionPlan
+
+        nlu = type("N", (), {"entities": type("E", (), {"date": None, "time": None})()})()
+        text = self._compose(
+            message="i would like to book an appointment",
+            nlu=nlu,
+            exec_plan=ExecutionPlan(booking=True),
+            sql_rows=[],
+            vector_rows=[],
+            booking_commit=True,
+        )
+        self.assertNotIn("Choose a time below", text)
+        self.assertNotIn("Pick a time below", text)
+        self.assertIn("let's get you booked", text.lower())
 
     def test_budget_exhausted_prefers_sql_over_generic_apology(self):
         text = self._compose(

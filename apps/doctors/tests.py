@@ -1,3 +1,5 @@
+from datetime import time
+
 from django.test import TestCase
 
 from apps.api.test_helpers import make_clinic_admin
@@ -55,6 +57,41 @@ class DoctorScheduleTests(TestCase):
             headers=self.headers,
         )
         self.assertEqual(resp.status_code, 400)
+
+    def test_put_does_not_clobber_another_doctors_schedule(self):
+        other = Doctor.objects.create(clinic=self.clinic, full_name="Dr. Other")
+        DoctorSchedule.objects.create(
+            clinic=self.clinic,
+            doctor=other,
+            day_of_week=1,
+            start_time=time(14, 0),
+            end_time=time(16, 0),
+            slot_duration_min=30,
+        )
+        resp = self.client.put(
+            f"/api/v1/doctors/{self.doctor.id}/schedule",
+            data=[
+                {
+                    "day_of_week": 0,
+                    "start_time": "09:00:00",
+                    "end_time": "11:00:00",
+                    "slot_duration_min": 30,
+                }
+            ],
+            content_type="application/json",
+            headers=self.headers,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(
+            DoctorSchedule.objects.filter(clinic=self.clinic, doctor=self.doctor).count(),
+            1,
+        )
+        self.assertEqual(
+            DoctorSchedule.objects.filter(clinic=self.clinic, doctor=other).count(), 1
+        )
+        leftover = DoctorSchedule.objects.get(clinic=self.clinic, doctor=other)
+        self.assertEqual(leftover.day_of_week, 1)
+        self.assertEqual(leftover.start_time, time(14, 0))
 
     def test_schedule_for_wrong_tenant_404s(self):
         _, _, other_headers = make_clinic_admin(

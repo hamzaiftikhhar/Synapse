@@ -83,6 +83,30 @@ class BookingResumeTests(TestCase):
         # Patient-entered details are never erased by a doctor/specialty correction.
         self.assertEqual(updated["patient_first_name"], "Jamie")
 
+    def test_generic_book_request_does_not_resume_time_step(self):
+        first = BookingService.start(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            doctor_id=str(self.doctor_a.id),
+            doctor_name="Dr. A",
+        )
+        self.chat_session.refresh_from_db()
+        booking = self.chat_session.conversation_context["booking"]
+        booking["step"] = BookingStep.TIME.value
+        booking["date"] = timezone.localdate().isoformat()
+        self.chat_session.conversation_context["booking"] = booking
+        self.chat_session.save(update_fields=["conversation_context"])
+
+        second = BookingService.start(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            message="i would like to book an appointment",
+        )
+
+        self.assertFalse(second["resumed"])
+        self.assertNotEqual(first["booking_id"], second["booking_id"])
+        self.assertEqual(second["step"], BookingStep.PATH.value)
+
     def test_start_after_confirmed_creates_fresh_booking(self):
         first = BookingService.start(clinic=self.clinic, chat_session=self.chat_session)
         self.chat_session.refresh_from_db()
@@ -98,7 +122,7 @@ class BookingResumeTests(TestCase):
 
 
 class BookingSlotFillingIntegrationTests(TestCase):
-    """End-to-end: "Book Botox Friday after 5" seeds specialty/date/time_hint
+    """End-to-end: "Book Botox Friday after 5" seeds service/date/time_hint
     and, once a doctor is chosen, jumps straight to the TIME step."""
 
     def setUp(self):
@@ -152,9 +176,9 @@ class BookingSlotFillingIntegrationTests(TestCase):
             clinic=self.clinic,
             chat_session=self.chat_session,
             message="Book Botox Friday after 5",
-            specialty_id=str(self.aesthetics.id),
+            service_id=str(self.botox.id),
         )
-        self.assertEqual(result["mode"], "specialty_first")
+        self.assertEqual(result["mode"], "service_first")
         # Doctor not yet known -> stays at DOCTOR step (only date/time_hint are seeded).
         self.assertEqual(result["step"], BookingStep.DOCTOR.value)
         self.chat_session.refresh_from_db()
@@ -163,14 +187,14 @@ class BookingSlotFillingIntegrationTests(TestCase):
         self.assertEqual(booking["time_hint"], "17:00:00")
 
     def test_known_doctor_and_date_hint_jumps_straight_to_time_step(self):
-        """When the chat engine has already resolved both the service->specialty
+        """When the chat engine has already resolved both the service
         and a named doctor from "Book Botox Friday after 5 with Dr. Aesthetic",
-        start() should skip PATH/SPECIALTY/DOCTOR/DATE entirely."""
+        start() should skip PATH/SERVICE/DOCTOR/DATE entirely."""
         result = BookingService.start(
             clinic=self.clinic,
             chat_session=self.chat_session,
             message="Book Botox Friday after 5",
-            specialty_id=str(self.aesthetics.id),
+            service_id=str(self.botox.id),
             doctor_id=str(self.doctor.id),
         )
 

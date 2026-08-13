@@ -12,7 +12,8 @@ from typing import Any
 class BookingStep(str, Enum):
     PATH = "path"  # Who would you like to see?
     DISCOVERY = "discovery"
-    SPECIALTY = "specialty"
+    SERVICE = "service"
+    SPECIALTY = "specialty"  # legacy alias; coerced to SERVICE on load
     DOCTOR = "doctor"
     DATE = "date"
     TIME = "time"
@@ -28,6 +29,8 @@ class BookingSession:
     mode: str
     step: str
     reason: str = ""
+    service_id: str | None = None
+    service_name: str | None = None
     specialty_id: str | None = None
     specialty_name: str | None = None
     doctor_id: str | None = None
@@ -60,6 +63,10 @@ class BookingSession:
     def from_dict(cls, data: dict[str, Any]) -> BookingSession:
         known = {f.name for f in cls.__dataclass_fields__.values()}  # type: ignore[attr-defined]
         filtered = {k: v for k, v in data.items() if k in known}
+        if filtered.get("mode") == "specialty_first":
+            filtered["mode"] = "service_first"
+        if filtered.get("step") == BookingStep.SPECIALTY.value:
+            filtered["step"] = BookingStep.SERVICE.value
         return cls(**filtered)
 
     @classmethod

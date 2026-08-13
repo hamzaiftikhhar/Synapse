@@ -9,6 +9,10 @@ import { useSelectedInsurance } from "@/hooks/use-selected-insurance";
 import { ChatInlineCard } from "@/features/chat/components/chat-inline-card";
 import type { ChatActionHandler, InsuranceCardData } from "@/types/chat";
 
+function isAcceptedPlan(plan: InsuranceCardData | null | undefined): boolean {
+  return Boolean(plan) && plan.is_accepted !== false;
+}
+
 export function InsuranceCard({
   plan,
   onAction,
@@ -16,27 +20,53 @@ export function InsuranceCard({
   plan: InsuranceCardData;
   onAction?: ChatActionHandler;
 }) {
-  const accepted = plan.is_accepted !== false;
+  const accepted = isAcceptedPlan(plan);
+  const body = (
+    <>
+      <p className="text-sm font-medium text-foreground">{plan.name}</p>
+      {accepted ? (
+        <>
+          {plan.plan ? (
+            <p className="text-xs text-muted-foreground">{plan.plan}</p>
+          ) : null}
+          <span className="mt-1 inline-flex items-center gap-1 text-[10px] font-medium text-emerald-600">
+            <Check className="size-3" /> Accepted
+          </span>
+        </>
+      ) : (
+        <>
+          <span className="mt-1 inline-flex items-center text-[10px] font-medium text-destructive">
+            Not accepted
+          </span>
+          {plan.plan ? (
+            <p className="text-xs text-muted-foreground">{plan.plan}</p>
+          ) : null}
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            We currently don&apos;t accept this plan.
+          </p>
+        </>
+      )}
+    </>
+  );
+
+  if (!accepted) {
+    return (
+      <div className="w-full rounded-lg border border-destructive/30 bg-destructive/5 p-2.5 text-left">
+        {body}
+      </div>
+    );
+  }
+
   return (
     <button
       type="button"
       onClick={() => onAction?.("select_insurance", plan)}
       className={cn(
-        "w-full rounded-lg border p-2.5 text-left transition-colors",
-        accepted
-          ? "border-border bg-card hover:border-primary/30 hover:bg-accent/40"
-          : "border-destructive/20 bg-destructive/5 opacity-80"
+        "w-full rounded-lg border border-border bg-card p-2.5 text-left transition-colors",
+        "hover:border-primary/30 hover:bg-accent/40"
       )}
     >
-      <p className="text-sm font-medium text-foreground">{plan.name}</p>
-      {plan.plan ? (
-        <p className="text-xs text-muted-foreground">{plan.plan}</p>
-      ) : null}
-      {accepted ? (
-        <span className="mt-1 inline-flex items-center gap-1 text-[10px] font-medium text-emerald-600">
-          <Check className="size-3" /> Accepted
-        </span>
-      ) : null}
+      {body}
     </button>
   );
 }
@@ -52,6 +82,7 @@ export function InsuranceCards({
 }) {
   const { selected, setSelected } = useSelectedInsurance(clinicSlug);
   const [query, setQuery] = useState("");
+  const activeSelection = isAcceptedPlan(selected) ? selected : null;
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -66,10 +97,11 @@ export function InsuranceCards({
   // a new question — we already know the answer, so this never sends a chat
   // message (see chat-widget.tsx's now-removed select_insurance handler).
   const handleSelect = (plan: InsuranceCardData) => {
+    if (!isAcceptedPlan(plan)) return;
     setSelected(plan);
   };
 
-  if (selected) {
+  if (activeSelection) {
     return (
       <ChatInlineCard className="rounded-[18px] border border-border/80 bg-card p-3 shadow-[0_2px_12px_rgb(11_14_46/0.06)]">
         <div className="flex items-start gap-2.5">
@@ -82,11 +114,11 @@ export function InsuranceCards({
                 Selected insurance
               </p>
               <p className="truncate text-sm font-semibold leading-snug text-foreground">
-                {selected.name}
-                {selected.plan ? (
+                {activeSelection.name}
+                {activeSelection.plan ? (
                   <span className="font-normal text-muted-foreground">
                     {" "}
-                    · {selected.plan}
+                    · {activeSelection.plan}
                   </span>
                 ) : null}
               </p>
@@ -106,7 +138,7 @@ export function InsuranceCards({
                 size="sm"
                 className="h-8 flex-1 rounded-full text-xs font-medium"
                 onClick={() =>
-                  onAction?.("book_appointment", { insurance: selected.name })
+                  onAction?.("book_appointment", { insurance: activeSelection.name })
                 }
               >
                 Continue to book

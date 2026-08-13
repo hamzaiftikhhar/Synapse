@@ -7,8 +7,8 @@ from typing import Any
 from apps.clinics.features import VERIFICATION_MODES, get_verification_mode
 
 DEFAULT_BOOKING_CONFIG: dict[str, Any] = {
-    # Fallback only — patients pick a path on the PATH step unless doctor/specialty is prefilled.
-    "mode": "specialty_first",
+    # Fallback only — patients pick a path on the PATH step unless doctor/service is prefilled.
+    "mode": "service_first",
     "ai_discovery": True,
     "require_auth": True,
     "verification_mode": "sms",  # sms | email | sms_or_email | none
@@ -26,8 +26,15 @@ DEFAULT_BOOKING_CONFIG: dict[str, Any] = {
 }
 
 VALID_MODES = frozenset(
-    {"specialty_first", "choose_doctor", "first_available", "general"}
+    {
+        "service_first",
+        "specialty_first",  # alias of service_first
+        "choose_doctor",
+        "first_available",
+        "general",
+    }
 )
+MODE_ALIASES = {"specialty_first": "service_first"}
 
 
 def get_booking_config(clinic: Any) -> dict[str, Any]:
@@ -44,10 +51,10 @@ def get_booking_config(clinic: Any) -> dict[str, Any]:
     except Exception:
         pass
 
-    mode = str(cfg.get("mode", "specialty_first")).lower().strip()
+    mode = str(cfg.get("mode", "service_first")).lower().strip()
     if mode not in VALID_MODES:
-        mode = "specialty_first"
-    cfg["mode"] = mode
+        mode = "service_first"
+    cfg["mode"] = MODE_ALIASES.get(mode, mode)
     cfg["ai_discovery"] = bool(cfg.get("ai_discovery", True))
 
     vmode = str(cfg.get("verification_mode") or "").lower().strip()

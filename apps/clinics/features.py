@@ -27,7 +27,7 @@ def default_widget_configuration() -> dict[str, Any]:
         },
         "ai": {"model": "default", "temperature": 0.2},
         "booking": {
-            "mode": "specialty_first",
+            "mode": "service_first",
             "ai_discovery": True,
             "require_auth": True,
             "verification_mode": "sms",

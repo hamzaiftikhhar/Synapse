@@ -196,3 +196,48 @@ class UiOrchestratorTests(SimpleTestCase):
         self.assertNotIn("booking", meta)
         self.assertTrue(meta.get("time_slots"))
         self.assertEqual(meta.get("primary_component"), "time_slots")
+
+    @patch("apps.chatbot.booking.discovery.suggest_specialties", return_value=([], ""))
+    def test_generic_book_launches_wizard_despite_stale_time_draft(self, _mock_suggest):
+        """Regression: leftover TIME-step draft + "i would like to book an
+        appointment" used to set launch=false (no card) while the text said
+        "Choose a time below." — the path picker must launch instead."""
+        nlu = type(
+            "N",
+            (),
+            {
+                "entities": type(
+                    "E",
+                    (),
+                    {
+                        "date": None,
+                        "time": None,
+                        "doctor_name": None,
+                        "service": None,
+                        "specialty": None,
+                    },
+                )(),
+                "service_filter_mode": None,
+            },
+        )()
+        meta = build_ui_meta(
+            clinic=type("C", (), {"name": "Test", "phone": ""})(),
+            intent="book_appointment",
+            route="direct_response",
+            sql_results=[],
+            message="i would like to book an appointment",
+            nlu=nlu,
+            ui_priority="booking",
+            exec_plan_booking=True,
+            last_doctor={"id": "elena", "name": "Elena Rostova"},
+            active_booking={
+                "booking_id": "stale-1",
+                "step": "time",
+                "mode": "choose_doctor",
+                "doctor_id": "elena",
+            },
+        )
+        self.assertIn("booking", meta)
+        self.assertTrue(meta["booking"]["launch"])
+        self.assertNotIn("doctor_id", meta["booking"])
+        self.assertNotIn("booking_id", meta["booking"])

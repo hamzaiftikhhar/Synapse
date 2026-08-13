@@ -222,7 +222,7 @@ export default function DoctorsPage() {
       </DataTableShell>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>{editing ? "Edit doctor" : "Add doctor"}</DialogTitle>
           </DialogHeader>
@@ -259,7 +259,6 @@ export default function DoctorsPage() {
             </label>
             {specialties.length > 0 || services.length > 0 ? (
               <div className="space-y-1.5">
-                <Label>Specialties &amp; services offered</Label>
                 <SpecialtyServicePicker
                   specialties={specialties}
                   services={services}

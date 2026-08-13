@@ -3,11 +3,10 @@ import type { Doctor, DoctorUpdateInput, Service, Specialty } from "@/types/api"
 type UpdateDoctor = (args: { id: string; input: DoctorUpdateInput }) => Promise<unknown>;
 
 /**
- * Booking's default `specialty_first` mode hides doctors with no
- * DoctorSpecialty / DoctorService rows. Catalog steps no longer ask the
- * owner to tick those boxes — so any still-unlinked doctor is assigned
- * every current specialty and/or service (same default the old combined
- * page applied on Continue). Existing links are left alone.
+ * Booking eligibility is doctors ↔ services. Catalog steps no longer ask
+ * the owner to tick those boxes — so any still-unlinked doctor is assigned
+ * every current service. Specialties stay optional (discovery only) and
+ * are not auto-linked. Existing links are left alone.
  */
 export async function ensureDoctorCatalogLinks({
   doctors,

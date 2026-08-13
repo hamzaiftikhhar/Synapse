@@ -100,6 +100,10 @@ _TEMPLATES: dict[str, str] = {
         "I want to make sure I help you correctly — could you tell me a bit "
         "more about what you're looking for?"
     ),
+    # Booking — acknowledge intent; the wizard is the next step (never claim
+    # times/slots are "below" unless availability SQL actually returned them).
+    "BOOKING_START": "Sure — let's get you booked.",
+    "BOOKING_START_SERVICE": "Let's get {service} booked.",
     # Human handoff
     "HANDOFF_HUMAN": (
         "Of course — let me connect you with a team member. "

@@ -165,7 +165,7 @@ class Command(BaseCommand):
                 },
                 "ai": {"model": "gpt-4o-mini", "temperature": 0.3},
                 "booking": {
-                    "mode": "specialty_first",
+                    "mode": "service_first",
                     "ai_discovery": True,
                     "require_auth": True,
                     "max_slots_preview": 5,

@@ -28,7 +28,14 @@ class MapInsuranceTests(SimpleTestCase):
 
     def test_forwards_is_accepted_false(self):
         row = {"id": "1", "provider_name": "Medicaid", "is_accepted": False}
-        self.assertFalse(_map_insurance(row)["is_accepted"])
+        mapped = _map_insurance(row)
+        self.assertFalse(mapped["is_accepted"])
+        self.assertNotIn("select_message", mapped)
+
+    def test_accepted_plan_keeps_booking_select_message(self):
+        row = {"id": "1", "provider_name": "Aetna", "plan_name": "Gold", "is_accepted": True}
+        mapped = _map_insurance(row)
+        self.assertEqual(mapped["select_message"], "Continue booking with Aetna Gold")
 
 
 class MapServiceTests(SimpleTestCase):

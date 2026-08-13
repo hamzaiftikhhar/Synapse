@@ -13,7 +13,10 @@ from django.utils import timezone
 _TZ = ZoneInfo("America/New_York")
 
 from apps.appointments.models import Appointment, AppointmentStatus
+from apps.chatbot.booking.service import BookingService
 from apps.chatbot.booking.slots import active_holds_for_date, compute_slots_for_day
+from apps.chatbot.booking.state import BookingStep
+from apps.chatbot.models import ChatSession, ChatSessionStatus
 from apps.clinics.models import Clinic
 from apps.doctors.models import Doctor, DoctorLeave, DoctorSchedule
 from apps.patients.models import Patient
@@ -115,6 +118,221 @@ class ComputeSlotsForDayTests(TestCase):
             self.clinic, target_date=self.target_date, doctors=[self.doctor], max_slots=2
         )
         self.assertLessEqual(len(slots), 2)
+
+
+class PerDoctorSlotIsolationTests(TestCase):
+    """Each doctor must own their own timetable. Selecting or generating
+    slots for Dr. A on a day must not leak Dr. B's hours, even when both
+    are free at the same clock time."""
+
+    def setUp(self):
+        self.clinic = Clinic.objects.create(
+            slug="per-doc-slots",
+            name="Per Doctor Clinic",
+            email="perdoc@clinic.com",
+            phone="+12125550022",
+            timezone="America/New_York",
+        )
+        self.morning_doc = Doctor.objects.create(
+            clinic=self.clinic, full_name="Dr. Morning", is_active=True
+        )
+        self.afternoon_doc = Doctor.objects.create(
+            clinic=self.clinic, full_name="Dr. Afternoon", is_active=True
+        )
+        self.overlap_doc = Doctor.objects.create(
+            clinic=self.clinic, full_name="Dr. Overlap", is_active=True
+        )
+        self.target_date = _next_weekday(0)
+        weekday = self.target_date.weekday()
+        DoctorSchedule.objects.create(
+            clinic=self.clinic,
+            doctor=self.morning_doc,
+            day_of_week=weekday,
+            start_time=time(9, 0),
+            end_time=time(11, 0),
+            slot_duration_min=30,
+        )
+        DoctorSchedule.objects.create(
+            clinic=self.clinic,
+            doctor=self.afternoon_doc,
+            day_of_week=weekday,
+            start_time=time(14, 0),
+            end_time=time(16, 0),
+            slot_duration_min=30,
+        )
+        DoctorSchedule.objects.create(
+            clinic=self.clinic,
+            doctor=self.overlap_doc,
+            day_of_week=weekday,
+            start_time=time(9, 0),
+            end_time=time(11, 0),
+            slot_duration_min=30,
+        )
+
+    def test_compute_slots_tags_each_row_with_its_doctor(self):
+        slots = compute_slots_for_day(
+            self.clinic,
+            target_date=self.target_date,
+            doctors=[self.morning_doc, self.afternoon_doc],
+        )
+        by_doctor = {}
+        for slot in slots:
+            by_doctor.setdefault(slot["doctor_id"], set()).add(slot["label"])
+        self.assertEqual(
+            by_doctor[str(self.morning_doc.id)],
+            {"09:00 AM", "09:30 AM", "10:00 AM", "10:30 AM"},
+        )
+        self.assertEqual(
+            by_doctor[str(self.afternoon_doc.id)],
+            {"02:00 PM", "02:30 PM", "03:00 PM", "03:30 PM"},
+        )
+
+    def test_slots_for_one_doctor_do_not_include_the_other(self):
+        from apps.chatbot.booking.serializers import _slots_for_day
+
+        morning = _slots_for_day(
+            self.clinic,
+            target_date=self.target_date,
+            doctor_id=str(self.morning_doc.id),
+            service_id=None,
+            mode="choose_doctor",
+        )
+        afternoon = _slots_for_day(
+            self.clinic,
+            target_date=self.target_date,
+            doctor_id=str(self.afternoon_doc.id),
+            service_id=None,
+            mode="choose_doctor",
+        )
+        self.assertTrue(morning)
+        self.assertTrue(afternoon)
+        self.assertTrue(all(s["doctor_id"] == str(self.morning_doc.id) for s in morning))
+        self.assertTrue(all(s["doctor_id"] == str(self.afternoon_doc.id) for s in afternoon))
+        self.assertTrue(
+            {s["label"] for s in morning}.isdisjoint({s["label"] for s in afternoon})
+        )
+
+    def test_overlapping_clock_times_have_distinct_ids_and_holds(self):
+        from apps.chatbot.booking.serializers import _slots_for_day
+
+        morning = _slots_for_day(
+            self.clinic,
+            target_date=self.target_date,
+            doctor_id=str(self.morning_doc.id),
+            service_id=None,
+            mode="choose_doctor",
+        )
+        overlap = _slots_for_day(
+            self.clinic,
+            target_date=self.target_date,
+            doctor_id=str(self.overlap_doc.id),
+            service_id=None,
+            mode="choose_doctor",
+        )
+        morning_ids = {s["id"] for s in morning}
+        overlap_ids = {s["id"] for s in overlap}
+        self.assertTrue(morning_ids)
+        self.assertTrue(overlap_ids)
+        self.assertTrue(morning_ids.isdisjoint(overlap_ids))
+
+        held_start = next(s for s in morning if s["label"] == "09:00 AM")
+        held = compute_slots_for_day(
+            self.clinic,
+            target_date=self.target_date,
+            doctors=[self.overlap_doc],
+            excluded_keys={f"{self.morning_doc.id}|{held_start['start']}"},
+        )
+        self.assertIn("09:00 AM", [s["label"] for s in held])
+
+    def test_time_options_follow_the_pinned_doctor(self):
+        from apps.chatbot.booking.serializers import _time_options
+        from apps.chatbot.booking.state import BookingSession
+
+        session = BookingSession(
+            booking_id="test-time-options",
+            clinic_id=str(self.clinic.id),
+            mode="choose_doctor",
+            step="time",
+            doctor_id=str(self.afternoon_doc.id),
+            doctor_name="Dr. Afternoon",
+            date=self.target_date.isoformat(),
+            show_all_times=True,
+        )
+        options = _time_options(self.clinic, session, {"max_slots_preview": 40})
+        slots = options["slots"]
+        self.assertTrue(slots)
+        self.assertTrue(all(s["doctor_id"] == str(self.afternoon_doc.id) for s in slots))
+        self.assertNotIn("09:00 AM", [s["label"] for s in slots])
+        self.assertEqual(options["doctor_name"], "Dr. Afternoon")
+
+
+class WizardPerDoctorTimeStepTests(TestCase):
+    def setUp(self):
+        self.clinic = Clinic.objects.create(
+            slug="wizard-per-doc",
+            name="Wizard Per Doc",
+            email="wizard-per-doc@clinic.com",
+            phone="+12125550023",
+            timezone="America/New_York",
+        )
+        self.doc_a = Doctor.objects.create(
+            clinic=self.clinic, full_name="Dr. Alpha", is_active=True
+        )
+        self.doc_b = Doctor.objects.create(
+            clinic=self.clinic, full_name="Dr. Beta", is_active=True
+        )
+        self.target_date = _next_weekday(0)
+        weekday = self.target_date.weekday()
+        DoctorSchedule.objects.create(
+            clinic=self.clinic,
+            doctor=self.doc_a,
+            day_of_week=weekday,
+            start_time=time(9, 0),
+            end_time=time(10, 0),
+            slot_duration_min=30,
+        )
+        DoctorSchedule.objects.create(
+            clinic=self.clinic,
+            doctor=self.doc_b,
+            day_of_week=weekday,
+            start_time=time(15, 0),
+            end_time=time(16, 0),
+            slot_duration_min=30,
+        )
+        self.chat_session = ChatSession.objects.create(
+            clinic=self.clinic,
+            session_token="tok-per-doc",
+            status=ChatSessionStatus.ACTIVE,
+        )
+
+    def _times_for(self, doctor: Doctor) -> list[dict]:
+        started = BookingService.start(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            doctor_id=str(doctor.id),
+            doctor_name=doctor.full_name,
+        )
+        dated = BookingService.apply_step(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            booking_id=started["booking_id"],
+            action="select_date",
+            value={"date": self.target_date.isoformat()},
+        )
+        self.assertEqual(dated["step"], BookingStep.TIME.value)
+        return dated["options"]["slots"]
+
+    def test_switching_doctor_loads_that_doctors_slots_only(self):
+        slots_a = self._times_for(self.doc_a)
+        self.assertTrue(all(s["doctor_id"] == str(self.doc_a.id) for s in slots_a))
+        self.assertEqual({s["label"] for s in slots_a}, {"09:00 AM", "09:30 AM"})
+
+        slots_b = self._times_for(self.doc_b)
+        self.assertTrue(all(s["doctor_id"] == str(self.doc_b.id) for s in slots_b))
+        self.assertEqual({s["label"] for s in slots_b}, {"03:00 PM", "03:30 PM"})
+        self.assertTrue(
+            {s["id"] for s in slots_a}.isdisjoint({s["id"] for s in slots_b})
+        )
 
 
 class ActiveHoldsForDateTests(TestCase):

@@ -109,11 +109,11 @@ def suggest_specialties(
         names = ", ".join(r["name"] for r in rows[:2])
         guidance = (
             f"Based on what you described, you may want to start with {names}. "
-            "These are suggestions — not a diagnosis. You can choose another specialty or continue chatting."
+            "These are suggestions — not a diagnosis. You can choose a service or continue chatting."
         )
     else:
         guidance = (
-            "I can help you book an appointment. Choose a specialty to continue, "
+            "I can help you book an appointment. Choose a service to continue, "
             "or pick a doctor directly."
         )
 

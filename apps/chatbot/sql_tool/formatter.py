@@ -139,8 +139,12 @@ def format_sql_results(results: list[dict[str, Any]]) -> str:
                     or "I couldn't find matching insurance plans in our records for that."
                 )
                 continue
-            # Searchable insurance list renders as cards — short prose only
-            parts.append("Search your plan below.")
+            # Named miss / mixed results already have an honest Yes/No summary.
+            # Browse (accepted-only) still uses the searchable card list intro.
+            if any(not row.get("is_accepted", True) for row in rows):
+                parts.append(summary or "We currently don't accept that plan.")
+            else:
+                parts.append("Search your plan below.")
             continue
 
         if handler == "services_offered":

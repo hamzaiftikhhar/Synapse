@@ -985,12 +985,16 @@ class ChatEngine:
             # Day/time already given → slots speak; don't dump discovery prompt.
             if has_schedule or has_availability or has_patient_appointments:
                 booking_text = ""
-            elif booking_commit:
-                booking_text = "Choose a time below."
-            elif matched_services or last_doctor or last_specialty:
-                booking_text = "Pick a time below to continue."
             else:
-                booking_text = "How would you like to book?"
+                from apps.chatbot.response_templates import get_response
+
+                svc_name = ""
+                if matched_services:
+                    svc_name = str((matched_services[0] or {}).get("name") or "").strip()
+                if svc_name:
+                    booking_text = get_response("BOOKING_START_SERVICE", service=svc_name)
+                else:
+                    booking_text = get_response("BOOKING_START")
 
         if exec_plan.direct_mode == "medical_advice_refusal":
             return self._medical_advice_refusal_reply()

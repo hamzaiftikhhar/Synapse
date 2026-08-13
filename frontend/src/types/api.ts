@@ -586,7 +586,7 @@ export type WidgetConfig = {
       require_auth?: boolean;
       verification_mode?: "sms" | "email" | "sms_or_email" | "none";
       slot_duration_min?: number;
-      mode?: "doctor_first" | "specialty_first" | "general";
+      mode?: "doctor_first" | "service_first" | "specialty_first" | "general";
     };
     feature_flags?: Record<string, boolean>;
   };
@@ -659,6 +659,7 @@ export type BookingStepPayload = {
   reason?: string;
   guidance?: string;
   suggested_specialties?: BookingSpecialty[];
+  service_chip?: { id: string; name: string } | null;
   specialty_chip?: { id: string; name: string } | null;
   options: Record<string, unknown>;
   hold?: { expires_at: string } | null;

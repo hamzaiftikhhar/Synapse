@@ -27,6 +27,19 @@ def _nlu_has_schedule_constraints(nlu: Any) -> bool:
     )
 
 
+def _nlu_has_booking_pins(nlu: Any) -> bool:
+    """Who/what/when extracted from THIS message — not leftover session context."""
+    if nlu is None:
+        return False
+    ents = getattr(nlu, "entities", None)
+    if ents is None:
+        return False
+    return any(
+        _entity_nonempty(getattr(ents, key, None))
+        for key in ("doctor_name", "service", "specialty", "date", "time")
+    )
+
+
 def _has_availability_handler(sql_results: list[dict[str, Any]]) -> bool:
     return any(block.get("handler") == "doctor_availability" for block in sql_results)
 
@@ -104,7 +117,15 @@ def build_ui_meta(
             Intent.RESCHEDULE_APPOINTMENT.value,
         }
     ):
-        booking_in_progress = bool(active_booking) and active_booking.get("step") != "confirmed"
+        from apps.chatbot.routing.signals import is_generic_book_request
+
+        nlu_pins = _nlu_has_booking_pins(nlu)
+        generic_restart = is_generic_book_request(message) and not nlu_pins
+        booking_in_progress = (
+            bool(active_booking)
+            and active_booking.get("step") != "confirmed"
+            and not generic_restart
+        )
 
         suggested, guidance = ([], "")
         if not booking_in_progress:
@@ -123,15 +144,16 @@ def build_ui_meta(
         }
         if booking_in_progress:
             booking["booking_id"] = active_booking.get("booking_id")
-        if last_doctor:
+        # A bare "book an appointment" must not inherit last turn's doctor.
+        if last_doctor and not generic_restart:
             booking["doctor_id"] = last_doctor.get("id")
             booking["doctor_name"] = last_doctor.get("name")
         # Only pin specialty when the patient already chose one in this session
         # (e.g. specialty chip). AI suggestions stay in suggested_specialties only.
-        if last_specialty and last_specialty.get("id"):
+        if last_specialty and last_specialty.get("id") and not generic_restart:
             booking["specialty_id"] = last_specialty.get("id")
             booking["specialty_name"] = last_specialty.get("name")
-        if last_service and last_service.get("id"):
+        if last_service and last_service.get("id") and not generic_restart:
             booking["service_id"] = last_service.get("id")
             booking["service_name"] = last_service.get("name")
         if last_insurance and last_insurance.get("name"):
@@ -539,15 +561,19 @@ def _map_appointment(row: dict[str, Any]) -> dict[str, Any]:
 def _map_insurance(row: dict[str, Any]) -> dict[str, Any]:
     provider = row.get("provider_name", "")
     plan = row.get("plan_name", "")
-    return {
+    accepted = bool(row.get("is_accepted", True))
+    mapped: dict[str, Any] = {
         "id": row.get("id"),
         "name": provider,
         "plan": plan,
         "notes": row.get("notes", ""),
-        "is_accepted": row.get("is_accepted", True),
-        "select_message": f"Continue booking with {provider}"
-        + (f" {plan}" if plan else ""),
+        "is_accepted": accepted,
     }
+    if accepted:
+        mapped["select_message"] = f"Continue booking with {provider}" + (
+            f" {plan}" if plan else ""
+        )
+    return mapped
 
 
 def _map_service(row: dict[str, Any]) -> dict[str, Any]:

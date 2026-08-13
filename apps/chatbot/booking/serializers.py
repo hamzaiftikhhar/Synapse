@@ -24,12 +24,17 @@ def serialize_step(clinic: Any, session: BookingSession) -> dict[str, Any]:
         "progress": {"current": current, "total": total},
         "reason": session.reason,
         "specialty_chip": None,
+        "service_chip": None,
         "options": {},
         "hold": None,
         "confirmation": None,
     }
 
-    if session.specialty_id and session.specialty_name:
+    if session.service_id and session.service_name:
+        chip = {"id": session.service_id, "name": session.service_name}
+        payload["service_chip"] = chip
+        payload["specialty_chip"] = chip  # legacy key; chip is the booked service
+    elif session.specialty_id and session.specialty_name:
         payload["specialty_chip"] = {
             "id": session.specialty_id,
             "name": session.specialty_name,
@@ -38,8 +43,8 @@ def serialize_step(clinic: Any, session: BookingSession) -> dict[str, Any]:
     step = session.step
     if step == BookingStep.PATH.value:
         payload["options"] = _path_options(clinic, session, cfg)
-    elif step == BookingStep.SPECIALTY.value:
-        payload["options"] = _specialty_options(clinic, session)
+    elif step in {BookingStep.SERVICE.value, BookingStep.SPECIALTY.value}:
+        payload["options"] = _service_options(clinic, session)
     elif step == BookingStep.DOCTOR.value:
         payload["options"] = _doctor_options(clinic, session)
     elif step == BookingStep.DATE.value:
@@ -96,7 +101,7 @@ def _hero_slot(clinic: Any, cfg: dict[str, Any]) -> dict[str, Any] | None:
     tz = clinic_timezone(clinic)
     today = timezone.now().astimezone(tz).date()
     horizon = int(cfg.get("hero_horizon_days") or 3)
-    doctors = _doctors_for_session(clinic, doctor_id=None, specialty_id=None, mode="general")
+    doctors = _doctors_for_session(clinic, doctor_id=None, service_id=None, mode="general")
     if not doctors:
         return None
 
@@ -115,29 +120,34 @@ def _hero_slot(clinic: Any, cfg: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-def _specialty_options(clinic: Any, session: BookingSession) -> dict[str, Any]:
-    from apps.specialties.models import Specialty
+def _service_options(clinic: Any, session: BookingSession) -> dict[str, Any]:
+    from apps.services.models import Service
 
-    qs = Specialty.objects.filter(
+    qs = Service.objects.filter(
         clinic=clinic, is_deleted=False, is_active=True
     ).order_by("name")
-    all_specs = [
+    if session.specialty_id:
+        # Discovery bridge: Dermatology → Botox, Acne Consultation.
+        # Specialty never determines booking eligibility — only which
+        # services are listed when chat already pinned an area of care.
+        qs = qs.filter(doctors__specialties__id=session.specialty_id).distinct()
+    all_services = [
         {
             "id": str(s.id),
             "name": s.name,
-            "slug": s.slug,
+            "slug": getattr(s, "slug", "") or "",
             "description": (s.description or "")[:200],
-            "doctor_count": s.doctors.filter(is_deleted=False, is_active=True).count(),
+            "doctor_count": s.doctors.filter(
+                is_deleted=False, is_active=True, is_accepting_patients=True
+            ).count(),
         }
         for s in qs
     ]
-    suggested_ids = set(session.suggested_specialty_ids or [])
-    suggested = [s for s in all_specs if s["id"] in suggested_ids]
     return {
-        "search_placeholder": "Condition, procedure or specialty",
-        "suggested": suggested,
-        "all": all_specs,
-        "title": "Choose a specialty",
+        "search_placeholder": "Search services",
+        "suggested": [],
+        "all": all_services,
+        "title": "Choose a service",
         "subtitle": "",
     }
 
@@ -152,11 +162,11 @@ def _doctor_options(clinic: Any, session: BookingSession) -> dict[str, Any]:
             is_active=True,
             is_accepting_patients=True,
         )
-        .prefetch_related("specialties")
+        .prefetch_related("specialties", "services")
         .order_by("full_name")
     )
-    if session.specialty_id:
-        qs = qs.filter(doctor_specialties__specialty_id=session.specialty_id).distinct()
+    if session.service_id:
+        qs = qs.filter(doctor_services__service_id=session.service_id).distinct()
 
     doctors = []
     for d in qs[:20]:
@@ -171,6 +181,7 @@ def _doctor_options(clinic: Any, session: BookingSession) -> dict[str, Any]:
                 "photo_url": row.get("photo_url") or "",
                 "languages": row.get("languages") or [],
                 "specialties": row.get("specialties") or [],
+                "services": row.get("services") or [],
                 "next_available": next_slot,
             }
         )
@@ -178,8 +189,8 @@ def _doctor_options(clinic: Any, session: BookingSession) -> dict[str, Any]:
         "title": "Choose a doctor",
         "doctors": doctors,
         "empty_message": (
-            "No doctors found for this specialty. Clear the filter to see all doctors."
-            if session.specialty_id
+            "No doctors currently offer this service."
+            if session.service_id
             else "No doctors are currently accepting patients."
         ),
     }
@@ -194,7 +205,7 @@ def _date_options(clinic: Any, session: BookingSession, cfg: dict[str, Any]) -> 
     end = today + timedelta(days=horizon - 1)
 
     doctors = _doctors_for_session(
-        clinic, doctor_id=session.doctor_id, specialty_id=session.specialty_id, mode=session.mode
+        clinic, doctor_id=session.doctor_id, service_id=session.service_id, mode=session.mode
     )
     density_by_date = (
         compute_density_for_range(
@@ -250,7 +261,7 @@ def _time_options(clinic: Any, session: BookingSession, cfg: dict[str, Any]) -> 
         clinic,
         target_date=target,
         doctor_id=session.doctor_id,
-        specialty_id=session.specialty_id,
+        service_id=session.service_id,
         mode=session.mode,
     )
 
@@ -295,6 +306,8 @@ def _slot_time_of_day(slot: dict[str, Any]) -> time:
 
 def _slot_summary(session: BookingSession) -> str:
     parts = []
+    if session.service_name:
+        parts.append(session.service_name)
     if session.doctor_name:
         parts.append(session.doctor_name)
     if session.date:
@@ -317,7 +330,7 @@ def _next_available_slot(clinic: Any, doctor: Any) -> dict[str, Any] | None:
             clinic,
             target_date=d,
             doctor_id=str(doctor.id),
-            specialty_id=None,
+            service_id=None,
             mode="choose_doctor",
         )
         if slots:
@@ -329,14 +342,17 @@ def _doctors_for_session(
     clinic: Any,
     *,
     doctor_id: str | None,
-    specialty_id: str | None,
+    service_id: str | None,
     mode: str,
 ) -> list[Any]:
     """The doctor-set-selection filter shared by _slots_for_day,
     _next_available_slot, _hero_slot, and the calendar density preview — the
     one place this filter logic lives (does not cover _doctor_options, which
     needs the full Doctor objects + prefetch_related for card rendering with
-    its own limit=20)."""
+    its own limit=20).
+
+    Booking eligibility is doctors ↔ services. Specialty is never used here.
+    """
     from apps.doctors.models import Doctor
 
     doctor_qs = Doctor.objects.filter(
@@ -347,9 +363,9 @@ def _doctors_for_session(
     )
     if doctor_id:
         doctor_qs = doctor_qs.filter(id=doctor_id)
-    elif specialty_id:
+    elif service_id:
         doctor_qs = doctor_qs.filter(
-            doctor_specialties__specialty_id=specialty_id
+            doctor_services__service_id=service_id
         ).distinct()
 
     # For general / first-available without a pinned doctor: scan more providers
@@ -362,13 +378,13 @@ def _slots_for_day(
     *,
     target_date: date,
     doctor_id: str | None,
-    specialty_id: str | None,
+    service_id: str | None,
     mode: str,
 ) -> list[dict[str, Any]]:
     from apps.chatbot.booking.slots import active_holds_for_date, compute_slots_for_day
 
     doctors = _doctors_for_session(
-        clinic, doctor_id=doctor_id, specialty_id=specialty_id, mode=mode
+        clinic, doctor_id=doctor_id, service_id=service_id, mode=mode
     )
     if not doctors:
         return []
