@@ -553,6 +553,7 @@ def _map_appointment(row: dict[str, Any]) -> dict[str, Any]:
         "service": row.get("service", ""),
         "start_time": row.get("start_time", ""),
         "end_time": row.get("end_time", ""),
+        "when": row.get("when", ""),
         "status": row.get("status", ""),
         "confirmation_code": row.get("confirmation_code", ""),
     }

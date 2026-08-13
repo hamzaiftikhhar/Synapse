@@ -84,6 +84,8 @@ export type AppointmentCardData = {
   service?: string;
   start_time: string;
   end_time?: string;
+  /** Clinic-local 12-hour label from the backend, e.g. "Fri 14 Aug, 12:00 AM". */
+  when?: string;
   status?: string;
   confirmation_code?: string;
 };

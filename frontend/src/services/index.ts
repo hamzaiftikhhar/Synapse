@@ -317,6 +317,7 @@ export const widgetAppointmentsService = {
       service_name: string | null;
       start_time: string;
       end_time: string;
+      when?: string;
     }>("/widget/appointments/reschedule", input);
     return data;
   },

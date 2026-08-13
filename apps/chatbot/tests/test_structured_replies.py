@@ -85,3 +85,24 @@ class StructuredRepliesTests(SimpleTestCase):
             ]
         )
         self.assertEqual(text, "Search your plan below.")
+
+    def test_patient_appointments_uses_when_not_iso(self):
+        text = format_sql_results(
+            [
+                {
+                    "handler": "patient_appointments",
+                    "found": True,
+                    "rows": [
+                        {
+                            "doctor": "Dr. Chloe Bennett",
+                            "start_time": "2026-08-13T19:00:00+00:00",
+                            "when": "Fri 14 Aug, 12:00 AM",
+                            "status": "confirmed",
+                        }
+                    ],
+                }
+            ]
+        )
+        self.assertIn("Fri 14 Aug, 12:00 AM", text)
+        self.assertNotIn("T19:00:00", text)
+        self.assertNotIn("+00:00", text)

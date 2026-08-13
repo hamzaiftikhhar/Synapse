@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { format } from "date-fns";
 import { ArrowDown, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -726,13 +727,12 @@ export function ChatWidget({
             session_token: patientSessionToken(),
             appointment_id: appointmentId,
           });
-          const currentWhen = new Date(result.start_time).toLocaleString(undefined, {
-            weekday: "short",
-            month: "short",
-            day: "numeric",
-            hour: "numeric",
-            minute: "2-digit",
-          });
+          const start = new Date(result.start_time);
+          const currentWhen =
+            result.when ||
+            (Number.isNaN(start.getTime())
+              ? result.start_time
+              : format(start, "EEE d MMM, h:mm a"));
           setMessages((prev) => [
             ...prev,
             systemNoticeMessage(

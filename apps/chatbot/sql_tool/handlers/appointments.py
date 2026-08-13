@@ -5,6 +5,7 @@ from __future__ import annotations
 from django.utils import timezone
 
 from apps.chatbot.sql_tool.base import SQLContext, SQLResult
+from apps.chatbot.sql_tool.utils import clinic_timezone, format_clinic_when
 
 
 def patient_appointments(ctx: SQLContext) -> SQLResult:
@@ -32,6 +33,7 @@ def patient_appointments(ctx: SQLContext) -> SQLResult:
         status__in=[AppointmentStatus.PENDING, AppointmentStatus.CONFIRMED],
     )[:10]
 
+    tz = clinic_timezone(ctx.clinic)
     rows = [
         {
             "id": str(a.id),
@@ -41,6 +43,7 @@ def patient_appointments(ctx: SQLContext) -> SQLResult:
             "insurance": a.insurance_plan.provider_name if a.insurance_plan else "",
             "start_time": a.start_time.isoformat(),
             "end_time": a.end_time.isoformat(),
+            "when": format_clinic_when(a.start_time, tz),
             "status": a.status,
             "confirmation_code": a.confirmation_code,
         }

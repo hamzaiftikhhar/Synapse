@@ -222,6 +222,12 @@ class PatientAppointmentsTests(SQLToolTestBase):
         result = patient_appointments(ctx)
         self.assertTrue(result.found)
         self.assertEqual(result.rows[0]["confirmation_code"], "SQL001")
+        when = result.rows[0]["when"]
+        self.assertRegex(when, r"\d{1,2}:\d{2} [AP]M")
+        self.assertNotIn("T", when)
+        text = format_sql_results([result.to_dict()])
+        self.assertIn(when, text)
+        self.assertNotIn("T10:00", text)
 
 
 class SQLToolDispatcherTests(SQLToolTestBase):

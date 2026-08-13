@@ -13,6 +13,7 @@ from apps.api.chat.router import _fallback_out, _to_out
 from apps.api.chat.schemas import ChatMessageOut
 from apps.chatbot.engine import ChatEngine
 from apps.chatbot.marketing_engine import MarketingEngine
+from apps.chatbot.sql_tool.utils import clinic_timezone, format_clinic_when
 from apps.clinics.models import Clinic, ClinicStatus
 from apps.widget.models import WidgetSettings
 
@@ -56,6 +57,7 @@ class AppointmentCardOut(Schema):
     service: str = ""
     start_time: str
     end_time: str = ""
+    when: str = ""
     status: str = ""
     confirmation_code: str = ""
 
@@ -78,6 +80,7 @@ class AppointmentRescheduleOut(Schema):
     service_name: str | None = None
     start_time: str
     end_time: str
+    when: str = ""
 
 
 def _resolve_clinic(slug: str) -> Clinic:
@@ -205,6 +208,7 @@ def reschedule_appointment(request, payload: AppointmentActionIn):
         service_name=appt.service.name if appt.service else None,
         start_time=appt.start_time.isoformat(),
         end_time=appt.end_time.isoformat(),
+        when=format_clinic_when(appt.start_time, clinic_timezone(clinic)),
     )
 
 
@@ -232,6 +236,7 @@ def list_appointments(request, payload: AppointmentsListIn):
         .order_by("start_time")[:10]
     )
 
+    tz = clinic_timezone(clinic)
     return AppointmentsListOut(
         appointments=[
             AppointmentCardOut(
@@ -241,6 +246,7 @@ def list_appointments(request, payload: AppointmentsListIn):
                 service=a.service.name if a.service else "",
                 start_time=a.start_time.isoformat(),
                 end_time=a.end_time.isoformat(),
+                when=format_clinic_when(a.start_time, tz),
                 status=a.status,
                 confirmation_code=a.confirmation_code,
             )

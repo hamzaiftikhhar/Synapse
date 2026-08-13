@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-import re
 from datetime import date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -31,6 +30,18 @@ def clinic_timezone(clinic: Any) -> ZoneInfo:
         return ZoneInfo(str(tz_name))
     except Exception:
         return ZoneInfo("UTC")
+
+
+def format_clinic_when(dt: datetime, tz: ZoneInfo) -> str:
+    """Patient-facing datetime: 'Fri 14 Aug, 12:00 AM' in clinic local time.
+
+    Always 12-hour with AM/PM so midnight is never shown as 0:00.
+    """
+    if timezone.is_naive(dt):
+        dt = timezone.make_aware(dt, ZoneInfo("UTC"))
+    local = dt.astimezone(tz)
+    clock = local.strftime("%I:%M %p").lstrip("0")
+    return f"{local.strftime('%a')} {local.day} {local.strftime('%b')}, {clock}"
 
 
 def parse_natural_date(raw: str | None, *, tz: ZoneInfo | None = None) -> date | None:

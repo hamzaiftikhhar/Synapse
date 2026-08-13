@@ -1,20 +1,17 @@
 "use client";
 
 import { useState } from "react";
+import { format } from "date-fns";
 import { Button } from "@/components/ui/button";
 import { ChatInlineCard } from "@/features/chat/components/chat-inline-card";
 import type { AppointmentCardData, ChatActionHandler } from "@/types/chat";
 
-function formatWhen(startIso: string): string {
-  const d = new Date(startIso);
-  if (Number.isNaN(d.getTime())) return startIso;
-  return d.toLocaleString(undefined, {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
+function formatWhen(appt: AppointmentCardData): string {
+  if (appt.when) return appt.when;
+  const d = new Date(appt.start_time);
+  if (Number.isNaN(d.getTime())) return appt.start_time;
+  // Always 12-hour with AM/PM — 24-hour locales otherwise render midnight as "0:00".
+  return format(d, "EEE d MMM, h:mm a");
 }
 
 type Stage = null | "cancel-confirm" | "reschedule-confirm" | "reschedule-options";
@@ -33,7 +30,7 @@ function AppointmentCard({
       <div className="rounded-lg border border-border bg-card p-3">
         <p className="text-sm font-medium text-foreground">Cancel appointment?</p>
         <p className="mt-0.5 text-xs text-muted-foreground">
-          {appt.doctor} · {formatWhen(appt.start_time)}
+          {appt.doctor} · {formatWhen(appt)}
         </p>
         <p className="mt-1.5 text-xs text-muted-foreground">
           This appointment will be cancelled.
@@ -67,7 +64,7 @@ function AppointmentCard({
       <div className="rounded-lg border border-border bg-card p-3">
         <p className="text-sm font-medium text-foreground">Reschedule appointment?</p>
         <p className="mt-0.5 text-xs text-muted-foreground">
-          {appt.doctor} · {formatWhen(appt.start_time)}
+          {appt.doctor} · {formatWhen(appt)}
         </p>
         <div className="mt-2.5 flex gap-2">
           <Button
@@ -124,7 +121,7 @@ function AppointmentCard({
       {appt.service ? (
         <p className="text-xs text-muted-foreground">{appt.service}</p>
       ) : null}
-      <p className="mt-1 text-xs text-foreground">{formatWhen(appt.start_time)}</p>
+      <p className="mt-1 text-xs text-foreground">{formatWhen(appt)}</p>
       <div className="mt-2.5 flex gap-2">
         <Button
           type="button"

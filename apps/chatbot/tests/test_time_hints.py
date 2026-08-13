@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
-from datetime import time
+from datetime import datetime, time, timezone as dt_timezone
+from zoneinfo import ZoneInfo
 
 from django.test import SimpleTestCase
 
 from apps.chatbot.nlu.entity_extract import extract_entities
-from apps.chatbot.sql_tool.utils import is_asap_request, is_same_day_request, parse_time_floor
+from apps.chatbot.sql_tool.utils import (
+    format_clinic_when,
+    is_asap_request,
+    is_same_day_request,
+    parse_time_floor,
+)
 
 
 class ParseTimeFloorTests(SimpleTestCase):
@@ -83,3 +89,16 @@ class EntityExtractDateTimePatternsTests(SimpleTestCase):
         self.assertIn("same day", same_day["date"])
         asap = extract_entities("need an appointment asap")
         self.assertIn("asap", asap["date"])
+
+
+class FormatClinicWhenTests(SimpleTestCase):
+    def test_midnight_is_12_am_not_0_00(self):
+        dt = datetime(2026, 8, 13, 19, 0, tzinfo=dt_timezone.utc)
+        label = format_clinic_when(dt, ZoneInfo("Asia/Karachi"))
+        self.assertEqual(label, "Fri 14 Aug, 12:00 AM")
+        self.assertNotIn("0:00", label)
+
+    def test_afternoon_is_12_hour(self):
+        dt = datetime(2026, 8, 20, 12, 0, tzinfo=dt_timezone.utc)
+        label = format_clinic_when(dt, ZoneInfo("Asia/Karachi"))
+        self.assertEqual(label, "Thu 20 Aug, 5:00 PM")

@@ -166,7 +166,7 @@ def format_sql_results(results: list[dict[str, Any]]) -> str:
                 )
                 continue
             lines = [
-                f"- {r['doctor']} on {r['start_time']} ({r['status']})"
+                f"- {r['doctor']} on {r.get('when') or r.get('start_time')} ({r['status']})"
                 for r in rows[:5]
             ]
             parts.append("Your upcoming appointments:\n" + "\n".join(lines))
