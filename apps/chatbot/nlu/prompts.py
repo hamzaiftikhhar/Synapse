@@ -49,7 +49,18 @@ def build_user_prompt(
         ctx = {
             k: v
             for k, v in conversation_context.items()
-            if k not in {"document_catalog", "services", "history", "messages", "turns"}
+            if k
+            not in {
+                "document_catalog",
+                "services",
+                "history",
+                "messages",
+                "turns",
+                # Confirmed/in-progress booking JSON is the #1 source of the
+                # classifier copying leftover dates into a bare "book an
+                # appointment" turn.
+                "booking",
+            }
         }
         parts = []
         if catalog:

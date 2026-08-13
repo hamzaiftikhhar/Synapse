@@ -40,6 +40,24 @@ class EntityGuardUnitTests(SimpleTestCase):
             entity_grounded_in_message("heart surgery", "which doctors offer heart surgery?")
         )
 
+    def test_strips_booking_ctx_date_from_bare_book_request(self):
+        """Regression: confirmed booking JSON in NLU Ctx leaked
+        entities.date=2026-08-25 into 'I would like to book an appointment',
+        which then ran availability SQL for that leftover day at midnight."""
+        entities = ExtractedEntities(date="2026-08-25")
+        cleaned = sanitize_entities("I would like to book an appointment", entities)
+        self.assertIsNone(cleaned.date)
+
+    def test_keeps_date_when_message_names_the_day(self):
+        entities = ExtractedEntities(date="2026-08-25")
+        cleaned = sanitize_entities("book me for Thursday afternoon", entities)
+        self.assertEqual(cleaned.date, "2026-08-25")
+
+    def test_keeps_iso_date_typed_in_the_message(self):
+        entities = ExtractedEntities(date="2026-08-25")
+        cleaned = sanitize_entities("book 2026-08-25", entities)
+        self.assertEqual(cleaned.date, "2026-08-25")
+
 
 class DoctorBrowseSignalTests(SimpleTestCase):
     def test_browse_queries(self):
@@ -147,6 +165,20 @@ class DoctorBrowseIntegrationTests(TestCase):
         )
         self.assertEqual(len(names), 1)
         self.assertIn("Dr. Hamza Ali", names)
+
+    def test_heuristics_strip_leaked_booking_date(self):
+        nlu = NLUResult(
+            intent=Intent.BOOK_APPOINTMENT,
+            confidence=0.85,
+            entities=ExtractedEntities(date="2026-08-25"),
+            resolved_ids=ResolvedIds(),
+            needs_sql=True,
+        )
+        nlu = apply_routing_heuristics(
+            message="I would like to book an appointment",
+            nlu=nlu,
+        )
+        self.assertIsNone(nlu.entities.date)
 
     def test_heuristic_service_survives_sanitization(self):
         nlu = NLUResult(

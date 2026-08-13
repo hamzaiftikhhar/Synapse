@@ -20,6 +20,10 @@ _DATE_PATTERNS = [
     r"\basap\b",
     r"\bas\s+soon\s+as\s+possible\b",
     r"\bnext\s+available\b",
+    r"\b\d{4}-\d{2}-\d{2}\b",
+    r"\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|"
+    r"dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?\b",
 ]
 
 _TIME_PATTERNS = [

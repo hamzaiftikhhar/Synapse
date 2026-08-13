@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from django.test import SimpleTestCase
 
-from apps.chatbot.nlu.prompts import get_system_prompt
+from apps.chatbot.nlu.prompts import build_user_prompt, get_system_prompt
 
 
 class SystemPromptTests(SimpleTestCase):
@@ -19,3 +19,19 @@ class SystemPromptTests(SimpleTestCase):
         prompt = get_system_prompt()
         self.assertIn("only what the user's current message states", prompt)
         self.assertIn("never copy a name from them", prompt)
+
+    def test_user_prompt_omits_booking_draft(self):
+        prompt = build_user_prompt(
+            "I would like to book an appointment",
+            {
+                "booking": {
+                    "date": "2026-08-25",
+                    "step": "confirmed",
+                    "reason": "Reschedule with Dr. Mei-Ling Zhou",
+                },
+                "services": "Botox",
+            },
+        )
+        self.assertNotIn("2026-08-25", prompt)
+        self.assertNotIn("Mei-Ling", prompt)
+        self.assertIn("I would like to book an appointment", prompt)

@@ -227,3 +227,23 @@ class ExecutionPlanTests(SimpleTestCase):
         self.assertIn("availability", plan.sql_tasks)
         self.assertNotIn("general_faq", plan.vector_tasks)
         self.assertFalse(plan.booking)
+
+    def test_generic_book_without_date_does_not_run_availability(self):
+        """A bare book request must open the wizard, not leftover-day slots."""
+        nlu = parse_nlu_payload(
+            {
+                "intent": "book_appointment",
+                "confidence": 0.85,
+                "entities": {},
+            }
+        )
+        plan = build_execution_plan(
+            nlu=nlu,
+            facts=_facts(
+                nlu=nlu,
+                message="I would like to book an appointment",
+                is_booking_intent=True,
+            ),
+        )
+        self.assertTrue(plan.booking)
+        self.assertNotIn("availability", plan.sql_tasks)

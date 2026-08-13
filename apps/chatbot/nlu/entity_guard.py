@@ -17,10 +17,12 @@ _GROUNDED_ENTITY_FIELDS = (
 
 
 def sanitize_entities(message: str, entities: ExtractedEntities) -> ExtractedEntities:
-    """
-    Keep entity values only when grounded in the user's message.
+    """Keep entity values only when grounded in the user's message.
 
-    Does not strip date/time/symptom — those use separate extractors.
+    Date/time copied from conversation Ctx (e.g. a confirmed booking's
+    ISO date) must not survive a message that never mentioned a day.
+    If the message *does* contain date language ("Thursday", "tomorrow"),
+    keep the classifier's resolved value.
     """
     msg = (message or "").strip()
     if not msg:
@@ -36,6 +38,18 @@ def sanitize_entities(message: str, entities: ExtractedEntities) -> ExtractedEnt
             updates[field] = None
         elif kept != raw:
             updates[field] = kept
+
+    from apps.chatbot.nlu.entity_extract import extract_entities
+
+    extracted = extract_entities(msg)
+    if getattr(entities, "date", None) and not extracted.get("date"):
+        kept_date = _filter_grounded_values(entities.date, msg)
+        if not kept_date:
+            updates["date"] = None
+    if getattr(entities, "time", None) and not extracted.get("time"):
+        kept_time = _filter_grounded_values(entities.time, msg)
+        if not kept_time:
+            updates["time"] = None
 
     if not updates:
         return entities

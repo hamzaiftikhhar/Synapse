@@ -53,8 +53,9 @@ def classify_message(
         services = conversation_context.get("services")
         if isinstance(services, str) and len(services) > 300:
             conversation_context["services"] = services[:300]
-        # Drop bulky history blobs from Small LLM
-        for key in ("history", "messages", "turns"):
+        # Drop bulky history blobs and booking drafts from Small LLM.
+        # Leftover booking.date was being copied into entities.date.
+        for key in ("history", "messages", "turns", "booking"):
             conversation_context.pop(key, None)
 
     if getattr(settings, "NLU_ENABLE_RULES", True):

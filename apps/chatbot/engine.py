@@ -112,6 +112,7 @@ class ChatEngine:
             timeline = apply_recovery(recovery, timeline)
             ctx = save_timeline(ctx, timeline)
         nlu_ctx = dict(ctx) if isinstance(ctx, dict) else {}
+        nlu_ctx.pop("booking", None)
         catalog_text = catalog_for_nlu_context(doc_catalog)
         if catalog_text:
             nlu_ctx["document_catalog"] = catalog_text[:1200]
