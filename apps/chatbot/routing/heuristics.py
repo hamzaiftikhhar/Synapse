@@ -16,6 +16,7 @@ from apps.chatbot.routing.signals import (
     is_service_list_query,
     is_specialty_list_query,
     is_transactional_booking,
+    is_typo_book_request,
     looks_like_about_service,
     looks_like_knowledge_question,
     match_services_in_message,
@@ -136,6 +137,21 @@ def apply_routing_heuristics(
             raw=raw,
             filter_mode=filter_mode,
         )
+
+    # Nano hallucinates view_appointments / unknown on 2-word typos of "book me".
+    # Message shape wins: never dump an appointment list from a garbled book.
+    if is_typo_book_request(message) and intent not in {
+        Intent.CANCEL_APPOINTMENT,
+        Intent.RESCHEDULE_APPOINTMENT,
+        Intent.EMERGENCY,
+    }:
+        intent = Intent.BOOK_APPOINTMENT
+        needs_sql = False
+        needs_vector = False
+        needs_llm = False
+        clarification_needed = False
+        can_direct = False
+        raw["sql_tool"] = None
 
     if is_specialty_list_query(message) and intent in {
         Intent.UNKNOWN,

@@ -17,6 +17,18 @@ from django.utils import timezone
 
 from apps.chatbot.sql_tool.utils import clinic_timezone, slot_to_dict
 
+# HTML <input type="time"> empty values save as 00:00. A midnight open with a
+# daytime close is treated as the 9:00 default, not a 24-hour clinic.
+_MIDNIGHT = time(0, 0)
+_DAYTIME_FLOOR = time(6, 0)
+_DEFAULT_OPEN = time(9, 0)
+
+
+def effective_schedule_window(start: time, end: time) -> tuple[time, time]:
+    if start == _MIDNIGHT and end > _DAYTIME_FLOOR:
+        return _DEFAULT_OPEN, end
+    return start, end
+
 
 def compute_slots_for_day(
     clinic: Any,
@@ -70,11 +82,14 @@ def compute_slots_for_day(
             day_of_week=day_of_week,
             is_active=True,
         ):
+            open_at, close_at = effective_schedule_window(
+                sched.start_time, sched.end_time
+            )
             slot_start = timezone.make_aware(
-                datetime.combine(target_date, sched.start_time), tz
+                datetime.combine(target_date, open_at), tz
             )
             slot_end = timezone.make_aware(
-                datetime.combine(target_date, sched.end_time), tz
+                datetime.combine(target_date, close_at), tz
             )
             duration = timedelta(minutes=sched.slot_duration_min)
             current = slot_start
@@ -128,9 +143,12 @@ def weekday_capacity(clinic: Any, doctors: Iterable[Any]) -> dict[int, int]:
     ).values("day_of_week", "start_time", "end_time", "slot_duration_min")
     for row in rows:
         duration = row["slot_duration_min"] or 30
+        open_at, close_at = effective_schedule_window(
+            row["start_time"], row["end_time"]
+        )
         minutes = (
-            row["end_time"].hour * 60 + row["end_time"].minute
-        ) - (row["start_time"].hour * 60 + row["start_time"].minute)
+            close_at.hour * 60 + close_at.minute
+        ) - (open_at.hour * 60 + open_at.minute)
         if minutes > 0 and duration > 0:
             capacity[row["day_of_week"]] += minutes // duration
     return capacity

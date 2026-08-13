@@ -155,6 +155,7 @@ class ChatEngine:
             is_doctor_availability_query,
             is_service_list_query,
             is_specialty_list_query,
+            is_typo_book_request,
             is_urgent_availability_request,
             match_services_in_message,
             mentions_doctor,
@@ -263,13 +264,25 @@ class ChatEngine:
         )
         knowledge_q = looks_like_knowledge_question(message)
         is_booking_intent = (
-            nlu_result.intent
-            in {
-                Intent.BOOK_APPOINTMENT,
-                Intent.RESCHEDULE_APPOINTMENT,
-            }
-            and (is_transactional_booking(message) or booking_commit)
-            and not knowledge_q
+            (
+                nlu_result.intent
+                in {
+                    Intent.BOOK_APPOINTMENT,
+                    Intent.RESCHEDULE_APPOINTMENT,
+                }
+                and (is_transactional_booking(message) or booking_commit)
+                and not knowledge_q
+            )
+            or (
+                is_typo_book_request(message)
+                and nlu_result.intent
+                not in {
+                    Intent.CANCEL_APPOINTMENT,
+                    Intent.RESCHEDULE_APPOINTMENT,
+                    Intent.EMERGENCY,
+                }
+                and not knowledge_q
+            )
         )
 
         soft_medical = (

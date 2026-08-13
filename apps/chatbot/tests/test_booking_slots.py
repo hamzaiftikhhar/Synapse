@@ -102,6 +102,18 @@ class ComputeSlotsForDayTests(TestCase):
         self.assertEqual(len(slots), 3)
         self.assertNotIn("09:00 AM", [s["label"] for s in slots])
 
+    def test_midnight_open_is_treated_as_nine_am(self):
+        DoctorSchedule.objects.filter(doctor=self.doctor).update(
+            start_time=time(0, 0), end_time=time(17, 0)
+        )
+        slots = compute_slots_for_day(
+            self.clinic, target_date=self.target_date, doctors=[self.doctor]
+        )
+        labels = [s["label"] for s in slots]
+        self.assertTrue(labels)
+        self.assertNotIn("12:00 AM", labels)
+        self.assertEqual(labels[0], "09:00 AM")
+
     def test_excluded_keys_removes_held_slot(self):
         start = datetime.combine(self.target_date, time(9, 0), tzinfo=_TZ)
         key = f"{self.doctor.id}|{start.isoformat()}"

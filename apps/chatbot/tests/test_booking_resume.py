@@ -107,6 +107,30 @@ class BookingResumeTests(TestCase):
         self.assertNotEqual(first["booking_id"], second["booking_id"])
         self.assertEqual(second["step"], BookingStep.PATH.value)
 
+    def test_colloquial_book_does_not_resume_date_step(self):
+        first = BookingService.start(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            doctor_id=str(self.doctor_a.id),
+            doctor_name="Dr. A",
+        )
+        self.chat_session.refresh_from_db()
+        booking = self.chat_session.conversation_context["booking"]
+        booking["step"] = BookingStep.DATE.value
+        booking["date"] = timezone.localdate().isoformat()
+        self.chat_session.conversation_context["booking"] = booking
+        self.chat_session.save(update_fields=["conversation_context"])
+
+        second = BookingService.start(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            message="can you book me",
+        )
+
+        self.assertFalse(second["resumed"])
+        self.assertNotEqual(first["booking_id"], second["booking_id"])
+        self.assertEqual(second["step"], BookingStep.PATH.value)
+
     def test_start_after_confirmed_creates_fresh_booking(self):
         first = BookingService.start(clinic=self.clinic, chat_session=self.chat_session)
         self.chat_session.refresh_from_db()

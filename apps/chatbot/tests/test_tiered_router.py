@@ -225,6 +225,40 @@ class HeuristicsTests(SimpleTestCase):
         self.assertNotEqual(out.intent, Intent.SERVICES_OFFERED)
         self.assertFalse(out.needs_sql)
 
+    def test_heuristics_override_view_hallucination_on_book_typo(self):
+        nlu = parse_nlu_payload(
+            {
+                "intent": "view_appointments",
+                "confidence": 0.95,
+                "needs_sql": True,
+                "sql_tool": "appointments",
+            }
+        )
+        out = apply_routing_heuristics(
+            message="koob me",
+            nlu=nlu,
+            document_catalog=[],
+        )
+        self.assertEqual(out.intent, Intent.BOOK_APPOINTMENT)
+        self.assertFalse(out.needs_sql)
+
+    def test_heuristics_keep_real_view_appointments(self):
+        nlu = parse_nlu_payload(
+            {
+                "intent": "view_appointments",
+                "confidence": 0.95,
+                "needs_sql": True,
+                "sql_tool": "appointments",
+            }
+        )
+        out = apply_routing_heuristics(
+            message="show my appointments",
+            nlu=nlu,
+            document_catalog=[],
+        )
+        self.assertEqual(out.intent, Intent.VIEW_APPOINTMENTS)
+        self.assertTrue(out.needs_sql)
+
     def test_decision_drops_needs_llm_without_vector(self):
         nlu = parse_nlu_payload(
             {

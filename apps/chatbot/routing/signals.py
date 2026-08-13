@@ -245,16 +245,127 @@ _GENERIC_DOCTOR_RE = re.compile(
 )
 
 
-def is_generic_book_request(message: str) -> bool:
-    """True for a bare "book an appointment" with no who/what/when.
+# Real English words one edit from "book". Never treat these as typos.
+_BOOK_FALSE_FRIENDS = frozenset(
+    {
+        "look",
+        "cook",
+        "hook",
+        "took",
+        "nook",
+        "rook",
+        "boom",
+        "boot",
+        "boon",
+        "boob",
+        "brook",
+        "books",
+    }
+)
 
-    These phrases classify as book_appointment (NLU fallback) but must open
-    the PATH picker — not resume a leftover TIME step or claim slots exist.
+_BOOK_OBJECT_TOKENS = frozenset(
+    {"me", "appointment", "appointments", "visit", "slot", "slots", "us"}
+)
+
+_VIEW_APPOINTMENT_RE = re.compile(
+    r"\b("
+    r"(?:show|view|find|list|see|check)\s+(?:my\s+)?(?:upcoming\s+)?appointments?|"
+    r"look\s+up\s+my\s+appointments?|"
+    r"my\s+(?:upcoming\s+|next\s+)?appointments?|"
+    r"do\s+i\s+have\s+(?:an?\s+)?appointments?|"
+    r"(?:what(?:'s|\s+is)|whats)\s+my\s+(?:next\s+)?appointments?|"
+    r"(?:next|upcoming|existing|scheduled)\s+appointments?|"
+    r"appointments?\s+(?:i\s+have|coming\s+up)"
+    r")\b",
+    re.I,
+)
+
+
+def _edit_distance(a: str, b: str, *, max_dist: int = 1) -> int:
+    if a == b:
+        return 0
+    if abs(len(a) - len(b)) > max_dist:
+        return max_dist + 1
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        curr = [i]
+        row_min = i
+        for j, cb in enumerate(b, 1):
+            v = min(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + (ca != cb))
+            curr.append(v)
+            if v < row_min:
+                row_min = v
+        if row_min > max_dist:
+            return max_dist + 1
+        prev = curr
+    return prev[-1]
+
+
+def looks_like_book_verb(token: str) -> bool:
+    """True for book/schedule or a 1-edit / anagram typo of 'book'.
+
+    'koob' is 'book' reversed (Levenshtein 2) — same letters, not a
+    real English word. False friends like 'look' are excluded.
+    """
+    t = re.sub(r"[^a-z]", "", (token or "").lower())
+    if not t:
+        return False
+    if t in {"book", "booking", "schedule", "scheduled", "reschedule"}:
+        return True
+    if t in _BOOK_FALSE_FRIENDS:
+        return False
+    if not (3 <= len(t) <= 5):
+        return False
+    if _edit_distance(t, "book") <= 1:
+        return True
+    return len(t) == 4 and sorted(t) == sorted("book")
+
+
+def is_view_appointments_request(message: str) -> bool:
+    """True when the utterance itself asks to look up existing appointments."""
+    text = message or ""
+    if not text.strip():
+        return False
+    return bool(_VIEW_APPOINTMENT_RE.search(text))
+
+
+def is_typo_book_request(message: str) -> bool:
+    """True for short garbled 'book me' / 'bbok me' — not a phrase allowlist.
+
+    Nano maps the same 2-word typo to book / view / clarify at random.
+    Python owns this shape: a near-miss of 'book' plus a booking object.
+    """
+    tokens = " ".join((message or "").lower().strip().rstrip("!.?").split()).split()
+    if not tokens or len(tokens) > 5:
+        return False
+    if is_view_appointments_request(message):
+        return False
+    if not any(looks_like_book_verb(t) for t in tokens):
+        return False
+    return any(t in _BOOK_OBJECT_TOKENS for t in tokens)
+
+
+def is_generic_book_request(message: str) -> bool:
+    """True for a bare book request with no who/what/when.
+
+    Must open the PATH picker — not resume a leftover TIME/DOCTOR draft.
+    Exact canonical phrases still match; so do "can you book me", "i want
+    to book", and noisy messages that contain a book request but no pin.
     """
     text = " ".join((message or "").lower().strip().rstrip("!.?").split())
     if not text:
         return False
-    return text in BOOKING_COMMIT_EXACT or text == "start booking"
+    if text in BOOKING_COMMIT_EXACT or text == "start booking":
+        return True
+    if not is_transactional_booking(text):
+        return False
+    if is_booking_commit(text):
+        return False
+    if _DAY_TOKEN_RE.search(text):
+        return False
+    if re.search(r"\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b", text, re.I):
+        return False
+    return True
 
 
 def is_booking_commit(message: str, *, doctor_name: Any = None) -> bool:
@@ -322,6 +433,8 @@ def is_informational(message: str) -> bool:
 def is_transactional_booking(message: str) -> bool:
     """True only when the user is asking to create/change a booking."""
     text = message or ""
+    if is_typo_book_request(text):
+        return True
     if not _TRANSACTIONAL_BOOK_RE.search(text):
         return False
     # "when should I book" / "how do I book" stay informational if question-framed

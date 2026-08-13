@@ -241,3 +241,44 @@ class UiOrchestratorTests(SimpleTestCase):
         self.assertTrue(meta["booking"]["launch"])
         self.assertNotIn("doctor_id", meta["booking"])
         self.assertNotIn("booking_id", meta["booking"])
+
+    @patch("apps.chatbot.booking.discovery.suggest_specialties", return_value=([], ""))
+    def test_colloquial_book_restarts_stale_date_draft(self, _mock_suggest):
+        nlu = type(
+            "N",
+            (),
+            {
+                "entities": type(
+                    "E",
+                    (),
+                    {
+                        "date": None,
+                        "time": None,
+                        "doctor_name": None,
+                        "service": None,
+                        "specialty": None,
+                    },
+                )(),
+                "service_filter_mode": None,
+            },
+        )()
+        meta = build_ui_meta(
+            clinic=type("C", (), {"name": "Test", "phone": ""})(),
+            intent="book_appointment",
+            route="direct_response",
+            sql_results=[],
+            message="can you book me",
+            nlu=nlu,
+            ui_priority="booking",
+            exec_plan_booking=True,
+            last_doctor={"id": "tariq", "name": "Dr. Tariq Al-Mansoor"},
+            active_booking={
+                "booking_id": "stale-date",
+                "step": "date",
+                "mode": "choose_doctor",
+                "doctor_id": "tariq",
+            },
+        )
+        self.assertTrue(meta["booking"]["launch"])
+        self.assertNotIn("doctor_id", meta["booking"])
+        self.assertNotIn("booking_id", meta["booking"])

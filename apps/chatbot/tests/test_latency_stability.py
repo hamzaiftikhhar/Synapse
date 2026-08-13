@@ -16,6 +16,8 @@ from apps.chatbot.routing.signals import (
     is_booking_commit,
     is_generic_book_request,
     is_transactional_booking,
+    is_typo_book_request,
+    is_view_appointments_request,
 )
 
 
@@ -69,6 +71,43 @@ class PlannerStabilityTests(SimpleTestCase):
         self.assertTrue(is_generic_book_request("I would like to book an appointment!"))
         self.assertFalse(is_booking_commit(msg))
         self.assertTrue(is_booking_commit("book with Dr. Rostova"))
+
+    def test_colloquial_book_requests_are_generic(self):
+        for msg in (
+            "can you book me",
+            "i want ot book",
+            "i want to book",
+            "book me",
+            "write book me an appointment detailed essay on clinic and also",
+        ):
+            self.assertTrue(is_generic_book_request(msg), msg)
+
+    def test_named_when_or_who_is_not_generic(self):
+        self.assertFalse(is_generic_book_request("book with Dr. Tariq"))
+        self.assertFalse(is_generic_book_request("book me Friday"))
+        self.assertFalse(is_generic_book_request("book at 3pm"))
+
+    def test_typo_book_me_is_transactional_not_a_lookup(self):
+        for msg in ("koob me", "bbok me", "bok me", "boook me"):
+            self.assertTrue(is_typo_book_request(msg), msg)
+            self.assertTrue(is_transactional_booking(msg), msg)
+            self.assertTrue(is_generic_book_request(msg), msg)
+            self.assertFalse(is_view_appointments_request(msg), msg)
+
+    def test_real_words_near_book_are_not_typos(self):
+        self.assertFalse(is_typo_book_request("look me"))
+        self.assertFalse(is_typo_book_request("cook me"))
+        self.assertFalse(is_typo_book_request("hook me"))
+
+    def test_view_language_is_not_a_book_typo(self):
+        for msg in (
+            "show my appointments",
+            "do I have an appointment",
+            "what's my next appointment",
+            "check my appointment",
+        ):
+            self.assertTrue(is_view_appointments_request(msg), msg)
+            self.assertFalse(is_typo_book_request(msg), msg)
 
 
 class ResponseDeadlineTests(SimpleTestCase):

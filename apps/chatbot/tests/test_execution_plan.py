@@ -247,3 +247,61 @@ class ExecutionPlanTests(SimpleTestCase):
         )
         self.assertTrue(plan.booking)
         self.assertNotIn("availability", plan.sql_tasks)
+
+    def test_hallucinated_view_on_book_typo_does_not_run_appointments_sql(self):
+        nlu = parse_nlu_payload(
+            {
+                "intent": "view_appointments",
+                "confidence": 0.95,
+                "needs_sql": True,
+                "sql_tool": "appointments",
+            }
+        )
+        plan = build_execution_plan(
+            nlu=nlu,
+            facts=_facts(nlu=nlu, message="koob me", is_booking_intent=False),
+        )
+        self.assertNotIn("appointments", plan.sql_tasks)
+        self.assertFalse(plan.booking)
+
+    def test_typo_book_with_booking_intent_opens_wizard_not_lookup(self):
+        nlu = parse_nlu_payload(
+            {
+                "intent": "book_appointment",
+                "confidence": 0.2,
+                "needs_sql": True,
+                "sql_tool": "appointments",
+            }
+        )
+        plan = build_execution_plan(
+            nlu=nlu,
+            facts=_facts(
+                nlu=nlu,
+                message="koob me",
+                is_booking_intent=True,
+                prefer_clarify=True,
+            ),
+        )
+        self.assertTrue(plan.booking)
+        self.assertNotIn("appointments", plan.sql_tasks)
+        self.assertFalse(plan.clarify)
+
+    def test_real_view_request_still_runs_appointments_sql(self):
+        nlu = parse_nlu_payload(
+            {
+                "intent": "view_appointments",
+                "confidence": 0.95,
+                "needs_sql": True,
+                "sql_tool": "appointments",
+            }
+        )
+        plan = build_execution_plan(
+            nlu=nlu,
+            facts=_facts(
+                nlu=nlu,
+                message="show my appointments",
+                is_booking_intent=False,
+            ),
+        )
+        self.assertIn("appointments", plan.sql_tasks)
+        self.assertFalse(plan.booking)

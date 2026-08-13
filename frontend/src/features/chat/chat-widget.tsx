@@ -354,8 +354,16 @@ export function ChatWidget({
           lastBookingMetaRef.current = bookingMeta as Record<string, unknown>;
         }
         const bookingUpdate = parsed.bookingUpdate;
+        const launchedWizard = parsed.messages.some((m) => m.type === "booking_wizard");
         setMessages((prev) => {
-          const next = [...prev, ...parsed.messages];
+          const base = launchedWizard
+            ? prev.map((m) =>
+                m.type === "booking_wizard" && !m.payload?.completed
+                  ? { ...m, payload: { ...(m.payload ?? {}), completed: true } }
+                  : m
+              )
+            : prev;
+          const next = [...base, ...parsed.messages];
           if (!bookingUpdate) return next;
           const visible = next.find(
             (m) =>

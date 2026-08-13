@@ -16,6 +16,7 @@ from typing import Any
 
 from apps.chatbot.nlu.schemas import Intent, NLUResult, Route
 from apps.chatbot.routing.lanes import Lane
+from apps.chatbot.routing.signals import is_view_appointments_request
 
 # ── Capability tables (Python source of truth) ───────────────────────────────
 
@@ -599,6 +600,13 @@ def build_execution_plan(*, nlu: NLUResult, facts: PlannerFacts) -> ExecutionPla
             _INTENT_TOPIC_DOMAIN.get(intent), nlu
         ):
             continue
+        # VIEW_APPOINTMENTS is the exception: nano labels "koob me" as a
+        # lookup at 0.95 or 0.2 at random. Require the utterance itself
+        # to ask for existing appointments before attaching SQL.
+        if intent == Intent.VIEW_APPOINTMENTS and not is_view_appointments_request(
+            message
+        ):
+            continue
         for task in _INTENT_SQL_TASKS.get(intent, []):
             add_sql(task)
         if intent in _VECTOR_INTENTS:
@@ -729,7 +737,14 @@ def build_execution_plan(*, nlu: NLUResult, facts: PlannerFacts) -> ExecutionPla
         if not (facts.knowledge_q and facts.has_catalog):
             vector_tasks = []
 
-    # Prefer clarify when confidence policy says so and no grounded tasks
+    # Prefer clarify when confidence policy says so and no grounded tasks.
+    # Drop appointment SQL that survived from a hallucinated VIEW intent
+    # when the message never asked to look appointments up.
+    if "appointments" in sql_tasks and nlu.intent == Intent.VIEW_APPOINTMENTS:
+        if not is_view_appointments_request(message) and not _CHECK_APPOINTMENT_RE.search(
+            message
+        ):
+            sql_tasks = [t for t in sql_tasks if t != "appointments"]
     clarify = False
     if nlu.clarification_needed or nlu.intent == Intent.UNKNOWN:
         if not sql_tasks and not vector_tasks and not booking:
