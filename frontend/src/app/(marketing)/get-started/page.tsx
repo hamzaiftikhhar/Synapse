@@ -15,8 +15,10 @@ import { getApiErrorMessage } from "@/lib/api/client";
 import { applicationsService } from "@/services";
 
 const PLAN_LABELS: Record<string, { name: string; price: string }> = {
-  starter: { name: "Starter", price: "$299 / month" },
-  growth: { name: "Growth", price: "$699 / month" },
+  starter: { name: "Starter", price: "$29 / month" },
+  growth: { name: "Professional", price: "$49 / month" },
+  professional: { name: "Professional", price: "$49 / month" },
+  enterprise: { name: "Enterprise", price: "$99 / month" },
 };
 
 const schema = z.object({
@@ -62,7 +64,7 @@ export default function GetStartedPage() {
         website: values.website || "",
         num_doctors: values.num_doctors ? Number(values.num_doctors) : null,
         current_scheduling_system: values.current_scheduling_system || "",
-        plan_slug: planSlug,
+        plan_slug: planSlug === "professional" ? "growth" : planSlug,
         notes: values.notes || "",
       });
       setSubmitted(true);

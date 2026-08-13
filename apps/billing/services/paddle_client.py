@@ -116,3 +116,13 @@ def change_subscription_price(
     }
     result = _request("PATCH", f"/subscriptions/{paddle_subscription_id}", body=body)
     return result.get("data") or {}
+
+
+def clear_scheduled_change(paddle_subscription_id: str) -> dict[str, Any]:
+    """Undo a scheduled cancellation (keep the plan)."""
+    result = _request(
+        "PATCH",
+        f"/subscriptions/{paddle_subscription_id}",
+        body={"scheduled_change": None},
+    )
+    return result.get("data") or {}

@@ -24,6 +24,7 @@ export async function openPaddleCheckout(options: {
   environment: "sandbox" | "live";
   priceId: string;
   customerId: string;
+  clinicId?: string;
 }): Promise<void> {
   const paddle = await getPaddleInstance(options.environment);
   if (!paddle) {
@@ -32,5 +33,8 @@ export async function openPaddleCheckout(options: {
   paddle.Checkout.open({
     items: [{ priceId: options.priceId, quantity: 1 }],
     customer: { id: options.customerId },
+    ...(options.clinicId
+      ? { customData: { clinic_id: options.clinicId } }
+      : {}),
   });
 }

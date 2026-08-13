@@ -35,8 +35,8 @@ export default function PricingPage() {
         </h1>
         <p className="mx-auto mt-4 max-w-lg text-center text-[15px] leading-relaxed text-white/55">
           Monthly plans for a clinical AI assistant — booking, insurance
-          answers, and 24/7 patient chat. Starter and Professional go live in
-          days.
+          answers, and 24/7 patient chat. Starter, Professional, and
+          Enterprise go live in days.
         </p>
 
         <div className="mt-16">

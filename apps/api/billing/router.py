@@ -129,6 +129,7 @@ def create_checkout(request, payload: CheckoutIn):
         paddle_environment=settings.PADDLE_ENVIRONMENT,
         paddle_price_id=price_id,
         paddle_customer_id=sub.paddle_customer_id,
+        clinic_id=str(clinic.id),
     )
 
 
@@ -162,6 +163,37 @@ def cancel_subscription(request, payload: CancelSubscriptionIn):
     )
 
     # Local state is NOT mutated here — Paddle's webhook is authoritative.
+    return _subscription_out(sub)
+
+
+@router.post("/subscription/resume", response=SubscriptionOut, auth=jwt_auth)
+def resume_subscription(request):
+    """Clear a scheduled Paddle cancellation so the plan keeps renewing."""
+    clinic = clinic_from(request)
+    _require_owner(request)
+
+    sub = Subscription.objects.select_related("plan").filter(clinic=clinic).first()
+    if sub is None or not sub.paddle_subscription_id:
+        raise HttpError(400, "No active subscription")
+
+    if not paddle_client.is_configured():
+        raise HttpError(503, "Billing is not configured")
+
+    try:
+        paddle_client.clear_scheduled_change(sub.paddle_subscription_id)
+    except paddle_client.PaddleAPIError as exc:
+        raise HttpError(502, "Could not reach Paddle") from exc
+
+    write_audit(
+        action=AuditAction.SUBSCRIPTION_CANCEL_REQUESTED,
+        actor=request.auth.user,  # type: ignore[attr-defined]
+        clinic=clinic,
+        object_type="subscription",
+        object_id=str(sub.id),
+        metadata={"resumed": True},
+        ip_address=client_ip(request),
+    )
+
     return _subscription_out(sub)
 
 

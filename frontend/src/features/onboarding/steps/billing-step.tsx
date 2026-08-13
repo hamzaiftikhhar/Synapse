@@ -70,6 +70,7 @@ export function BillingStep() {
         environment: checkout.paddle_environment,
         priceId: checkout.paddle_price_id,
         customerId: checkout.paddle_customer_id,
+        clinicId: checkout.clinic_id,
       });
       startPolling();
     } catch (err) {

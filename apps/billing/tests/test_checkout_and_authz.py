@@ -18,6 +18,7 @@ PLANS_URL = "/api/v1/billing/plans"
 SUBSCRIPTION_URL = "/api/v1/billing/subscription"
 CHECKOUT_URL = "/api/v1/billing/checkout"
 CANCEL_URL = "/api/v1/billing/subscription/cancel"
+RESUME_URL = "/api/v1/billing/subscription/resume"
 CHANGE_PLAN_URL = "/api/v1/billing/subscription/change-plan"
 
 
@@ -155,6 +156,44 @@ class CancelAndChangePlanAuthzTests(TestCase):
         mock_change.assert_called_once_with("sub_x", price_id="pri_growth_sandbox")
         self.sub.refresh_from_db()
         self.assertEqual(self.sub.plan_id, self.plan.id)  # unchanged — still starter
+
+    def test_immediate_cancel_calls_paddle_with_at_period_end_false(self):
+        with patch(
+            "apps.billing.services.paddle_client.cancel_subscription",
+            return_value={"status": "canceled"},
+        ) as mock_cancel:
+            resp = self.client.post(
+                CANCEL_URL, data={"at_period_end": False},
+                content_type="application/json", headers=self.headers,
+            )
+        self.assertEqual(resp.status_code, 200)
+        mock_cancel.assert_called_once_with("sub_x", at_period_end=False)
+        self.sub.refresh_from_db()
+        self.assertEqual(self.sub.status, SubscriptionStatus.ACTIVE)
+
+    def test_resume_clears_paddle_scheduled_change_without_local_mutate(self):
+        self.sub.cancel_at_period_end = True
+        self.sub.save(update_fields=["cancel_at_period_end"])
+        with patch(
+            "apps.billing.services.paddle_client.clear_scheduled_change",
+            return_value={"status": "active", "scheduled_change": None},
+        ) as mock_clear:
+            resp = self.client.post(
+                RESUME_URL, data={},
+                content_type="application/json", headers=self.headers,
+            )
+        self.assertEqual(resp.status_code, 200)
+        mock_clear.assert_called_once_with("sub_x")
+        self.sub.refresh_from_db()
+        self.assertTrue(self.sub.cancel_at_period_end)
+
+    def test_non_owner_cannot_resume(self):
+        headers = _non_owner_headers(clinic=self.clinic, email="staff4@example.com")
+        resp = self.client.post(
+            RESUME_URL, data={},
+            content_type="application/json", headers=headers,
+        )
+        self.assertEqual(resp.status_code, 403)
 
 
 @override_settings(PADDLE_API_KEY="test-key", PADDLE_ENVIRONMENT="sandbox")

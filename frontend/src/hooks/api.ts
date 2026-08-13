@@ -576,10 +576,11 @@ export function usePlans() {
   });
 }
 
-export function useSubscription() {
+export function useSubscription(options?: { watch?: boolean }) {
   return useQuery({
     queryKey: queryKeys.billingSubscription,
     queryFn: () => billingService.getSubscription(),
+    refetchInterval: options?.watch ? 3000 : false,
   });
 }
 
@@ -594,7 +595,9 @@ export function useCancelSubscription() {
   return useMutation({
     mutationFn: (input: CancelSubscriptionInput) =>
       billingService.cancelSubscription(input),
-    onSuccess: (data) => qc.setQueryData(queryKeys.billingSubscription, data),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.billingSubscription });
+    },
   });
 }
 
@@ -602,7 +605,19 @@ export function useChangePlan() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: ChangePlanInput) => billingService.changePlan(input),
-    onSuccess: (data) => qc.setQueryData(queryKeys.billingSubscription, data),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.billingSubscription });
+    },
+  });
+}
+
+export function useResumeSubscription() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => billingService.resumeSubscription(),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.billingSubscription });
+    },
   });
 }
 

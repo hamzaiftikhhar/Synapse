@@ -245,6 +245,56 @@ class WebhookDrivenClinicActivationTests(TestCase):
         self.sub.refresh_from_db()
         self.assertFalse(self.sub.has_access)
 
+    def test_orphaned_paddle_customer_attaches_to_incomplete_checkout(self):
+        """Paddle.js can mint a new customer at pay time. The webhook must
+        still land on the clinic that started checkout, not 200-and-ignore."""
+        self.sub.paddle_customer_id = "ctm_01luminacheckout"
+        self.sub.save(update_fields=["paddle_customer_id"])
+        body = _event_body(
+            event_id="evt_orphan_ctm",
+            event_type="subscription.activated",
+            customer_id="ctm_01brandnewfrompaddle",
+            status="active",
+        )
+        resp = self.client.post(
+            WEBHOOK_URL, data=body, content_type="application/json",
+            HTTP_PADDLE_SIGNATURE=_sign(body),
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.sub.refresh_from_db()
+        self.assertEqual(self.sub.status, SubscriptionStatus.ACTIVE)
+        self.assertEqual(self.sub.paddle_customer_id, "ctm_01brandnewfrompaddle")
+        self.assertEqual(self.sub.paddle_subscription_id, "sub_123")
+
+    def test_subscription_custom_data_clinic_id_matches(self):
+        other = Clinic.objects.create(
+            slug="other-clinic", name="Other", email="o2@example.com",
+            status=ClinicStatus.ACTIVE,
+        )
+        other_plan = self.plan
+        Subscription.objects.create(
+            clinic=other, plan=other_plan, paddle_customer_id="ctm_01other",
+            status=SubscriptionStatus.INCOMPLETE,
+        )
+        payload = json.loads(
+            _event_body(
+                event_id="evt_custom_clinic",
+                event_type="subscription.activated",
+                customer_id="ctm_01overlaynew",
+                status="active",
+            )
+        )
+        payload["data"]["custom_data"] = {"clinic_id": str(self.clinic.id)}
+        body = json.dumps(payload).encode("utf-8")
+        resp = self.client.post(
+            WEBHOOK_URL, data=body, content_type="application/json",
+            HTTP_PADDLE_SIGNATURE=_sign(body),
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.sub.refresh_from_db()
+        self.assertEqual(self.sub.status, SubscriptionStatus.ACTIVE)
+        self.assertEqual(self.sub.paddle_customer_id, "ctm_01overlaynew")
+
     def test_past_due_webhook_does_not_activate_clinic(self):
         body = _event_body(
             event_id="evt_past_due", event_type="subscription.updated",

@@ -803,6 +803,7 @@ export type CheckoutResponse = {
   paddle_environment: "sandbox" | "live";
   paddle_price_id: string;
   paddle_customer_id: string;
+  clinic_id: string;
 };
 
 export type CancelSubscriptionInput = {

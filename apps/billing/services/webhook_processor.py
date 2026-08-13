@@ -104,9 +104,46 @@ def _parse_occurred_at(value: str) -> datetime:
     return parsed
 
 
-def _resolve_clinic_id(customer_id: str) -> Any | None:
-    sub = Subscription.objects.filter(paddle_customer_id=customer_id).only("clinic_id").first()
+def _resolve_clinic_id(customer_id: str, data: dict[str, Any] | None = None) -> Any | None:
+    sub = _find_subscription(data or {"customer_id": customer_id})
     return sub.clinic_id if sub else None
+
+
+def _find_subscription(data: dict[str, Any]) -> Subscription | None:
+    """Locate the local Subscription this Paddle event belongs to.
+
+    Checkout always creates a local row first, but Paddle.js can mint a
+    *new* customer at pay time (email change, overlay fallback). Matching
+    only on paddle_customer_id then 200s the webhook and never flips
+    status — which is why billing stayed on "No active plan".
+    """
+    customer_id = data.get("customer_id") or ""
+    if customer_id:
+        sub = Subscription.objects.filter(paddle_customer_id=customer_id).first()
+        if sub is not None:
+            return sub
+
+    custom = data.get("custom_data") or {}
+    clinic_id = custom.get("clinic_id") if isinstance(custom, dict) else None
+    if clinic_id:
+        sub = Subscription.objects.filter(clinic_id=clinic_id).first()
+        if sub is not None:
+            if customer_id and sub.paddle_customer_id != customer_id:
+                sub.paddle_customer_id = customer_id
+            return sub
+
+    # Last resort: exactly one real incomplete checkout in flight.
+    if customer_id:
+        candidates = [
+            s
+            for s in Subscription.objects.filter(status=SubscriptionStatus.INCOMPLETE)
+            if (s.paddle_customer_id or "").startswith("ctm_01")
+        ]
+        if len(candidates) == 1:
+            sub = candidates[0]
+            sub.paddle_customer_id = customer_id
+            return sub
+    return None
 
 
 def _get_or_create_event(
@@ -142,15 +179,15 @@ def _resolve_plan(price_id: str) -> Plan | None:
     ).first()
 
 
-def _apply_subscription_event(data: dict[str, Any], occurred_at: datetime) -> None:
+def _apply_subscription_event(data: dict[str, Any], occurred_at: datetime) -> Subscription | None:
     customer_id = data.get("customer_id") or ""
-    sub = Subscription.objects.filter(paddle_customer_id=customer_id).first()
+    sub = _find_subscription(data)
     if sub is None:
         # No local row for this customer — our checkout flow always creates
         # one before Paddle ever sees the customer, so this means the event
         # is for a customer we don't recognize. Nothing to attach it to.
         logger.warning("Paddle webhook: no Subscription for customer_id=%s", customer_id)
-        return
+        return None
 
     if sub.occurred_at is not None and occurred_at <= sub.occurred_at:
         logger.info(
@@ -192,6 +229,7 @@ def _apply_subscription_event(data: dict[str, Any], occurred_at: datetime) -> No
     sub.save(
         update_fields=[
             "status",
+            "paddle_customer_id",
             "paddle_subscription_id",
             "current_period_start",
             "current_period_end",
@@ -206,6 +244,7 @@ def _apply_subscription_event(data: dict[str, Any], occurred_at: datetime) -> No
     from apps.billing.services.activation import maybe_activate_clinic
 
     maybe_activate_clinic(sub)
+    return sub
 
 
 def process_webhook(*, raw_body: bytes, signature_header: str | None, secret: str) -> None:
@@ -230,9 +269,11 @@ def process_webhook(*, raw_body: bytes, signature_header: str | None, secret: st
         raise SignatureError("Webhook body missing required fields")
 
     occurred_at = _parse_occurred_at(occurred_at_raw)
-    clinic_id = _resolve_clinic_id(data.get("customer_id") or "") if event_type.startswith(
-        "subscription."
-    ) else None
+    clinic_id = (
+        _resolve_clinic_id(data.get("customer_id") or "", data)
+        if event_type.startswith("subscription.")
+        else None
+    )
 
     event, created = _get_or_create_event(
         event_id=event_id,
@@ -242,18 +283,24 @@ def process_webhook(*, raw_body: bytes, signature_header: str | None, secret: st
         payload=body,
         clinic_id=clinic_id,
     )
-    if not created and event.status == BillingEventStatus.PROCESSED:
+    already_processed = not created and event.status == BillingEventStatus.PROCESSED
+    if already_processed and event.clinic_id is not None:
         logger.info("Paddle webhook: duplicate of already-processed event %s — no-op", event_id)
         return
 
     try:
         with transaction.atomic():
+            applied = None
             if event_type.startswith("subscription."):
-                _apply_subscription_event(data, occurred_at)
+                applied = _apply_subscription_event(data, occurred_at)
             event.status = BillingEventStatus.PROCESSED
             event.processed_at = dj_timezone.now()
             event.error = ""
-            event.save(update_fields=["status", "processed_at", "error"])
+            update = ["status", "processed_at", "error"]
+            if applied is not None and event.clinic_id is None:
+                event.clinic_id = applied.clinic_id
+                update.append("clinic_id")
+            event.save(update_fields=update)
     except Exception as exc:  # noqa: BLE001 - must record failure then re-raise
         event.status = BillingEventStatus.FAILED
         event.error = str(exc)[:2000]

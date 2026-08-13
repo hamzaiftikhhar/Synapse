@@ -556,6 +556,13 @@ export const billingService = {
     );
     return data;
   },
+  async resumeSubscription() {
+    const { data } = await api.post<import("@/types/api").Subscription>(
+      "/billing/subscription/resume",
+      {}
+    );
+    return data;
+  },
 };
 
 /* ─── Clinic applications (public "Get Started" intake) ───────── */

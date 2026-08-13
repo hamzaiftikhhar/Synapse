@@ -36,6 +36,7 @@ class CheckoutOut(Schema):
     paddle_environment: str
     paddle_price_id: str
     paddle_customer_id: str
+    clinic_id: str
 
 
 class CancelSubscriptionIn(Schema):
