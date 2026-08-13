@@ -14,6 +14,9 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { SpecialtyServicePicker } from "@/components/dashboard/specialty-service-picker";
+import { ImportGuide } from "@/features/importer/import-guide";
+import { ImportTriggerButton } from "@/features/importer/import-trigger-button";
+import { StepHint } from "@/features/onboarding/step-hint";
 import {
   useCreateService,
   useCreateSpecialty,
@@ -26,7 +29,9 @@ import {
   useUpdateService,
 } from "@/hooks/api";
 import { getApiErrorMessage } from "@/lib/api/client";
+import { useAuth } from "@/providers/auth-provider";
 import type { Doctor, Service, Specialty } from "@/types/api";
+import { SERVICE_TEMPLATES, type ServiceTemplate } from "../service-templates";
 import { ONBOARDING_FORM_ID, type OnboardingStepProps } from "../steps";
 
 function formatPrice(cents: number | null) {
@@ -54,12 +59,15 @@ function SpecialtiesSection() {
   }
 
   return (
-    <div className="space-y-3">
-      <div>
-        <Label className="text-sm font-medium text-navy">Specialties</Label>
-        <p className="mt-0.5 text-xs text-muted-foreground">
-          Broad areas of care — e.g. Dermatology, Orthodontics, Primary Care.
-        </p>
+    <div className="space-y-4 rounded-2xl border border-border bg-card p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <Label className="text-sm font-medium text-navy">Specialties</Label>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            Broad areas of care — e.g. Dermatology, Orthodontics, Primary Care.
+          </p>
+        </div>
+        <ImportTriggerButton recordType="specialties" />
       </div>
       <div className="flex flex-wrap gap-2">
         {specialties.map((s) => (
@@ -96,6 +104,9 @@ function SpecialtiesSection() {
           <Plus className="size-4" /> Add
         </Button>
       </div>
+      {specialties.length === 0 ? (
+        <ImportGuide recordType="specialties" compact />
+      ) : null}
     </div>
   );
 }
@@ -115,6 +126,7 @@ const EMPTY_SERVICE: ServiceForm = {
 };
 
 function ServicesSection() {
+  const { clinic } = useAuth();
   const { data, isLoading } = useServices({ limit: 100 });
   const create = useCreateService();
   const update = useUpdateService();
@@ -127,10 +139,22 @@ function ServicesSection() {
   const [priceError, setPriceError] = useState("");
 
   const services = data?.results ?? [];
+  const existingNames = new Set(services.map((s) => s.name.toLowerCase()));
+  const templates = (clinic?.clinic_type ? SERVICE_TEMPLATES[clinic.clinic_type] : undefined) ?? [];
+  const suggestions = templates.filter((t) => !existingNames.has(t.name.toLowerCase()));
 
-  function openCreate() {
+  function openCreate(template?: ServiceTemplate) {
     setEditing(null);
-    setForm(EMPTY_SERVICE);
+    setForm(
+      template
+        ? {
+            name: template.name,
+            duration_min: String(template.duration_min),
+            price_dollars: template.price_cents != null ? (template.price_cents / 100).toFixed(2) : "",
+            category: template.category ?? "",
+          }
+        : EMPTY_SERVICE
+    );
     setNameError("");
     setPriceError("");
     setOpen(true);
@@ -196,7 +220,7 @@ function ServicesSection() {
   }
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3 rounded-2xl border border-border bg-card p-5">
       <div>
         <Label className="text-sm font-medium text-navy">Services</Label>
         <p className="mt-0.5 text-xs text-muted-foreground">
@@ -204,14 +228,36 @@ function ServicesSection() {
         </p>
       </div>
 
+      {suggestions.length > 0 ? (
+        <div className="space-y-1.5">
+          <p className="text-xs font-medium text-muted-foreground">Suggested for you</p>
+          <div className="flex flex-wrap gap-1.5">
+            {suggestions.map((template) => (
+              <button
+                key={template.name}
+                type="button"
+                onClick={() => openCreate(template)}
+                className="inline-flex items-center gap-1 rounded-full border border-dashed border-border px-3 py-1 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary"
+              >
+                <Plus className="size-3" />
+                {template.name}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
       {isLoading ? (
         <p className="text-sm text-muted-foreground">Loading…</p>
       ) : services.length === 0 ? (
-        <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border px-6 py-10 text-center">
-          <p className="text-sm font-medium text-navy">Add the services patients can book</p>
-          <Button type="button" className="mt-4" onClick={openCreate}>
-            <Plus className="size-4" /> Add service
-          </Button>
+        <div className="space-y-4">
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" onClick={() => openCreate()}>
+              <Plus className="size-4" /> Add service
+            </Button>
+            <ImportTriggerButton recordType="services" />
+          </div>
+          <ImportGuide recordType="services" compact />
         </div>
       ) : (
         <div className="space-y-2">
@@ -238,9 +284,12 @@ function ServicesSection() {
               </div>
             </div>
           ))}
-          <Button type="button" variant="outline" onClick={openCreate}>
-            <Plus className="size-4" /> Add another service
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="outline" onClick={() => openCreate()}>
+              <Plus className="size-4" /> Add another service
+            </Button>
+            <ImportTriggerButton recordType="services" />
+          </div>
         </div>
       )}
 
@@ -418,14 +467,17 @@ export function CatalogStep({ onNext }: OnboardingStepProps) {
   }
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       <form id={ONBOARDING_FORM_ID} onSubmit={onContinue} />
+      <StepHint>
+        Specialties are areas of care. Services are what patients book. You can
+        type them in or import a spreadsheet — download the sample to see the
+        exact columns.
+      </StepHint>
       <SpecialtiesSection />
-      <div className="h-px bg-border" />
       <ServicesSection />
       {doctors.length > 0 && (specialties.length > 0 || services.length > 0) ? (
-        <>
-          <div className="h-px bg-border" />
+        <div className="rounded-2xl border border-border bg-card p-5">
           <ProviderLinksSection
             doctors={doctors}
             specialties={specialties}
@@ -433,7 +485,7 @@ export function CatalogStep({ onNext }: OnboardingStepProps) {
             edits={linkEdits}
             setEdits={setLinkEdits}
           />
-        </>
+        </div>
       ) : null}
     </div>
   );

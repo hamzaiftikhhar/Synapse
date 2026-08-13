@@ -14,6 +14,9 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { ImportGuide } from "@/features/importer/import-guide";
+import { ImportTriggerButton } from "@/features/importer/import-trigger-button";
+import { StepHint } from "@/features/onboarding/step-hint";
 import {
   useCreateDoctor,
   useDeleteDoctor,
@@ -111,26 +114,43 @@ export function ProvidersStep({ onNext }: OnboardingStepProps) {
   return (
     <div className="space-y-4">
       <form id={ONBOARDING_FORM_ID} onSubmit={onContinue} />
+      <StepHint>
+        Add the clinicians patients can book with. Name is enough to continue —
+        credentials, bio, and languages are optional. You can type them in or
+        import a spreadsheet.
+      </StepHint>
 
       {isLoading ? (
         <p className="text-sm text-muted-foreground">Loading…</p>
       ) : providers.length === 0 ? (
-        <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border px-6 py-14 text-center">
-          <UserRound className="mb-3 size-8 text-muted-foreground" />
-          <p className="text-sm font-medium text-navy">Add your first provider</p>
-          <p className="mt-1 max-w-sm text-sm text-muted-foreground">
-            Add the clinicians who should appear in patient booking.
-          </p>
-          <Button type="button" className="mt-4" onClick={openCreate}>
-            <Plus className="size-4" /> Add provider
-          </Button>
+        <div className="space-y-4 rounded-2xl border border-border bg-card p-5">
+          <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-start gap-3">
+              <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-muted text-foreground">
+                <UserRound className="size-5" strokeWidth={1.75} />
+              </div>
+              <div>
+                <p className="text-sm font-medium text-navy">Add your first provider</p>
+                <p className="mt-0.5 text-sm text-muted-foreground">
+                  One clinician is enough. You can add more later.
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" onClick={openCreate}>
+                <Plus className="size-4" /> Add provider
+              </Button>
+              <ImportTriggerButton recordType="providers" />
+            </div>
+          </div>
+          <ImportGuide recordType="providers" compact />
         </div>
       ) : (
-        <div className="space-y-2">
+        <div className="space-y-2 rounded-2xl border border-border bg-card p-4">
           {providers.map((doctor) => (
             <div
               key={doctor.id}
-              className="flex items-center justify-between rounded-xl border border-border bg-card px-4 py-3"
+              className="flex items-center justify-between rounded-xl border border-border px-4 py-3"
             >
               <div className="min-w-0">
                 <p className="truncate text-sm font-medium text-navy">
@@ -155,9 +175,12 @@ export function ProvidersStep({ onNext }: OnboardingStepProps) {
               </div>
             </div>
           ))}
-          <Button type="button" variant="outline" onClick={openCreate}>
-            <Plus className="size-4" /> Add another provider
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="outline" onClick={openCreate}>
+              <Plus className="size-4" /> Add another provider
+            </Button>
+            <ImportTriggerButton recordType="providers" />
+          </div>
         </div>
       )}
 

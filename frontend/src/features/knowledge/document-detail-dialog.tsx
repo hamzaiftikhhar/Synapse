@@ -177,7 +177,7 @@ export function DocumentDetailDialog({
             </Button>
           </aside>
 
-          <div className="min-h-0 p-4">
+          <div className="flex h-full min-h-0 flex-col p-4">
             <PdfViewer
               fileUrl={blobUrl}
               fileName={document.file_name}

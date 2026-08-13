@@ -87,25 +87,19 @@ def update_clinic_profile(request, payload: ClinicProfileUpdateIn):
 
 
 def _serialize_hours(clinic: Clinic) -> list[BusinessHourOut]:
-    existing = {
-        row.day_of_week: row
-        for row in ClinicBusinessHours.objects.filter(clinic=clinic)
-    }
-    out = []
-    for day in _DAYS:
-        row = existing.get(day)
-        if row is None:
-            out.append(BusinessHourOut(day_of_week=day, is_closed=False))
-        else:
-            out.append(
-                BusinessHourOut(
-                    day_of_week=day,
-                    open_time=row.open_time,
-                    close_time=row.close_time,
-                    is_closed=row.is_closed,
-                )
-            )
-    return out
+    rows = ClinicBusinessHours.objects.filter(clinic=clinic).order_by(
+        "day_of_week", "open_time"
+    )
+    return [
+        BusinessHourOut(
+            id=row.id,
+            day_of_week=row.day_of_week,
+            open_time=row.open_time,
+            close_time=row.close_time,
+            is_closed=row.is_closed,
+        )
+        for row in rows
+    ]
 
 
 @router.get("/me/business-hours", response=list[BusinessHourOut], auth=jwt_auth)
@@ -113,21 +107,55 @@ def get_business_hours(request):
     return _serialize_hours(clinic_from(request))
 
 
-@router.put("/me/business-hours", response=list[BusinessHourOut], auth=jwt_auth)
-def update_business_hours(request, payload: list[BusinessHourIn]):
-    clinic = clinic_from(request)
+def _validate_business_hours(payload: list[BusinessHourIn]) -> None:
+    """Same validation shape as apps/api/doctors/router.py's schedule
+    endpoint (end-after-start), plus the constraints unique to business
+    hours now that multiple intervals per day are allowed."""
+    by_day: dict[int, list[BusinessHourIn]] = {}
     for row in payload:
         if row.day_of_week not in _DAYS:
             raise HttpError(400, "day_of_week must be between 0 (Monday) and 6 (Sunday)")
-        ClinicBusinessHours.objects.update_or_create(
-            clinic=clinic,
-            day_of_week=row.day_of_week,
-            defaults={
-                "open_time": None if row.is_closed else row.open_time,
-                "close_time": None if row.is_closed else row.close_time,
-                "is_closed": row.is_closed,
-            },
-        )
+        by_day.setdefault(row.day_of_week, []).append(row)
+
+    for day, rows in by_day.items():
+        closed_rows = [r for r in rows if r.is_closed]
+        open_rows = [r for r in rows if not r.is_closed]
+        if closed_rows and open_rows:
+            raise HttpError(400, f"Day {day} cannot be both closed and open")
+        if len(closed_rows) > 1:
+            raise HttpError(400, f"Day {day} has more than one closed entry")
+        for row in open_rows:
+            if row.open_time is None or row.close_time is None:
+                raise HttpError(400, f"Day {day} is missing an open or close time")
+            if row.close_time <= row.open_time:
+                raise HttpError(400, "End time must be after start time")
+        for i, a in enumerate(open_rows):
+            for b in open_rows[i + 1 :]:
+                if a.open_time < b.close_time and b.open_time < a.close_time:
+                    raise HttpError(400, f"Business hours overlap on day {day}")
+
+
+@router.put("/me/business-hours", response=list[BusinessHourOut], auth=jwt_auth)
+def update_business_hours(request, payload: list[BusinessHourIn]):
+    """Bulk replace — same delete+recreate pattern as
+    apps/api/doctors/router.py::update_doctor_schedule. Multiple rows per
+    day are allowed (e.g. a morning shift + an afternoon shift)."""
+    clinic = clinic_from(request)
+    _validate_business_hours(payload)
+
+    ClinicBusinessHours.objects.filter(clinic=clinic).delete()
+    ClinicBusinessHours.objects.bulk_create(
+        [
+            ClinicBusinessHours(
+                clinic=clinic,
+                day_of_week=row.day_of_week,
+                open_time=None if row.is_closed else row.open_time,
+                close_time=None if row.is_closed else row.close_time,
+                is_closed=row.is_closed,
+            )
+            for row in payload
+        ]
+    )
     return _serialize_hours(clinic)
 
 

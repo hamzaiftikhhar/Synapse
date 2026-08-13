@@ -24,11 +24,11 @@ const STEP_COPY: Record<string, { title: string; subtitle: string }> = {
   },
   providers: {
     title: "Who provides care at your clinic?",
-    subtitle: "Add the clinicians patients can book with. Advanced details can wait until later.",
+    subtitle: "Add clinicians by hand, or import a CSV / Excel using the sample format below.",
   },
   catalog: {
     title: "What can patients book?",
-    subtitle: "Tell us the specialties you cover and the services patients can request.",
+    subtitle: "Add specialties and services, or import them from a spreadsheet.",
   },
   hours: {
     title: "When is your clinic open?",

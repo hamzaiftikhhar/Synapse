@@ -27,10 +27,11 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    // Clinic owner/staff with unfinished setup → resume onboarding.
-    // Re-checked from real clinic state on every dashboard visit (not a
-    // client-side flag), so this holds across refresh/logout/login too.
-    if (!isSuper && clinic && clinic.status !== "active") {
+    // Unfinished clinic setup → resume onboarding. Super Admin impersonating
+    // an onboarding clinic follows the same path so they can test setup
+    // without the owner's credentials. Platform routes stay reachable so
+    // they can still switch or exit.
+    if (clinic && clinic.status !== "active" && !onPlatform && !onProfile) {
       router.replace("/onboarding");
     }
   }, [user, clinic, isLoading, pathname, router]);

@@ -11,6 +11,7 @@ from apps.api.auth.deps import clinic_from, jwt_auth
 from apps.api.common.schemas import MessageOut, PaginatedOut
 from apps.api.services.schemas import ServiceIn, ServiceOut, ServiceUpdateIn
 from apps.services.models import Service
+from apps.services.services.service_service import create_service as create_service_row
 
 router = Router(tags=["Services"])
 
@@ -72,9 +73,8 @@ def list_services(
 @router.post("", response={201: ServiceOut}, auth=jwt_auth)
 def create_service(request, payload: ServiceIn):
     data = payload.dict()
-    if data.get("metadata") is None:
-        data["metadata"] = {}
-    service = Service.objects.create(clinic=clinic_from(request), **data)
+    data["metadata"] = data.get("metadata") or {}
+    service = create_service_row(clinic=clinic_from(request), **data)
     return 201, _serialize(service)
 
 

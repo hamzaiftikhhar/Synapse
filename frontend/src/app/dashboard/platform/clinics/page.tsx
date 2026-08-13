@@ -58,9 +58,11 @@ export default function PlatformClinicsPage() {
   async function enter(slug: string) {
     setBusySlug(slug);
     try {
-      await enterClinic(slug);
-      toast.success(`Entered ${slug}`);
-      router.push("/dashboard");
+      const data = await enterClinic(slug);
+      toast.success(`Entered ${data.clinic?.name ?? slug}`);
+      router.push(
+        data.clinic?.status === "onboarding" ? "/onboarding" : "/dashboard"
+      );
     } catch (err) {
       toast.error(getApiErrorMessage(err));
     } finally {
@@ -97,7 +99,7 @@ export default function PlatformClinicsPage() {
     <div>
       <PageHeader
         title="Clinics"
-        description="Create, suspend, and enter any clinic. Entering opens the clinic portal; your role stays Super Admin."
+        description="Create, suspend, and enter any clinic. Entering an onboarding clinic opens its setup wizard — you do not need the owner's login."
       />
       {canExitClinic && activeSlug ? (
         <div className="mb-4 rounded-xl border border-warning/25 bg-warning/10 px-3 py-2 text-sm text-foreground">
@@ -168,19 +170,36 @@ export default function PlatformClinicsPage() {
                     <td className="px-3 py-2.5">
                       <div className="flex flex-wrap justify-end gap-1.5">
                         {isActive ? (
-                          <Button
-                            size="sm"
-                            variant="outline"                            disabled={busySlug === c.slug}
-                            onClick={() => void exit(c.slug)}
-                          >
-                            {busySlug === c.slug ? "…" : "Exit"}
-                          </Button>
+                          <>
+                            {c.status === "onboarding" ? (
+                              <Button
+                                size="sm"
+                                disabled={busySlug === c.slug}
+                                onClick={() => router.push("/onboarding")}
+                              >
+                                Continue setup
+                              </Button>
+                            ) : null}
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={busySlug === c.slug}
+                              onClick={() => void exit(c.slug)}
+                            >
+                              {busySlug === c.slug ? "…" : "Exit"}
+                            </Button>
+                          </>
                         ) : (
                           <Button
-                            size="sm"                            disabled={busySlug === c.slug}
+                            size="sm"
+                            disabled={busySlug === c.slug}
                             onClick={() => void enter(c.slug)}
                           >
-                            {busySlug === c.slug ? "…" : "Enter"}
+                            {busySlug === c.slug
+                              ? "…"
+                              : c.status === "onboarding"
+                                ? "Enter setup"
+                                : "Enter"}
                           </Button>
                         )}
                         {c.status !== "suspended" ? (

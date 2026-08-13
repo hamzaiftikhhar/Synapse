@@ -14,12 +14,17 @@ class ClinicStatus(models.TextChoices):
 
 
 class ClinicType(models.TextChoices):
+    PRIMARY_CARE = "primary_care", "Primary Care"
+    MEDICAL_SPECIALTY = "medical_specialty", "Medical Specialty"
+    NEUROLOGY = "neurology", "Neurology"
+    CARDIOLOGY = "cardiology", "Cardiology"
     DERMATOLOGY = "dermatology", "Dermatology"
-    DENTAL = "dental", "Dental"
     AESTHETICS = "aesthetics", "Aesthetics / Med Spa"
-    GENERAL_MEDICINE = "general_medicine", "General Medicine"
+    DENTAL = "dental", "Dental"
+    PHYSICAL_THERAPY = "physical_therapy", "Physical Therapy"
+    BEHAVIORAL_HEALTH = "behavioral_health", "Mental / Behavioral Health"
+    LABORATORY = "laboratory", "Laboratory / Diagnostics"
     URGENT_CARE = "urgent_care", "Urgent Care"
-    LABORATORY = "laboratory", "Laboratory"
     COSMETIC_SURGERY = "cosmetic_surgery", "Cosmetic / Plastic Surgery"
     MULTI_SPECIALTY = "multi_specialty", "Multi-Specialty"
     OTHER = "other", "Other"
@@ -65,10 +70,6 @@ class ClinicBusinessHours(TenantModel, TimestampedModel):
         db_table = "clinic_business_hours"
         verbose_name_plural = "clinic business hours"
         constraints = [
-            models.UniqueConstraint(
-                fields=["clinic", "day_of_week"],
-                name="uq_clinic_business_hours_day",
-            ),
             models.CheckConstraint(
                 check=Q(day_of_week__gte=0) & Q(day_of_week__lte=6),
                 name="chk_clinic_hours_day_of_week",
@@ -76,6 +77,11 @@ class ClinicBusinessHours(TenantModel, TimestampedModel):
         ]
         indexes = [
             models.Index(fields=["clinic"]),
+            # Multiple intervals are now allowed per (clinic, day_of_week) —
+            # this indexes the grouped-by-day query pattern instead of a
+            # uniqueness guarantee. Overlap/duplicate/closed+open conflicts
+            # are validated in apps/api/clinics/router.py, not the DB.
+            models.Index(fields=["clinic", "day_of_week"], name="idx_clinic_hours_day"),
         ]
 
     def __str__(self) -> str:

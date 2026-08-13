@@ -14,6 +14,7 @@ import {
 import { useUpdateClinicProfile } from "@/hooks/api";
 import { getApiErrorMessage } from "@/lib/api/client";
 import { useAuth } from "@/providers/auth-provider";
+import { StepHint } from "../step-hint";
 import { ONBOARDING_FORM_ID, type OnboardingStepProps } from "../steps";
 
 const FALLBACK_TIMEZONES = [
@@ -103,6 +104,10 @@ export function LocationStep({ onNext }: OnboardingStepProps) {
 
   return (
     <form id={ONBOARDING_FORM_ID} onSubmit={onSubmit} className="space-y-4">
+      <StepHint>
+        This is the address and phone the chatbot shares with patients. Use the
+        format patients would search for — street, city, state, ZIP.
+      </StepHint>
       <div className="space-y-2">
         <Label htmlFor="line1">Street address</Label>
         <Input

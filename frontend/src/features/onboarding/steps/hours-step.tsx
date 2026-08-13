@@ -4,11 +4,14 @@ import { useState } from "react";
 import { toast } from "sonner";
 import {
   businessHoursToWeekly,
+  validateWeeklySchedule,
+  weeklyToBusinessHours,
   WeeklyScheduleEditor,
   type WeeklyDayValue,
 } from "@/components/dashboard/weekly-schedule-editor";
 import { useBusinessHours, useUpdateBusinessHours } from "@/hooks/api";
 import { getApiErrorMessage } from "@/lib/api/client";
+import { StepHint } from "../step-hint";
 import { ONBOARDING_FORM_ID, type OnboardingStepProps } from "../steps";
 
 export function HoursStep({ onNext }: OnboardingStepProps) {
@@ -20,22 +23,13 @@ export function HoursStep({ onNext }: OnboardingStepProps) {
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    const openWithoutRange = value.find(
-      (row) => row.isOpen && (!row.start || !row.end || row.end <= row.start)
-    );
-    if (openWithoutRange) {
-      toast.error("Closing time must be after opening time.");
+    const error = validateWeeklySchedule(value);
+    if (error) {
+      toast.error(error);
       return;
     }
     try {
-      await update.mutateAsync(
-        value.map((row) => ({
-          day_of_week: row.day,
-          is_closed: !row.isOpen,
-          open_time: row.isOpen ? `${row.start}:00` : null,
-          close_time: row.isOpen ? `${row.end}:00` : null,
-        }))
-      );
+      await update.mutateAsync(weeklyToBusinessHours(value));
       onNext();
     } catch (err) {
       toast.error(getApiErrorMessage(err));
@@ -47,7 +41,11 @@ export function HoursStep({ onNext }: OnboardingStepProps) {
   }
 
   return (
-    <form id={ONBOARDING_FORM_ID} onSubmit={onSubmit}>
+    <form id={ONBOARDING_FORM_ID} onSubmit={onSubmit} className="space-y-4">
+      <StepHint>
+        These hours are the clinic default. Next you&apos;ll set each
+        provider&apos;s schedule — closed days here mean the clinic is closed.
+      </StepHint>
       <WeeklyScheduleEditor value={value} onChange={setRows} />
     </form>
   );

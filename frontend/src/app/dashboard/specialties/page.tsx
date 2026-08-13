@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { Plus, Pencil, Trash2 } from "lucide-react";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { DataTableShell, EmptyState } from "@/components/dashboard/shell";
+import { ImportTriggerButton } from "@/features/importer/import-trigger-button";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -108,9 +109,12 @@ export default function SpecialtiesPage() {
         title="Specialties"
         description="Broad areas of care patients can search by — shown to doctors and the chatbot."
         actions={
-          <Button onClick={openCreate}>
-            <Plus className="size-4" /> Add specialty
-          </Button>
+          <div className="flex gap-2">
+            <ImportTriggerButton recordType="specialties" />
+            <Button onClick={openCreate}>
+              <Plus className="size-4" /> Add specialty
+            </Button>
+          </div>
         }
       />
       <DataTableShell

@@ -4,7 +4,6 @@ from uuid import UUID
 
 from django.db.models import Q
 from django.utils import timezone
-from django.utils.text import slugify
 from ninja import Query, Router
 from ninja.errors import HttpError
 
@@ -12,6 +11,10 @@ from apps.api.auth.deps import clinic_from, jwt_auth
 from apps.api.common.schemas import MessageOut, PaginatedOut
 from apps.api.specialties.schemas import SpecialtyIn, SpecialtyOut, SpecialtyUpdateIn
 from apps.specialties.models import Specialty
+from apps.specialties.services.specialty_service import (
+    create_specialty as create_specialty_row,
+)
+from apps.specialties.services.specialty_service import unique_slug as _unique_slug
 
 router = Router(tags=["Specialties"])
 
@@ -36,22 +39,6 @@ def _get_specialty(clinic_id: UUID, specialty_id: UUID) -> Specialty:
         )
     except Specialty.DoesNotExist:
         raise HttpError(404, "Specialty not found") from None
-
-
-def _unique_slug(clinic_id: UUID, base: str, *, exclude_id: UUID | None = None) -> str:
-    base = slugify(base)[:100] or "specialty"
-    candidate = base
-    n = 1
-    qs = Specialty.objects.filter(clinic_id=clinic_id, slug=candidate)
-    if exclude_id:
-        qs = qs.exclude(id=exclude_id)
-    while qs.exists():
-        n += 1
-        candidate = f"{base}-{n}"[:100]
-        qs = Specialty.objects.filter(clinic_id=clinic_id, slug=candidate)
-        if exclude_id:
-            qs = qs.exclude(id=exclude_id)
-    return candidate
 
 
 @router.get("", response=PaginatedOut[SpecialtyOut], auth=jwt_auth)
@@ -82,11 +69,10 @@ def create_specialty(request, payload: SpecialtyIn):
     clinic = clinic_from(request)
     if not payload.name.strip():
         raise HttpError(400, "Specialty name is required")
-    slug = _unique_slug(clinic.id, payload.slug or payload.name)
-    specialty = Specialty.objects.create(
+    specialty = create_specialty_row(
         clinic=clinic,
-        name=payload.name.strip(),
-        slug=slug,
+        name=payload.name,
+        slug=payload.slug,
         description=payload.description,
         is_active=payload.is_active,
     )

@@ -56,6 +56,7 @@ LOCAL_APPS = [
     "apps.widget.apps.WidgetConfig",
     "apps.notifications.apps.NotificationsConfig",
     "apps.billing.apps.BillingConfig",
+    "apps.importer.apps.ImporterConfig",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -277,4 +278,14 @@ DEBUG_CHAT_PIPELINE = env.bool("DEBUG_CHAT_PIPELINE", default=False)
 DEBUG_CHAT_PIPELINE_SAVE_JSON = env.bool("DEBUG_CHAT_PIPELINE_SAVE_JSON", default=True)
 # Token streaming for RAG replies (designed; off until budgets are proven)
 CHAT_RESPONSE_STREAMING = env.bool("CHAT_RESPONSE_STREAMING", default=False)
+
+# ─── Spreadsheet data import (onboarding bulk-import pipeline) ────────────────
+IMPORTER_MAX_FILE_SIZE_BYTES = env.int("IMPORTER_MAX_FILE_SIZE_BYTES", default=5 * 1024 * 1024)
+IMPORTER_MAX_ROWS = env.int("IMPORTER_MAX_ROWS", default=2000)
+IMPORTER_MAX_COLUMNS = env.int("IMPORTER_MAX_COLUMNS", default=60)
+IMPORTER_LLM_TIMEOUT_SECONDS = env.float("IMPORTER_LLM_TIMEOUT_SECONDS", default=8.0)
+IMPORTER_LLM_MODEL = env("IMPORTER_LLM_MODEL", default="gpt-4.1-mini")
+# Below this, an extracted field is flagged "needs review" instead of
+# being trusted for auto-commit.
+IMPORTER_CONFIDENCE_THRESHOLD = env.float("IMPORTER_CONFIDENCE_THRESHOLD", default=0.7)
 

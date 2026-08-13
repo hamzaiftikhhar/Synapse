@@ -128,14 +128,14 @@ class BusinessHoursTests(TestCase):
             email="owner@hours.test", clinic_slug="hours-clinic"
         )
 
-    def test_get_returns_all_seven_days_with_defaults(self):
+    def test_get_returns_no_rows_when_unset(self):
+        """GET no longer synthesizes 7 placeholder rows — it reflects
+        exactly what's been saved, same as DoctorSchedule."""
         resp = self.client.get("/api/v1/clinics/me/business-hours", headers=self.headers)
         self.assertEqual(resp.status_code, 200)
-        body = resp.json()
-        self.assertEqual(len(body), 7)
-        self.assertEqual({row["day_of_week"] for row in body}, set(range(7)))
+        self.assertEqual(resp.json(), [])
 
-    def test_put_upserts_and_apply_to_weekdays(self):
+    def test_put_replaces_and_apply_to_weekdays(self):
         payload = [
             {"day_of_week": d, "open_time": "09:00:00", "close_time": "17:00:00", "is_closed": False}
             for d in range(5)
@@ -164,6 +164,126 @@ class BusinessHoursTests(TestCase):
             headers=self.headers,
         )
         self.assertEqual(resp.status_code, 400)
+
+    def test_put_is_a_full_replace(self):
+        """A second PUT with a smaller payload drops rows that weren't
+        resent — same delete+recreate contract as DoctorSchedule."""
+        first = [{"day_of_week": d, "open_time": "09:00:00", "close_time": "17:00:00"} for d in range(7)]
+        self.client.put(
+            "/api/v1/clinics/me/business-hours",
+            data=first,
+            content_type="application/json",
+            headers=self.headers,
+        )
+        second = [{"day_of_week": 0, "open_time": "09:00:00", "close_time": "17:00:00"}]
+        resp = self.client.put(
+            "/api/v1/clinics/me/business-hours",
+            data=second,
+            content_type="application/json",
+            headers=self.headers,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(ClinicBusinessHours.objects.filter(clinic=self.clinic).count(), 1)
+
+
+class BusinessHoursMultiIntervalTests(TestCase):
+    """Split-shift business hours (e.g. a lunch closure) — multiple
+    ClinicBusinessHours rows per day are now allowed."""
+
+    def setUp(self):
+        self.user, self.clinic, self.headers = make_clinic_admin(
+            email="owner@splitshift.test", clinic_slug="split-shift-clinic"
+        )
+
+    def _put(self, payload):
+        return self.client.put(
+            "/api/v1/clinics/me/business-hours",
+            data=payload,
+            content_type="application/json",
+            headers=self.headers,
+        )
+
+    def test_multiple_intervals_same_day_accepted(self):
+        payload = [
+            {"day_of_week": 0, "open_time": "08:00:00", "close_time": "13:00:00"},
+            {"day_of_week": 0, "open_time": "13:30:00", "close_time": "17:00:00"},
+        ]
+        resp = self._put(payload)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        rows = ClinicBusinessHours.objects.filter(clinic=self.clinic, day_of_week=0).order_by(
+            "open_time"
+        )
+        self.assertEqual(rows.count(), 2)
+        self.assertEqual(str(rows[0].close_time), "13:00:00")
+        self.assertEqual(str(rows[1].open_time), "13:30:00")
+
+    def test_overlapping_intervals_rejected(self):
+        payload = [
+            {"day_of_week": 0, "open_time": "08:00:00", "close_time": "13:00:00"},
+            {"day_of_week": 0, "open_time": "12:30:00", "close_time": "17:00:00"},
+        ]
+        resp = self._put(payload)
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("overlap", resp.json()["detail"].lower())
+
+    def test_duplicate_intervals_rejected_as_overlap(self):
+        payload = [
+            {"day_of_week": 0, "open_time": "08:00:00", "close_time": "13:00:00"},
+            {"day_of_week": 0, "open_time": "08:00:00", "close_time": "13:00:00"},
+        ]
+        resp = self._put(payload)
+        self.assertEqual(resp.status_code, 400)
+
+    def test_end_before_start_rejected(self):
+        resp = self._put([{"day_of_week": 0, "open_time": "13:00:00", "close_time": "08:00:00"}])
+        self.assertEqual(resp.status_code, 400)
+
+    def test_closed_and_open_same_day_rejected(self):
+        payload = [
+            {"day_of_week": 0, "is_closed": True},
+            {"day_of_week": 0, "open_time": "08:00:00", "close_time": "13:00:00"},
+        ]
+        resp = self._put(payload)
+        self.assertEqual(resp.status_code, 400)
+
+    def test_get_returns_flat_real_rows(self):
+        self._put(
+            [
+                {"day_of_week": 0, "open_time": "08:00:00", "close_time": "13:00:00"},
+                {"day_of_week": 0, "open_time": "13:30:00", "close_time": "17:00:00"},
+            ]
+        )
+        resp = self.client.get("/api/v1/clinics/me/business-hours", headers=self.headers)
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(len(body), 2)
+        self.assertTrue(all("id" in row for row in body))
+
+    def test_onboarding_checklist_still_true_with_multi_interval_day(self):
+        self._put(
+            [
+                {"day_of_week": 0, "open_time": "08:00:00", "close_time": "13:00:00"},
+                {"day_of_week": 0, "open_time": "13:30:00", "close_time": "17:00:00"},
+            ]
+        )
+        resp = self.client.get("/api/v1/clinics/me/onboarding-status", headers=self.headers)
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.json()["checklist"]["hours"])
+
+    def test_cannot_write_another_clinics_business_hours(self):
+        _, other_clinic, other_headers = make_clinic_admin(
+            email="owner2@othersplit.test", clinic_slug="other-split-clinic"
+        )
+        self._put([{"day_of_week": 0, "open_time": "08:00:00", "close_time": "17:00:00"}])
+        resp = self.client.put(
+            "/api/v1/clinics/me/business-hours",
+            data=[{"day_of_week": 0, "open_time": "09:00:00", "close_time": "10:00:00"}],
+            content_type="application/json",
+            headers=other_headers,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(ClinicBusinessHours.objects.filter(clinic=self.clinic).count(), 1)
+        self.assertEqual(ClinicBusinessHours.objects.filter(clinic=other_clinic).count(), 1)
 
 
 class WidgetSettingsTests(TestCase):

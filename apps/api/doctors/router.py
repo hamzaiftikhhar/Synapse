@@ -20,6 +20,7 @@ from apps.api.doctors.schemas import (
     DoctorUpdateIn,
 )
 from apps.doctors.models import Doctor, DoctorSchedule, DoctorService, DoctorSpecialty
+from apps.doctors.services.doctor_service import create_doctor as create_doctor_row
 from apps.services.models import Service
 from apps.specialties.models import Specialty
 
@@ -117,9 +118,7 @@ def list_doctors(
 def create_doctor(request, payload: DoctorIn):
     clinic = clinic_from(request)
     data = payload.dict(exclude={"specialty_ids", "service_ids"})
-    if data.get("languages") is None:
-        data["languages"] = ["en"]
-    doctor = Doctor.objects.create(clinic=clinic, **data)
+    doctor = create_doctor_row(clinic=clinic, **data)
     if payload.specialty_ids:
         _sync_specialties(clinic.id, doctor, payload.specialty_ids)
     if payload.service_ids:

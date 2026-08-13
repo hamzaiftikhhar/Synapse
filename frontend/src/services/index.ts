@@ -17,6 +17,13 @@ import type {
   DoctorUpdateInput,
   DocumentChunk,
   DocumentUpdateInput,
+  ImportCommitOut,
+  ImportJob,
+  ImportMappingUpdateInput,
+  ImportBulkApproveOut,
+  ImportRecord,
+  ImportRecordType,
+  ImportRecordUpdateInput,
   InsurancePlan,
   InsurancePlanInput,
   InsurancePlanUpdateInput,
@@ -706,5 +713,80 @@ export const documentsService = {
       responseType: "blob",
     });
     return data;
+  },
+};
+
+/* ─── Spreadsheet data import ──────────────────────────────── */
+
+export const importerService = {
+  async listJobs(recordType?: ImportRecordType) {
+    const { data } = await api.get<ImportJob[]>("/import/jobs", {
+      params: recordType ? { record_type: recordType } : undefined,
+    });
+    return data;
+  },
+  async getJob(id: string) {
+    const { data } = await api.get<ImportJob>(`/import/jobs/${id}`);
+    return data;
+  },
+  async createJob(
+    recordType: ImportRecordType,
+    file: File,
+    onProgress?: (percent: number) => void
+  ) {
+    const form = new FormData();
+    form.append("record_type", recordType);
+    form.append("file", file);
+    const { data } = await api.post<ImportJob>("/import/jobs", form, {
+      headers: { "Content-Type": "multipart/form-data" },
+      onUploadProgress: (event) => {
+        if (!onProgress || !event.total) return;
+        onProgress(Math.min(100, Math.round((event.loaded / event.total) * 100)));
+      },
+    });
+    return data;
+  },
+  async listRecords(jobId: string, status?: string) {
+    const { data } = await api.get<Paginated<ImportRecord>>(
+      `/import/jobs/${jobId}/records`,
+      { params: { status, limit: 500 } }
+    );
+    return data;
+  },
+  async updateMapping(jobId: string, input: ImportMappingUpdateInput) {
+    const { data } = await api.patch<ImportJob>(`/import/jobs/${jobId}/mapping`, input);
+    return data;
+  },
+  async updateRecord(jobId: string, recordId: string, input: ImportRecordUpdateInput) {
+    const { data } = await api.patch<ImportRecord>(
+      `/import/jobs/${jobId}/records/${recordId}`,
+      input
+    );
+    return data;
+  },
+  async approveRecord(jobId: string, recordId: string) {
+    const { data } = await api.post<ImportRecord>(
+      `/import/jobs/${jobId}/records/${recordId}/approve`
+    );
+    return data;
+  },
+  async approveAll(jobId: string) {
+    const { data } = await api.post<ImportBulkApproveOut>(
+      `/import/jobs/${jobId}/approve-all`
+    );
+    return data;
+  },
+  async rejectRecord(jobId: string, recordId: string) {
+    const { data } = await api.post<ImportRecord>(
+      `/import/jobs/${jobId}/records/${recordId}/reject`
+    );
+    return data;
+  },
+  async commitJob(jobId: string) {
+    const { data } = await api.post<ImportCommitOut>(`/import/jobs/${jobId}/commit`);
+    return data;
+  },
+  async deleteJob(jobId: string) {
+    await api.delete(`/import/jobs/${jobId}`);
   },
 };

@@ -41,7 +41,9 @@ type AuthState = {
    * should check this rather than assume a resolved promise means success. */
   refreshMe: () => Promise<boolean>;
   selectTenant: (slug: string) => Promise<void>;
-  enterClinic: (slug: string) => Promise<void>;
+  enterClinic: (
+    slug: string
+  ) => Promise<Awaited<ReturnType<typeof authService.enterClinic>>>;
   exitClinic: () => Promise<void>;
 };
 
@@ -202,6 +204,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       tenants: data.tenants ?? [],
       can_exit_clinic: true,
     });
+    return data;
   }, [qc]);
 
   const exitClinic = useCallback(async () => {

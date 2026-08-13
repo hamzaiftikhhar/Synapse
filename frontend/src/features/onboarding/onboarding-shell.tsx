@@ -1,6 +1,9 @@
 "use client";
 
 import type { ReactNode } from "react";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 import { HelpCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -10,6 +13,8 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { APP_NAME } from "@/constants";
+import { getApiErrorMessage } from "@/lib/api/client";
+import { useAuth } from "@/providers/auth-provider";
 import { cn } from "@/lib/utils";
 import { ONBOARDING_STAGES } from "./steps";
 
@@ -73,11 +78,66 @@ export function OnboardingShell({
   hideFooter?: boolean;
   children: ReactNode;
 }) {
+  const { user, clinic, canExitClinic, exitClinic } = useAuth();
+  const router = useRouter();
+  const [exiting, setExiting] = useState(false);
+  const impersonating =
+    user?.role === "SUPER_ADMIN" && Boolean(clinic) && canExitClinic;
+
+  useEffect(() => {
+    document.body.classList.add("theme-instrument", "theme-light");
+    return () => {
+      document.body.classList.remove("theme-instrument", "theme-light");
+    };
+  }, []);
+
+  async function handleExit() {
+    setExiting(true);
+    try {
+      await exitClinic();
+      toast.success("Returned to platform");
+      router.push("/dashboard/platform/clinics");
+    } catch (err) {
+      toast.error(getApiErrorMessage(err));
+    } finally {
+      setExiting(false);
+    }
+  }
+
   return (
     <TooltipProvider>
-      <div className="min-h-screen bg-background">
+      <div className="theme-instrument theme-light min-h-screen bg-background">
+        {impersonating ? (
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-warning/25 bg-warning/10 px-4 py-2.5 sm:px-6">
+            <p className="text-sm text-foreground">
+              <span className="font-semibold">{clinic?.name}</span>
+              <span className="text-muted-foreground">
+                {" "}
+                · Super Admin testing setup
+              </span>
+            </p>
+            <div className="flex shrink-0 gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => router.push("/dashboard/platform/clinics")}
+              >
+                Switch clinic
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                disabled={exiting}
+                onClick={() => void handleExit()}
+              >
+                {exiting ? "Exiting…" : "Exit clinic"}
+              </Button>
+            </div>
+          </div>
+        ) : null}
         <header className="border-b border-border">
-          <div className="mx-auto flex h-14 max-w-2xl items-center justify-between px-6">
+          <div className="mx-auto flex h-14 max-w-3xl items-center justify-between px-6">
             <span className="text-sm font-semibold tracking-tight text-navy">
               {APP_NAME}
             </span>
@@ -101,7 +161,7 @@ export function OnboardingShell({
           </div>
         </header>
 
-        <div className="mx-auto max-w-2xl px-6 py-10 pb-32 sm:py-14">
+        <div className="mx-auto max-w-3xl px-6 py-10 pb-32 sm:py-14">
           <StageProgress activeIndex={stageIndex} />
           <h1 className="text-2xl font-semibold tracking-tight text-navy">
             {title}
@@ -116,7 +176,7 @@ export function OnboardingShell({
 
         {!hideFooter ? (
           <footer className="fixed inset-x-0 bottom-0 border-t border-border bg-background/95 backdrop-blur">
-            <div className="mx-auto flex max-w-2xl items-center justify-between gap-3 px-6 py-4">
+            <div className="mx-auto flex max-w-3xl items-center justify-between gap-3 px-6 py-4">
               <div>
                 {onBack ? (
                   <Button type="button" variant="outline" onClick={onBack}>

@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { Plus, Pencil, Trash2 } from "lucide-react";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { DataTableShell, EmptyState } from "@/components/dashboard/shell";
+import { ImportTriggerButton } from "@/features/importer/import-trigger-button";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -132,9 +133,12 @@ export default function ServicesPage() {
         title="Services"
         description="Procedures and visit types patients can ask about or book."
         actions={
-          <Button onClick={openCreate}>
-            <Plus className="size-4" /> Add service
-          </Button>
+          <div className="flex gap-2">
+            <ImportTriggerButton recordType="services" />
+            <Button onClick={openCreate}>
+              <Plus className="size-4" /> Add service
+            </Button>
+          </div>
         }
       />
       <DataTableShell

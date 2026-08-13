@@ -12,6 +12,7 @@ import {
 import {
   businessHoursToWeekly,
   defaultWeeklySchedule,
+  validateWeeklySchedule,
   WeeklyScheduleEditor,
   type WeeklyDayValue,
 } from "@/components/dashboard/weekly-schedule-editor";
@@ -24,22 +25,26 @@ import {
 import { getApiErrorMessage } from "@/lib/api/client";
 import { doctorsService } from "@/services";
 import type { DoctorScheduleSlot } from "@/types/api";
+import { StepHint } from "../step-hint";
 import { ONBOARDING_FORM_ID, type OnboardingStepProps } from "../steps";
 
 function scheduleToWeekly(
   rows: DoctorScheduleSlot[] | undefined,
   clinicDefaults: WeeklyDayValue[]
 ): WeeklyDayValue[] {
-  if (!rows || rows.length === 0) return clinicDefaults.map((d) => ({ ...d }));
-  const closedWeek = defaultWeeklySchedule().map((d) => ({ ...d, isOpen: false }));
+  if (!rows || rows.length === 0) return clinicDefaults.map((d) => ({ ...d, intervals: d.intervals.map((iv) => ({ ...iv })) }));
+  const active = rows.filter((r) => r.is_active);
+  const closedWeek = defaultWeeklySchedule().map((d) => ({ ...d, isOpen: false, intervals: [] }));
   return closedWeek.map((fallback) => {
-    const row = rows.find((r) => r.day_of_week === fallback.day && r.is_active);
-    if (!row) return fallback;
+    const dayRows = active.filter((r) => r.day_of_week === fallback.day);
+    if (dayRows.length === 0) return fallback;
     return {
       day: fallback.day,
       isOpen: true,
-      start: row.start_time.slice(0, 5),
-      end: row.end_time.slice(0, 5),
+      intervals: dayRows
+        .slice()
+        .sort((a, b) => a.start_time.localeCompare(b.start_time))
+        .map((r) => ({ start: r.start_time.slice(0, 5), end: r.end_time.slice(0, 5) })),
     };
   });
 }
@@ -83,11 +88,9 @@ export function AvailabilityStep({ onNext }: OnboardingStepProps) {
       id: doctor.id,
       rows: valueFor(doctor.id),
     }));
-    const bad = perDoctor.find(({ rows }) =>
-      rows.some((row) => row.isOpen && (!row.start || !row.end || row.end <= row.start))
-    );
+    const bad = perDoctor.find(({ rows }) => validateWeeklySchedule(rows) !== null);
     if (bad) {
-      toast.error("Closing time must be after opening time.");
+      toast.error(validateWeeklySchedule(bad.rows) ?? "Check this provider's availability.");
       return;
     }
     try {
@@ -97,12 +100,14 @@ export function AvailabilityStep({ onNext }: OnboardingStepProps) {
             id,
             input: rows
               .filter((row) => row.isOpen)
-              .map((row) => ({
-                day_of_week: row.day,
-                start_time: `${row.start}:00`,
-                end_time: `${row.end}:00`,
-                slot_duration_min: 30,
-              })),
+              .flatMap((row) =>
+                row.intervals.map((iv) => ({
+                  day_of_week: row.day,
+                  start_time: `${iv.start}:00`,
+                  end_time: `${iv.end}:00`,
+                  slot_duration_min: 30,
+                }))
+              ),
           })
         )
       );
@@ -132,10 +137,10 @@ export function AvailabilityStep({ onNext }: OnboardingStepProps) {
 
   return (
     <form id={ONBOARDING_FORM_ID} onSubmit={onSubmit} className="space-y-4">
-      <p className="text-sm text-muted-foreground">
-        We started each provider from your clinic hours — adjust anyone whose
-        schedule is different.
-      </p>
+      <StepHint>
+        Each provider starts from clinic hours. Adjust anyone whose bookable
+        times are different — closed days mean that provider cannot be booked.
+      </StepHint>
       <Tabs value={effectiveActiveId} onValueChange={(v) => setActiveId(v as string)}>
         <TabsList className="w-full flex-wrap justify-start">
           {doctors.map((doctor) => (

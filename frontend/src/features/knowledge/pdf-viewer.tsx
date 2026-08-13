@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronLeft,
   ChevronRight,
@@ -44,26 +44,59 @@ export function PdfViewer({
   const [page, setPage] = useState(1);
   const [scale, setScale] = useState(1.1);
   const [renderError, setRenderError] = useState<string | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const pageRefs = useRef<(HTMLDivElement | null)[]>([]);
 
   useEffect(() => {
     setPage(1);
     setNumPages(0);
     setRenderError(null);
+    pageRefs.current = [];
   }, [fileUrl]);
+
+  useEffect(() => {
+    const root = scrollRef.current;
+    if (!root || !numPages) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries
+          .filter((e) => e.isIntersecting)
+          .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+        const n = Number(visible?.target.getAttribute("data-page"));
+        if (n) setPage(n);
+      },
+      { root, threshold: [0.35, 0.6] }
+    );
+
+    pageRefs.current.forEach((el) => {
+      if (el) observer.observe(el);
+    });
+    return () => observer.disconnect();
+  }, [numPages, fileUrl]);
 
   const file = useMemo(
     () => (fileUrl ? { url: fileUrl } : null),
     [fileUrl]
   );
 
+  function goToPage(next: number) {
+    const clamped = Math.min(Math.max(next, 1), numPages || 1);
+    setPage(clamped);
+    pageRefs.current[clamped - 1]?.scrollIntoView({
+      behavior: "auto",
+      block: "start",
+    });
+  }
+
   return (
     <div
       className={cn(
-        "flex min-h-0 flex-1 flex-col overflow-hidden rounded-[6px] border border-border bg-zinc-50",
+        "flex h-full min-h-0 flex-1 flex-col overflow-hidden rounded-[6px] border border-border bg-zinc-100",
         className
       )}
     >
-      <div className="flex flex-wrap items-center gap-1 border-b border-border bg-background px-2 py-1.5">
+      <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border bg-background px-2 py-1.5">
         <div className="mr-auto min-w-0 truncate px-1 text-xs text-muted-foreground">
           {fileName || "Document"}
         </div>
@@ -73,7 +106,7 @@ export function PdfViewer({
           size="icon-sm"
           className="rounded-[4px]"
           disabled={page <= 1}
-          onClick={() => setPage((p) => Math.max(1, p - 1))}
+          onClick={() => goToPage(page - 1)}
           aria-label="Previous page"
         >
           <ChevronLeft className="size-4" />
@@ -87,7 +120,7 @@ export function PdfViewer({
           size="icon-sm"
           className="rounded-[4px]"
           disabled={!numPages || page >= numPages}
-          onClick={() => setPage((p) => Math.min(numPages, p + 1))}
+          onClick={() => goToPage(page + 1)}
           aria-label="Next page"
         >
           <ChevronRight className="size-4" />
@@ -145,7 +178,10 @@ export function PdfViewer({
         ) : null}
       </div>
 
-      <div className="relative min-h-[28rem] flex-1 overflow-auto">
+      <div
+        ref={scrollRef}
+        className="relative min-h-0 flex-1 overflow-auto"
+      >
         {loading ? (
           <div className="flex h-full min-h-[28rem] items-center justify-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="size-4 animate-spin" />
@@ -170,13 +206,25 @@ export function PdfViewer({
                 setRenderError(err.message || "Failed to render PDF")
               }
             >
-              <Page
-                pageNumber={page}
-                scale={scale}
-                className="shadow-sm"
-                renderTextLayer
-                renderAnnotationLayer
-              />
+              <div className="flex flex-col items-center gap-3">
+                {Array.from({ length: numPages }, (_, i) => (
+                  <div
+                    key={i + 1}
+                    data-page={i + 1}
+                    ref={(el) => {
+                      pageRefs.current[i] = el;
+                    }}
+                  >
+                    <Page
+                      pageNumber={i + 1}
+                      scale={scale}
+                      className="shadow-sm"
+                      renderTextLayer
+                      renderAnnotationLayer
+                    />
+                  </div>
+                ))}
+              </div>
             </Document>
           </div>
         ) : (

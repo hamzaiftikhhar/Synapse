@@ -16,9 +16,25 @@ export type UploadItemState = {
 type Props = {
   disabled?: boolean;
   onFiles: (files: File[]) => void;
+  /** input[accept] — defaults to PDF-only (the knowledge base's original behavior). */
+  accept?: string;
+  /** Per-file validator — defaults to isPdfFile. */
+  validate?: (file: File) => boolean;
+  /** Overrides the default PDF copy. */
+  title?: string;
+  hint?: string;
+  rejectionLabel?: string;
 };
 
-export function UploadDropzone({ disabled, onFiles }: Props) {
+export function UploadDropzone({
+  disabled,
+  onFiles,
+  accept = "application/pdf,.pdf",
+  validate = isPdfFile,
+  title,
+  hint,
+  rejectionLabel = "Only PDF is supported.",
+}: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
@@ -30,21 +46,21 @@ export function UploadDropzone({ disabled, onFiles }: Props) {
       const valid: File[] = [];
       const rejected: string[] = [];
       for (const file of files) {
-        if (isPdfFile(file)) valid.push(file);
+        if (validate(file)) valid.push(file);
         else rejected.push(file.name);
       }
       if (rejected.length) {
         setLocalError(
           rejected.length === 1
-            ? `"${rejected[0]}" is not a PDF. Only PDF files are supported.`
-            : `${rejected.length} files were skipped — only PDF is supported.`
+            ? `"${rejected[0]}" isn't a supported file. ${rejectionLabel}`
+            : `${rejected.length} files were skipped — ${rejectionLabel.toLowerCase()}`
         );
       } else {
         setLocalError(null);
       }
       if (valid.length) onFiles(valid);
     },
-    [disabled, onFiles]
+    [disabled, onFiles, validate, rejectionLabel]
   );
 
   return (
@@ -82,14 +98,14 @@ export function UploadDropzone({ disabled, onFiles }: Props) {
           acceptFiles(e.dataTransfer.files);
         }}
         className={cn(
-          "group flex cursor-pointer flex-col items-center justify-center rounded-[6px] border border-dashed px-6 py-10 text-center transition-colors",
+          "group flex cursor-pointer flex-col items-center justify-center rounded-2xl border border-dashed px-6 py-10 text-center",
           dragging
             ? "border-primary/50 bg-primary/[0.03]"
             : "border-border bg-muted/20 hover:border-border hover:bg-muted/35",
           disabled && "pointer-events-none opacity-60"
         )}
       >
-        <div className="mb-3 flex size-10 items-center justify-center rounded-[6px] border border-border bg-background text-muted-foreground">
+        <div className="mb-3 flex size-10 items-center justify-center rounded-xl border border-border bg-background text-muted-foreground">
           {dragging ? (
             <FileUp className="size-4 text-primary" />
           ) : (
@@ -97,15 +113,15 @@ export function UploadDropzone({ disabled, onFiles }: Props) {
           )}
         </div>
         <p className="text-sm font-medium text-navy">
-          {dragging ? "Drop PDFs to upload" : "Drag & drop PDFs here"}
+          {dragging ? "Drop files to upload" : (title ?? "Drag & drop PDFs here")}
         </p>
         <p className="mt-1 text-xs text-muted-foreground">
-          or click to browse · PDF only · multiple files supported
+          {hint ?? "or click to browse · PDF only · multiple files supported"}
         </p>
         <input
           ref={inputRef}
           type="file"
-          accept="application/pdf,.pdf"
+          accept={accept}
           multiple
           className="hidden"
           disabled={disabled}

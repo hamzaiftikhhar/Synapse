@@ -9,6 +9,7 @@ import { getApiErrorMessage } from "@/lib/api/client";
 import { useAuth } from "@/providers/auth-provider";
 import type { ClinicType } from "@/types/api";
 import { CLINIC_TYPE_OPTIONS } from "../clinic-types";
+import { StepHint } from "../step-hint";
 import { ONBOARDING_FORM_ID, type OnboardingStepProps } from "../steps";
 import { cn } from "@/lib/utils";
 
@@ -42,6 +43,10 @@ export function ClinicStep({ onNext }: OnboardingStepProps) {
 
   return (
     <form id={ONBOARDING_FORM_ID} onSubmit={onSubmit} className="space-y-8">
+      <StepHint>
+        Use the name patients will recognize. Clinic type only personalizes
+        suggested services — you can change it later.
+      </StepHint>
       <div className="space-y-2">
         <Label htmlFor="clinic-name">Clinic name</Label>
         <Input

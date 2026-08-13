@@ -23,6 +23,7 @@ import {
 } from "@/hooks/api";
 import { getApiErrorMessage } from "@/lib/api/client";
 import { cn } from "@/lib/utils";
+import { StepHint } from "../step-hint";
 import { ONBOARDING_FORM_ID, type OnboardingStepProps } from "../steps";
 
 const LEAD_TIME_OPTIONS = [
@@ -33,7 +34,7 @@ const LEAD_TIME_OPTIONS = [
   { value: "custom", label: "Custom" },
 ];
 
-const COLOR_PRESETS = ["#5b21b6", "#0f766e", "#b45309", "#1d4ed8", "#be123c", "#334155"];
+const COLOR_PRESETS = ["#5c67f2", "#0f766e", "#b45309", "#1d4ed8", "#be123c", "#1a1e26"];
 
 function InsuranceMiniList() {
   const { data } = useInsurancePlans({ limit: 50 });
@@ -148,6 +149,10 @@ export function BookingStep({ onNext }: OnboardingStepProps) {
 
   return (
     <form id={ONBOARDING_FORM_ID} onSubmit={onSubmit} className="space-y-8">
+      <StepHint>
+        Lead time and cancellation copy appear in the patient chatbot. Insurance
+        is optional and can be finished later from the dashboard.
+      </StepHint>
       <div className="space-y-3">
         <Label>How soon can patients book?</Label>
         <div className="flex flex-wrap items-center gap-2">

@@ -3,12 +3,17 @@
 export type UserRole = "SUPER_ADMIN" | "CLINIC_ADMIN" | "STAFF";
 
 export type ClinicType =
+  | "primary_care"
+  | "medical_specialty"
+  | "neurology"
+  | "cardiology"
   | "dermatology"
-  | "dental"
   | "aesthetics"
-  | "general_medicine"
-  | "urgent_care"
+  | "dental"
+  | "physical_therapy"
+  | "behavioral_health"
   | "laboratory"
+  | "urgent_care"
   | "cosmetic_surgery"
   | "multi_specialty"
   | "other"
@@ -436,6 +441,107 @@ export type DocumentChunk = {
   has_embedding: boolean;
   embedding_model: string;
   created_at: string;
+};
+
+/* ─── Spreadsheet data import (onboarding bulk-import) ────────────────── */
+
+export type ImportRecordType = "providers" | "services" | "specialties";
+
+export type ImportJobStatus =
+  | "uploaded"
+  | "parsing"
+  | "mapped"
+  | "validated"
+  | "reviewed"
+  | "committed"
+  | "failed";
+
+export type ImportRecordStatus =
+  | "needs_review"
+  | "ready"
+  | "duplicate"
+  | "approved"
+  | "rejected"
+  | "committed";
+
+export type ImportColumnMapping = Record<
+  string,
+  { target: string | null; confidence: number; reason: string }
+>;
+
+export type ImportJobCounts = {
+  needs_review: number;
+  ready: number;
+  duplicate: number;
+  approved: number;
+  rejected: number;
+  committed: number;
+};
+
+export type ImportJob = {
+  id: string;
+  record_type: ImportRecordType;
+  status: ImportJobStatus;
+  file_name: string;
+  file_type: string;
+  file_size_bytes: number | null;
+  column_mapping: ImportColumnMapping;
+  total_row_count: number;
+  error_message: string;
+  metadata: { mapping_source?: "llm" | "heuristic_fallback" } & Record<string, unknown>;
+  counts: ImportJobCounts;
+  committed_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ImportCanonicalField = {
+  source: string;
+  value: unknown;
+  confidence: number;
+  reason: string;
+};
+
+export type ImportValidationError = { field: string; message: string };
+
+export type ImportDuplicateMatch = {
+  model: string;
+  id: string | null;
+  row_number: number | null;
+  similarity: number;
+  label: string;
+};
+
+export type ImportRecord = {
+  id: string;
+  row_number: number;
+  raw_data: Record<string, string>;
+  canonical_data: Record<string, ImportCanonicalField>;
+  status: ImportRecordStatus;
+  validation_errors: ImportValidationError[];
+  duplicate_match: ImportDuplicateMatch | null;
+  created_entity_type: string;
+  created_entity_id: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ImportMappingUpdateInput = {
+  mapping: Record<string, string | null>;
+};
+
+export type ImportRecordUpdateInput = {
+  values: Record<string, unknown>;
+};
+
+export type ImportCommitOut = {
+  job: ImportJob;
+  created_count: number;
+};
+
+export type ImportBulkApproveOut = {
+  approved_count: number;
+  skipped_count: number;
 };
 
 export type ChatTimings = {

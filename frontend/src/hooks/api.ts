@@ -11,6 +11,7 @@ import {
   clinicsService,
   doctorsService,
   documentsService,
+  importerService,
   insuranceService,
   patientsService,
   servicesService,
@@ -30,6 +31,10 @@ import type {
   DoctorInput,
   DoctorScheduleInput,
   DoctorUpdateInput,
+  ImportJob,
+  ImportMappingUpdateInput,
+  ImportRecordType,
+  ImportRecordUpdateInput,
   InsurancePlanInput,
   InsurancePlanUpdateInput,
   KnowledgeDocument,
@@ -45,6 +50,10 @@ import type {
   WidgetGuestChatInput,
   WidgetSettingsUpdateInput,
 } from "@/types/api";
+
+function importJobIsActive(job: ImportJob | undefined) {
+  return job?.status === "uploaded" || job?.status === "parsing";
+}
 
 function documentIsActive(doc: KnowledgeDocument) {
   return doc.status === "pending" || doc.status === "processing";
@@ -72,6 +81,10 @@ export const queryKeys = {
   onboardingStatus: ["onboarding-status"] as const,
   billingPlans: ["billing-plans"] as const,
   billingSubscription: ["billing-subscription"] as const,
+  importJobs: (recordType?: ImportRecordType) => ["import-jobs", recordType] as const,
+  importJob: (id: string) => ["import-jobs", id] as const,
+  importJobRecords: (id: string, status?: string) =>
+    ["import-jobs", id, "records", status] as const,
 };
 
 export function useMe(enabled = true) {
@@ -590,5 +603,139 @@ export function useChangePlan() {
   return useMutation({
     mutationFn: (input: ChangePlanInput) => billingService.changePlan(input),
     onSuccess: (data) => qc.setQueryData(queryKeys.billingSubscription, data),
+  });
+}
+
+/* ─── Spreadsheet data import ──────────────────────────────── */
+
+function invalidateForRecordType(qc: ReturnType<typeof useQueryClient>, recordType: ImportRecordType) {
+  const key = { providers: "doctors", services: "services", specialties: "specialties" }[recordType];
+  qc.invalidateQueries({ queryKey: [key] });
+  qc.invalidateQueries({ queryKey: queryKeys.onboardingStatus });
+}
+
+export function useImportJobs(recordType?: ImportRecordType) {
+  return useQuery({
+    queryKey: queryKeys.importJobs(recordType),
+    queryFn: () => importerService.listJobs(recordType),
+  });
+}
+
+export function useImportJob(id: string | null) {
+  return useQuery({
+    queryKey: queryKeys.importJob(id ?? ""),
+    queryFn: () => importerService.getJob(id!),
+    enabled: Boolean(id),
+    refetchInterval: (query) => (importJobIsActive(query.state.data) ? 1200 : false),
+  });
+}
+
+export function useImportJobRecords(id: string | null, status?: string) {
+  return useQuery({
+    queryKey: queryKeys.importJobRecords(id ?? "", status),
+    queryFn: () => importerService.listRecords(id!, status),
+    enabled: Boolean(id),
+  });
+}
+
+export function useCreateImportJob() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      recordType,
+      file,
+      onProgress,
+    }: {
+      recordType: ImportRecordType;
+      file: File;
+      onProgress?: (percent: number) => void;
+    }) => importerService.createJob(recordType, file, onProgress),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["import-jobs"] }),
+  });
+}
+
+export function useUpdateImportMapping() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ jobId, input }: { jobId: string; input: ImportMappingUpdateInput }) =>
+      importerService.updateMapping(jobId, input),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: queryKeys.importJob(vars.jobId) });
+      qc.invalidateQueries({ queryKey: ["import-jobs", vars.jobId, "records"] });
+    },
+  });
+}
+
+export function useUpdateImportRecord() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      jobId,
+      recordId,
+      input,
+    }: {
+      jobId: string;
+      recordId: string;
+      input: ImportRecordUpdateInput;
+    }) => importerService.updateRecord(jobId, recordId, input),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ["import-jobs", vars.jobId, "records"] });
+      qc.invalidateQueries({ queryKey: queryKeys.importJob(vars.jobId) });
+    },
+  });
+}
+
+export function useApproveImportRecord() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ jobId, recordId }: { jobId: string; recordId: string }) =>
+      importerService.approveRecord(jobId, recordId),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ["import-jobs", vars.jobId, "records"] });
+      qc.invalidateQueries({ queryKey: queryKeys.importJob(vars.jobId) });
+    },
+  });
+}
+
+export function useApproveAllImportRecords() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (jobId: string) => importerService.approveAll(jobId),
+    onSuccess: (_data, jobId) => {
+      qc.invalidateQueries({ queryKey: ["import-jobs", jobId, "records"] });
+      qc.invalidateQueries({ queryKey: queryKeys.importJob(jobId) });
+    },
+  });
+}
+
+export function useRejectImportRecord() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ jobId, recordId }: { jobId: string; recordId: string }) =>
+      importerService.rejectRecord(jobId, recordId),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ["import-jobs", vars.jobId, "records"] });
+      qc.invalidateQueries({ queryKey: queryKeys.importJob(vars.jobId) });
+    },
+  });
+}
+
+export function useCommitImportJob() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ jobId }: { jobId: string; recordType: ImportRecordType }) =>
+      importerService.commitJob(jobId),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: queryKeys.importJob(vars.jobId) });
+      invalidateForRecordType(qc, vars.recordType);
+    },
+  });
+}
+
+export function useDeleteImportJob() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (jobId: string) => importerService.deleteJob(jobId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["import-jobs"] }),
   });
 }

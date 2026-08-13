@@ -33,6 +33,7 @@ class ClinicProfileUpdateIn(Schema):
 
 
 class BusinessHourOut(Schema):
+    id: UUID
     day_of_week: int
     open_time: time | None = None
     close_time: time | None = None

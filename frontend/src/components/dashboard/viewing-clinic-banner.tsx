@@ -44,6 +44,17 @@ export function ViewingClinicBanner() {
         </p>
       </div>
       <div className="flex shrink-0 gap-2">
+        {clinic.status === "onboarding" ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="border-warning/40 bg-card"
+            onClick={() => router.push("/onboarding")}
+          >
+            Continue setup
+          </Button>
+        ) : null}
         <Button
           type="button"
           variant="outline"

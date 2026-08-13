@@ -71,6 +71,22 @@ class ActivationTests(TestCase):
         self.clinic.refresh_from_db()
         self.assertEqual(self.clinic.status, ClinicStatus.ONBOARDING)
 
+    def test_activates_with_multi_interval_business_hours(self):
+        """ClinicBusinessHours now allows multiple rows per day (e.g. a
+        lunch closure) — activation's readiness check is a plain
+        `.exists()` on non-closed rows, so it must still work unchanged."""
+        self._make_checklist_ready()
+        ClinicBusinessHours.objects.create(
+            clinic=self.clinic, day_of_week=0, open_time="13:30", close_time="17:00"
+        )
+        self.sub.status = SubscriptionStatus.ACTIVE
+        self.sub.save(update_fields=["status"])
+
+        maybe_activate_clinic(self.sub)
+
+        self.clinic.refresh_from_db()
+        self.assertEqual(self.clinic.status, ClinicStatus.ACTIVE)
+
     def test_already_active_clinic_is_untouched(self):
         self._make_checklist_ready()
         self.clinic.status = ClinicStatus.ACTIVE

@@ -7,6 +7,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
   businessHoursToWeekly,
+  validateWeeklySchedule,
+  weeklyToBusinessHours,
   WeeklyScheduleEditor,
   type WeeklyDayValue,
 } from "@/components/dashboard/weekly-schedule-editor";
@@ -21,22 +23,13 @@ export default function BusinessHoursPage() {
   const value = rows ?? businessHoursToWeekly(data);
 
   async function onSave() {
-    const openWithoutRange = value.find(
-      (row) => row.isOpen && (!row.start || !row.end || row.end <= row.start)
-    );
-    if (openWithoutRange) {
-      toast.error("Closing time must be after opening time.");
+    const error = validateWeeklySchedule(value);
+    if (error) {
+      toast.error(error);
       return;
     }
     try {
-      await update.mutateAsync(
-        value.map((row) => ({
-          day_of_week: row.day,
-          is_closed: !row.isOpen,
-          open_time: row.isOpen ? `${row.start}:00` : null,
-          close_time: row.isOpen ? `${row.end}:00` : null,
-        }))
-      );
+      await update.mutateAsync(weeklyToBusinessHours(value));
       toast.success("Business hours saved");
     } catch (err) {
       toast.error(getApiErrorMessage(err));
