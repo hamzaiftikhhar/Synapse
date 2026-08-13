@@ -22,7 +22,7 @@ def create_doctor(
         title=title,
         bio=bio,
         photo_url=photo_url,
-        languages=languages if languages is not None else ["en"],
+        languages=list(languages) if languages is not None else [],
         is_active=is_active,
         is_accepting_patients=is_accepting_patients,
     )

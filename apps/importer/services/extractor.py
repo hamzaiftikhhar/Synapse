@@ -16,6 +16,27 @@ from apps.importer.models import ImportRecordStatus
 from apps.importer.target_schemas import required_fields_for, target_fields_for
 
 
+def apply_field_defaults(canonical: dict, record_type: str) -> dict:
+    """Fill catalog defaults (e.g. blank service duration → 30) before review.
+
+    Missing optional values stay missing unless the field declares a default.
+    Applied here so the review UI shows what will actually be committed.
+    """
+    for field, spec in target_fields_for(record_type).items():
+        if "default" not in spec:
+            continue
+        entry = canonical.get(field)
+        if entry is not None and entry.get("value") not in (None, ""):
+            continue
+        canonical[field] = {
+            "source": (entry or {}).get("source") or "",
+            "value": spec["default"],
+            "confidence": 1.0,
+            "reason": f"Blank {field} defaults to {spec['default']}.",
+        }
+    return canonical
+
+
 def _coerce(raw: str, field_type: str) -> tuple[Any, str | None]:
     raw = (raw or "").strip()
     if field_type == "string":
@@ -66,6 +87,8 @@ def extract_record(
             "confidence": info.get("confidence", 0.0),
             "reason": info.get("reason", ""),
         }
+
+    apply_field_defaults(canonical, record_type)
 
     for field in required_fields_for(record_type):
         entry = canonical.get(field)

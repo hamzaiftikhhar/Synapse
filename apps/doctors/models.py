@@ -8,7 +8,7 @@ from core.models import SoftDeleteModel, TenantModel, TimestampedModel
 
 
 def default_languages() -> list[str]:
-    return ["en"]
+    return []
 
 
 class Doctor(TenantModel, TimestampedModel, SoftDeleteModel):

@@ -4,6 +4,7 @@ from django.test import TestCase
 
 from apps.api.test_helpers import make_clinic_admin
 from apps.doctors.models import Doctor, DoctorSchedule
+from apps.doctors.services.doctor_service import create_doctor
 
 
 class DoctorScheduleTests(TestCase):
@@ -101,3 +102,20 @@ class DoctorScheduleTests(TestCase):
             f"/api/v1/doctors/{self.doctor.id}/schedule", headers=other_headers
         )
         self.assertEqual(resp.status_code, 404)
+
+
+class DoctorCreateDefaultsTests(TestCase):
+    def setUp(self):
+        _, self.clinic, _ = make_clinic_admin(
+            email="owner@doctor-defaults.test", clinic_slug="doctor-defaults-clinic"
+        )
+
+    def test_omitted_languages_are_empty_not_english(self):
+        doctor = create_doctor(clinic=self.clinic, full_name="Dr. No Lang")
+        self.assertEqual(list(doctor.languages), [])
+
+    def test_explicit_languages_are_kept(self):
+        doctor = create_doctor(
+            clinic=self.clinic, full_name="Dr. Bilingual", languages=["en", "ur"]
+        )
+        self.assertEqual(list(doctor.languages), ["en", "ur"])

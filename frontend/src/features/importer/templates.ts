@@ -10,6 +10,7 @@ export type TemplateColumn = {
 export type ImportTemplate = {
   fileStem: string;
   summary: string;
+  notes?: string[];
   columns: TemplateColumn[];
   sampleRows: string[][];
 };
@@ -17,7 +18,10 @@ export type ImportTemplate = {
 export const IMPORT_TEMPLATES: Record<ImportRecordType, ImportTemplate> = {
   providers: {
     fileStem: "synapse-providers",
-    summary: "One row per clinician. Name is required — title, bio, and languages can wait.",
+    summary: "One row per clinician. Name is required — credentials, bio, and languages can be blank.",
+    notes: [
+      "Leave languages blank if you don't know them — we will not assume English.",
+    ],
     columns: [
       {
         key: "full_name",
@@ -29,19 +33,19 @@ export const IMPORT_TEMPLATES: Record<ImportRecordType, ImportTemplate> = {
         key: "title",
         header: "Credentials",
         required: false,
-        hint: "Short credentials or role, e.g. MD, FAAD or PA-C",
+        hint: "Optional. Short credentials or role, e.g. MD, FAAD or PA-C",
       },
       {
         key: "bio",
         header: "Bio",
         required: false,
-        hint: "A short public description patients might see",
+        hint: "Optional. A short public description patients might see",
       },
       {
         key: "languages",
         header: "Languages",
         required: false,
-        hint: "Comma-separated, e.g. English, Spanish",
+        hint: "Optional. Comma-separated, e.g. English, Spanish. Leave blank if unknown.",
       },
     ],
     sampleRows: [
@@ -51,13 +55,18 @@ export const IMPORT_TEMPLATES: Record<ImportRecordType, ImportTemplate> = {
         "Board-certified dermatologist.",
         "English, Spanish",
       ],
-      ["Julian Reyes", "PA-C", "Focuses on medical dermatology.", "English, Tagalog"],
-      ["Dr. Maya Lin", "MD", "Surgical and cosmetic procedures.", "English, Mandarin"],
+      ["Julian Reyes", "PA-C", "", ""],
+      ["Dr. Maya Lin", "", "Surgical and cosmetic procedures.", "English, Mandarin"],
     ],
   },
   services: {
     fileStem: "synapse-services",
-    summary: "One row per bookable service. Name is required. Price can be 150 or $150.00.",
+    summary:
+      "One row per bookable service. Name is required. Description, category, duration, and price can be blank.",
+    notes: [
+      "If duration is blank, we'll use 30 minutes by default.",
+      "Price can be 150 or $150.00. Leave it blank for call-for-pricing.",
+    ],
     columns: [
       {
         key: "name",
@@ -81,24 +90,24 @@ export const IMPORT_TEMPLATES: Record<ImportRecordType, ImportTemplate> = {
         key: "duration_min",
         header: "Duration (min)",
         required: false,
-        hint: "Appointment length in minutes, e.g. 30",
+        hint: "Optional. Leave blank to use 30 minutes.",
       },
       {
         key: "price_cents",
         header: "Price",
         required: false,
-        hint: "Dollars, e.g. 150 or $150.00 — not cents",
+        hint: "Optional. Dollars, e.g. 150 or $150.00 — not cents",
       },
     ],
     sampleRows: [
       ["Acne Consultation", "New patient acne visit", "Medical", "30", "150"],
-      ["Botox", "Cosmetic neuromodulator treatment", "Cosmetic", "20", "299"],
-      ["Follow-up Visit", "Established patient follow-up", "Medical", "15", "85"],
+      ["Botox", "", "Cosmetic", "", "299"],
+      ["Follow-up Visit", "Established patient follow-up", "", "15", ""],
     ],
   },
   specialties: {
     fileStem: "synapse-specialties",
-    summary: "One row per area of care. Name is required.",
+    summary: "One row per area of care. Name is required. Description can be blank.",
     columns: [
       {
         key: "name",
@@ -115,13 +124,14 @@ export const IMPORT_TEMPLATES: Record<ImportRecordType, ImportTemplate> = {
     ],
     sampleRows: [
       ["Dermatology", "Medical and surgical skin care"],
-      ["Cosmetic Dermatology", "Aesthetic procedures"],
+      ["Cosmetic Dermatology", ""],
       ["Pediatric Dermatology", "Skin care for children"],
     ],
   },
   insurance: {
     fileStem: "synapse-insurance",
-    summary: "One row per accepted payer. Insurance name is required — plan and network can wait.",
+    summary: "One row per accepted payer. Insurance name is required — plan and network can be blank.",
+    notes: ["Plan name and network/type are optional. A payer-only row is valid."],
     columns: [
       {
         key: "provider_name",

@@ -51,7 +51,11 @@ export function targetFieldOptions(recordType: ImportRecordType) {
 
 export function formatFieldValue(value: unknown, field?: string): string {
   if (value === null || value === undefined || value === "") return "—";
+  if (Array.isArray(value)) return value.length ? value.join(", ") : "—";
   if (field === "price_cents" && typeof value === "number") return `$${(value / 100).toFixed(2)}`;
-  if (Array.isArray(value)) return value.join(", ");
   return String(value);
+}
+
+export function isDefaultedImportValue(reason?: string): boolean {
+  return Boolean(reason?.includes("defaults to"));
 }

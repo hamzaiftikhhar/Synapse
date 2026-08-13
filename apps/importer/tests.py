@@ -340,6 +340,50 @@ class ImportDuplicateTests(ImporterTestCase):
         self.assertEqual(record.duplicate_match["similarity"], 1.0)
 
 
+class ImportServiceDefaultTests(ImporterTestCase):
+    def setUp(self):
+        super().setUp()
+        self.user, self.clinic, self.headers = make_clinic_admin(
+            email="owner@defaults.test", clinic_slug="defaults-clinic"
+        )
+
+    def test_blank_duration_defaults_to_30_and_commits(self):
+        resp = self.client.post(
+            "/api/v1/import/jobs",
+            data={"record_type": "services", "file": _csv_upload("Service Name\nBotox\n")},
+            headers=self.headers,
+        )
+        job = ImportJob.objects.get(id=resp.json()["id"])
+        pipeline.run_import_pipeline(job)
+        record = job.records.get()
+        self.assertEqual(record.canonical_data["duration_min"]["value"], 30)
+        self.assertIn("defaults to", record.canonical_data["duration_min"]["reason"])
+
+        self.client.post(
+            f"/api/v1/import/jobs/{job.id}/records/{record.id}/approve", headers=self.headers
+        )
+        commit = self.client.post(f"/api/v1/import/jobs/{job.id}/commit", headers=self.headers)
+        self.assertEqual(commit.status_code, 200, commit.content)
+        service = Service.objects.get(clinic=self.clinic, name="Botox")
+        self.assertEqual(service.duration_min, 30)
+        self.assertIsNone(service.price_cents)
+
+    def test_provided_duration_is_not_overwritten(self):
+        resp = self.client.post(
+            "/api/v1/import/jobs",
+            data={
+                "record_type": "services",
+                "file": _csv_upload("Service Name,Duration (min)\nBotox,45\n"),
+            },
+            headers=self.headers,
+        )
+        job = ImportJob.objects.get(id=resp.json()["id"])
+        pipeline.run_import_pipeline(job)
+        record = job.records.get()
+        self.assertEqual(record.canonical_data["duration_min"]["value"], 45)
+        self.assertNotIn("defaults to", record.canonical_data["duration_min"].get("reason", ""))
+
+
 class ImportInvalidValueTests(ImporterTestCase):
     def setUp(self):
         super().setUp()
@@ -608,6 +652,21 @@ class ImportProvidersAndSpecialtiesTests(ImporterTestCase):
             set(Doctor.objects.filter(clinic=self.clinic).values_list("full_name", flat=True)),
             {"Dr. Alice Chen", "Dr. Bo Diallo"},
         )
+        self.assertEqual(
+            list(Doctor.objects.get(full_name="Dr. Alice Chen").languages),
+            [],
+        )
+
+    def test_blank_languages_column_does_not_assume_english(self):
+        from apps.doctors.models import Doctor
+
+        resp, _job = self._upload_map_approve_commit(
+            "Provider Name,Languages\nDr. No Lang,\n",
+            "providers",
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        doctor = Doctor.objects.get(clinic=self.clinic, full_name="Dr. No Lang")
+        self.assertEqual(list(doctor.languages), [])
 
     def test_specialties_csv_import_creates_specialties(self):
         from apps.specialties.models import Specialty

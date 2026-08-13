@@ -8,7 +8,7 @@ coercion in apps/importer/services/extractor.py.
 
 from apps.importer.models import ImportRecordType
 
-FieldSpec = dict[str, bool | str]
+FieldSpec = dict[str, bool | str | int]
 
 # type: "string" | "string_list" | "integer" | "money_cents"
 PROVIDER_FIELDS: dict[str, FieldSpec] = {
@@ -22,7 +22,7 @@ SERVICE_FIELDS: dict[str, FieldSpec] = {
     "name": {"required": True, "type": "string"},
     "description": {"required": False, "type": "string"},
     "category": {"required": False, "type": "string"},
-    "duration_min": {"required": False, "type": "integer"},
+    "duration_min": {"required": False, "type": "integer", "default": 30},
     "price_cents": {"required": False, "type": "money_cents"},
 }
 

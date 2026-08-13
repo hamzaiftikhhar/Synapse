@@ -31,7 +31,7 @@ from apps.importer.models import (
     ImportRecordType,
 )
 from apps.importer.services import committer, duplicates, parser, pipeline, storage
-from apps.importer.services.extractor import finalize_status
+from apps.importer.services.extractor import apply_field_defaults, finalize_status
 from apps.importer.target_schemas import required_fields_for, target_fields_for
 
 router = Router(tags=["Import"])
@@ -212,6 +212,8 @@ def update_import_record(request, job_id: UUID, record_id: UUID, payload: Import
         canonical[field] = {"source": "manual edit", "value": value, "confidence": 1.0, "reason": "Manually edited"}
         if field in identity_fields:
             name_touched = True
+
+    apply_field_defaults(canonical, job.record_type)
 
     errors = [
         {"field": field, "message": f"'{field}' is required but is missing."}

@@ -30,7 +30,12 @@ import {
 } from "@/hooks/api";
 import { getApiErrorMessage } from "@/lib/api/client";
 import type { ImportJob, ImportRecord, ImportRecordType } from "@/types/api";
-import { formatFieldValue, targetFieldOptions, TARGET_FIELD_LABELS } from "./utils";
+import {
+  formatFieldValue,
+  isDefaultedImportValue,
+  targetFieldOptions,
+  TARGET_FIELD_LABELS,
+} from "./utils";
 
 const UNMAPPED = "__unmapped__";
 
@@ -242,8 +247,20 @@ function RecordTableRow({
               className="h-8 min-w-[8rem]"
             />
           ) : (
-            <span className="block truncate text-navy" title={formatFieldValue(record.canonical_data[field]?.value, field)}>
+            <span
+              className="block truncate text-navy"
+              title={
+                isDefaultedImportValue(record.canonical_data[field]?.reason)
+                  ? record.canonical_data[field]?.reason
+                  : formatFieldValue(record.canonical_data[field]?.value, field)
+              }
+            >
               {formatFieldValue(record.canonical_data[field]?.value, field)}
+              {isDefaultedImportValue(record.canonical_data[field]?.reason) ? (
+                <span className="ml-1 text-[11px] font-normal text-muted-foreground">
+                  default
+                </span>
+              ) : null}
             </span>
           )}
         </TableCell>

@@ -35,6 +35,13 @@ export function ImportGuide({
             Spreadsheet format
           </p>
           <p className="mt-1 text-xs text-muted-foreground">{template.summary}</p>
+          {template.notes?.length ? (
+            <ul className="mt-1.5 list-disc space-y-0.5 pl-4 text-[11px] text-muted-foreground">
+              {template.notes.map((note) => (
+                <li key={note}>{note}</li>
+              ))}
+            </ul>
+          ) : null}
         </div>
         <p className="shrink-0 text-[11px] text-muted-foreground">CSV or XLSX</p>
       </div>
@@ -73,7 +80,11 @@ export function ImportGuide({
               <tr key={i} className="border-t border-border">
                 {previewIndexes.map((idx) => (
                   <td key={idx} className="px-4 py-2.5 text-foreground">
-                    {row[idx]}
+                    {row[idx] ? (
+                      row[idx]
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
                   </td>
                 ))}
               </tr>
