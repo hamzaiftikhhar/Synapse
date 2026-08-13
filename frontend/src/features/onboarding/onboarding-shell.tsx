@@ -64,6 +64,7 @@ export function OnboardingShell({
   continueLoading,
   secondaryAction,
   hideFooter = false,
+  wide = false,
   children,
 }: {
   stageIndex: number;
@@ -76,8 +77,10 @@ export function OnboardingShell({
   continueLoading?: boolean;
   secondaryAction?: ReactNode;
   hideFooter?: boolean;
+  wide?: boolean;
   children: ReactNode;
 }) {
+  const frame = cn("mx-auto px-6", wide ? "max-w-5xl" : "max-w-3xl");
   const { user, clinic, canExitClinic, exitClinic } = useAuth();
   const router = useRouter();
   const [exiting, setExiting] = useState(false);
@@ -137,7 +140,7 @@ export function OnboardingShell({
           </div>
         ) : null}
         <header className="border-b border-border">
-          <div className="mx-auto flex h-14 max-w-3xl items-center justify-between px-6">
+          <div className={cn("flex h-14 items-center justify-between", frame)}>
             <span className="text-sm font-semibold tracking-tight text-navy">
               {APP_NAME}
             </span>
@@ -161,7 +164,7 @@ export function OnboardingShell({
           </div>
         </header>
 
-        <div className="mx-auto max-w-3xl px-6 py-10 pb-32 sm:py-14">
+        <div className={cn("py-10 pb-32 sm:py-14", frame)}>
           <StageProgress activeIndex={stageIndex} />
           <h1 className="text-2xl font-semibold tracking-tight text-navy">
             {title}
@@ -176,7 +179,7 @@ export function OnboardingShell({
 
         {!hideFooter ? (
           <footer className="fixed inset-x-0 bottom-0 border-t border-border bg-background/95 backdrop-blur">
-            <div className="mx-auto flex max-w-3xl items-center justify-between gap-3 px-6 py-4">
+            <div className={cn("flex items-center justify-between gap-3 py-4", frame)}>
               <div>
                 {onBack ? (
                   <Button type="button" variant="outline" onClick={onBack}>

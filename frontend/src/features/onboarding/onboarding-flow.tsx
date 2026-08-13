@@ -96,6 +96,7 @@ export function OnboardingFlow() {
       subtitle={copy.subtitle}
       onBack={isFirst ? undefined : goBack}
       formId={ONBOARDING_FORM_ID}
+      wide={stepSlug === "hours" || stepSlug === "availability"}
     >
       {stepSlug === "clinic" ? <ClinicStep onNext={goNext} /> : null}
       {stepSlug === "location" ? <LocationStep onNext={goNext} /> : null}

@@ -194,7 +194,7 @@ export function WeeklyScheduleEditor({
   }
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
         <Button type="button" variant="outline" size="sm" onClick={copyMondayToOthers} disabled={disabled}>
           Copy Monday to other days
@@ -211,7 +211,7 @@ export function WeeklyScheduleEditor({
             <div
               key={row.day}
               className={cn(
-                "flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-start sm:gap-4",
+                "flex flex-col gap-2.5 px-5 py-3.5 sm:flex-row sm:items-start sm:gap-6",
                 !row.isOpen && "bg-muted/30"
               )}
             >
@@ -232,7 +232,7 @@ export function WeeklyScheduleEditor({
                         value={iv.start}
                         onChange={(e) => updateInterval(row.day, index, { start: e.target.value })}
                         disabled={disabled}
-                        className="w-32"
+                        className="w-36"
                         aria-label={`${DAY_LABELS[row.day]} interval ${index + 1} start time`}
                       />
                       <span className="text-sm text-muted-foreground">to</span>
@@ -241,7 +241,7 @@ export function WeeklyScheduleEditor({
                         value={iv.end}
                         onChange={(e) => updateInterval(row.day, index, { end: e.target.value })}
                         disabled={disabled}
-                        className="w-32"
+                        className="w-36"
                         aria-label={`${DAY_LABELS[row.day]} interval ${index + 1} end time`}
                       />
                       {row.intervals.length > 1 ? (

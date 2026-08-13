@@ -203,10 +203,10 @@ export function AvailabilityStep({ onNext }: OnboardingStepProps) {
 
       {doctors.length === 1 && activeDoctor ? (
         <div className="overflow-hidden rounded-2xl border border-border bg-card">
-          <div className="border-b border-border px-4 py-3">
+          <div className="border-b border-border px-5 py-4">
             <ProviderPaneHeader doctor={activeDoctor} summary={hoursSummary(valueFor(activeDoctor.id))} />
           </div>
-          <div className="p-4 sm:p-5">
+          <div className="p-5 sm:p-6">
             <WeeklyScheduleEditor
               value={valueFor(activeDoctor.id)}
               onChange={(rows) => setValueFor(activeDoctor.id, rows)}
@@ -215,9 +215,9 @@ export function AvailabilityStep({ onNext }: OnboardingStepProps) {
         </div>
       ) : (
         <div className="overflow-hidden rounded-2xl border border-border bg-card">
-          <div className="grid md:grid-cols-[13.5rem_minmax(0,1fr)]">
+          <div className="grid md:grid-cols-[17rem_minmax(0,1fr)]">
             <aside className="border-b border-border md:border-r md:border-b-0">
-              <div className="flex items-center justify-between px-3 pt-3 pb-2">
+              <div className="flex items-center justify-between px-4 pt-4 pb-2.5">
                 <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
                   Providers
                 </p>
@@ -226,7 +226,7 @@ export function AvailabilityStep({ onNext }: OnboardingStepProps) {
                 </span>
               </div>
               {doctors.length > 6 ? (
-                <div className="px-3 pb-2">
+                <div className="px-4 pb-3">
                   <div className="relative">
                     <Search className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground" />
                     <Input
@@ -240,7 +240,7 @@ export function AvailabilityStep({ onNext }: OnboardingStepProps) {
                 </div>
               ) : null}
 
-              <div className="flex gap-2 overflow-x-auto px-3 pb-3 md:hidden">
+              <div className="flex gap-2 overflow-x-auto px-4 pb-4 md:hidden">
                 {visibleDoctors.map((doctor) => (
                   <ProviderChip
                     key={doctor.id}
@@ -257,7 +257,7 @@ export function AvailabilityStep({ onNext }: OnboardingStepProps) {
                 aria-label="Providers"
                 tabIndex={0}
                 onKeyDown={onRosterKeyDown}
-                className="hidden max-h-[28rem] overflow-y-auto md:block"
+                className="hidden max-h-[32rem] overflow-y-auto md:block"
               >
                 {visibleDoctors.length === 0 ? (
                   <p className="px-3 py-6 text-center text-xs text-muted-foreground">
@@ -281,7 +281,7 @@ export function AvailabilityStep({ onNext }: OnboardingStepProps) {
             <section className="min-w-0">
               {activeDoctor ? (
                 <>
-                  <div className="flex items-center gap-2 border-b border-border px-4 py-3">
+                  <div className="flex items-center gap-3 border-b border-border px-5 py-4">
                     <div className="min-w-0 flex-1">
                       <ProviderPaneHeader
                         doctor={activeDoctor}
@@ -315,7 +315,7 @@ export function AvailabilityStep({ onNext }: OnboardingStepProps) {
                       </Button>
                     </div>
                   </div>
-                  <div className="p-4 sm:p-5">
+                  <div className="p-5 sm:p-6">
                     <WeeklyScheduleEditor
                       value={valueFor(activeDoctor.id)}
                       onChange={(rows) => setValueFor(activeDoctor.id, rows)}
@@ -376,7 +376,7 @@ function ProviderRow({
       aria-selected={selected}
       onClick={onSelect}
       className={cn(
-        "flex w-full items-center gap-2.5 border-l-2 px-3 py-2.5 text-left transition-colors",
+        "flex w-full items-center gap-3 border-l-2 px-4 py-3 text-left transition-colors",
         selected
           ? "border-l-primary bg-primary/10"
           : "border-l-transparent hover:bg-muted/60"
