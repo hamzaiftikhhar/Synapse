@@ -16,10 +16,14 @@ import {
   WeeklyScheduleEditor,
   type WeeklyDayValue,
 } from "@/components/dashboard/weekly-schedule-editor";
-import { queryKeys } from "@/hooks/api";
+import { ensureDoctorCatalogLinks } from "@/features/onboarding/doctor-catalog-links";
 import {
+  queryKeys,
   useBusinessHours,
   useDoctors,
+  useServices,
+  useSpecialties,
+  useUpdateDoctor,
   useUpdateDoctorSchedule,
 } from "@/hooks/api";
 import { getApiErrorMessage } from "@/lib/api/client";
@@ -51,9 +55,14 @@ function scheduleToWeekly(
 
 export function AvailabilityStep({ onNext }: OnboardingStepProps) {
   const { data: doctorsData, isLoading: doctorsLoading } = useDoctors({ limit: 100 });
+  const { data: specialtiesData } = useSpecialties({ limit: 100 });
+  const { data: servicesData } = useServices({ limit: 100 });
   const { data: businessHours } = useBusinessHours();
   const updateSchedule = useUpdateDoctorSchedule();
+  const updateDoctor = useUpdateDoctor();
   const doctors = useMemo(() => doctorsData?.results ?? [], [doctorsData]);
+  const specialties = specialtiesData?.results ?? [];
+  const services = servicesData?.results ?? [];
   const clinicDefaults = useMemo(() => businessHoursToWeekly(businessHours), [businessHours]);
 
   // Every provider's schedule is fetched up front (not just the active tab)
@@ -111,6 +120,15 @@ export function AvailabilityStep({ onNext }: OnboardingStepProps) {
           })
         )
       );
+      // Safety net: a provider added after catalog steps would otherwise
+      // stay unlinked and vanish from specialty_first booking.
+      await ensureDoctorCatalogLinks({
+        doctors,
+        specialties,
+        services,
+        updateDoctor: (args) => updateDoctor.mutateAsync(args),
+        kind: "both",
+      });
       onNext();
     } catch (err) {
       toast.error(getApiErrorMessage(err));

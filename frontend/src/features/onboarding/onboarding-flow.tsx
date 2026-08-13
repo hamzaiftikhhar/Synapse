@@ -4,12 +4,13 @@ import { OnboardingShell } from "./onboarding-shell";
 import { AvailabilityStep } from "./steps/availability-step";
 import { BillingStep } from "./steps/billing-step";
 import { BookingStep } from "./steps/booking-step";
-import { CatalogStep } from "./steps/catalog-step";
 import { ClinicStep } from "./steps/clinic-step";
 import { HoursStep } from "./steps/hours-step";
 import { LocationStep } from "./steps/location-step";
 import { ProvidersStep } from "./steps/providers-step";
 import { ReviewStep } from "./steps/review-step";
+import { ServicesStep } from "./steps/services-step";
+import { SpecialtiesStep } from "./steps/specialties-step";
 import { ONBOARDING_FORM_ID } from "./steps";
 import { useOnboarding } from "./use-onboarding";
 
@@ -26,9 +27,13 @@ const STEP_COPY: Record<string, { title: string; subtitle: string }> = {
     title: "Who provides care at your clinic?",
     subtitle: "Add clinicians by hand, or import a CSV / Excel using the sample format below.",
   },
-  catalog: {
+  specialties: {
+    title: "What areas of care do you offer?",
+    subtitle: "Add specialties if you use them — this step is optional.",
+  },
+  services: {
     title: "What can patients book?",
-    subtitle: "Add specialties and services, or import them from a spreadsheet.",
+    subtitle: "Add the services patients will schedule, or import them from a spreadsheet.",
   },
   hours: {
     title: "When is your clinic open?",
@@ -95,7 +100,8 @@ export function OnboardingFlow() {
       {stepSlug === "clinic" ? <ClinicStep onNext={goNext} /> : null}
       {stepSlug === "location" ? <LocationStep onNext={goNext} /> : null}
       {stepSlug === "providers" ? <ProvidersStep onNext={goNext} /> : null}
-      {stepSlug === "catalog" ? <CatalogStep onNext={goNext} /> : null}
+      {stepSlug === "specialties" ? <SpecialtiesStep onNext={goNext} /> : null}
+      {stepSlug === "services" ? <ServicesStep onNext={goNext} /> : null}
       {stepSlug === "hours" ? <HoursStep onNext={goNext} /> : null}
       {stepSlug === "availability" ? <AvailabilityStep onNext={goNext} /> : null}
       {stepSlug === "booking" ? <BookingStep onNext={goNext} /> : null}

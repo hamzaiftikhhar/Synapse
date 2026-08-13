@@ -8,6 +8,7 @@
 export const ONBOARDING_STAGES = [
   { key: "clinic", label: "Clinic" },
   { key: "team", label: "Team" },
+  { key: "specialties", label: "Specialties" },
   { key: "services", label: "Services" },
   { key: "availability", label: "Availability" },
   { key: "booking", label: "Booking" },
@@ -20,7 +21,8 @@ export const ONBOARDING_STEPS = [
   { slug: "clinic", stage: "clinic" },
   { slug: "location", stage: "clinic" },
   { slug: "providers", stage: "team" },
-  { slug: "catalog", stage: "services" },
+  { slug: "specialties", stage: "specialties" },
+  { slug: "services", stage: "services" },
   { slug: "hours", stage: "availability" },
   { slug: "availability", stage: "availability" },
   { slug: "booking", stage: "booking" },
@@ -33,6 +35,13 @@ export const ONBOARDING_STEPS = [
 
 export type OnboardingStepSlug = (typeof ONBOARDING_STEPS)[number]["slug"];
 
+/** Clinics that started onboarding before the catalog page was split still
+ * have `onboarding_step = "catalog"`. Land them on Specialties rather than
+ * bouncing to the first step. */
+const LEGACY_STEP_ALIASES: Record<string, OnboardingStepSlug> = {
+  catalog: "specialties",
+};
+
 export function stageIndexForStep(slug: string): number {
   const step = ONBOARDING_STEPS.find((s) => s.slug === slug);
   if (!step) return 0;
@@ -41,6 +50,13 @@ export function stageIndexForStep(slug: string): number {
 
 export function isOnboardingStepSlug(value: string | undefined | null): value is OnboardingStepSlug {
   return Boolean(value) && ONBOARDING_STEPS.some((s) => s.slug === value);
+}
+
+export function resolveOnboardingStepSlug(
+  value: string | undefined | null
+): OnboardingStepSlug {
+  if (value && value in LEGACY_STEP_ALIASES) return LEGACY_STEP_ALIASES[value];
+  return isOnboardingStepSlug(value) ? value : ONBOARDING_STEPS[0].slug;
 }
 
 /** Every step form uses this id so the shell's sticky footer Continue

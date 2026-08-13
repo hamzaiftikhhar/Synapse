@@ -25,7 +25,7 @@ const REQUIRED_ITEMS: Array<{
   { key: "clinic", label: "Clinic information", step: "clinic" },
   { key: "location", label: "Location", step: "location" },
   { key: "providers", label: "Providers", step: "providers" },
-  { key: "services", label: "Services", step: "catalog" },
+  { key: "services", label: "Services", step: "services" },
   { key: "hours", label: "Business hours", step: "hours" },
   { key: "availability", label: "Provider availability", step: "availability" },
 ];
@@ -145,12 +145,20 @@ export function ReviewStep({
             onEdit={() => onGoToStep("providers")}
           />
           <SummaryRow
+            label="Specialties"
+            value={
+              status?.counts.specialties
+                ? `${status.counts.specialties} specialt${status.counts.specialties === 1 ? "y" : "ies"}`
+                : "None — optional"
+            }
+            ok
+            onEdit={() => onGoToStep("specialties")}
+          />
+          <SummaryRow
             label="Services"
-            value={`${status?.counts.services ?? 0} service${status?.counts.services === 1 ? "" : "s"}${
-              status?.counts.specialties ? ` · ${status.counts.specialties} specialties` : ""
-            }`}
+            value={`${status?.counts.services ?? 0} service${status?.counts.services === 1 ? "" : "s"}`}
             ok={Boolean(checklist?.services)}
-            onEdit={() => onGoToStep("catalog")}
+            onEdit={() => onGoToStep("services")}
           />
           <SummaryRow
             label="Business hours"

@@ -1,5 +1,57 @@
 import type { ClinicType } from "@/types/api";
 
+/** Map free-text specialty names onto clinic-type template sets. Used only
+ * to rank onboarding suggestions — never written to the database and never
+ * creates a Specialty → Service relationship. */
+const SPECIALTY_TEMPLATE_HINTS: Array<{ pattern: RegExp; types: ClinicType[] }> = [
+  { pattern: /dermat|skin|acne|mole|psoriasis/i, types: ["dermatology", "aesthetics"] },
+  { pattern: /aesthetic|cosmetic|botox|filler|med\s*spa|laser|peel/i, types: ["aesthetics"] },
+  { pattern: /dental|orthodont|teeth|oral|invisalign/i, types: ["dental"] },
+  { pattern: /cardio|heart/i, types: ["cardiology"] },
+  { pattern: /neuro|migraine|seizure/i, types: ["neurology"] },
+  { pattern: /physical\s*therap|rehab|sports\s*injur/i, types: ["physical_therapy"] },
+  { pattern: /behavio|mental\s*health|psychiatr|psycholog/i, types: ["behavioral_health"] },
+  { pattern: /lab|diagnostic|patholog|blood/i, types: ["laboratory"] },
+  { pattern: /primary\s*care|family\s*med|internal\s*med|gp\b/i, types: ["primary_care"] },
+];
+
+function addTemplates(into: ServiceTemplate[], seen: Set<string>, list: ServiceTemplate[] | undefined) {
+  if (!list) return;
+  for (const template of list) {
+    const key = template.name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    into.push(template);
+  }
+}
+
+/** Clinic-type templates first, then extra sets hinted by specialty names
+ * the owner already entered. Deduped by service name. */
+export function suggestedServiceTemplates(
+  clinicType: ClinicType | string | undefined,
+  specialtyNames: string[]
+): ServiceTemplate[] {
+  const seen = new Set<string>();
+  const out: ServiceTemplate[] = [];
+
+  if (clinicType) addTemplates(out, seen, SERVICE_TEMPLATES[clinicType as ClinicType]);
+
+  const hinted = new Set<ClinicType>();
+  for (const name of specialtyNames) {
+    for (const hint of SPECIALTY_TEMPLATE_HINTS) {
+      if (hint.pattern.test(name)) {
+        for (const type of hint.types) hinted.add(type);
+      }
+    }
+  }
+  for (const type of hinted) {
+    if (type === clinicType) continue;
+    addTemplates(out, seen, SERVICE_TEMPLATES[type]);
+  }
+
+  return out;
+}
+
 export type ServiceTemplate = {
   name: string;
   duration_min: number;

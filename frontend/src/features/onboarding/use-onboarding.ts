@@ -4,8 +4,8 @@ import { useMemo, useState } from "react";
 import { useUpdateClinicProfile } from "@/hooks/api";
 import { useAuth } from "@/providers/auth-provider";
 import {
-  isOnboardingStepSlug,
   ONBOARDING_STEPS,
+  resolveOnboardingStepSlug,
   stageIndexForStep,
   type OnboardingStepSlug,
 } from "./steps";
@@ -15,9 +15,7 @@ export function useOnboarding() {
   const updateProfile = useUpdateClinicProfile();
 
   const initialSlug = useMemo<OnboardingStepSlug>(() => {
-    return isOnboardingStepSlug(clinic?.onboarding_step)
-      ? clinic!.onboarding_step!
-      : ONBOARDING_STEPS[0].slug;
+    return resolveOnboardingStepSlug(clinic?.onboarding_step);
     // Only ever read on first mount — the flow owns step navigation after that.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
