@@ -36,7 +36,12 @@ from apps.importer.target_schemas import required_fields_for, target_fields_for
 
 router = Router(tags=["Import"])
 
-_NAME_FIELD = {"providers": "full_name", "services": "name", "specialties": "name"}
+_NAME_FIELD = {
+    "providers": "full_name",
+    "services": "name",
+    "specialties": "name",
+    "insurance": "provider_name",
+}
 
 _SUPPORTED_RECORD_TYPES = {t.value for t in ImportRecordType}
 
@@ -196,12 +201,16 @@ def update_import_record(request, job_id: UUID, record_id: UUID, payload: Import
     name_field = _NAME_FIELD.get(job.record_type)
     name_touched = False
 
+    identity_fields = {name_field} if name_field else set()
+    if job.record_type == ImportRecordType.INSURANCE:
+        identity_fields.update({"provider_name", "plan_name", "plan_type"})
+
     canonical = dict(record.canonical_data)
     for field, value in payload.values.items():
         if field not in target_fields:
             raise HttpError(400, f"'{field}' is not a valid field for {job.record_type}.")
         canonical[field] = {"source": "manual edit", "value": value, "confidence": 1.0, "reason": "Manually edited"}
-        if field == name_field:
+        if field in identity_fields:
             name_touched = True
 
     errors = [
@@ -213,9 +222,14 @@ def update_import_record(request, job_id: UUID, record_id: UUID, payload: Import
     duplicate_match = record.duplicate_match
     if name_touched and name_field:
         name_value = canonical.get(name_field, {}).get("value")
+        extra = duplicates.extra_from_canonical(job.record_type, canonical)
         duplicate_match = (
             duplicates.find_duplicate(
-                record_type=job.record_type, name=name_value, clinic=clinic, in_batch_names=[]
+                record_type=job.record_type,
+                name=name_value,
+                clinic=clinic,
+                in_batch_names=[],
+                extra=extra,
             )
             if name_value
             else None

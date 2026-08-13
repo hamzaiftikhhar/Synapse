@@ -609,7 +609,12 @@ export function useChangePlan() {
 /* ─── Spreadsheet data import ──────────────────────────────── */
 
 function invalidateForRecordType(qc: ReturnType<typeof useQueryClient>, recordType: ImportRecordType) {
-  const key = { providers: "doctors", services: "services", specialties: "specialties" }[recordType];
+  const key = {
+    providers: "doctors",
+    services: "services",
+    specialties: "specialties",
+    insurance: "insurance",
+  }[recordType];
   qc.invalidateQueries({ queryKey: [key] });
   qc.invalidateQueries({ queryKey: queryKeys.onboardingStatus });
 }

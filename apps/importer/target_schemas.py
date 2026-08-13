@@ -31,10 +31,17 @@ SPECIALTY_FIELDS: dict[str, FieldSpec] = {
     "description": {"required": False, "type": "string"},
 }
 
+INSURANCE_FIELDS: dict[str, FieldSpec] = {
+    "provider_name": {"required": True, "type": "string"},
+    "plan_name": {"required": False, "type": "string"},
+    "plan_type": {"required": False, "type": "string"},
+}
+
 TARGET_FIELDS: dict[str, dict[str, FieldSpec]] = {
     ImportRecordType.PROVIDERS: PROVIDER_FIELDS,
     ImportRecordType.SERVICES: SERVICE_FIELDS,
     ImportRecordType.SPECIALTIES: SPECIALTY_FIELDS,
+    ImportRecordType.INSURANCE: INSURANCE_FIELDS,
 }
 
 

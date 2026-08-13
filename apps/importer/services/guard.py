@@ -52,12 +52,25 @@ def _normalize(header: str) -> str:
     return re.sub(r"\s+", " ", header.strip().lower())
 
 
-def looks_like_patient_data(headers: list[str]) -> list[str]:
+# Payer-list spreadsheets often include an "Insurance ID" / NAIC column.
+# Those headers are PHI on a *patient* file, but they are setup metadata
+# when the owner is importing accepted plans — skip them only then.
+_INSURANCE_SETUP_HEADERS = {"insurance id", "insurance number"}
+
+
+def looks_like_patient_data(
+    headers: list[str], record_type: str | None = None
+) -> list[str]:
     """Returns the subset of headers that matched a patient-data marker
     (empty list = safe to proceed)."""
+    skipped = _INSURANCE_SETUP_HEADERS if record_type == "insurance" else set()
     matches = []
     for header in headers:
         normalized = _normalize(header)
-        if any(marker in normalized for marker in _PATIENT_DATA_MARKERS):
+        if any(
+            marker in normalized
+            for marker in _PATIENT_DATA_MARKERS
+            if marker not in skipped
+        ):
             matches.append(header)
     return matches

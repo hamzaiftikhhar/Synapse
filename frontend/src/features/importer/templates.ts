@@ -119,6 +119,35 @@ export const IMPORT_TEMPLATES: Record<ImportRecordType, ImportTemplate> = {
       ["Pediatric Dermatology", "Skin care for children"],
     ],
   },
+  insurance: {
+    fileStem: "synapse-insurance",
+    summary: "One row per accepted payer. Insurance name is required — plan and network can wait.",
+    columns: [
+      {
+        key: "provider_name",
+        header: "Insurance Name",
+        required: true,
+        hint: "Payer or carrier patients know, e.g. Aetna",
+      },
+      {
+        key: "plan_name",
+        header: "Plan name",
+        required: false,
+        hint: "Optional product name, e.g. Gold",
+      },
+      {
+        key: "plan_type",
+        header: "Network / type",
+        required: false,
+        hint: "Optional network, e.g. PPO or HMO",
+      },
+    ],
+    sampleRows: [
+      ["Aetna", "", "PPO"],
+      ["Blue Cross Blue Shield", "Gold", "HMO"],
+      ["Cigna", "", ""],
+    ],
+  },
 };
 
 function escapeCsv(value: string) {

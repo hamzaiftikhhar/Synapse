@@ -1,6 +1,6 @@
 """Turns APPROVED ImportRecords into real production rows.
 
-The only place an import job is allowed to touch Doctor/Service/Specialty
+The only place an import job is allowed to touch Doctor/Service/Specialty/InsurancePlan
 — and only through the same creation functions the manual onboarding UI
 already uses, so nothing about readiness detection or business logic gets
 a second code path. Single atomic transaction: any failure rolls back the
@@ -14,6 +14,7 @@ from django.utils import timezone
 
 from apps.doctors.services.doctor_service import create_doctor
 from apps.importer.models import ImportJob, ImportJobStatus, ImportRecordStatus, ImportRecordType
+from apps.insurance.services.insurance_service import create_insurance_plan
 from apps.services.services.service_service import create_service
 from apps.specialties.services.specialty_service import create_specialty
 
@@ -32,6 +33,8 @@ def _create_fn_for(record_type: str) -> tuple:
         return create_doctor, "doctor"
     if record_type == ImportRecordType.SPECIALTIES:
         return create_specialty, "specialty"
+    if record_type == ImportRecordType.INSURANCE:
+        return create_insurance_plan, "insurance"
     raise CommitError(f"Importing {record_type} isn't supported yet.")  # pragma: no cover
 
 

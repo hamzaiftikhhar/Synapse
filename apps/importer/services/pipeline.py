@@ -28,6 +28,7 @@ _NAME_FIELD = {
     "providers": "full_name",
     "services": "name",
     "specialties": "name",
+    "insurance": "provider_name",
 }
 
 
@@ -46,6 +47,7 @@ def _build_records(job: ImportJob, rows: list[dict]) -> list[ImportRecord]:
     for index, row in enumerate(rows, start=1):
         canonical_data, errors = extract_record(row, job.column_mapping, job.record_type)
         name_value = (canonical_data.get(name_field) or {}).get("value") if name_field else None
+        extra = duplicates.extra_from_canonical(job.record_type, canonical_data)
         duplicate_match = None
         if name_value:
             duplicate_match = duplicates.find_duplicate(
@@ -53,8 +55,9 @@ def _build_records(job: ImportJob, rows: list[dict]) -> list[ImportRecord]:
                 name=name_value,
                 clinic=job.clinic,
                 in_batch_names=seen_names,
+                extra=extra,
             )
-            seen_names.append(name_value)
+            seen_names.append(duplicates.batch_token(job.record_type, name_value, extra))
         status = finalize_status(
             canonical_data=canonical_data,
             validation_errors=errors,
@@ -87,7 +90,9 @@ def run_import_pipeline(job: ImportJob) -> None:
         _fail(job, str(exc))
         return
 
-    patient_markers = guard.looks_like_patient_data(table.headers)
+    patient_markers = guard.looks_like_patient_data(
+        table.headers, record_type=job.record_type
+    )
     if patient_markers:
         _fail(
             job,

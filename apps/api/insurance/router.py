@@ -15,6 +15,9 @@ from apps.api.insurance.schemas import (
     InsurancePlanUpdateIn,
 )
 from apps.insurance.models import InsurancePlan
+from apps.insurance.services.insurance_service import (
+    create_insurance_plan as create_insurance_plan_row,
+)
 
 router = Router(tags=["Insurance"])
 
@@ -59,7 +62,9 @@ def list_insurance_plans(
         qs = qs.filter(is_accepted=is_accepted)
     if search:
         qs = qs.filter(
-            Q(provider_name__icontains=search) | Q(plan_name__icontains=search)
+            Q(provider_name__icontains=search)
+            | Q(plan_name__icontains=search)
+            | Q(plan_type__icontains=search)
         )
     qs = qs.order_by("provider_name")
     count = qs.count()
@@ -71,7 +76,14 @@ def list_insurance_plans(
 def create_insurance_plan(request, payload: InsurancePlanIn):
     if not payload.provider_name.strip():
         raise HttpError(400, "Insurance provider name is required")
-    plan = InsurancePlan.objects.create(clinic=clinic_from(request), **payload.dict())
+    plan = create_insurance_plan_row(
+        clinic=clinic_from(request),
+        provider_name=payload.provider_name,
+        plan_name=payload.plan_name,
+        plan_type=payload.plan_type,
+        is_accepted=payload.is_accepted,
+        notes=payload.notes,
+    )
     return 201, _serialize(plan)
 
 
@@ -83,7 +95,16 @@ def get_insurance_plan(request, plan_id: UUID):
 @router.patch("/{plan_id}", response=InsurancePlanOut, auth=jwt_auth)
 def update_insurance_plan(request, plan_id: UUID, payload: InsurancePlanUpdateIn):
     plan = _get_plan(clinic_from(request).id, plan_id)
-    for field, value in payload.dict(exclude_unset=True).items():
+    data = payload.dict(exclude_unset=True)
+    if "provider_name" in data and not (data["provider_name"] or "").strip():
+        raise HttpError(400, "Insurance provider name is required")
+    if "provider_name" in data:
+        data["provider_name"] = data["provider_name"].strip()
+    if "plan_name" in data and data["plan_name"] is not None:
+        data["plan_name"] = data["plan_name"].strip()
+    if "plan_type" in data and data["plan_type"] is not None:
+        data["plan_type"] = data["plan_type"].strip()[:50]
+    for field, value in data.items():
         setattr(plan, field, value)
     plan.save()
     return _serialize(plan)

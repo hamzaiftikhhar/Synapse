@@ -12,6 +12,7 @@ export const RECORD_TYPE_LABEL: Record<ImportRecordType, string> = {
   providers: "Providers",
   services: "Services",
   specialties: "Specialties",
+  insurance: "Insurance",
 };
 
 // Mirrors apps/importer/target_schemas.py — the fixed catalog the backend
@@ -33,6 +34,11 @@ export const TARGET_FIELD_LABELS: Record<ImportRecordType, Record<string, string
   specialties: {
     name: "Name",
     description: "Description",
+  },
+  insurance: {
+    provider_name: "Insurance name",
+    plan_name: "Plan name",
+    plan_type: "Network / type",
   },
 };
 

@@ -445,7 +445,7 @@ export type DocumentChunk = {
 
 /* ─── Spreadsheet data import (onboarding bulk-import) ────────────────── */
 
-export type ImportRecordType = "providers" | "services" | "specialties";
+export type ImportRecordType = "providers" | "services" | "specialties" | "insurance";
 
 export type ImportJobStatus =
   | "uploaded"

@@ -1,5 +1,5 @@
 """Spreadsheet data import — staging layer for bulk provider/service/
-specialty onboarding.
+specialty/insurance onboarding.
 
 Nothing here ever writes to Doctor/Service/Specialty directly. A row lives
 as an ImportRecord (raw + mapped-but-unconfirmed data) until a human
@@ -17,6 +17,7 @@ class ImportRecordType(models.TextChoices):
     PROVIDERS = "providers", "Providers"
     SERVICES = "services", "Services"
     SPECIALTIES = "specialties", "Specialties"
+    INSURANCE = "insurance", "Insurance"
 
 
 class ImportJobStatus(models.TextChoices):

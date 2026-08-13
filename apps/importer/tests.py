@@ -110,7 +110,7 @@ class ImportUploadTests(ImporterTestCase):
         self.assertEqual(resp.status_code, 400)
 
     def test_unsupported_record_type_string_rejected(self):
-        resp = self._upload("a,b\n1,2\n", record_type="insurance")
+        resp = self._upload("a,b\n1,2\n", record_type="patients")
         self.assertEqual(resp.status_code, 400)
 
     def test_tenant_isolation_on_get(self):
@@ -404,6 +404,22 @@ class ImportGuardTests(ImporterTestCase):
         self.assertEqual(job.records.count(), 0)
         self.mock_llm.assert_not_called()
 
+    def test_insurance_id_on_services_import_still_fails(self):
+        resp = self.client.post(
+            "/api/v1/import/jobs",
+            data={
+                "record_type": "services",
+                "file": _csv_upload("Service Name,Insurance ID\nBotox,60054\n"),
+            },
+            headers=self.headers,
+        )
+        job = ImportJob.objects.get(id=resp.json()["id"])
+        pipeline.run_import_pipeline(job)
+        job.refresh_from_db()
+        self.assertEqual(job.status, ImportJobStatus.FAILED)
+        self.assertIn("patient", job.error_message.lower())
+        self.mock_llm.assert_not_called()
+
 
 class ImportReviewFlowTests(ImporterTestCase):
     def setUp(self):
@@ -605,6 +621,437 @@ class ImportProvidersAndSpecialtiesTests(ImporterTestCase):
             set(Specialty.objects.filter(clinic=self.clinic).values_list("name", flat=True)),
             {"Cardiology", "Neurology"},
         )
+
+    def test_insurance_csv_import_creates_plans(self):
+        from apps.insurance.models import InsurancePlan
+
+        resp, _job = self._upload_map_approve_commit(
+            "Insurance Name,Plan name,Network / type\n"
+            "Aetna,,PPO\n"
+            "Blue Cross Blue Shield,Gold,HMO\n"
+            "Cigna,,\n",
+            "insurance",
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()["created_count"], 3)
+        rows = {
+            (p.provider_name, p.plan_name, p.plan_type)
+            for p in InsurancePlan.objects.filter(clinic=self.clinic)
+        }
+        self.assertEqual(
+            rows,
+            {
+                ("Aetna", "", "PPO"),
+                ("Blue Cross Blue Shield", "Gold", "HMO"),
+                ("Cigna", "", ""),
+            },
+        )
+
+    def test_insurance_import_rejects_blank_payer(self):
+        resp = self.client.post(
+            "/api/v1/import/jobs",
+            data={
+                "record_type": "insurance",
+                "file": _csv_upload("Insurance Name,Plan name\n,Gold\nAetna,\n"),
+            },
+            headers=self.headers,
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        job = ImportJob.objects.get(id=resp.json()["id"])
+        pipeline.run_import_pipeline(job)
+        blank = job.records.get(row_number=1)
+        valid = job.records.get(row_number=2)
+        self.assertEqual(blank.status, ImportRecordStatus.NEEDS_REVIEW)
+        self.assertTrue(
+            any(err.get("field") == "provider_name" for err in blank.validation_errors)
+        )
+        self.assertEqual(
+            (valid.canonical_data.get("provider_name") or {}).get("value"), "Aetna"
+        )
+        self.assertFalse(
+            any(err.get("field") == "provider_name" for err in valid.validation_errors)
+        )
+
+
+class ImportInsuranceEdgeTests(ImporterTestCase):
+    def setUp(self):
+        super().setUp()
+        self.user, self.clinic, self.headers = make_clinic_admin(
+            email="owner@ins-import.test", clinic_slug="ins-import-clinic"
+        )
+
+    def _mapped(self, csv_text: str) -> ImportJob:
+        resp = self.client.post(
+            "/api/v1/import/jobs",
+            data={"record_type": "insurance", "file": _csv_upload(csv_text, "insurance.csv")},
+            headers=self.headers,
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        job = ImportJob.objects.get(id=resp.json()["id"])
+        pipeline.run_import_pipeline(job)
+        job.refresh_from_db()
+        return job
+
+    def test_heuristic_maps_common_payer_headers(self):
+        from apps.importer.services.heuristics import heuristic_map_columns
+
+        mapping = heuristic_map_columns(
+            "insurance",
+            ["Insurance Name", "Plan name", "Network / type"],
+        )
+        self.assertEqual(mapping["Insurance Name"]["target"], "provider_name")
+        self.assertEqual(mapping["Plan name"]["target"], "plan_name")
+        self.assertEqual(mapping["Network / type"]["target"], "plan_type")
+
+    def test_sample_csv_headers_match_template(self):
+        """Keep in lockstep with frontend/src/features/importer/templates.ts."""
+        from apps.importer.services.heuristics import heuristic_map_columns
+
+        mapping = heuristic_map_columns(
+            "insurance", ["Insurance Name", "Plan name", "Network / type"]
+        )
+        self.assertEqual(
+            {info["target"] for info in mapping.values()},
+            {"provider_name", "plan_name", "plan_type"},
+        )
+
+    def test_heuristic_maps_payer_carrier_and_bare_name(self):
+        from apps.importer.services.heuristics import heuristic_map_columns
+
+        mapping = heuristic_map_columns("insurance", ["Payer", "Product", "Network"])
+        self.assertEqual(mapping["Payer"]["target"], "provider_name")
+        self.assertEqual(mapping["Product"]["target"], "plan_name")
+        self.assertEqual(mapping["Network"]["target"], "plan_type")
+        mapping_name = heuristic_map_columns("insurance", ["Name"])
+        self.assertEqual(mapping_name["Name"]["target"], "provider_name")
+
+    def test_payer_id_notes_and_npi_are_not_mapped(self):
+        job = self._mapped(
+            "Insurance Name,Payer ID,Notes,NPI\nAetna,ABC123,in network,1234567890\n"
+        )
+        record = job.records.first()
+        self.assertEqual(record.canonical_data["provider_name"]["value"], "Aetna")
+        self.assertNotIn("notes", record.canonical_data)
+        self.assertNotIn("payer_id", record.canonical_data)
+        self.assertIn("Payer ID", record.raw_data)
+        self.assertIn("Notes", record.raw_data)
+        self.assertIn("NPI", record.raw_data)
+
+    def test_mapping_rejects_invented_target(self):
+        job = self._mapped("Insurance Name\nAetna\n")
+        resp = self.client.patch(
+            f"/api/v1/import/jobs/{job.id}/mapping",
+            data={"mapping": {"Insurance Name": "payer_id"}},
+            content_type="application/json",
+            headers=self.headers,
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_xlsx_import_creates_plans(self):
+        from apps.insurance.models import InsurancePlan
+
+        resp = self.client.post(
+            "/api/v1/import/jobs",
+            data={
+                "record_type": "insurance",
+                "file": _xlsx_upload(
+                    [
+                        ["Insurance Name", "Plan name", "Network / type"],
+                        ["Aetna", "Gold", "PPO"],
+                        ["Cigna", "", ""],
+                    ],
+                    "insurance.xlsx",
+                ),
+            },
+            headers=self.headers,
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        job = ImportJob.objects.get(id=resp.json()["id"])
+        pipeline.run_import_pipeline(job)
+        for record in job.records.all():
+            self.client.post(
+                f"/api/v1/import/jobs/{job.id}/records/{record.id}/approve",
+                headers=self.headers,
+            )
+        commit = self.client.post(
+            f"/api/v1/import/jobs/{job.id}/commit", headers=self.headers
+        )
+        self.assertEqual(commit.status_code, 200, commit.content)
+        self.assertEqual(commit.json()["created_count"], 2)
+        rows = {
+            (p.provider_name, p.plan_name, p.plan_type, p.is_accepted, p.notes)
+            for p in InsurancePlan.objects.filter(clinic=self.clinic)
+        }
+        self.assertEqual(rows, {("Aetna", "Gold", "PPO", True, ""), ("Cigna", "", "", True, "")})
+
+    def test_commit_does_not_create_doctor_insurance_links(self):
+        from apps.doctors.models import Doctor, DoctorInsurance
+        from apps.insurance.models import InsurancePlan
+
+        Doctor.objects.create(clinic=self.clinic, full_name="Dr. Link Test")
+        job = self._mapped("Insurance Name\nAetna\n")
+        for record in job.records.all():
+            self.client.post(
+                f"/api/v1/import/jobs/{job.id}/records/{record.id}/approve",
+                headers=self.headers,
+            )
+        self.client.post(f"/api/v1/import/jobs/{job.id}/commit", headers=self.headers)
+        self.assertEqual(InsurancePlan.objects.filter(clinic=self.clinic).count(), 1)
+        self.assertEqual(DoctorInsurance.objects.filter(clinic=self.clinic).count(), 0)
+
+    def test_duplicate_against_existing_payer(self):
+        from apps.importer.services import duplicates
+        from apps.insurance.models import InsurancePlan
+
+        InsurancePlan.objects.create(clinic=self.clinic, provider_name="Aetna")
+        match = duplicates.find_duplicate(
+            record_type="insurance", name="Aetna", clinic=self.clinic, in_batch_names=[]
+        )
+        self.assertIsNotNone(match)
+        self.assertEqual(match["similarity"], 1.0)
+
+    def test_same_payer_different_plans_are_not_duplicates(self):
+        from apps.importer.services import duplicates
+        from apps.insurance.models import InsurancePlan
+
+        InsurancePlan.objects.create(
+            clinic=self.clinic, provider_name="Aetna", plan_name="Gold", plan_type="PPO"
+        )
+        silver = duplicates.find_duplicate(
+            record_type="insurance",
+            name="Aetna",
+            clinic=self.clinic,
+            in_batch_names=[],
+            extra={"plan_name": "Silver", "plan_type": "HMO"},
+        )
+        self.assertIsNone(silver)
+        same_network = duplicates.find_duplicate(
+            record_type="insurance",
+            name="Aetna",
+            clinic=self.clinic,
+            in_batch_names=[],
+            extra={"plan_name": "Gold", "plan_type": "HMO"},
+        )
+        self.assertIsNone(same_network)
+
+    def test_identical_payer_plan_network_is_duplicate_case_insensitive(self):
+        from apps.importer.services import duplicates
+        from apps.insurance.models import InsurancePlan
+
+        InsurancePlan.objects.create(
+            clinic=self.clinic, provider_name="Aetna", plan_name="Gold", plan_type="PPO"
+        )
+        match = duplicates.find_duplicate(
+            record_type="insurance",
+            name="aetna",
+            clinic=self.clinic,
+            in_batch_names=[],
+            extra={"plan_name": "GOLD", "plan_type": "ppo"},
+        )
+        self.assertIsNotNone(match)
+        self.assertEqual(match["label"], "Aetna · Gold · PPO")
+
+    def test_soft_deleted_plan_is_not_a_duplicate(self):
+        from apps.importer.services import duplicates
+        from apps.insurance.models import InsurancePlan
+
+        plan = InsurancePlan.objects.create(clinic=self.clinic, provider_name="Aetna")
+        plan.is_deleted = True
+        plan.save(update_fields=["is_deleted"])
+        match = duplicates.find_duplicate(
+            record_type="insurance", name="Aetna", clinic=self.clinic, in_batch_names=[]
+        )
+        self.assertIsNone(match)
+
+    def test_csv_same_payer_different_plans_imports_both(self):
+        from apps.insurance.models import InsurancePlan
+
+        job = self._mapped(
+            "Insurance Name,Plan name,Network / type\n"
+            "Aetna,Gold,PPO\n"
+            "Aetna,Silver,HMO\n"
+        )
+        statuses = {r.row_number: r.duplicate_match for r in job.records.all()}
+        self.assertIsNone(statuses[1])
+        self.assertIsNone(statuses[2])
+        for record in job.records.all():
+            self.client.post(
+                f"/api/v1/import/jobs/{job.id}/records/{record.id}/approve",
+                headers=self.headers,
+            )
+        commit = self.client.post(
+            f"/api/v1/import/jobs/{job.id}/commit", headers=self.headers
+        )
+        self.assertEqual(commit.status_code, 200, commit.content)
+        self.assertEqual(commit.json()["created_count"], 2)
+        rows = {
+            (p.provider_name, p.plan_name, p.plan_type)
+            for p in InsurancePlan.objects.filter(clinic=self.clinic)
+        }
+        self.assertEqual(rows, {("Aetna", "Gold", "PPO"), ("Aetna", "Silver", "HMO")})
+
+    def test_csv_identical_rows_flag_in_batch_duplicate(self):
+        job = self._mapped(
+            "Insurance Name,Plan name,Network / type\n"
+            "Aetna,Gold,PPO\n"
+            "Aetna,Gold,PPO\n"
+        )
+        first, second = job.records.get(row_number=1), job.records.get(row_number=2)
+        self.assertIsNone(first.duplicate_match)
+        self.assertIsNotNone(second.duplicate_match)
+        self.assertEqual(second.duplicate_match["label"], "Aetna · Gold · PPO")
+
+    def test_heuristic_maps_carrier_company_insurer(self):
+        from apps.importer.services.heuristics import heuristic_map_columns
+
+        for header in ("Carrier", "Company", "Insurer"):
+            mapping = heuristic_map_columns("insurance", [header])
+            self.assertEqual(mapping[header]["target"], "provider_name", header)
+
+    def test_insurance_id_column_is_allowed_on_payer_lists(self):
+        job = self._mapped("Insurance Name,Insurance ID\nAetna,60054\n")
+        self.assertEqual(job.status, ImportJobStatus.MAPPED)
+        record = job.records.first()
+        self.assertEqual(record.canonical_data["provider_name"]["value"], "Aetna")
+        self.assertNotIn("insurance_id", record.canonical_data)
+
+    def test_member_id_still_fails_insurance_import_as_phi(self):
+        resp = self.client.post(
+            "/api/v1/import/jobs",
+            data={
+                "record_type": "insurance",
+                "file": _csv_upload(
+                    "Insurance Name,Member ID\nAetna,M-12345\n", "insurance.csv"
+                ),
+            },
+            headers=self.headers,
+        )
+        job = ImportJob.objects.get(id=resp.json()["id"])
+        pipeline.run_import_pipeline(job)
+        job.refresh_from_db()
+        self.assertEqual(job.status, ImportJobStatus.FAILED)
+        self.assertIn("patient", job.error_message.lower())
+
+    def test_commit_skips_rejected_blank_and_keeps_valid(self):
+        from apps.insurance.models import InsurancePlan
+
+        job = self._mapped("Insurance Name,Plan name\n,Gold\nAetna,\n")
+        blank = job.records.get(row_number=1)
+        valid = job.records.get(row_number=2)
+        self.client.post(
+            f"/api/v1/import/jobs/{job.id}/records/{blank.id}/reject",
+            headers=self.headers,
+        )
+        self.client.post(
+            f"/api/v1/import/jobs/{job.id}/records/{valid.id}/approve",
+            headers=self.headers,
+        )
+        commit = self.client.post(
+            f"/api/v1/import/jobs/{job.id}/commit", headers=self.headers
+        )
+        self.assertEqual(commit.status_code, 200, commit.content)
+        self.assertEqual(commit.json()["created_count"], 1)
+        self.assertEqual(
+            InsurancePlan.objects.get(clinic=self.clinic).provider_name, "Aetna"
+        )
+
+    def test_commit_blocked_while_row_still_needs_review(self):
+        job = self._mapped("Insurance Name\nAetna\n")
+        resp = self.client.post(
+            f"/api/v1/import/jobs/{job.id}/commit", headers=self.headers
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_list_jobs_filters_insurance_record_type(self):
+        job = self._mapped("Insurance Name\nAetna\n")
+        listing = self.client.get(
+            "/api/v1/import/jobs?record_type=insurance", headers=self.headers
+        )
+        self.assertEqual(listing.status_code, 200)
+        self.assertIn(str(job.id), [row["id"] for row in listing.json()])
+        services = self.client.get(
+            "/api/v1/import/jobs?record_type=services", headers=self.headers
+        )
+        self.assertNotIn(str(job.id), [row["id"] for row in services.json()])
+
+    def test_empty_insurance_csv_fails_cleanly(self):
+        resp = self.client.post(
+            "/api/v1/import/jobs",
+            data={
+                "record_type": "insurance",
+                "file": _csv_upload("Insurance Name\n", "insurance.csv"),
+            },
+            headers=self.headers,
+        )
+        job = ImportJob.objects.get(id=resp.json()["id"])
+        pipeline.run_import_pipeline(job)
+        job.refresh_from_db()
+        self.assertEqual(job.status, ImportJobStatus.FAILED)
+        self.assertIn("no data", job.error_message.lower())
+
+    def test_unicode_payer_imports(self):
+        from apps.insurance.models import InsurancePlan
+
+        job = self._mapped("Insurance Name\nMüller Kranken\n")
+        record = job.records.first()
+        self.client.post(
+            f"/api/v1/import/jobs/{job.id}/records/{record.id}/approve",
+            headers=self.headers,
+        )
+        self.client.post(f"/api/v1/import/jobs/{job.id}/commit", headers=self.headers)
+        self.assertEqual(
+            InsurancePlan.objects.get(clinic=self.clinic).provider_name,
+            "Müller Kranken",
+        )
+
+    def test_whitespace_payer_stripped_on_commit(self):
+        from apps.insurance.models import InsurancePlan
+
+        job = self._mapped("Insurance Name\n  Aetna  \n")
+        for record in job.records.all():
+            self.client.post(
+                f"/api/v1/import/jobs/{job.id}/records/{record.id}/approve",
+                headers=self.headers,
+            )
+        self.client.post(f"/api/v1/import/jobs/{job.id}/commit", headers=self.headers)
+        self.assertEqual(
+            InsurancePlan.objects.get(clinic=self.clinic).provider_name, "Aetna"
+        )
+
+    def test_long_network_truncated_on_commit(self):
+        from apps.insurance.models import InsurancePlan
+
+        job = self._mapped("Insurance Name,Network / type\nAetna," + ("P" * 80) + "\n")
+        for record in job.records.all():
+            self.client.post(
+                f"/api/v1/import/jobs/{job.id}/records/{record.id}/approve",
+                headers=self.headers,
+            )
+        resp = self.client.post(f"/api/v1/import/jobs/{job.id}/commit", headers=self.headers)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(len(InsurancePlan.objects.get(clinic=self.clinic).plan_type), 50)
+
+    def test_insurance_job_does_not_create_services(self):
+        from apps.insurance.models import InsurancePlan
+        from apps.services.models import Service
+
+        job = self._mapped("Insurance Name\nAetna\n")
+        for record in job.records.all():
+            self.client.post(
+                f"/api/v1/import/jobs/{job.id}/records/{record.id}/approve",
+                headers=self.headers,
+            )
+        self.client.post(f"/api/v1/import/jobs/{job.id}/commit", headers=self.headers)
+        self.assertEqual(InsurancePlan.objects.filter(clinic=self.clinic).count(), 1)
+        self.assertEqual(Service.objects.filter(clinic=self.clinic).count(), 0)
+
+    def test_tenant_cannot_see_other_clinic_insurance_job(self):
+        job = self._mapped("Insurance Name\nAetna\n")
+        _, _, other_headers = make_clinic_admin(
+            email="other@ins-import-2.test", clinic_slug="ins-import-clinic-2"
+        )
+        resp = self.client.get(f"/api/v1/import/jobs/{job.id}", headers=other_headers)
+        self.assertEqual(resp.status_code, 404)
 
 
 class ImportFileSafetyTests(ImporterTestCase):

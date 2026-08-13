@@ -31,6 +31,15 @@ _SYNONYMS: dict[str, set[str]] = {
     "price_cents": {
         "price", "fee", "cost", "cash price", "rate", "amount", "price ($)",
     },
+    "provider_name": {
+        "name", "insurance", "insurance name", "payer", "payer name", "carrier",
+        "company", "insurer", "provider", "provider name",
+    },
+    "plan_name": {"plan", "plan name", "product", "product name"},
+    "plan_type": {
+        "network", "type", "plan type", "network type", "network/type",
+        "network / type",
+    },
 }
 
 

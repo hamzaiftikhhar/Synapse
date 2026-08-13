@@ -161,6 +161,16 @@ export function ReviewStep({
             onEdit={() => onGoToStep("services")}
           />
           <SummaryRow
+            label="Insurance"
+            value={
+              status?.counts.insurance_plans
+                ? `${status.counts.insurance_plans} plan${status.counts.insurance_plans === 1 ? "" : "s"}`
+                : "None — optional"
+            }
+            ok
+            onEdit={() => onGoToStep("insurance")}
+          />
+          <SummaryRow
             label="Business hours"
             value={openDays > 0 ? `Open ${openDays} day${openDays === 1 ? "" : "s"} a week` : "Not set"}
             ok={Boolean(checklist?.hours)}

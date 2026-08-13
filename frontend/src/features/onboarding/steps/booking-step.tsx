@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import { toast } from "sonner";
-import { Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -15,9 +14,6 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  useCreateInsurancePlan,
-  useDeleteInsurancePlan,
-  useInsurancePlans,
   useUpdateWidgetSettings,
   useWidgetSettings,
 } from "@/hooks/api";
@@ -35,77 +31,6 @@ const LEAD_TIME_OPTIONS = [
 ];
 
 const COLOR_PRESETS = ["#5c67f2", "#0f766e", "#b45309", "#1d4ed8", "#be123c", "#1a1e26"];
-
-function InsuranceMiniList() {
-  const { data } = useInsurancePlans({ limit: 50 });
-  const create = useCreateInsurancePlan();
-  const remove = useDeleteInsurancePlan();
-  const [draft, setDraft] = useState("");
-
-  const plans = data?.results ?? [];
-
-  async function add() {
-    const name = draft.trim();
-    if (!name) return;
-    try {
-      await create.mutateAsync({ provider_name: name });
-      setDraft("");
-    } catch (err) {
-      toast.error(getApiErrorMessage(err));
-    }
-  }
-
-  return (
-    <div className="space-y-3">
-      <div>
-        <Label className="text-sm font-medium text-navy">
-          Insurance{" "}
-          <span className="font-normal text-muted-foreground">(optional)</span>
-        </Label>
-        <p className="mt-0.5 text-xs text-muted-foreground">
-          You can add accepted insurance plans later from your dashboard.
-        </p>
-      </div>
-      {plans.length > 0 ? (
-        <div className="flex flex-wrap gap-2">
-          {plans.map((plan) => (
-            <span
-              key={plan.id}
-              className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/50 py-1 pr-1.5 pl-3 text-sm"
-            >
-              {plan.provider_name}
-              <button
-                type="button"
-                aria-label={`Remove ${plan.provider_name}`}
-                onClick={() => remove.mutate(plan.id)}
-                className="flex size-5 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground"
-              >
-                <X className="size-3" />
-              </button>
-            </span>
-          ))}
-        </div>
-      ) : null}
-      <div className="flex gap-2">
-        <Input
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              void add();
-            }
-          }}
-          placeholder="e.g. Aetna"
-          className="max-w-xs"
-        />
-        <Button type="button" variant="outline" onClick={add} disabled={!draft.trim()}>
-          <Plus className="size-4" /> Add
-        </Button>
-      </div>
-    </div>
-  );
-}
 
 export function BookingStep({ onNext }: OnboardingStepProps) {
   const { data, isLoading } = useWidgetSettings();
@@ -150,8 +75,8 @@ export function BookingStep({ onNext }: OnboardingStepProps) {
   return (
     <form id={ONBOARDING_FORM_ID} onSubmit={onSubmit} className="space-y-8">
       <StepHint>
-        Lead time and cancellation copy appear in the patient chatbot. Insurance
-        is optional and can be finished later from the dashboard.
+        Lead time and cancellation copy appear in the patient chatbot. You can
+        change all of this later from Settings.
       </StepHint>
       <div className="space-y-3">
         <Label>How soon can patients book?</Label>
@@ -228,9 +153,6 @@ export function BookingStep({ onNext }: OnboardingStepProps) {
           Used for your booking widget. Defaults to Synapse&apos;s palette if left as-is.
         </p>
       </div>
-
-      <div className="h-px bg-border" />
-      <InsuranceMiniList />
     </form>
   );
 }

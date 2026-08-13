@@ -6,6 +6,7 @@ import { BillingStep } from "./steps/billing-step";
 import { BookingStep } from "./steps/booking-step";
 import { ClinicStep } from "./steps/clinic-step";
 import { HoursStep } from "./steps/hours-step";
+import { InsuranceStep } from "./steps/insurance-step";
 import { LocationStep } from "./steps/location-step";
 import { ProvidersStep } from "./steps/providers-step";
 import { ReviewStep } from "./steps/review-step";
@@ -34,6 +35,10 @@ const STEP_COPY: Record<string, { title: string; subtitle: string }> = {
   services: {
     title: "What can patients book?",
     subtitle: "Add the services patients will schedule, or import them from a spreadsheet.",
+  },
+  insurance: {
+    title: "Which insurance do you accept?",
+    subtitle: "Optional — a payer name is enough. You can add plans later from the dashboard.",
   },
   hours: {
     title: "When is your clinic open?",
@@ -103,6 +108,7 @@ export function OnboardingFlow() {
       {stepSlug === "providers" ? <ProvidersStep onNext={goNext} /> : null}
       {stepSlug === "specialties" ? <SpecialtiesStep onNext={goNext} /> : null}
       {stepSlug === "services" ? <ServicesStep onNext={goNext} /> : null}
+      {stepSlug === "insurance" ? <InsuranceStep onNext={goNext} /> : null}
       {stepSlug === "hours" ? <HoursStep onNext={goNext} /> : null}
       {stepSlug === "availability" ? <AvailabilityStep onNext={goNext} /> : null}
       {stepSlug === "booking" ? <BookingStep onNext={goNext} /> : null}

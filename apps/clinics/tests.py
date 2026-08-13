@@ -362,7 +362,17 @@ class OnboardingStatusTests(TestCase):
     def test_ready_when_minimum_requirements_met(self):
         self._make_ready()
         resp = self.client.get("/api/v1/clinics/me/onboarding-status", headers=self.headers)
-        self.assertTrue(resp.json()["ready"])
+        body = resp.json()
+        self.assertTrue(body["ready"])
+        self.assertEqual(body["counts"]["insurance_plans"], 0)
+
+    def test_ready_without_insurance_plans(self):
+        self._make_ready()
+        resp = self.client.post(
+            "/api/v1/clinics/me/onboarding/complete", headers=self.headers
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["status"], "active")
 
     def test_complete_flips_status_and_sets_completed_at(self):
         self._make_ready()
