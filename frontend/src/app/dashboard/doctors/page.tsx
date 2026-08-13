@@ -5,11 +5,16 @@ import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
-import { Plus, Pencil, Trash2 } from "lucide-react";
+import { Clock, Pencil, Plus, Stethoscope, Trash2 } from "lucide-react";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { DataTableShell, EmptyState } from "@/components/dashboard/shell";
 import { SpecialtyServicePicker } from "@/components/dashboard/specialty-service-picker";
 import { ImportTriggerButton } from "@/features/importer/import-trigger-button";
+import {
+  DoctorHoursEditor,
+  useDoctorHoursState,
+  weeklyToDoctorSchedule,
+} from "@/features/doctors/doctor-hours-editor";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -31,6 +36,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   useCreateDoctor,
   useDeleteDoctor,
@@ -38,9 +44,12 @@ import {
   useServices,
   useSpecialties,
   useUpdateDoctor,
+  useUpdateDoctorSchedule,
 } from "@/hooks/api";
 import { getApiErrorMessage } from "@/lib/api/client";
 import type { Doctor } from "@/types/api";
+
+type DoctorsView = "providers" | "hours";
 
 const schema = z.object({
   full_name: z.string().min(1, "Required"),
@@ -56,6 +65,7 @@ const schema = z.object({
 type FormValues = z.infer<typeof schema>;
 
 export default function DoctorsPage() {
+  const [view, setView] = useState<DoctorsView>("providers");
   const [search, setSearch] = useState("");
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Doctor | null>(null);
@@ -65,6 +75,8 @@ export default function DoctorsPage() {
   const create = useCreateDoctor();
   const update = useUpdateDoctor();
   const remove = useDeleteDoctor();
+  const hours = useDoctorHoursState({ enabled: view === "hours" });
+  const updateSchedule = useUpdateDoctorSchedule();
   const specialties = specialtiesData?.results ?? [];
   const services = servicesData?.results ?? [];
 
@@ -151,75 +163,155 @@ export default function DoctorsPage() {
 
   const rows = useMemo(() => data?.results ?? [], [data]);
 
+  async function onSaveHours() {
+    const entries = hours.dirtyAndActiveRows();
+    if (entries.length === 0) {
+      toast.error("Add a provider before setting hours.");
+      return;
+    }
+    const error = hours.validateRows(entries);
+    if (error) {
+      toast.error(error);
+      return;
+    }
+    try {
+      await Promise.all(
+        entries.map(({ id, rows: dayRows }) =>
+          updateSchedule.mutateAsync({
+            id,
+            input: weeklyToDoctorSchedule(dayRows),
+          })
+        )
+      );
+      hours.markSaved(entries.map((e) => e.id));
+      const n = entries.length;
+      toast.success(
+        n === 1
+          ? `Hours saved for ${hours.activeDoctor?.full_name ?? "provider"}`
+          : `Hours saved for ${n} providers`
+      );
+    } catch (e) {
+      toast.error(getApiErrorMessage(e));
+    }
+  }
+
   return (
     <div>
       <PageHeader
         title="Doctors"
-        description="Manage providers available for booking and chatbot discovery."
+        description={
+          view === "hours"
+            ? "When each provider can be booked. Closed days mean that provider is not bookable."
+            : "Manage providers available for booking and chatbot discovery."
+        }
         actions={
-          <div className="flex gap-2">
-            <ImportTriggerButton recordType="providers" />
-            <Button onClick={openCreate}>
-              <Plus className="size-4" /> Add doctor
+          view === "hours" ? (
+            <Button
+              onClick={onSaveHours}
+              disabled={updateSchedule.isPending || hours.doctors.length === 0}
+            >
+              {updateSchedule.isPending ? "Saving…" : "Save hours"}
             </Button>
-          </div>
+          ) : (
+            <div className="flex gap-2">
+              <ImportTriggerButton recordType="providers" />
+              <Button onClick={openCreate}>
+                <Plus className="size-4" /> Add doctor
+              </Button>
+            </div>
+          )
         }
       />
-      <DataTableShell
-        toolbar={
-          <Input
-            placeholder="Search doctors…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="h-8 w-56"
-          />
-        }
+
+      <Tabs
+        value={view}
+        onValueChange={(next) => setView(next as DoctorsView)}
+        className="mb-4 gap-0"
       >
-        {isLoading ? (
-          <p className="p-6 text-sm text-muted-foreground">Loading…</p>
-        ) : !rows.length ? (
-          <EmptyState title="No doctors" description="Add your first provider." />
-        ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Title</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="w-24" />
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {rows.map((d) => (
-                <TableRow key={d.id}>
-                  <TableCell className="font-medium">{d.full_name}</TableCell>
-                  <TableCell className="text-muted-foreground">{d.title || "—"}</TableCell>
-                  <TableCell>
-                    <div className="flex gap-1">
-                      <Badge variant="secondary">
-                        {d.is_active ? "Active" : "Inactive"}
-                      </Badge>
-                      {d.is_accepting_patients ? (
-                        <Badge>Accepting</Badge>
-                      ) : null}
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex justify-end gap-1">
-                      <Button variant="ghost" size="icon-sm" onClick={() => openEdit(d)}>
-                        <Pencil className="size-3.5" />
-                      </Button>
-                      <Button variant="ghost" size="icon-sm" onClick={() => onDelete(d.id)}>
-                        <Trash2 className="size-3.5" />
-                      </Button>
-                    </div>
-                  </TableCell>
+        <TabsList aria-label="Doctors views">
+          <TabsTrigger value="providers" className="gap-1.5 px-3">
+            <Stethoscope className="size-3.5" />
+            Providers
+          </TabsTrigger>
+          <TabsTrigger value="hours" className="gap-1.5 px-3">
+            <Clock className="size-3.5" />
+            Hours
+          </TabsTrigger>
+        </TabsList>
+      </Tabs>
+
+      {view === "hours" ? (
+        <DoctorHoursEditor
+          state={hours}
+          empty={
+            <div className="rounded-xl border border-dashed border-border px-6 py-10 text-center">
+              <p className="text-sm font-medium text-navy">No providers yet</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Add a provider first, then set when patients can book with them.
+              </p>
+              <Button className="mt-4" onClick={() => { setView("providers"); openCreate(); }}>
+                <Plus className="size-4" /> Add doctor
+              </Button>
+            </div>
+          }
+        />
+      ) : (
+        <DataTableShell
+          toolbar={
+            <Input
+              placeholder="Search doctors…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="h-8 w-56"
+            />
+          }
+        >
+          {isLoading ? (
+            <p className="p-6 text-sm text-muted-foreground">Loading…</p>
+          ) : !rows.length ? (
+            <EmptyState title="No doctors" description="Add your first provider." />
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Name</TableHead>
+                  <TableHead>Title</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead className="w-24" />
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        )}
-      </DataTableShell>
+              </TableHeader>
+              <TableBody>
+                {rows.map((d) => (
+                  <TableRow key={d.id}>
+                    <TableCell className="font-medium">{d.full_name}</TableCell>
+                    <TableCell className="text-muted-foreground">{d.title || "—"}</TableCell>
+                    <TableCell>
+                      <div className="flex gap-1">
+                        <Badge variant="secondary">
+                          {d.is_active ? "Active" : "Inactive"}
+                        </Badge>
+                        {d.is_accepting_patients ? (
+                          <Badge>Accepting</Badge>
+                        ) : null}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex justify-end gap-1">
+                        <Button variant="ghost" size="icon-sm" onClick={() => openEdit(d)}>
+                          <Pencil className="size-3.5" />
+                        </Button>
+                        <Button variant="ghost" size="icon-sm" onClick={() => onDelete(d.id)}>
+                          <Trash2 className="size-3.5" />
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </DataTableShell>
+      )}
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="sm:max-w-lg">
