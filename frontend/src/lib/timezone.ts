@@ -119,3 +119,31 @@ export function formatClinicDate(iso: string, timeZone: string): string {
     year: "numeric",
   }).format(new Date(iso));
 }
+
+export function formatClinicDayHeading(iso: string, timeZone: string): string {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+  }).format(new Date(iso));
+}
+
+/** Compact range: "4:00–4:30 AM" when both ends share AM/PM. */
+export function formatClinicTimeRange(
+  startIso: string,
+  endIso: string,
+  timeZone: string
+): string {
+  const start = formatClinicTime(startIso, timeZone).replace(/\u202f/g, " ");
+  const end = formatClinicTime(endIso, timeZone).replace(/\u202f/g, " ");
+  const startPeriod = start.slice(-2);
+  const endPeriod = end.slice(-2);
+  if (
+    (startPeriod === "AM" || startPeriod === "PM") &&
+    startPeriod === endPeriod
+  ) {
+    return `${start.slice(0, -3).trim()}–${end}`;
+  }
+  return `${start} – ${end}`;
+}

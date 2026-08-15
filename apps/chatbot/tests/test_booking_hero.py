@@ -21,11 +21,9 @@ from apps.patients.models import Patient
 _TZ = ZoneInfo("America/New_York")
 
 
-def _next_weekday(weekday: int, *, from_days_ahead: int = 0):
-    d = timezone.localdate() + timedelta(days=from_days_ahead)
-    while d.weekday() != weekday:
-        d += timedelta(days=1)
-    return d
+def _days_ahead(n: int = 1):
+    """A date inside the default 3-day hero horizon (not 'same weekday next week')."""
+    return timezone.localdate() + timedelta(days=n)
 
 
 class HeroSlotTests(TestCase):
@@ -44,7 +42,7 @@ class HeroSlotTests(TestCase):
 
     def test_returns_earliest_slot_within_horizon(self):
         doctor = Doctor.objects.create(clinic=self.clinic, full_name="Dr. Hero")
-        target = _next_weekday(timezone.localdate().weekday(), from_days_ahead=1)
+        target = _days_ahead(1)
         DoctorSchedule.objects.create(
             clinic=self.clinic,
             doctor=doctor,
@@ -69,7 +67,7 @@ class SelectHeroActionTests(TestCase):
             timezone="America/New_York",
         )
         self.doctor = Doctor.objects.create(clinic=self.clinic, full_name="Dr. Action")
-        self.target_date = _next_weekday(timezone.localdate().weekday(), from_days_ahead=1)
+        self.target_date = _days_ahead(1)
         DoctorSchedule.objects.create(
             clinic=self.clinic,
             doctor=self.doctor,

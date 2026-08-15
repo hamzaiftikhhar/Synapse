@@ -72,7 +72,12 @@ def compute_slots_for_day(
                 doctor=doctor,
                 start_time__gte=day_start,
                 start_time__lte=day_end,
-                status__in=[AppointmentStatus.PENDING, AppointmentStatus.CONFIRMED],
+                status__in=[
+                    AppointmentStatus.PENDING,
+                    AppointmentStatus.CONFIRMED,
+                    AppointmentStatus.COMPLETED,
+                    AppointmentStatus.NO_SHOW,
+                ],
             ).values_list("start_time", flat=True)
         }
 
@@ -196,7 +201,12 @@ def compute_density_for_range(
             doctor_id__in=doctor_ids,
             start_time__gte=range_start,
             start_time__lte=range_end,
-            status__in=[AppointmentStatus.PENDING, AppointmentStatus.CONFIRMED],
+            status__in=[
+                AppointmentStatus.PENDING,
+                AppointmentStatus.CONFIRMED,
+                AppointmentStatus.COMPLETED,
+                AppointmentStatus.NO_SHOW,
+            ],
         ).values_list("start_time", flat=True)
         for start in starts:
             d = start.astimezone(tz).date()

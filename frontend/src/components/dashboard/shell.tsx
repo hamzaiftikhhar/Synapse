@@ -2,6 +2,7 @@ import type { LucideIcon } from "lucide-react";
 import { Inbox } from "lucide-react";
 import type { ReactNode } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { cn } from "@/lib/utils";
 
 export function DataTableShell({
   title,
@@ -15,12 +16,17 @@ export function DataTableShell({
   return (
     <Card>
       {(title || toolbar) && (
-        <CardHeader className="flex flex-row items-center justify-between gap-3 space-y-0 border-b border-border py-3.5">
+        <CardHeader
+          className={cn(
+            "space-y-0 border-b border-border py-3",
+            title
+              ? "flex flex-row items-center justify-between gap-3"
+              : "block"
+          )}
+        >
           {title ? (
             <CardTitle className="text-sm font-medium">{title}</CardTitle>
-          ) : (
-            <div />
-          )}
+          ) : null}
           {toolbar}
         </CardHeader>
       )}

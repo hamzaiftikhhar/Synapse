@@ -5,7 +5,7 @@ import string
 from datetime import datetime
 from uuid import UUID
 
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 from ninja import Query, Router
 from ninja.errors import HttpError
 
@@ -149,7 +149,8 @@ def create_appointment(request, payload: AppointmentIn):
         data["confirmation_code"] = _confirmation_code()
     _resolve_fk(clinic.id, data)
     try:
-        appt = Appointment.objects.create(clinic=clinic, **data)
+        with transaction.atomic():
+            appt = Appointment.objects.create(clinic=clinic, **data)
     except IntegrityError as exc:
         raise HttpError(
             400,
@@ -183,7 +184,8 @@ def update_appointment(request, appointment_id: UUID, payload: AppointmentUpdate
     for field, value in data.items():
         setattr(appt, field, value)
     try:
-        appt.save()
+        with transaction.atomic():
+            appt.save()
     except IntegrityError as exc:
         raise HttpError(400, "Could not update — possible double booking") from exc
     return _serialize(_get_appointment(clinic_id, appt.id))

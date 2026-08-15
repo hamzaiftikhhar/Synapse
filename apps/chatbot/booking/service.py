@@ -732,7 +732,8 @@ class BookingService:
             clinic=clinic,
             doctor=doctor,
             start_time=start,
-            status__in=[AppointmentStatus.PENDING, AppointmentStatus.CONFIRMED],
+        ).exclude(
+            status__in=[AppointmentStatus.CANCELLED, AppointmentStatus.RESCHEDULED],
         ).exists()
         if conflict:
             raise BookingError(
