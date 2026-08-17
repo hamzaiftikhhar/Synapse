@@ -2,6 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  analyticsService,
   appointmentsService,
   type AppointmentListParams,
   authService,
@@ -14,6 +15,7 @@ import {
   importerService,
   insuranceService,
   patientsService,
+  platformService,
   servicesService,
   specialtiesService,
   widgetService,
@@ -85,6 +87,8 @@ export const queryKeys = {
   importJob: (id: string) => ["import-jobs", id] as const,
   importJobRecords: (id: string, status?: string) =>
     ["import-jobs", id, "records", status] as const,
+  clinicAnalytics: (days: number) => ["analytics", "clinic", days] as const,
+  platformAiUsage: (days: number) => ["analytics", "platform", days] as const,
 };
 
 export function useMe(enabled = true) {
@@ -386,6 +390,21 @@ export function useCompleteOnboarding() {
       qc.invalidateQueries({ queryKey: queryKeys.me });
       qc.invalidateQueries({ queryKey: queryKeys.clinicProfile });
     },
+  });
+}
+
+export function useClinicAnalytics(days: number) {
+  return useQuery({
+    queryKey: queryKeys.clinicAnalytics(days),
+    queryFn: () => analyticsService.clinic(days),
+  });
+}
+
+export function usePlatformAiUsage(days: number, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.platformAiUsage(days),
+    queryFn: () => platformService.aiUsage(days),
+    enabled,
   });
 }
 

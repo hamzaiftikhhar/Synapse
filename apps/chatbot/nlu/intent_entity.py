@@ -140,6 +140,8 @@ class IntentEntityService:
             total_tokens = int(
                 usage.get("total_tokens") or (prompt_tokens + completion_tokens)
             )
+            from apps.ai.pricing import estimate_usd, usd_to_microcents
+
             AIUsageLog.objects.create(
                 clinic=clinic,
                 session=session,
@@ -151,6 +153,13 @@ class IntentEntityService:
                 completion_tokens=completion_tokens,
                 total_tokens=total_tokens,
                 latency_ms=latency_ms,
+                cost_microcents=usd_to_microcents(
+                    estimate_usd(
+                        model=model_name,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                    )
+                ),
                 metadata={"intent": intent},
             )
         except Exception:

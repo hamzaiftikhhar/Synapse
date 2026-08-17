@@ -235,6 +235,13 @@ export const platformService = {
     );
     return data;
   },
+  async aiUsage(days = 30) {
+    const { data } = await api.get<import("@/types/api").PlatformAiUsage>(
+      "/platform/ai-usage",
+      { params: { days } }
+    );
+    return data;
+  },
 };
 
 /* ─── Widget / Patient Auth ────────────────────────────────── */
@@ -522,7 +529,17 @@ export const clinicsService = {
   },
 };
 
-/* ─── Billing (Paddle) ─────────────────────────────────────── */
+/* ─── Clinic analytics ─────────────────────────────────────── */
+
+export const analyticsService = {
+  async clinic(days = 30) {
+    const { data } = await api.get<import("@/types/api").ClinicAnalytics>(
+      "/analytics",
+      { params: { days } }
+    );
+    return data;
+  },
+};
 
 export const billingService = {
   async listPlans() {

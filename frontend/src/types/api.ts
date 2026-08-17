@@ -866,3 +866,74 @@ export type ApplicationActionResponse = {
   application: ClinicApplication;
   clinic: Clinic | null;
 };
+
+/* ─── Analytics (AI usage) ─────────────────────────────────── */
+
+export type AnalyticsModelRow = {
+  model: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  calls: number;
+  estimated_usd: number | null;
+};
+
+export type AnalyticsOperationRow = {
+  operation: string;
+  total_tokens: number;
+  calls: number;
+};
+
+export type AnalyticsDailyRow = {
+  date: string;
+  total_tokens: number;
+  calls: number;
+};
+
+export type AnalyticsRateCard = {
+  model: string;
+  input_usd_per_1m: number;
+  output_usd_per_1m: number;
+};
+
+export type ClinicAnalytics = {
+  days: number;
+  show_cost: boolean;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  calls: number;
+  cached_calls: number;
+  avg_latency_ms: number;
+  conversations: number;
+  chatbot_bookings: number;
+  estimated_usd: number | null;
+  models: AnalyticsModelRow[];
+  operations: AnalyticsOperationRow[];
+  daily: AnalyticsDailyRow[];
+  rates: AnalyticsRateCard[];
+};
+
+export type PlatformClinicUsage = {
+  clinic_id: string;
+  name: string;
+  slug: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  calls: number;
+  estimated_usd: number;
+};
+
+export type PlatformAiUsage = {
+  days: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  calls: number;
+  estimated_usd: number;
+  clinics: PlatformClinicUsage[];
+  models: AnalyticsModelRow[];
+  daily: AnalyticsDailyRow[];
+  rates: AnalyticsRateCard[];
+};

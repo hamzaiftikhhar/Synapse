@@ -8,7 +8,7 @@ from uuid import UUID
 from django.db.models import Q, Sum
 from django.utils import timezone
 from django.utils.text import slugify
-from ninja import Router, Schema
+from ninja import Query, Router, Schema
 from ninja.errors import HttpError
 
 from apps.accounts.models import AuditAction, ClinicStaff, User, UserRole
@@ -63,6 +63,51 @@ class PlatformOverviewOut(Schema):
     documents: int = 0
     staff_users: int = 0
     top_clinics_by_tokens: list[dict] = []
+
+
+class PlatformClinicUsageOut(Schema):
+    clinic_id: str
+    name: str
+    slug: str
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    calls: int
+    estimated_usd: float
+
+
+class PlatformModelUsageOut(Schema):
+    model: str
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    calls: int
+    estimated_usd: float
+
+
+class PlatformDailyUsageOut(Schema):
+    date: str
+    total_tokens: int
+    calls: int
+
+
+class PlatformRateCardOut(Schema):
+    model: str
+    input_usd_per_1m: float
+    output_usd_per_1m: float
+
+
+class PlatformAiUsageOut(Schema):
+    days: int
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    calls: int
+    estimated_usd: float
+    clinics: list[PlatformClinicUsageOut]
+    models: list[PlatformModelUsageOut]
+    daily: list[PlatformDailyUsageOut]
+    rates: list[PlatformRateCardOut]
 
 
 class ClinicApplicationOut(Schema):
@@ -167,6 +212,27 @@ def platform_overview(request):
         documents=docs,
         staff_users=staff_users,
         top_clinics_by_tokens=top[:5],
+    )
+
+
+@router.get("/ai-usage", response=PlatformAiUsageOut, auth=staff_jwt_auth)
+def platform_ai_usage(request, days: int = Query(30, ge=1, le=90)):
+    """Cross-tenant token + estimated OpenAI spend. Super Admin only."""
+    _require_platform(request)
+    from apps.ai.services.analytics import platform_by_clinic, summarize_usage
+
+    summary = summarize_usage(clinic_id=None, days=days)
+    return PlatformAiUsageOut(
+        days=summary["days"],
+        prompt_tokens=summary["prompt_tokens"],
+        completion_tokens=summary["completion_tokens"],
+        total_tokens=summary["total_tokens"],
+        calls=summary["calls"],
+        estimated_usd=summary["estimated_usd"],
+        clinics=platform_by_clinic(days=days),
+        models=summary["models"],
+        daily=summary["daily"],
+        rates=summary["rates"],
     )
 
 

@@ -3,6 +3,7 @@
 from django.conf import settings
 from ninja import NinjaAPI
 
+from apps.api.analytics.router import router as analytics_router
 from apps.api.applications.router import router as applications_router
 from apps.api.appointments.router import router as appointments_router
 from apps.api.billing.router import router as billing_router
@@ -52,6 +53,7 @@ api.add_router("/insurance", insurance_router)
 api.add_router("/import", importer_router)
 api.add_router("/appointments", appointments_router)
 api.add_router("/billing", billing_router)
+api.add_router("/analytics", analytics_router)
 api.add_router("/applications", applications_router)
 
 if settings.DEBUG:
