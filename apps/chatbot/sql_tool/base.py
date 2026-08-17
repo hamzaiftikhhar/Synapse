@@ -16,6 +16,11 @@ class SQLContext:
     nlu: NLUResult
     patient: Any | None = None
     message: str = ""
+    # Service IDs the planner already authorized for this turn (see
+    # planner.ExecutionPlan.resolved_service_ids). A handler that needs to
+    # filter by service should read this first — it means "which IDs did
+    # the planner authorize me to query," not "let me guess from scratch."
+    resolved_service_ids: list[str] = field(default_factory=list)
 
 
 @dataclass

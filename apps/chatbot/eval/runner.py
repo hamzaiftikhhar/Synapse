@@ -133,6 +133,7 @@ def evaluate_routing_case(case: EvalCase) -> CaseResult:
         specialty_list=is_specialty_list_query(case.message),
         service_list=is_service_list_query(case.message),
         matched_doc_ids=sensors.matched_docs,
+        matched_service_ids=sensors.matched_service_ids,
         service_hit=sensors.service_hit,
         allow_hybrid=bool(policy.allow_hybrid),
         doctor_availability_query=sensors.doctor_availability_query,

@@ -282,6 +282,7 @@ class ChatEngine:
             has_catalog=has_catalog,
             doc_match=doc_match,
             matched_doc_ids=matched_docs or [],
+            matched_service_ids=sensors.matched_service_ids,
             service_hit=service_hit,
             prefer_vector=conf_policy.prefer_vector,
             prefer_clarify=conf_policy.prefer_clarify,
@@ -344,6 +345,7 @@ class ChatEngine:
                     exec_plan.sql_tasks,
                     patient=patient,
                     message=message,
+                    resolved_service_ids=exec_plan.resolved_service_ids,
                 )
                 timings["sql_ms"] = (time.perf_counter() - t0) * 1000
 
@@ -799,11 +801,17 @@ class ChatEngine:
         *,
         patient: Any = None,
         message: str = "",
+        resolved_service_ids: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         from apps.chatbot.sql_tool import SQLTool
 
         results = SQLTool.run_tasks(
-            clinic, nlu, tasks, patient=patient, message=message
+            clinic,
+            nlu,
+            tasks,
+            patient=patient,
+            message=message,
+            resolved_service_ids=resolved_service_ids,
         )
         return [r.to_dict() for r in results]
 

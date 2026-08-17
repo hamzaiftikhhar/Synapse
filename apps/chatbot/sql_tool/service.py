@@ -87,11 +87,18 @@ class SQLTool:
         *,
         patient: object | None = None,
         message: str = "",
+        resolved_service_ids: list[str] | None = None,
     ) -> list[SQLResult]:
         """Execute SQL tools named by the ExecutionPlan (planner source of truth)."""
         from apps.chatbot.sql_tool.cache import get_cached_result, set_cached_result
 
-        ctx = SQLContext(clinic=clinic, nlu=nlu, patient=patient, message=message or "")
+        ctx = SQLContext(
+            clinic=clinic,
+            nlu=nlu,
+            patient=patient,
+            message=message or "",
+            resolved_service_ids=list(resolved_service_ids or []),
+        )
         clinic_id = getattr(clinic, "id", None)
         results: list[SQLResult] = []
         pending_handlers: list[tuple[str, SQLHandler]] = []

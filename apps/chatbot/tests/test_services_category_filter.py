@@ -98,3 +98,89 @@ class ServicesCategoryFilterTests(TestCase):
         row = next(r for r in result.rows if r["name"] == "Laser Hair Removal")
         self.assertEqual(row["price_cents"], 15000)
         self.assertIn("category", row)
+
+
+class CategoryModeResolvedIdAuthorityTests(TestCase):
+    """Phase 5: category mode must give resolved_ids.service_id (Algorithm 2,
+    NLU entity -> DB fuzzy match) the same priority the mode == "named"
+    branch already gives it, instead of losing a confidently resolved
+    service behind a raw entities.service icontains that can silently
+    match zero rows for a paraphrase (e.g. "laser treatment" isn't a
+    literal substring of any real service name)."""
+
+    def setUp(self):
+        self.clinic = Clinic.objects.create(
+            slug="category-resolved-id-clinic",
+            name="Category Resolved ID Clinic",
+            email="category-resolved-id@clinic.com",
+            phone="+12125550030",
+            timezone="America/New_York",
+        )
+        self.laser = Service.objects.create(
+            clinic=self.clinic, name="Laser Hair Removal", duration_min=45, price_cents=15000
+        )
+        self.resurfacing = Service.objects.create(
+            clinic=self.clinic, name="Laser Skin Resurfacing", duration_min=40, price_cents=30000
+        )
+        Service.objects.create(
+            clinic=self.clinic,
+            name="Botox / Dysport Wrinkle Treatment",
+            duration_min=30,
+            price_cents=50000,
+        )
+
+    def _nlu(self, *, service_id: str | None = None, entity_service: str | None = None) -> NLUResult:
+        return NLUResult(
+            intent=Intent.SERVICES_OFFERED,
+            confidence=0.9,
+            entities=ExtractedEntities(service=entity_service),
+            resolved_ids=ResolvedIds(service_id=service_id),
+            needs_sql=True,
+            service_filter_mode="category",
+        )
+
+    def test_resolved_id_wins_despite_paraphrase_that_icontains_would_miss(self):
+        # "laser treatment" is not a literal substring of either laser
+        # service's name — the old code's name__icontains=entities.service
+        # branch would have matched zero rows here.
+        ctx = SQLContext(
+            clinic=self.clinic,
+            nlu=self._nlu(service_id=str(self.laser.id), entity_service="laser treatment"),
+            message="how much is laser treatment",
+        )
+        result = services_offered(ctx)
+        names = [r["name"] for r in result.rows]
+        self.assertEqual(names, ["Laser Hair Removal"])
+        self.assertTrue(result.found)
+
+    def test_resolved_id_wins_over_disagreeing_message_resolver(self):
+        # The raw message matches BOTH laser services via the message
+        # resolver (Algorithm 1, ExecutionPlan.resolved_service_ids) —
+        # that's what makes mode == "category" in the first place.
+        # resolved_ids.service_id (Algorithm 2) confidently picked just
+        # one of them; that must still win.
+        ctx = SQLContext(
+            clinic=self.clinic,
+            nlu=self._nlu(service_id=str(self.resurfacing.id)),
+            message="tell me about your laser services",
+            resolved_service_ids=[str(self.laser.id), str(self.resurfacing.id)],
+        )
+        result = services_offered(ctx)
+        names = [r["name"] for r in result.rows]
+        self.assertEqual(names, ["Laser Skin Resurfacing"])
+
+    def test_no_resolved_id_paraphrase_falls_through_to_message_resolver(self):
+        # No resolved_ids.service_id this time. entities.service is still a
+        # paraphrase, but category mode no longer attempts an icontains
+        # against it at all — it falls straight through to the
+        # planner-authorized resolved_service_ids (Algorithm 1, grounded in
+        # the real message text) instead of silently returning zero rows.
+        ctx = SQLContext(
+            clinic=self.clinic,
+            nlu=self._nlu(entity_service="laser treatment"),
+            message="how much is laser hair removal",
+            resolved_service_ids=[str(self.laser.id)],
+        )
+        result = services_offered(ctx)
+        names = [r["name"] for r in result.rows]
+        self.assertEqual(names, ["Laser Hair Removal"])

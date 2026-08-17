@@ -29,18 +29,40 @@ def services_offered(ctx: SQLContext) -> SQLResult:
         qs = qs.filter(id=ctx.nlu.resolved_ids.service_id)
     elif mode == "named" and ctx.nlu.entities.service:
         qs = qs.filter(name__icontains=_service_needle(ctx.nlu.entities.service))
+    elif mode == "category" and ctx.nlu.resolved_ids.service_id:
+        # Same authority the mode == "named" branch above already gives
+        # this signal — a confidently DB-resolved service must never be
+        # silently dropped just because the raw message also read as a
+        # multi-service category question (e.g. "laser treatment" can
+        # both fuzzy-resolve to one service via NLU entity resolution AND
+        # surface >1 raw-text hits from the message resolver).
+        qs = qs.filter(id=ctx.nlu.resolved_ids.service_id)
     elif mode == "category":
-        needle = _service_needle(ctx.nlu.entities.service) or _category_needle(ctx.message)
+        needle = _category_needle(ctx.message)
         if needle:
             qs = qs.filter(name__icontains=needle)
         else:
-            # Neither the hardcoded category phrases nor the NLU-extracted
-            # service entity matched — fall back to a strict, clinic-agnostic
-            # token match against this clinic's actual service names instead
-            # of silently returning the entire unfiltered catalog (e.g. "what
-            # laser services do you have" was previously surfacing every
-            # active service, Botox/filler/acne included).
-            matched_ids = _match_services_strict(ctx)
+            # No hardcoded category phrase matched either — fall back to
+            # the planner-authorized match (ExecutionPlan.resolved_service_ids,
+            # computed once by the shared message resolver) instead of the
+            # handler re-guessing from scratch. _match_services_strict is a
+            # legacy local fallback, kept only for the case resolved_service_ids
+            # is empty (e.g. call sites that bypass the planner, such as
+            # SQLTool.run) so behavior never regresses to "no filter" here
+            # — not something this handler should still be doing on the
+            # planner-driven path (e.g. "what laser services do you have"
+            # was previously surfacing every active service, Botox/filler/
+            # acne included, before either fallback existed).
+            #
+            # Deliberately does NOT fall back to a raw entities.service
+            # icontains here (unlike mode == "named" — see above): that
+            # string is whatever the NLU extracted verbatim, often a
+            # paraphrase (e.g. "laser treatment") rather than a literal
+            # substring of any real service name, so name__icontains=
+            # against it can silently match zero rows even when the
+            # resolvers above/below independently found a real answer for
+            # the same message.
+            matched_ids = ctx.resolved_service_ids or _match_services_strict(ctx)
             if matched_ids:
                 qs = qs.filter(id__in=matched_ids)
     elif ctx.nlu.resolved_ids.service_id:
@@ -49,7 +71,7 @@ def services_offered(ctx: SQLContext) -> SQLResult:
         qs = qs.filter(name__icontains=_service_needle(ctx.nlu.entities.service))
     else:
         # Only strict full-name matches from message — never loose token hits
-        matched_ids = _match_services_strict(ctx)
+        matched_ids = ctx.resolved_service_ids or _match_services_strict(ctx)
         if matched_ids and mode == "named":
             qs = qs.filter(id__in=matched_ids)
 

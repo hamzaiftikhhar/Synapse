@@ -239,6 +239,11 @@ class ExecutionPlan:
     # and the intent/catalog shape makes a vector fallback appropriate if
     # that SQL comes back empty.
     fallback_vector_tasks: list[str] = field(default_factory=list)
+    # Service IDs the message resolver matched (see compute_message_sensors /
+    # routing.signals.match_services_in_message) — the single authority for
+    # "which services does this turn refer to." SQL handlers filter by this
+    # instead of independently re-matching the message themselves.
+    resolved_service_ids: list[str] = field(default_factory=list)
 
     @property
     def primary_lane(self) -> Lane:
@@ -337,6 +342,7 @@ class ExecutionPlan:
             "doctor_followup": self.doctor_followup,
             "ui_priority": self.ui_priority.value,
             "fallback_vector_tasks": list(self.fallback_vector_tasks),
+            "resolved_service_ids": list(self.resolved_service_ids),
         }
 
     def to_planner_decision(self) -> PlannerDecision:
@@ -395,6 +401,7 @@ class PlannerFacts:
     has_catalog: bool = False
     doc_match: bool = False
     matched_doc_ids: tuple[str, ...] = ()
+    matched_service_ids: tuple[str, ...] = ()
     service_hit: bool = False
     prefer_vector: bool = False
     prefer_clarify: bool = False
@@ -420,6 +427,7 @@ class PlannerFacts:
             "has_catalog": self.has_catalog,
             "doc_match": self.doc_match,
             "matched_doc_ids": list(self.matched_doc_ids),
+            "matched_service_ids": list(self.matched_service_ids),
             "service_hit": self.service_hit,
             "prefer_vector": self.prefer_vector,
             "prefer_clarify": self.prefer_clarify,
@@ -451,6 +459,7 @@ class MessageSensors:
 
     nlu: NLUResult
     matched_services: list[dict[str, Any]]
+    matched_service_ids: list[str]
     service_hit: bool
     knowledge_q: bool
     booking_commit: bool
@@ -505,6 +514,7 @@ def compute_message_sensors(
     )
 
     matched_services = match_services_in_message(message, service_catalog)
+    matched_service_ids = [s.get("id") for s in matched_services if s.get("id")]
     service_hit = bool(matched_services)
     knowledge_q = looks_like_knowledge_question(message)
 
@@ -559,6 +569,7 @@ def compute_message_sensors(
     return MessageSensors(
         nlu=nlu,
         matched_services=matched_services,
+        matched_service_ids=matched_service_ids,
         service_hit=service_hit,
         knowledge_q=knowledge_q,
         booking_commit=booking_commit,
@@ -589,6 +600,7 @@ def build_planner_facts(
     has_catalog: bool = False,
     doc_match: bool = False,
     matched_doc_ids: list[str] | None = None,
+    matched_service_ids: list[str] | None = None,
     service_hit: bool = False,
     prefer_vector: bool = False,
     prefer_clarify: bool = False,
@@ -615,6 +627,7 @@ def build_planner_facts(
         has_catalog=has_catalog,
         doc_match=doc_match,
         matched_doc_ids=tuple(matched_doc_ids or ()),
+        matched_service_ids=tuple(matched_service_ids or ()),
         service_hit=service_hit,
         prefer_vector=prefer_vector,
         prefer_clarify=prefer_clarify,
@@ -981,6 +994,7 @@ def build_execution_plan(*, nlu: NLUResult, facts: PlannerFacts) -> ExecutionPla
         soft_medical=facts.soft_medical,
         doctor_followup=facts.doctor_followup,
         fallback_vector_tasks=fallback_vector_tasks,
+        resolved_service_ids=list(facts.matched_service_ids),
     )
 
 
@@ -1004,6 +1018,7 @@ def choose_plan(
     specialty_list: bool = False,
     service_list: bool = False,
     matched_doc_ids: list[str] | None = None,
+    matched_service_ids: list[str] | None = None,
     service_hit: bool = False,
     allow_hybrid: bool = False,
     doctor_followup: bool = False,
@@ -1029,6 +1044,7 @@ def choose_plan(
         has_catalog=has_catalog,
         doc_match=doc_match,
         matched_doc_ids=matched_doc_ids,
+        matched_service_ids=matched_service_ids,
         service_hit=service_hit,
         prefer_vector=prefer_vector,
         prefer_clarify=prefer_clarify,
