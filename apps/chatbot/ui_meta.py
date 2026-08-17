@@ -92,22 +92,21 @@ def build_ui_meta(
                 meta["appointments"] = [_map_appointment(r) for r in appt_rows]
             break
 
-    # Book appointment / reschedule → embed wizard in chat (Homey-style).
-    # Cancel only gets the wizard when planner.py's `booking` flag is set —
-    # it turns transactional cancel requests into booking=True but leaves
-    # knowledge-only cancel questions (e.g. "what's your cancellation fee")
-    # as booking=False, and the card must follow that same decision or the
-    # composed reply's "How would you like to book?" tail has no card behind it.
+    # Book appointment / reschedule / cancel → embed wizard in chat (Homey-style),
+    # gated exclusively by planner.py's `booking` flag — never by raw intent.
+    # The planner already turns transactional requests into booking=True while
+    # leaving knowledge-only questions (e.g. "what's your cancellation fee")
+    # or refusals (e.g. unknown_doctor_refusal) as booking=False; ui_meta must
+    # not re-decide this from `intent` alone, or a refusal response can render
+    # next to an active wizard launch. See planner.build_execution_plan for
+    # the actual booking-eligibility decision.
     #
     # Exception: when the patient already gave a day/time (or availability SQL
     # ran), show slots — do NOT open the discovery path picker.
     schedule_first = _nlu_has_schedule_constraints(nlu) or _has_availability_handler(
         sql_results
     )
-    wants_booking_wizard = intent in (
-        Intent.BOOK_APPOINTMENT.value,
-        Intent.RESCHEDULE_APPOINTMENT.value,
-    ) or (intent == Intent.CANCEL_APPOINTMENT.value and exec_plan_booking)
+    wants_booking_wizard = exec_plan_booking
 
     if wants_booking_wizard and not (
         schedule_first

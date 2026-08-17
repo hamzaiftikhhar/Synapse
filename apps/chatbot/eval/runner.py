@@ -9,16 +9,14 @@ from typing import Any
 
 from apps.chatbot.eval.cases import EvalCase
 from apps.chatbot.nlu.decision import DecisionEngine
-from apps.chatbot.planner import choose_plan
+from apps.chatbot.planner import choose_plan, compute_message_sensors
 from apps.chatbot.nlu.rules import try_rule_classify
 from apps.chatbot.nlu.schemas import Intent, parse_nlu_payload
-from apps.chatbot.routing.confidence import apply_confidence_policy
 from apps.chatbot.routing.heuristics import apply_routing_heuristics
 from apps.chatbot.routing.lanes import Lane
 from apps.chatbot.routing.signals import (
-    is_transactional_booking,
-    looks_like_knowledge_question,
-    match_services_in_message,
+    is_service_list_query,
+    is_specialty_list_query,
 )
 
 
@@ -99,83 +97,46 @@ def evaluate_routing_case(case: EvalCase) -> CaseResult:
         document_catalog=documents,
         service_catalog=services,
     )
-    service_hit = bool(match_services_in_message(case.message, services))
-    knowledge_q = looks_like_knowledge_question(case.message)
-    policy = apply_confidence_policy(
-        nlu,
-        has_catalog=bool(documents),
-        service_hit=service_hit,
-        knowledge_q=knowledge_q,
-    )
-    nlu = policy.nlu
-    decision = DecisionEngine.decide(nlu)
 
-    booking_commit = case.message.lower().strip() in {
-        "start booking",
-        "book appointment",
-        "book an appointment",
-        "i would like to book an appointment",
-    }
-    is_booking = (
-        nlu.intent in {Intent.BOOK_APPOINTMENT, Intent.RESCHEDULE_APPOINTMENT}
-        and (is_transactional_booking(case.message) or booking_commit)
-        and not knowledge_q
+    # Same shared, I/O-free sensor formulas ChatEngine.process uses in
+    # production (apps.chatbot.planner.compute_message_sensors) — this is
+    # what keeps eval's routing predictions honest: it can no longer drift
+    # from what a real request would compute for the same message/NLU/
+    # catalogs. doctor_resolution-derived unknown_doctor_requested is the
+    # one sensor this deliberately can't reproduce (no live clinic/DB here).
+    sensors = compute_message_sensors(
+        message=case.message,
+        nlu=nlu,
+        document_catalog=documents,
+        service_catalog=services,
     )
-    soft_medical = (
-        (
-            nlu.intent == Intent.MEDICAL_QUESTION
-            or bool(getattr(nlu.entities, "symptom", None))
-        )
-        and not is_booking
-        and not knowledge_q
-    )
-    matched_docs = [
-        d["id"]
-        for d in documents
-        if any(
-            isinstance(kw, str) and kw.lower() in case.message.lower()
-            for kw in (d.get("routing_keywords") or [])
-        )
-    ]
-    has_catalog = bool(documents)
-    # Align with engine: never treat bare UNKNOWN + catalog as a doc match
-    needs_vector = bool(nlu.needs_vector) or (
-        (soft_medical or knowledge_q) and bool(matched_docs)
-    ) or (knowledge_q and has_catalog and nlu.intent in {Intent.FAQ, Intent.UNKNOWN})
-    doc_match = bool(matched_docs) or (
-        has_catalog
-        and (
-            bool(nlu.needs_vector)
-            or knowledge_q
-            or nlu.intent in {Intent.FAQ, Intent.MEDICAL_QUESTION}
-        )
-    )
-    from apps.chatbot.routing.signals import (
-        is_service_list_query,
-        is_specialty_list_query,
-    )
+    nlu = sensors.nlu
+    policy = sensors.policy
+    decision = DecisionEngine.decide(nlu)
 
     plan = choose_plan(
         nlu=nlu,
-        is_booking_intent=is_booking,
-        soft_medical=soft_medical,
-        needs_vector=needs_vector,
-        doc_match=doc_match,
-        has_catalog=has_catalog,
+        is_booking_intent=sensors.is_booking_intent,
+        soft_medical=sensors.soft_medical,
+        needs_vector=False,  # deprecated param, ignored by choose_plan itself
+        doc_match=sensors.doc_match,
+        has_catalog=sensors.has_catalog,
         prefer_vector=policy.prefer_vector,
         prefer_clarify=policy.prefer_clarify,
-        degraded=bool(getattr(nlu.timings, "classifier_source", "") == "rules_fallback"),
-        doctor_ranking_request=False,
-        instruction_injection=False,
+        degraded=sensors.degraded,
+        doctor_ranking_request=sensors.doctor_ranking_request,
+        instruction_injection=sensors.instruction_injection,
         unknown_doctor_requested=False,
         message=case.message,
-        booking_commit=booking_commit,
-        knowledge_q=knowledge_q,
+        booking_commit=sensors.booking_commit,
+        knowledge_q=sensors.knowledge_q,
         specialty_list=is_specialty_list_query(case.message),
         service_list=is_service_list_query(case.message),
-        matched_doc_ids=matched_docs,
-        service_hit=service_hit,
+        matched_doc_ids=sensors.matched_docs,
+        service_hit=sensors.service_hit,
         allow_hybrid=bool(policy.allow_hybrid),
+        doctor_availability_query=sensors.doctor_availability_query,
+        urgent_availability=sensors.urgent_availability,
         confidence_band=policy.band.value,
     )
     lane = plan.lane

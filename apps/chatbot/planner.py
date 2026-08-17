@@ -233,6 +233,12 @@ class ExecutionPlan:
     # Soft medical → specialty discovery without RAG
     soft_medical: bool = False
     doctor_followup: bool = False
+    # Pre-authorized SQL→vector fallback (see resolve_plan_after_sql below).
+    # Decided once, upfront, alongside sql_tasks/vector_tasks — never
+    # invented ad hoc after the fact. Empty unless this plan is SQL-only
+    # and the intent/catalog shape makes a vector fallback appropriate if
+    # that SQL comes back empty.
+    fallback_vector_tasks: list[str] = field(default_factory=list)
 
     @property
     def primary_lane(self) -> Lane:
@@ -330,6 +336,7 @@ class ExecutionPlan:
             "soft_medical": self.soft_medical,
             "doctor_followup": self.doctor_followup,
             "ui_priority": self.ui_priority.value,
+            "fallback_vector_tasks": list(self.fallback_vector_tasks),
         }
 
     def to_planner_decision(self) -> PlannerDecision:
@@ -427,6 +434,146 @@ class PlannerFacts:
             "topic": self.topic,
             "confidence_band": self.confidence_band,
         }
+
+
+@dataclass(frozen=True)
+class MessageSensors:
+    """Pure, message+NLU+catalog-derived planner sensors — no I/O.
+
+    Single source of truth for signal formulas that used to be
+    independently duplicated (and drifted) between engine.py and
+    eval/runner.py. Deliberately excludes anything that needs a live
+    clinic/session — doctor resolution, unknown_doctor_requested,
+    doctor_followup, resolved entity ids. Callers with real DB access
+    compute those separately and pass them to build_planner_facts
+    alongside this dataclass's fields.
+    """
+
+    nlu: NLUResult
+    matched_services: list[dict[str, Any]]
+    service_hit: bool
+    knowledge_q: bool
+    booking_commit: bool
+    is_booking_intent: bool
+    soft_medical: bool
+    matched_docs: list[str]
+    has_catalog: bool
+    doc_match: bool
+    degraded: bool
+    doctor_ranking_request: bool
+    instruction_injection: bool
+    doctor_availability_query: bool
+    urgent_availability: bool
+    # Full ConfidencePolicyResult (apps.chatbot.routing.confidence) — kept
+    # as one object, not flattened, so callers that need the whole shape
+    # (e.g. engine.py's confidence_meta(sensors.policy) for ui_meta) don't
+    # have to reconstruct it field-by-field. Typed loosely to avoid a
+    # module-level import of routing.confidence from planner.py.
+    policy: Any
+
+
+def compute_message_sensors(
+    *,
+    message: str,
+    nlu: NLUResult,
+    document_catalog: list[dict[str, Any]] | None,
+    service_catalog: list[dict[str, Any]] | None,
+) -> MessageSensors:
+    """Derive the shared, I/O-free planner sensors for one message.
+
+    Called by both ChatEngine.process (production) and
+    eval/runner.py::evaluate_routing_case (offline battery) so the two
+    consume literally the same formulas instead of independently
+    reimplementing them. Returns an nlu that may differ from the one
+    passed in — apply_confidence_policy can rewrite it (e.g. clarify
+    flags) — callers must use the returned .nlu from here on, the same
+    way they already must use resolve_plan_after_sql's returned plan.
+    """
+    from apps.chatbot.routing.confidence import apply_confidence_policy
+    from apps.chatbot.routing.doc_catalog import matching_document_ids
+    from apps.chatbot.routing.signals import (
+        is_booking_commit,
+        is_doctor_availability_query,
+        is_doctor_ranking_request,
+        is_transactional_booking,
+        is_typo_book_request,
+        is_urgent_availability_request,
+        looks_like_instruction_injection,
+        looks_like_knowledge_question,
+        looks_like_symptom,
+        match_services_in_message,
+    )
+
+    matched_services = match_services_in_message(message, service_catalog)
+    service_hit = bool(matched_services)
+    knowledge_q = looks_like_knowledge_question(message)
+
+    conf_policy = apply_confidence_policy(
+        nlu, has_catalog=bool(document_catalog), service_hit=service_hit, knowledge_q=knowledge_q,
+    )
+    nlu = conf_policy.nlu
+
+    doctor_availability_query = is_doctor_availability_query(message)
+    urgent_availability = is_urgent_availability_request(message)
+
+    booking_commit = is_booking_commit(
+        message, doctor_name=getattr(nlu.entities, "doctor_name", None)
+    )
+    is_booking_intent = (
+        (
+            nlu.intent in {Intent.BOOK_APPOINTMENT, Intent.RESCHEDULE_APPOINTMENT}
+            and (is_transactional_booking(message) or booking_commit)
+            and not knowledge_q
+        )
+        or (
+            is_typo_book_request(message)
+            and nlu.intent
+            not in {Intent.CANCEL_APPOINTMENT, Intent.RESCHEDULE_APPOINTMENT, Intent.EMERGENCY}
+            and not knowledge_q
+        )
+    )
+    soft_medical = (
+        (
+            nlu.intent == Intent.MEDICAL_QUESTION
+            or bool(getattr(nlu.entities, "symptom", None))
+            or looks_like_symptom(message)
+        )
+        and not is_booking_intent
+        and not knowledge_q
+    )
+
+    matched_docs = matching_document_ids(message, document_catalog)
+    has_catalog = bool(document_catalog)
+    doc_match = bool(matched_docs) or (
+        has_catalog
+        and (knowledge_q or nlu.intent in {Intent.FAQ, Intent.MEDICAL_QUESTION, Intent.MEMBERSHIP})
+    )
+
+    degraded = bool((nlu.raw or {}).get("_degraded")) or (
+        getattr(nlu.timings, "classifier_source", "") == "rules_fallback"
+        and float(nlu.confidence or 0) < 0.55
+    )
+    doctor_ranking_request = is_doctor_ranking_request(message)
+    instruction_injection = looks_like_instruction_injection(message)
+
+    return MessageSensors(
+        nlu=nlu,
+        matched_services=matched_services,
+        service_hit=service_hit,
+        knowledge_q=knowledge_q,
+        booking_commit=booking_commit,
+        is_booking_intent=is_booking_intent,
+        soft_medical=soft_medical,
+        matched_docs=matched_docs,
+        has_catalog=has_catalog,
+        doc_match=doc_match,
+        degraded=degraded,
+        doctor_ranking_request=doctor_ranking_request,
+        instruction_injection=instruction_injection,
+        doctor_availability_query=doctor_availability_query,
+        urgent_availability=urgent_availability,
+        policy=conf_policy,
+    )
 
 
 def build_planner_facts(
@@ -794,6 +941,21 @@ def build_execution_plan(*, nlu: NLUResult, facts: PlannerFacts) -> ExecutionPla
         clarify=0.60 + (0.12 if facts.degraded else 0.0) if clarify else 0.0,
     )
 
+    # Pre-authorize a SQL→vector fallback for SQL-only plans, so the engine
+    # never has to invent one after the fact (see resolve_plan_after_sql).
+    # Equivalent to the old _should_hybrid_rag's reachable conditions for
+    # the "SQL came back empty" case — the separate "SQL found rows"
+    # early-return in that function always returned False regardless of
+    # allow_hybrid, so that branch contributed nothing and isn't
+    # reproduced here; likewise its final 5-intent check was a strict
+    # subset of HYBRID_SQL_INTENTS and never reachable on its own.
+    fallback_vector_tasks: list[str] = []
+    if sql_tasks and not vector_tasks and not booking and facts.has_catalog:
+        from apps.chatbot.routing.lanes import HYBRID_SQL_INTENTS
+
+        if nlu.intent in HYBRID_SQL_INTENTS or facts.knowledge_q or facts.allow_hybrid:
+            fallback_vector_tasks = [_vector_task_for_intent(nlu.intent, message, topic)]
+
     reason_parts = ["planner_execution_plan"]
     if booking:
         reason_parts.append("booking")
@@ -803,6 +965,8 @@ def build_execution_plan(*, nlu: NLUResult, facts: PlannerFacts) -> ExecutionPla
         reason_parts.append("vector:" + ",".join(vector_tasks))
     if clarify:
         reason_parts.append("clarify")
+    if fallback_vector_tasks:
+        reason_parts.append("fallback_vector:" + ",".join(fallback_vector_tasks))
 
     return ExecutionPlan(
         clarify=clarify and not (booking or sql_tasks or vector_tasks),
@@ -816,6 +980,7 @@ def build_execution_plan(*, nlu: NLUResult, facts: PlannerFacts) -> ExecutionPla
         facts=fact_dict,
         soft_medical=facts.soft_medical,
         doctor_followup=facts.doctor_followup,
+        fallback_vector_tasks=fallback_vector_tasks,
     )
 
 
@@ -842,6 +1007,8 @@ def choose_plan(
     service_hit: bool = False,
     allow_hybrid: bool = False,
     doctor_followup: bool = False,
+    doctor_availability_query: bool = False,
+    urgent_availability: bool = False,
     confidence_band: str = "",
 ) -> PlannerDecision:
     """Compatibility wrapper: build ExecutionPlan, project PlannerDecision.
@@ -871,6 +1038,8 @@ def choose_plan(
         instruction_injection=instruction_injection,
         unknown_doctor_requested=unknown_doctor_requested,
         doctor_followup=doctor_followup,
+        doctor_availability_query=doctor_availability_query,
+        urgent_availability=urgent_availability,
         confidence_band=confidence_band,
     )
     plan = build_execution_plan(nlu=nlu, facts=facts)
@@ -891,6 +1060,38 @@ def apply_plan_to_nlu(nlu: NLUResult, plan: ExecutionPlan) -> NLUResult:
         sql_tool=sql_tool,
         can_respond_directly=bool(plan.direct and not plan.booking),
         clarification_needed=bool(plan.clarify) or nlu.clarification_needed,
+    )
+
+
+def resolve_plan_after_sql(plan: ExecutionPlan, *, sql_found: bool) -> ExecutionPlan:
+    """The only legitimate way an ExecutionPlan changes after SQL executes.
+
+    Called exactly once, by the engine, immediately after running
+    plan.sql_tasks — never for any other reason, and never based on
+    anything other than whether those specific SQL tasks found rows.
+    Activates the plan's own pre-authorized fallback_vector_tasks (decided
+    upfront, at planning time, alongside sql_tasks/vector_tasks) when they
+    came back empty. Still performs no I/O itself — sql_found is a fact
+    the caller already observed by actually running the SQL.
+
+    Returns a NEW ExecutionPlan via dataclasses.replace; the plan passed
+    in is never mutated (it stays frozen). If there is nothing to
+    activate, returns the exact same plan object, unchanged, so callers
+    can safely reassign their local variable to the result either way.
+    """
+    if sql_found or not plan.fallback_vector_tasks:
+        return plan
+    from dataclasses import replace
+
+    new_vector_tasks = list(plan.vector_tasks)
+    for task in plan.fallback_vector_tasks:
+        if task not in new_vector_tasks:
+            new_vector_tasks.append(task)
+    return replace(
+        plan,
+        vector_tasks=new_vector_tasks,
+        use_response_llm=True,
+        reason=plan.reason + "|hybrid_fallback_activated",
     )
 
 
