@@ -89,6 +89,18 @@ export const queryKeys = {
     ["import-jobs", id, "records", status] as const,
   clinicAnalytics: (days: number) => ["analytics", "clinic", days] as const,
   platformAiUsage: (days: number) => ["analytics", "platform", days] as const,
+  platformOverview: ["platform", "overview"] as const,
+  platformUsers: (p?: { search?: string; role?: string }) => ["platform", "users", p] as const,
+  platformSubscriptions: (p?: { status?: string; search?: string }) =>
+    ["platform", "subscriptions", p] as const,
+  platformPlans: ["platform", "plans"] as const,
+  platformDocuments: (p?: { status?: string; search?: string }) =>
+    ["platform", "documents", p] as const,
+  platformMonitoring: (days: number) => ["platform", "monitoring", days] as const,
+  platformAudit: (p?: { action?: string; search?: string }) => ["platform", "audit", p] as const,
+  platformSettings: ["platform", "settings"] as const,
+  platformClinics: (search?: string) => ["platform", "clinics", search] as const,
+  platformApplications: (status?: string) => ["platform", "applications", status] as const,
 };
 
 export function useMe(enabled = true) {
@@ -404,6 +416,87 @@ export function usePlatformAiUsage(days: number, enabled = true) {
   return useQuery({
     queryKey: queryKeys.platformAiUsage(days),
     queryFn: () => platformService.aiUsage(days),
+    enabled,
+  });
+}
+
+export function usePlatformOverview(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.platformOverview,
+    queryFn: () => platformService.overview(),
+    enabled,
+  });
+}
+
+export function usePlatformClinics(search = "", enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.platformClinics(search),
+    queryFn: () => platformService.listClinics(search),
+    enabled,
+  });
+}
+
+export function usePlatformApplications(status = "", enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.platformApplications(status),
+    queryFn: () => platformService.listApplications(status),
+    enabled,
+  });
+}
+
+export function usePlatformUsers(params?: { search?: string; role?: string }, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.platformUsers(params),
+    queryFn: () => platformService.listUsers(params),
+    enabled,
+  });
+}
+
+export function usePlatformSubscriptions(
+  params?: { status?: string; search?: string },
+  enabled = true
+) {
+  return useQuery({
+    queryKey: queryKeys.platformSubscriptions(params),
+    queryFn: () => platformService.listSubscriptions(params),
+    enabled,
+  });
+}
+
+export function usePlatformDocuments(
+  params?: { status?: string; search?: string },
+  enabled = true
+) {
+  return useQuery({
+    queryKey: queryKeys.platformDocuments(params),
+    queryFn: () => platformService.listDocuments(params),
+    enabled,
+  });
+}
+
+export function usePlatformMonitoring(days: number, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.platformMonitoring(days),
+    queryFn: () => platformService.aiMonitoring(days),
+    enabled,
+  });
+}
+
+export function usePlatformAudit(
+  params?: { action?: string; search?: string },
+  enabled = true
+) {
+  return useQuery({
+    queryKey: queryKeys.platformAudit(params),
+    queryFn: () => platformService.listAudit(params),
+    enabled,
+  });
+}
+
+export function usePlatformSettings(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.platformSettings,
+    queryFn: () => platformService.settings(),
     enabled,
   });
 }

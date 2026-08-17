@@ -192,6 +192,7 @@ export type User = {
   is_clinic_owner: boolean;
   email_verified?: boolean;
   email_verified_at?: string | null;
+  phone_number?: string;
 };
 
 export type Tenant = {
@@ -936,4 +937,166 @@ export type PlatformAiUsage = {
   models: AnalyticsModelRow[];
   daily: AnalyticsDailyRow[];
   rates: AnalyticsRateCard[];
+};
+
+export type PlatformOverview = {
+  clinic_count: number;
+  active_clinics: number;
+  suspended_clinics: number;
+  onboarding_clinics: number;
+  appointments_30d: number;
+  tokens_30d: number;
+  documents: number;
+  staff_users: number;
+  pending_applications: number;
+  active_subscriptions: number;
+  failed_documents: number;
+  avg_latency_ms_30d: number;
+  top_clinics_by_tokens: Array<{ slug: string; name: string; tokens_30d: number }>;
+};
+
+export type PlatformClinicRow = {
+  id: string;
+  slug: string;
+  name: string;
+  email: string;
+  status: string;
+  timezone: string;
+  doctor_count: number;
+  staff_count: number;
+  document_count: number;
+  appointment_count_30d: number;
+  token_usage_30d: number;
+  created_at: string;
+};
+
+export type PlatformUser = {
+  id: number;
+  email: string;
+  first_name: string;
+  last_name: string;
+  role: string;
+  is_active: boolean;
+  is_clinic_owner: boolean;
+  email_verified: boolean;
+  last_login: string | null;
+  date_joined: string;
+  clinics: Array<{ id: string; slug: string; name: string; is_active: boolean }>;
+};
+
+export type InviteUserInput = {
+  email: string;
+  first_name?: string;
+  last_name?: string;
+  clinic_id: string;
+  role?: string;
+};
+
+export type PlatformSubscription = {
+  id: string;
+  clinic_id: string;
+  clinic_name: string;
+  clinic_slug: string;
+  plan_slug: string;
+  plan_name: string;
+  status: string;
+  display_price_cents: number | null;
+  display_currency: string;
+  current_period_end: string | null;
+  cancel_at_period_end: boolean;
+  paddle_subscription_id: string | null;
+  updated_at: string;
+};
+
+export type PlatformPlan = {
+  id: string;
+  slug: string;
+  name: string;
+  billing_interval: string;
+  display_price_cents: number | null;
+  display_currency: string;
+  is_active: boolean;
+  display_order: number;
+  paddle_price_id_sandbox: string;
+  paddle_price_id_live: string;
+  subscriber_count: number;
+};
+
+export type PlatformDocument = {
+  id: string;
+  title: string;
+  file_name: string;
+  status: string;
+  processing_stage: string;
+  chunk_count: number;
+  clinic_id: string;
+  clinic_name: string;
+  clinic_slug: string;
+  error_message: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PlatformMonitoring = {
+  days: number;
+  calls: number;
+  cached_calls: number;
+  avg_latency_ms: number;
+  max_latency_ms: number;
+  p95_latency_ms: number;
+  slow_calls: number;
+  failed_documents: number;
+  by_operation: Array<{
+    key: string;
+    calls: number;
+    avg_latency_ms: number;
+    max_latency_ms: number;
+    tokens: number;
+  }>;
+  by_model: Array<{
+    key: string;
+    calls: number;
+    avg_latency_ms: number;
+    max_latency_ms: number;
+    tokens: number;
+  }>;
+  slowest: Array<{
+    id: string;
+    clinic_name: string;
+    clinic_slug: string;
+    model: string;
+    operation: string;
+    latency_ms: number;
+    total_tokens: number;
+    created_at: string;
+  }>;
+};
+
+export type PlatformAuditRow = {
+  id: number;
+  action: string;
+  actor_email: string;
+  clinic_name: string;
+  clinic_slug: string;
+  object_type: string;
+  object_id: string;
+  metadata: Record<string, unknown>;
+  ip_address: string | null;
+  created_at: string;
+};
+
+export type PlatformSettings = {
+  frontend_url: string;
+  paddle_environment: string;
+  nlu_provider: string;
+  nlu_model: string;
+  embedding_provider: string;
+  embedding_model: string;
+  integrations: Array<{
+    key: string;
+    label: string;
+    configured: boolean;
+    detail: string;
+  }>;
+  plans: PlatformPlan[];
 };

@@ -107,17 +107,8 @@ export default function PlatformAiUsagePage() {
             <CardHeader>
               <CardTitle>Daily tokens</CardTitle>
             </CardHeader>
-            <CardContent>
-              <TokenSparkline
-                points={series.map((p) => ({
-                  label: p.label,
-                  total_tokens: p.total_tokens,
-                }))}
-              />
-              <div className="mt-2 flex justify-between text-[10px] text-muted-foreground">
-                <span>{series[0]?.label}</span>
-                <span>{series[series.length - 1]?.label}</span>
-              </div>
+            <CardContent className="pt-1 pb-5">
+              <TokenSparkline points={series} />
             </CardContent>
           </Card>
 
@@ -147,9 +138,9 @@ export default function PlatformAiUsagePage() {
                         <TableCell className="pl-5 whitespace-normal">
                           <p className="font-medium text-navy">{clinic.name}</p>
                           <p className="text-[11px] text-muted-foreground">{clinic.slug}</p>
-                          <div className="mt-1.5 h-1 max-w-xs overflow-hidden rounded-full bg-muted">
+                          <div className="mt-1.5 h-1.5 max-w-xs overflow-hidden rounded-full bg-primary/10">
                             <div
-                              className="h-full rounded-full bg-navy"
+                              className="h-full rounded-full bg-primary"
                               style={{
                                 width: `${Math.max((clinic.total_tokens / maxTokens) * 100, 2)}%`,
                               }}

@@ -87,6 +87,10 @@ class ClinicAnalyticsAuthzTests(TestCase):
         self.assertEqual(body["rates"], [])
         self.assertIsNone(body["models"][0]["estimated_usd"])
         self.assertEqual(body["models"][0]["model"], "gpt-4.1-nano")
+        self.assertTrue(body["daily"])
+        for row in body["daily"]:
+            self.assertRegex(row["date"], r"^\d{4}-\d{2}-\d{2}$")
+        self.assertEqual(sum(r["total_tokens"] for r in body["daily"]), 12_000)
 
     def test_clinic_owner_cannot_see_other_clinic_tokens(self):
         resp = self.client.get("/api/v1/analytics", headers=self.headers)

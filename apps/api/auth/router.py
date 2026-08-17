@@ -40,6 +40,7 @@ from apps.api.auth.schemas import (
     ForgotPasswordIn,
     MeOut,
     MessageOut,
+    PatchMeIn,
     RefreshIn,
     ResendVerificationIn,
     ResetPasswordIn,
@@ -72,6 +73,7 @@ def _user_out(user) -> UserOut:
         is_clinic_owner=user.is_clinic_owner,
         email_verified=bool(user.email_verified_at),
         email_verified_at=user.email_verified_at,
+        phone_number=user.phone_number or "",
     )
 
 
@@ -409,6 +411,24 @@ def me(request):
         tenants=_tenants_for(auth.user),
         can_exit_clinic=auth.role == UserRole.SUPER_ADMIN and auth.clinic is not None,
     )
+
+
+@router.patch("/me", response=UserOut, auth=staff_jwt_auth)
+def patch_me(request, payload: PatchMeIn):
+    user = request.auth.user
+    fields: list[str] = []
+    if payload.first_name is not None:
+        user.first_name = payload.first_name.strip()[:150]
+        fields.append("first_name")
+    if payload.last_name is not None:
+        user.last_name = payload.last_name.strip()[:150]
+        fields.append("last_name")
+    if payload.phone_number is not None:
+        user.phone_number = payload.phone_number.strip()[:20]
+        fields.append("phone_number")
+    if fields:
+        user.save(update_fields=fields)
+    return _user_out(user)
 
 
 @router.get("/tenants", response=list[TenantOut], auth=staff_jwt_auth)

@@ -169,3 +169,103 @@ class ApplicationApprovalProvisioningTests(TestCase):
             data={}, content_type="application/json", headers=self.admin_headers,
         )
         self.assertEqual(resp.status_code, 400)
+
+
+class PlatformOpsTests(TestCase):
+    def setUp(self):
+        self.admin, self.admin_headers = make_super_admin(email="ops@synapse.test")
+        self.owner, self.clinic, self.owner_headers = make_clinic_admin(
+            email="owner@ops.test", clinic_slug="ops-clinic"
+        )
+        Plan.objects.get_or_create(
+            slug="starter",
+            defaults={"name": "Starter", "is_active": True, "display_price_cents": 2900},
+        )
+
+    def test_clinic_owner_cannot_list_users(self):
+        resp = self.client.get("/api/v1/platform/users", headers=self.owner_headers)
+        self.assertEqual(resp.status_code, 403)
+
+    def test_list_users_includes_owner(self):
+        resp = self.client.get("/api/v1/platform/users", headers=self.admin_headers)
+        self.assertEqual(resp.status_code, 200)
+        emails = {u["email"] for u in resp.json()}
+        self.assertIn("owner@ops.test", emails)
+
+    def test_invite_staff_creates_membership(self):
+        resp = self.client.post(
+            "/api/v1/platform/users/invite",
+            data={
+                "email": "front@ops.test",
+                "first_name": "Front",
+                "clinic_id": str(self.clinic.id),
+                "role": "STAFF",
+            },
+            content_type="application/json",
+            headers=self.admin_headers,
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        body = resp.json()
+        self.assertEqual(body["email"], "front@ops.test")
+        self.assertEqual(body["role"], "STAFF")
+        self.assertTrue(
+            ClinicStaff.objects.filter(user__email="front@ops.test", clinic=self.clinic).exists()
+        )
+
+    def test_cannot_deactivate_self(self):
+        resp = self.client.patch(
+            f"/api/v1/platform/users/{self.admin.id}",
+            data={"is_active": False},
+            content_type="application/json",
+            headers=self.admin_headers,
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_subscriptions_and_plans_list(self):
+        plan = Plan.objects.get(slug="starter")
+        Subscription.objects.create(clinic=self.clinic, plan=plan)
+        subs = self.client.get("/api/v1/platform/subscriptions", headers=self.admin_headers)
+        self.assertEqual(subs.status_code, 200)
+        self.assertTrue(any(s["clinic_slug"] == "ops-clinic" for s in subs.json()))
+        plans = self.client.get("/api/v1/platform/plans", headers=self.admin_headers)
+        self.assertEqual(plans.status_code, 200)
+        self.assertTrue(any(p["slug"] == "starter" for p in plans.json()))
+
+    def test_patch_plan_updates_price(self):
+        plan = Plan.objects.get(slug="starter")
+        resp = self.client.patch(
+            f"/api/v1/platform/plans/{plan.id}",
+            data={"display_price_cents": 4900, "name": "Starter+"},
+            content_type="application/json",
+            headers=self.admin_headers,
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        plan.refresh_from_db()
+        self.assertEqual(plan.display_price_cents, 4900)
+        self.assertEqual(plan.name, "Starter+")
+
+    def test_audit_and_settings_and_monitoring(self):
+        audit = self.client.get("/api/v1/platform/audit", headers=self.admin_headers)
+        self.assertEqual(audit.status_code, 200)
+        settings_resp = self.client.get("/api/v1/platform/settings", headers=self.admin_headers)
+        self.assertEqual(settings_resp.status_code, 200)
+        self.assertIn("integrations", settings_resp.json())
+        mon = self.client.get("/api/v1/platform/ai-monitoring", headers=self.admin_headers)
+        self.assertEqual(mon.status_code, 200)
+        self.assertIn("avg_latency_ms", mon.json())
+
+    def test_documents_list(self):
+        resp = self.client.get("/api/v1/platform/documents", headers=self.admin_headers)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), [])
+
+    def test_patch_me(self):
+        resp = self.client.patch(
+            "/api/v1/auth/me",
+            data={"first_name": "Root", "last_name": "Admin", "phone_number": "555-0100"},
+            content_type="application/json",
+            headers=self.admin_headers,
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()["first_name"], "Root")
+        self.assertEqual(resp.json()["phone_number"], "555-0100")

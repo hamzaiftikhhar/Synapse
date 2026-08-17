@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import date, datetime, timedelta
 from uuid import UUID
 
 from django.db.models import Avg, Count, Q, Sum
@@ -15,6 +15,16 @@ from apps.ai.pricing import estimate_usd, known_rate_cards
 
 def _since(days: int):
     return timezone.now() - timedelta(days=max(1, min(days, 90)))
+
+
+def _day_iso(day) -> str:
+    if day is None:
+        return ""
+    if isinstance(day, datetime):
+        day = day.date()
+    if isinstance(day, date):
+        return day.isoformat()
+    return str(day)[:10]
 
 
 def _base_qs(*, clinic_id: UUID | None, days: int):
@@ -83,7 +93,7 @@ def summarize_usage(*, clinic_id: UUID | None = None, days: int = 30) -> dict:
 
     daily = [
         {
-            "date": row["day"].isoformat() if row["day"] else "",
+            "date": _day_iso(row["day"]),
             "total_tokens": int(row["tokens"] or 0),
             "calls": int(row["calls"] or 0),
         }

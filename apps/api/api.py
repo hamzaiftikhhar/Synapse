@@ -19,6 +19,7 @@ from apps.api.insurance.router import router as insurance_router
 from apps.api.knowledge.router import router as knowledge_router
 from apps.api.patients.router import router as patients_router
 from apps.api.platform.router import router as platform_router
+from apps.api.platform.ops import router as platform_ops_router
 from apps.api.services.router import router as services_router
 from apps.api.specialties.router import router as specialties_router
 
@@ -39,6 +40,7 @@ api = NinjaAPI(
 
 api.add_router("/auth", auth_router)
 api.add_router("/platform", platform_router)
+api.add_router("/platform", platform_ops_router)
 api.add_router("/widget", patient_auth_router)
 api.add_router("/widget", widget_public_router)
 api.add_router("/widget", widget_booking_router)

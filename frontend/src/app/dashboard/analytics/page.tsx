@@ -4,15 +4,10 @@ import { useMemo, useState } from "react";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ModelMix } from "@/features/analytics/model-mix";
+import { ModelMix, OperationMix } from "@/features/analytics/model-mix";
 import { TokenSparkline } from "@/features/analytics/token-sparkline";
 import { useClinicAnalytics } from "@/hooks/api";
-import {
-  OPERATION_LABEL,
-  fillDailySeries,
-  formatTokens,
-  formatUsd,
-} from "@/lib/analytics-format";
+import { fillDailySeries, formatTokens, formatUsd } from "@/lib/analytics-format";
 
 type Range = "7" | "30";
 
@@ -87,24 +82,15 @@ export default function AnalyticsPage() {
               <div>
                 <CardTitle>Daily tokens</CardTitle>
                 <p className="mt-0.5 text-xs text-muted-foreground">
-                  Each bar is one clinic day. Hover a bar for the exact count.
+                  Each bar is one clinic day.
                 </p>
               </div>
               <p className="font-mono text-sm tabular-nums text-navy">
                 {formatTokens(data.total_tokens)}
               </p>
             </CardHeader>
-            <CardContent>
-              <TokenSparkline
-                points={series.map((p) => ({
-                  label: p.label,
-                  total_tokens: p.total_tokens,
-                }))}
-              />
-              <div className="mt-2 flex justify-between text-[10px] text-muted-foreground">
-                <span>{series[0]?.label}</span>
-                <span>{series[series.length - 1]?.label}</span>
-              </div>
+            <CardContent className="pt-1 pb-5">
+              <TokenSparkline points={series} />
             </CardContent>
           </Card>
 
@@ -123,27 +109,12 @@ export default function AnalyticsPage() {
             <Card className="lg:col-span-2">
               <CardHeader>
                 <CardTitle>By job</CardTitle>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  Where tokens go — routing, replies, and knowledge.
+                </p>
               </CardHeader>
               <CardContent>
-                {data.operations.length ? (
-                  <ul className="divide-y divide-border">
-                    {data.operations.map((op) => (
-                      <li
-                        key={op.operation}
-                        className="flex items-baseline justify-between gap-3 py-2.5 first:pt-0 last:pb-0"
-                      >
-                        <span className="text-sm">
-                          {OPERATION_LABEL[op.operation] ?? op.operation}
-                        </span>
-                        <span className="text-sm tabular-nums text-muted-foreground">
-                          {formatTokens(op.total_tokens)} · {op.calls}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p className="text-sm text-muted-foreground">No calls yet.</p>
-                )}
+                <OperationMix rows={data.operations} />
               </CardContent>
             </Card>
           </div>

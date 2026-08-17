@@ -13,10 +13,14 @@ export type StatusCount = {
 export function StatusBreakdownCard({
   title,
   subtitle,
+  emptyTitle,
+  emptyDescription,
   counts,
 }: {
   title: string;
   subtitle?: string;
+  emptyTitle?: string;
+  emptyDescription?: string;
   counts: StatusCount[];
 }) {
   const total = counts.reduce((sum, c) => sum + c.count, 0);
@@ -33,9 +37,9 @@ export function StatusBreakdownCard({
       <CardContent>
         {total === 0 ? (
           <div className="flex h-44 flex-col items-center justify-center gap-1 text-center">
-            <p className="text-sm font-medium text-navy">No appointments yet</p>
+            <p className="text-sm font-medium text-navy">{emptyTitle ?? "Nothing here yet"}</p>
             <p className="text-xs text-muted-foreground">
-              Status breakdown appears once appointments come in.
+              {emptyDescription ?? "Counts appear once there is activity."}
             </p>
           </div>
         ) : (

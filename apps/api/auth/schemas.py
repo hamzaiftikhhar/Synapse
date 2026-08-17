@@ -92,6 +92,13 @@ class UserOut(Schema):
     is_clinic_owner: bool
     email_verified: bool = False
     email_verified_at: datetime | None = None
+    phone_number: str = ""
+
+
+class PatchMeIn(Schema):
+    first_name: str | None = None
+    last_name: str | None = None
+    phone_number: str | None = None
 
 
 class TenantOut(Schema):

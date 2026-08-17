@@ -50,6 +50,7 @@ import type {
   StaffRegisterInput,
   StaffTokenResponse,
   Tenant,
+  User,
   WidgetSettingsOut,
   WidgetSettingsUpdateInput,
 } from "@/types/api";
@@ -113,6 +114,10 @@ export const authService = {
     const { data } = await api.get<MeResponse>("/auth/me");
     return data;
   },
+  async patchMe(input: { first_name?: string; last_name?: string; phone_number?: string }) {
+    const { data } = await api.patch<User>("/auth/me", input);
+    return data;
+  },
   async tenants() {
     const { data } = await api.get<Tenant[]>("/auth/tenants");
     return data;
@@ -168,40 +173,25 @@ export const authService = {
 
 export const platformService = {
   async overview() {
-    const { data } = await api.get<{
-      clinic_count: number;
-      active_clinics: number;
-      suspended_clinics: number;
-      onboarding_clinics: number;
-      appointments_30d: number;
-      tokens_30d: number;
-      documents: number;
-      staff_users: number;
-      top_clinics_by_tokens: Array<{
-        slug: string;
-        name: string;
-        tokens_30d: number;
-      }>;
-    }>("/platform/overview");
+    const { data } = await api.get<import("@/types/api").PlatformOverview>("/platform/overview");
     return data;
   },
   async listClinics(search = "") {
-    const { data } = await api.get<
-      Array<{
-        id: string;
-        slug: string;
-        name: string;
-        email: string;
-        status: string;
-        timezone: string;
-        doctor_count: number;
-        staff_count: number;
-        document_count: number;
-        appointment_count_30d: number;
-        token_usage_30d: number;
-        created_at: string;
-      }>
-    >("/platform/clinics", { params: search ? { search } : undefined });
+    const { data } = await api.get<import("@/types/api").PlatformClinicRow[]>(
+      "/platform/clinics",
+      { params: search ? { search } : undefined }
+    );
+    return data;
+  },
+  async createClinic(input: {
+    name: string;
+    slug: string;
+    email: string;
+    phone?: string;
+    timezone?: string;
+    owner_email?: string;
+  }) {
+    const { data } = await api.post("/platform/clinics", input);
     return data;
   },
   async patchClinic(id: string, input: { status?: string; name?: string }) {
@@ -235,11 +225,109 @@ export const platformService = {
     );
     return data;
   },
+  async reviewApplication(id: string) {
+    const { data } = await api.post<import("@/types/api").ClinicApplication>(
+      `/platform/applications/${id}/review`,
+      {}
+    );
+    return data;
+  },
   async aiUsage(days = 30) {
     const { data } = await api.get<import("@/types/api").PlatformAiUsage>(
       "/platform/ai-usage",
       { params: { days } }
     );
+    return data;
+  },
+  async listUsers(params?: { search?: string; role?: string }) {
+    const { data } = await api.get<import("@/types/api").PlatformUser[]>("/platform/users", {
+      params,
+    });
+    return data;
+  },
+  async inviteUser(input: import("@/types/api").InviteUserInput) {
+    const { data } = await api.post<import("@/types/api").PlatformUser>(
+      "/platform/users/invite",
+      input
+    );
+    return data;
+  },
+  async patchUser(
+    id: number,
+    input: { is_active?: boolean; role?: string; first_name?: string; last_name?: string }
+  ) {
+    const { data } = await api.patch<import("@/types/api").PlatformUser>(
+      `/platform/users/${id}`,
+      input
+    );
+    return data;
+  },
+  async listSubscriptions(params?: { status?: string; search?: string }) {
+    const { data } = await api.get<import("@/types/api").PlatformSubscription[]>(
+      "/platform/subscriptions",
+      { params }
+    );
+    return data;
+  },
+  async listPlans() {
+    const { data } = await api.get<import("@/types/api").PlatformPlan[]>("/platform/plans");
+    return data;
+  },
+  async patchPlan(
+    id: string,
+    input: Partial<
+      Pick<
+        import("@/types/api").PlatformPlan,
+        | "name"
+        | "display_price_cents"
+        | "is_active"
+        | "display_order"
+        | "paddle_price_id_sandbox"
+        | "paddle_price_id_live"
+      >
+    >
+  ) {
+    const { data } = await api.patch<import("@/types/api").PlatformPlan>(
+      `/platform/plans/${id}`,
+      input
+    );
+    return data;
+  },
+  async listDocuments(params?: { status?: string; search?: string }) {
+    const { data } = await api.get<import("@/types/api").PlatformDocument[]>(
+      "/platform/documents",
+      { params }
+    );
+    return data;
+  },
+  async reindexDocument(id: string) {
+    const { data } = await api.post<import("@/types/api").PlatformDocument>(
+      `/platform/documents/${id}/reindex`,
+      {}
+    );
+    return data;
+  },
+  async deleteDocument(id: string) {
+    const { data } = await api.delete<import("@/types/api").PlatformDocument>(
+      `/platform/documents/${id}`
+    );
+    return data;
+  },
+  async aiMonitoring(days = 7) {
+    const { data } = await api.get<import("@/types/api").PlatformMonitoring>(
+      "/platform/ai-monitoring",
+      { params: { days } }
+    );
+    return data;
+  },
+  async listAudit(params?: { action?: string; search?: string }) {
+    const { data } = await api.get<import("@/types/api").PlatformAuditRow[]>("/platform/audit", {
+      params,
+    });
+    return data;
+  },
+  async settings() {
+    const { data } = await api.get<import("@/types/api").PlatformSettings>("/platform/settings");
     return data;
   },
 };

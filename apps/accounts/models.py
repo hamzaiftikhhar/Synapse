@@ -165,6 +165,9 @@ class AuditAction(models.TextChoices):
     APPLICATION_APPROVED = "application_approved", "Clinic application approved"
     APPLICATION_REJECTED = "application_rejected", "Clinic application rejected"
     INVITE_ACCEPTED = "invite_accepted", "Invitation accepted"
+    USER_INVITE = "user_invite", "User invited"
+    USER_UPDATE = "user_update", "User updated"
+    PLAN_UPDATE = "plan_update", "Billing plan updated"
 
 
 class AuditLog(models.Model):

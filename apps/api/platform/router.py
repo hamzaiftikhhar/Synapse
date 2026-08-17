@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import timedelta
 from uuid import UUID
 
-from django.db.models import Q, Sum
+from django.db.models import Avg, Q, Sum
 from django.utils import timezone
 from django.utils.text import slugify
 from ninja import Query, Router, Schema
@@ -62,6 +62,10 @@ class PlatformOverviewOut(Schema):
     tokens_30d: int = 0
     documents: int = 0
     staff_users: int = 0
+    pending_applications: int = 0
+    active_subscriptions: int = 0
+    failed_documents: int = 0
+    avg_latency_ms_30d: int = 0
     top_clinics_by_tokens: list[dict] = []
 
 
@@ -171,7 +175,8 @@ def platform_overview(request):
     _require_platform(request)
     from apps.ai.models import AIUsageLog
     from apps.appointments.models import Appointment
-    from apps.knowledge.models import Document
+    from apps.billing.models import Subscription, SubscriptionStatus
+    from apps.knowledge.models import Document, DocumentStatus
 
     since = timezone.now() - timedelta(days=30)
     clinics = list(Clinic.objects.all())
@@ -190,6 +195,21 @@ def platform_overview(request):
     staff_users = User.objects.filter(
         role__in=[UserRole.CLINIC_ADMIN, UserRole.STAFF], is_active=True
     ).count()
+    pending_apps = ClinicApplication.objects.filter(
+        status__in=[ClinicApplicationStatus.PENDING, ClinicApplicationStatus.REVIEWING]
+    ).count()
+    active_subs = Subscription.objects.filter(
+        status__in=[SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIALING]
+    ).count()
+    failed_docs = Document.objects.filter(
+        is_deleted=False, status=DocumentStatus.FAILED
+    ).count()
+    avg_latency = (
+        AIUsageLog.objects.filter(created_at__gte=since, latency_ms__gt=0).aggregate(
+            a=Avg("latency_ms")
+        )["a"]
+        or 0
+    )
 
     top = []
     for c in clinics:
@@ -211,6 +231,10 @@ def platform_overview(request):
         tokens_30d=int(tokens_30d),
         documents=docs,
         staff_users=staff_users,
+        pending_applications=pending_apps,
+        active_subscriptions=active_subs,
+        failed_documents=failed_docs,
+        avg_latency_ms_30d=int(avg_latency),
         top_clinics_by_tokens=top[:5],
     )
 
@@ -530,4 +554,22 @@ def reject_application(request, application_id: UUID, payload: RejectApplication
         metadata={"reason": app.rejection_reason},
         ip_address=client_ip(request),
     )
+    return _application_out(app)
+
+
+@router.post(
+    "/applications/{application_id}/review",
+    response=ClinicApplicationOut,
+    auth=staff_jwt_auth,
+)
+def mark_application_reviewing(request, application_id: UUID):
+    _require_platform(request)
+    try:
+        app = ClinicApplication.objects.get(pk=application_id)
+    except ClinicApplication.DoesNotExist:
+        raise HttpError(404, "Application not found") from None
+    if app.status in {ClinicApplicationStatus.CONVERTED, ClinicApplicationStatus.REJECTED}:
+        raise HttpError(400, f"Application is already {app.status}")
+    app.status = ClinicApplicationStatus.REVIEWING
+    app.save(update_fields=["status", "updated_at"])
     return _application_out(app)

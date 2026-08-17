@@ -190,6 +190,8 @@ export default function DashboardHomePage() {
         <StatusBreakdownCard
           title="Appointment status"
           subtitle="Where things stand right now"
+          emptyTitle="No appointments yet"
+          emptyDescription="Status breakdown appears once appointments come in."
           counts={statusCounts}
         />
       </div>
