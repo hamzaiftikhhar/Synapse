@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import date, time, timedelta
+from typing import Any
 
 from django.utils import timezone
 
@@ -15,6 +16,7 @@ from apps.chatbot.sql_tool.utils import (
     entity_list,
     parse_natural_date,
 )
+from apps.chatbot.temporal import TemporalQuery
 
 
 def _slot_at_or_after(slot: dict, floor_time) -> bool:
@@ -135,20 +137,32 @@ def list_specialties(ctx: SQLContext) -> SQLResult:
 
 
 def doctor_availability(ctx: SQLContext) -> SQLResult:
-    from apps.chatbot.booking.slots import active_holds_for_date, compute_slots_for_day
     from apps.doctors.models import Doctor
     from apps.chatbot.sql_tool.utils import parse_time_ceiling, parse_time_floor
+    from apps.chatbot.booking.config import booking_horizon_days
+    from apps.chatbot.temporal import day_label, resolve_temporal_query
 
     clinic = ctx.clinic
     nlu = ctx.nlu
     tz = clinic_timezone(clinic)
+    today = timezone.now().astimezone(tz).date()
 
-    dates = entity_list(nlu.entities.date)
-    target_date = parse_natural_date(dates[0] if dates else None, tz=tz)
-    if target_date is None:
-        target_date = timezone.now().astimezone(tz).date() + timedelta(days=1)
+    scope = resolve_temporal_query(
+        date_entities=entity_list(nlu.entities.date),
+        today=today,
+        horizon_days=booking_horizon_days(clinic),
+        message=ctx.message,
+        tz=tz,
+    )
+    if not scope.searchable:
+        return SQLResult(
+            handler="doctor_availability",
+            found=False,
+            summary=_unsearchable_summary(scope),
+            meta={**scope.as_meta(), "authoritative_summary": True},
+        )
 
-    time_entities = entity_list(nlu.entities.time)
+    time_entities = _clean_time_entities(entity_list(nlu.entities.time))
     time_floor = parse_time_floor(time_entities)
     time_ceiling = parse_time_ceiling(time_entities)
 
@@ -192,49 +206,162 @@ def doctor_availability(ctx: SQLContext) -> SQLResult:
             handler="doctor_availability",
             found=False,
             summary="No matching doctors found to check availability.",
-            meta={"target_date": target_date.isoformat()},
+            meta={**scope.as_meta(), "target_date": scope.start.isoformat()},
         )
 
-    slots = compute_slots_for_day(
+    slots, target_date = _first_day_with_slots(
         clinic,
-        target_date=target_date,
+        scope=scope,
         doctors=doctors,
-        max_slots=20,
-        excluded_keys=active_holds_for_date(clinic, target_date),
+        time_floor=time_floor,
+        time_ceiling=time_ceiling,
     )
-
-    if time_floor is not None:
-        slots = [
-            s
-            for s in slots
-            if _slot_at_or_after(s, time_floor)
-        ]
-    if time_ceiling is not None:
-        slots = [
-            s
-            for s in slots
-            if _slot_before(s, time_ceiling)
-        ]
+    target_date = target_date or scope.start
 
     found = bool(slots)
-    day_label = target_date.strftime("%A, %B %d")
+    where = day_label(target_date, today=today)
     if found:
-        summary = f"Found {len(slots)} available slot(s) on {day_label}."
-    elif time_entities:
-        wanted = ", ".join(time_entities)
-        summary = (
-            f"No available slots on {day_label} for {wanted}. "
-            "Try another day or time."
-        )
+        summary = f"Found {len(slots)} available slot(s) on {where}."
+        if scope.conflict and scope.conflict_weekday:
+            # The date the patient gave and the weekday they gave disagree.
+            # The date wins, but we say so rather than quietly picking one.
+            summary += (
+                f" Note: you mentioned {scope.conflict_weekday}, but "
+                f"{where} is a {target_date.strftime('%A')}."
+            )
     else:
-        summary = (
-            f"No available slots found on {day_label}. "
-            "Try another day, or tap Book Appointment to pick a time."
-        )
+        # A month with nothing open must say so about the month, not about
+        # whichever single day the scan happened to end on.
+        if scope.is_range and scope.scope_label:
+            where = scope.scope_label
+        if time_entities:
+            wanted = ", ".join(time_entities)
+            summary = (
+                f"No available slots on {where} for {wanted}. "
+                "Try another day or time."
+            )
+        else:
+            summary = (
+                f"No available slots found on {where}. "
+                "Try another day, or tap Book Appointment to pick a time."
+            )
     return SQLResult(
         handler="doctor_availability",
         found=found,
         rows=slots[:20],
         summary=summary,
-        meta={"target_date": target_date.isoformat()},
+        meta={
+            **scope.as_meta(),
+            "target_date": target_date.isoformat(),
+            "authoritative_summary": True,
+        },
+    )
+
+
+# A day scan is bounded so a wide horizon can never turn one question into an
+# unbounded walk. Days the roster never works are skipped before any query.
+_MAX_DAYS_SCANNED = 62
+
+
+def _first_day_with_slots(
+    clinic: Any,
+    *,
+    scope: TemporalQuery,
+    doctors: list[Any],
+    time_floor: time | None,
+    time_ceiling: time | None,
+) -> tuple[list[dict[str, Any]], date | None]:
+    """Earliest day inside `scope` that has bookable slots left.
+
+    A single-day scope visits exactly one day, so this is the previous
+    behaviour for "Monday morning"; a month scope walks the month instead of
+    collapsing to an arbitrary date.
+    """
+    from apps.chatbot.booking.slots import active_holds_for_date, compute_slots_for_day
+    from apps.doctors.models import DoctorSchedule
+
+    working_days = set(
+        DoctorSchedule.objects.filter(
+            clinic=clinic, doctor__in=doctors, is_active=True
+        ).values_list("day_of_week", flat=True)
+    )
+
+    for scanned, day in enumerate(scope.iter_days()):
+        if scanned >= _MAX_DAYS_SCANNED:
+            break
+        if working_days and day.weekday() not in working_days:
+            continue
+        slots = compute_slots_for_day(
+            clinic,
+            target_date=day,
+            doctors=doctors,
+            max_slots=20,
+            excluded_keys=active_holds_for_date(clinic, day),
+        )
+        if time_floor is not None:
+            slots = [s for s in slots if _slot_at_or_after(s, time_floor)]
+        if time_ceiling is not None:
+            slots = [s for s in slots if _slot_before(s, time_ceiling)]
+        if slots:
+            return slots, day
+    return [], None
+
+
+_WEEKDAY_WORDS = frozenset(
+    w.lower()
+    for w in (
+        "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
+        "sunday", "mon", "tue", "tues", "wed", "weds", "thu", "thur", "thurs",
+        "fri", "sat", "sun",
+    )
+)
+
+
+def _clean_time_entities(values: list[str]) -> list[str]:
+    """Drop values that name a day or a bare number rather than a time.
+
+    The NLU has been observed filing "Friday" and "2" under `time` — which
+    produced the reply "No available slots on Friday, August 21 for Friday"
+    and risks a nonsense floor/ceiling filter suppressing real slots.
+    """
+    cleaned = []
+    for value in values:
+        text = str(value).strip().lower()
+        if not text or text in _WEEKDAY_WORDS or text.isdigit():
+            continue
+        cleaned.append(value)
+    return cleaned
+
+
+def _unsearchable_summary(scope: TemporalQuery) -> str:
+    """What we say when there is nothing safe to search.
+
+    Every branch names the constraint back to the patient and offers no
+    slots. Substituting the earliest opening here is what let someone book
+    19 August after asking about 12 January.
+    """
+    from apps.chatbot.temporal import TemporalStatus, day_label
+
+    asked = scope.scope_label or scope.requested_text or "that date"
+    if scope.status is TemporalStatus.PAST:
+        return (
+            f"{asked} has already passed. Which upcoming date would you like "
+            "me to check?"
+        )
+    if scope.status is TemporalStatus.BEYOND_HORIZON:
+        through = (
+            day_label(scope.horizon_end) if scope.horizon_end else "the current window"
+        )
+        return (
+            f"This clinic is scheduling appointments through {through}, so "
+            f"{asked} isn't open for booking yet."
+        )
+    if scope.status is TemporalStatus.AMBIGUOUS:
+        return (
+            f"I couldn't pin down the date you meant by \"{asked}\". Could you "
+            "give me the full date — for example \"September 1\"?"
+        )
+    return (
+        f"I couldn't confidently work out which date \"{asked}\" refers to. "
+        "Could you give me the full date — for example \"January 12, 2027\"?"
     )
