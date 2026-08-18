@@ -25,6 +25,10 @@ DEFAULT_BOOKING_CONFIG: dict[str, Any] = {
     "hero_horizon_days": 3,
 }
 
+# Upper bound on how far ahead a clinic can be configured to take bookings —
+# guards against a mis-entered value turning into a year-long day scan.
+MAX_HORIZON_DAYS = 365
+
 VALID_MODES = frozenset(
     {
         "service_first",
@@ -64,8 +68,31 @@ def get_booking_config(clinic: Any) -> dict[str, Any]:
     # Keep require_auth in sync for older callers
     cfg["require_auth"] = vmode != "none"
 
-    cfg["max_slots_preview"] = int(cfg.get("max_slots_preview") or 5)
-    cfg["date_horizon_days"] = int(cfg.get("date_horizon_days") or 14)
-    cfg["slot_hold_minutes"] = int(cfg.get("slot_hold_minutes") or 10)
-    cfg["slot_duration_min"] = int(cfg.get("slot_duration_min") or 30)
+    # Coerce against the declared defaults. Spelling the fallbacks a second
+    # time is how date_horizon_days ended up advertising 30 days and applying
+    # 14 to any clinic that stored a blank value.
+    for key in (
+        "max_slots_preview",
+        "date_horizon_days",
+        "slot_hold_minutes",
+        "slot_duration_min",
+        "hero_horizon_days",
+    ):
+        try:
+            value = int(cfg.get(key) or 0)
+        except (TypeError, ValueError):
+            value = 0
+        cfg[key] = value if value > 0 else int(DEFAULT_BOOKING_CONFIG[key])
+
+    cfg["date_horizon_days"] = min(cfg["date_horizon_days"], MAX_HORIZON_DAYS)
     return cfg
+
+
+def booking_horizon_days(clinic: Any) -> int:
+    """Last day the clinic accepts bookings, as a day offset from today.
+
+    The availability layer enforces this so a question about a month the
+    clinic isn't open for yet gets an honest answer instead of whatever the
+    date parser happened to fall back to.
+    """
+    return int(get_booking_config(clinic)["date_horizon_days"])
