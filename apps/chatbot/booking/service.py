@@ -239,20 +239,29 @@ class BookingService:
 
     @classmethod
     def _apply_date_time_hint(cls, session: BookingSession, clinic: Any, text: str) -> None:
-        """Minimal relative date/time parsing so a message like "Botox Friday
-        after 5" can seed the DATE/TIME steps instead of forcing the patient
-        to click through them. Deliberately simple: "ASAP"/"same day" resolve
-        to today only, not a multi-day forward search."""
+        """Seed the DATE/TIME steps from a message like "Botox Friday after 5"
+        so the patient isn't made to click through steps they already answered.
+
+        The date comes from the same canonical resolver the availability
+        handler uses. It must not be re-derived here: this method used to run
+        its own `parse_natural_date(dates[0])`, which for "book me with dr aris
+        16 oct friday" seeded the *next Friday* instead of October 16 — the
+        booking wizard quietly disagreeing with the answer the patient had just
+        been shown. Anything the resolver won't commit to (unreadable,
+        ambiguous, past, beyond the horizon, or a whole month rather than a
+        day) seeds nothing, and the patient picks a date themselves.
+        """
         if not text:
             return
+        from apps.chatbot.booking.config import booking_horizon_days
         from apps.chatbot.nlu.entity_extract import extract_entities
         from apps.chatbot.sql_tool.utils import (
             clinic_timezone,
             is_asap_request,
             is_same_day_request,
-            parse_natural_date,
             parse_time_floor,
         )
+        from apps.chatbot.temporal import TemporalStatus, resolve_temporal_query
 
         entities = extract_entities(text)
         tz = clinic_timezone(clinic)
@@ -261,9 +270,15 @@ class BookingService:
         if is_same_day_request(text) or is_asap_request(text):
             target_date = timezone.now().astimezone(tz).date()
         else:
-            dates = entities.get("date") or []
-            if dates:
-                target_date = parse_natural_date(dates[0], tz=tz)
+            scope = resolve_temporal_query(
+                date_entities=entities.get("date") or [],
+                today=timezone.now().astimezone(tz).date(),
+                horizon_days=booking_horizon_days(clinic),
+                message=text,
+                tz=tz,
+            )
+            if scope.status is TemporalStatus.RESOLVED and not scope.is_range:
+                target_date = scope.start
 
         time_floor = parse_time_floor(entities.get("time") or [])
 
