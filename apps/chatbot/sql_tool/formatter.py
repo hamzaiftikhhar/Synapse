@@ -126,7 +126,15 @@ def format_sql_results(results: list[dict[str, Any]]) -> str:
 
         if handler == "doctor_availability":
             if not found or not rows:
-                parts.append(summary if summary and "No available" in summary else EMPTY_AVAILABILITY)
+                # The handler's own wording wins when it resolved the request
+                # and is telling the patient something specific — the date has
+                # passed, the month isn't open yet, the expression was
+                # ambiguous. Generic copy would erase that answer.
+                meta = block.get("meta") or {}
+                if summary and (meta.get("authoritative_summary") or "No available" in summary):
+                    parts.append(summary)
+                else:
+                    parts.append(EMPTY_AVAILABILITY)
                 continue
             recommended = rows[0] if rows else None
             parts.append(_format_availability(rows, recommended=recommended))
