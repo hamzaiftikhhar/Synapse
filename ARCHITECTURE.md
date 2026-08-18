@@ -1,0 +1,327 @@
+# Synapse Chatbot — Architecture (source of truth)
+
+Scope: this document describes the **chatbot request pipeline** as it actually
+exists in code today, verified by direct source reading during the routing
+refactor (2026-08). `docs/Synapse-Architecture-Document.md` and
+`docs/PROJECT-GUIDE.md` are earlier planning documents (July 2026) — where
+they conflict with this file on chatbot internals, this file is current;
+they may still be accurate for other subsystems (billing, onboarding,
+importer, etc.) this document doesn't cover.
+
+**Read this before inspecting chatbot source.** It exists so you don't have
+to re-derive the pipeline from scratch every session. If something here
+turns out to be wrong, fix the code/this doc together — don't silently work
+around a stale description.
+
+## 1. Request lifecycle
+
+```
+Patient message
+      │
+      ▼
+ChatEngine.process()                          apps/chatbot/engine.py
+      │
+      ├─ 1. Catalogs — build_document_catalog(), build_service_catalog()
+      ├─ 2. Conversation state — load_timeline() / detect_recovery()
+      ├─ 3. NLU — IntentEntityService.analyze() → NLUResult
+      ├─ 4. Heuristics — apply_routing_heuristics() (entity hints, phatic/
+      │      emergency trust, service_filter_mode — NOT lane ownership)
+      ├─ 5. Entity resolution — resolve_entities() (DB, doctor/specialty/
+      │      service/insurance name → id)
+      ├─ 6. Sensors — compute_message_sensors() → MessageSensors
+      ├─ 7. Planner — build_planner_facts() + build_execution_plan()
+      │      → ExecutionPlan
+      └─ 8. Executor — runs what the ExecutionPlan says (SQL / vector /
+             booking / direct), composes the reply, builds ui_meta
+      │
+      ▼
+EngineResult → API → patient
+```
+
+## 2. The core rule this refactor enforces
+
+**The Small LLM (NLU) produces semantics. Python (the planner) decides
+execution. SQL handlers execute what the planner authorized — they do not
+re-decide.** This rule was NOT true before this refactor (Phase 0 baseline
+found an unknown-doctor booking that showed a refusal message *and* launched
+the booking wizard simultaneously, because `ui_meta.py` re-derived booking
+eligibility from raw intent instead of trusting the planner). Phases 1–8
+progressively closed these gaps. **It is not fully true yet** — see §7 for
+the one confirmed remaining violation (service-existence questions
+sometimes still reach vector/RAG instead of SQL).
+
+## 3. NLU — `apps/chatbot/nlu/`
+
+**The system prompt is already minimal and semantic-only** — verified by
+reading `apps/chatbot/nlu/prompts.py` directly, not inferred:
+
+```
+Fields: intent, secondary_intents, confidence, entities, is_emergency,
+        is_off_topic, clarification_needed, clarification_question,
+        can_respond_directly, reasoning_short, service_filter_mode, topic
+Deprecated (optional, ignored for routing): needs_sql, needs_vector,
+        needs_llm, sql_tool, document_needed
+```
+
+The LLM is **not asked** to produce execution fields. If you see
+`nlu_result.needs_vector == True` in a pipeline-debug trace, that is very
+likely `apply_plan_to_nlu(nlu, exec_plan)` (engine.py, called ~line 294,
+*before* the debug trace is captured ~line 551) writing the **planner's**
+decision back onto the NLU object for legacy-consumer compatibility — not
+proof the LLM emitted it. Don't misdiagnose this as "NLU contract
+pollution" without checking `apply_plan_to_nlu` call order first; this was
+already investigated and settled (see ROADMAP.md, Phase 9 background).
+
+**Classifier chain** (`nlu/classifier.py::classify_message`):
+```
+safety rules → phatic/fast rules → [optional strong rules] →
+primary provider → openai_fallback (mini) → gemini → rules_fallback/clarify
+```
+Bounded by `NLU_TOTAL_BUDGET_SECONDS` (default 5.0) across the whole
+provider loop — see §8.
+
+**Rule tiers are not equally active in production.** `nlu/rules.py`'s
+`try_rule_classify(..., tier=...)` has four tiers: `safety`/`fast` are
+"always safe for pre-LLM" and run unconditionally; `strong` is explicitly
+"legacy semantic regex (opt-in via `NLU_RULES_BEFORE_LLM`)" —
+**`NLU_RULES_BEFORE_LLM` defaults to `False`**, so every `strong`-tier
+pattern (informal booking phrasing like "squeeze me in", doctor+
+availability regex, etc.) is dormant in a default deployment and every
+matching message falls through to the LLM instead. **`eval/runner.py`
+calls `tier="strong"` unconditionally** (no `NLU_RULES_BEFORE_LLM` check at
+all) — so eval passing a case does not prove production handles it; it
+only proves the regex itself is correct. Confirmed concretely: the
+`adversarial_booking_slang_squeeze` eval case ("squeeze me in") passes via
+the dormant strong-tier rule in eval, but the same phrasing reaches the
+real LLM in production. A near-identical, newly-found production bug
+("hope me in"/"slip me in" reaching the LLM and getting misclassified as
+`faq`) was fixed by adding a *new* pattern to the `fast` tier specifically
+(always active), not by touching `NLU_RULES_BEFORE_LLM` or the existing
+dormant `strong`-tier rule — see ROADMAP.md's "Off-roadmap" entry for why.
+The rest of the `strong` tier has not been individually audited for
+whether it should also move to `fast`, be deleted, or stay opt-in — treat
+any `strong`-tier-only behavior as unverified in production until checked.
+
+**Entity resolution** (`nlu/resolvers.py`, DB-backed, fuzzy):
+- `resolve_doctor_candidates` / `resolve_doctor_from_text` — confidence-banded (high/medium/low) doctor matching.
+- `_match_specialty`, `_match_insurance`, `_match_service` — per-entity DB fuzzy resolvers, feed `NLUResult.resolved_ids`.
+
+## 4. Planner — `apps/chatbot/planner.py`
+
+Pure, no I/O (this is an enforced convention — DB/network calls belong to
+the engine, never the planner).
+
+- **`MessageSensors`** (`compute_message_sensors()`) — the single shared,
+  I/O-free sensor computation. Called by *both* `engine.py` (production) and
+  `eval/runner.py` (the 682-case offline battery), so the two can't
+  independently drift. Fields: `matched_services`, `matched_service_ids`,
+  `service_hit`, `knowledge_q`, `booking_commit`, `is_booking_intent`,
+  `soft_medical`, `matched_docs`, `has_catalog`, `doc_match`, `degraded`,
+  `doctor_ranking_request`, `instruction_injection`,
+  `doctor_availability_query`, `urgent_availability`, `policy` (full
+  `ConfidencePolicyResult`), `nlu` (post-confidence-policy NLUResult — use
+  the *returned* one, the input may be stale).
+- **`PlannerFacts`** (`build_planner_facts()`) — assembles sensor output +
+  DB-dependent facts (`unknown_doctor_requested`, `doctor_followup` — these
+  need a real clinic/session, so `compute_message_sensors` can't produce
+  them) into the planner's input. As of Phase 7, does **not** carry
+  `booking_commit`, `service_hit`, `prefer_vector`, `confidence_band`, or
+  `matched_doc_ids` — those were computed, serialized, and never read by
+  anything; removed.
+- **`ExecutionPlan`** (`build_execution_plan()`) — the actual decision:
+  `emergency`, `clarify`, `direct`/`direct_mode`, `booking`, `sql_tasks`,
+  `vector_tasks`, `use_response_llm`, `fallback_vector_tasks` (pre-authorized
+  SQL→vector escalation, see §6), `resolved_service_ids` (see §5). Derived:
+  `.primary_lane` → `Lane`, `.to_route()` → `Route`.
+- **`resolve_plan_after_sql(plan, *, sql_found)`** — the *only* legitimate
+  way a plan changes after SQL executes. Activates `fallback_vector_tasks`
+  into real `vector_tasks` when SQL came back empty. Called once, by the
+  engine; the engine reassigns its `exec_plan` local to the result so every
+  downstream read (booking prep, compose, ui_meta, logging, EngineResult)
+  sees the resolved plan with no second variable to go stale.
+- **`choose_plan()`** — legacy compatibility wrapper (`PlannerDecision`
+  projection). Internally calls `build_planner_facts` + `build_execution_plan`
+  same as production. Kept because `eval/runner.py` and several tests still
+  call it directly; its signature is intentionally frozen (deprecated params
+  like `needs_vector`, `booking_commit`, `service_hit`, `prefer_vector`,
+  `matched_doc_ids`, `confidence_band` are accepted-then-`del`eted so
+  existing callers don't need updating when `PlannerFacts` sheds a field).
+
+## 5. Service resolution — three algorithms, one authority
+
+There are three genuinely different service-matching implementations, none
+of them redundant (audited in Phase 6 — do not delete on sight):
+
+| Algorithm | Where | Input | Purpose |
+|---|---|---|---|
+| `match_services_in_message()` | `routing/signals.py` | raw message + pre-fetched catalog (`build_service_catalog`, capped at 40) | **Canonical resolver.** Feeds `MessageSensors.matched_service_ids` → `ExecutionPlan.resolved_service_ids`. |
+| `_match_service()` | `nlu/resolvers.py` | one NLU-extracted entity string + live DB query (fuzzy, threshold 0.55) | Feeds `NLUResult.resolved_ids.service_id`. Highest-priority signal in `services_offered()`. |
+| `_match_services_strict()` | `sql_tool/handlers/services.py` | raw message + **uncapped** live DB query | Legacy last-resort fallback. **Not deletable yet** — `build_service_catalog`'s `limit=40` means a clinic with >40 active services has services invisible to the canonical resolver; this is the only thing that still finds them. Proven by `LegacyMatcherCatalogLimitTests`. Full reasoning: `docs/decisions/0002-keep-legacy-service-matcher.md`. |
+
+**Precedence inside `services_offered()`** (`sql_tool/handlers/services.py`),
+by `service_filter_mode`:
+- **named** mode: `resolved_ids.service_id` → raw `entities.service` icontains → `resolved_service_ids`/`_match_services_strict` fallback.
+- **category** mode (Phase 5): `resolved_ids.service_id` → hardcoded category phrase → `resolved_service_ids`/`_match_services_strict` fallback. Category mode deliberately does **not** fall back to raw `entities.service` icontains — that string is LLM-extracted and often a paraphrase (e.g. "laser treatment"), so `icontains` against it can silently match zero rows even when a resolver above/below it has a real answer. This was a real, shipped bug; fixed in Phase 5.
+- **none** mode: no filter, full browse (by design — list/browse queries never collapse to one SKU).
+
+`SQLContext.resolved_service_ids` is threaded from `ExecutionPlan` through
+`SQLTool.run_tasks()` (the planner-driven path). `SQLTool.run()` (legacy,
+only used by `test_sql_tool.py` and dead in production — `ChatEngine._run_sql`
+is never called) does not populate it, so it always falls to the legacy
+matcher — by design, not an oversight.
+
+## 6. SQL vs. Vector — current boundary, and its known gap
+
+**SQL** (`sql_tool/handlers/`) is the source of truth for structured facts:
+doctors, specialties, services, pricing, insurance, hours, location,
+availability, patient appointments.
+
+**Vector/RAG** (`response_llm.py::synthesize_clinic_reply`, backed by
+`apps/knowledge`) is for unstructured clinic documents: policies, post-op
+instructions, membership terms, arrival instructions.
+
+**Hybrid escalation** (`resolve_plan_after_sql`, Phase 2): a plan that is
+SQL-only pre-authorizes a `fallback_vector_tasks` entry at planning time
+(never invented ad hoc after the fact) for intents in `HYBRID_SQL_INTENTS`
+(`routing/lanes.py`) or knowledge-shaped messages. If the SQL task comes
+back empty, the engine activates the fallback and runs vector + Large LLM.
+
+**Known, unfixed gap (target of Phase 10):** "Do you have X?" / "Do you
+offer X?" / "Are you sure you have X?" phrasings do not reliably classify
+into the same SQL-triggering bucket as "How much is X?" / "What services do
+you offer?" — verified against a real transcript where a clinic without
+HydraFacial gave four *different* answers across four phrasings of the same
+question, only converging on the correct "we don't offer that" for the
+pricing-shaped phrasing. Root cause is intent/mode classification, **not**
+RAG being allowed to override SQL facts — when the SQL task *does* run,
+`response_llm.py`'s prompt builder (`_user_block`, ~line 220) already
+includes SQL results and the LLM respects them correctly. The bug is
+upstream: some existence-question phrasings never attach a SQL task at all
+and go pure-vector, where a generic "cosmetic procedures deposit policy"
+document gets misread as confirming the specific service exists.
+
+## 7. RAG degraded states (target of Phase 9C, not yet fixed)
+
+`_compose_from_plan` / `_generate_response` (`engine.py`) call
+`empty_rag_reply()` (`response_llm.py`) from **four** different branches:
+genuinely-empty `vector_rows`, budget-exhausted-before-LLM-call, LLM
+timeout, LLM error. Only the first is actually "nothing found" — the other
+three can have real, relevant `vector_rows` (verified: a real transcript
+turn had 3 hits at 0.61/0.58/0.50 similarity, then said "I couldn't find
+clinic-specific information" because the budget ran out before the LLM call,
+not because retrieval failed). Not yet fixed — planned as Phase 9C.
+
+## 8. NLU provider budget (Phase 9A, done)
+
+`classify_message`'s provider loop used to let each attempt claim its own
+full timeout independently (primary 3.5s + openai_fallback 3.0s + gemini
+3.0s → up to ~9.5–10.9s observed on a real failure chain). Fixed: one
+`total_budget` (`NLU_TOTAL_BUDGET_SECONDS`, default 5.0) measured from loop
+start; each attempt gets `min(per_provider_cap, remaining)` — **cap-then-
+remaining, not an even upfront split** (the primary keeps its full 3.5s
+when it's the only/first attempt, so today's normal ~2.3s successful
+classifications are unaffected; only the failure-chain worst case is
+bounded). A skipped (circuit-open) provider costs no budget and doesn't
+trip its own breaker further. Full reasoning for cap-then-remaining vs. an
+even split: `docs/decisions/0001-nlu-budget-cap-then-remaining.md`.
+
+**Verified emergent behavior** (not a bug, confirmed by test): during a
+*sustained* total outage, `openai` and `openai_fallback` fail every turn
+and both open their breakers after 5 consecutive failures (the shared
+`LLM_CIRCUIT_FAILURE_THRESHOLD`). `gemini`, third in the chain, is starved
+of budget during those turns and hasn't failed yet — so it briefly absorbs
+the whole freed-up budget alone, until it too opens 5 turns later. After
+that, all three are skipped and `classify_message` returns near-instantly
+(rules fallback) rather than continuing to pay latency turn after turn.
+
+**Known limitation, not fixed:** `nlu/deadline.py::run_with_deadline` wraps
+calls in a 4-worker `ThreadPoolExecutor`. On timeout it calls
+`future.cancel()`, which is a no-op once a future is `RUNNING` (only works
+while still `PENDING`) — the abandoned HTTP call keeps running on its
+worker thread until the *provider's own* transport timeout fires. Under
+concurrent load, enough abandoned calls can saturate the 4 workers, and a
+newly-submitted attempt can burn its whole slice just waiting to be
+scheduled. The caller-side ceiling still holds either way, but the budget
+buys fewer real attempts than it looks like under saturation. Deferred —
+see ROADMAP.md.
+
+## 9. Embedding / vector search (Phase 9B, done)
+
+`EMBEDDING_PROVIDER=local`, model `BAAI/bge-base-en-v1.5`
+(`apps/knowledge/embeddings/local.py`). Reproduced and measured on this
+machine: **20.26s cold start** (9.77s `import sentence_transformers` +
+7.28s model construction + 3.22s first encode) vs. **0.042s** once warm —
+matches a real transcript's 24.9s `vector_ms` on the session's first vector
+search. pgvector already has an HNSW index
+(`idx_kc_embedding_hnsw`, `apps/knowledge/migrations/0001_initial.py` /
+`0007_embedding_dimensions_768.py`) — the DB query was never the bottleneck.
+
+**Fix:** `KnowledgeConfig.ready()` (`apps/knowledge/apps.py`) synchronously
+calls `warm_up_embedding_service()` (`embeddings/factory.py`) at process
+startup, guarded by `should_warm_up_embeddings(argv)` which skips
+non-serving management commands (`test`, `migrate`, `shell`,
+`run_chat_eval`, `benchmark_nlu_models`, etc. — full list in `apps.py`).
+Verified end-to-end with real (non-mocked) `django.setup()`: a simulated
+`runserver` process has the model in `_model_cache` before any request
+exists; a simulated `test` process does not load it at all. No-op for
+`EMBEDDING_PROVIDER=openai`. Failure is caught and logged — the existing
+lazy-load path is still the fallback if warm-up itself fails.
+
+## 10. Conversation state — `apps/chatbot/conversation_state.py`
+
+Tracks exactly four named slots (`last_doctor`, `last_specialty`,
+`last_service`, `last_insurance`) plus one `pending_clarification`, via
+`ConversationTimeline` / `load_timeline` / `merge_turn_context` /
+`detect_recovery`. **No generic coreference** ("him", "that one", "the
+second doctor") — confirmed by reading the file; a real transcript showing
+"which one treats cancer?" → "Dr. Chloe Bennet" → "book with him" failing
+to resolve "him" is expected behavior today, not a bug in scope for any
+current phase. Deliberately deferred — do not patch ad hoc into doctor
+resolution or booking; it needs its own phase (see ROADMAP.md).
+
+## 11. Multi-tenancy
+
+Every clinic-scoped query must filter by `clinic`/`clinic_id`. This applies
+to doctors, services, specialties, appointments, insurance, knowledge
+chunks, patients. Not re-audited end-to-end during this refactor — assume
+existing scoping is correct unless a specific phase says otherwise, and
+flag anything that looks unscoped rather than assuming it's fine.
+
+## 12. Known issues not yet addressed (see ROADMAP.md for phase status)
+
+- Service-existence question routing (§6) — Phase 10.
+- RAG degraded-state mislabeling (§7) — Phase 9C.
+- `ThreadPoolExecutor` saturation under concurrent NLU load (§8) — deferred, no phase assigned yet.
+- Bare "Dr." (no name) resolves to a specific doctor instead of asking which one — Phase 11.
+- No coreference/reference resolution (§10) — deferred, needs its own phase.
+- `ExecutionPlan.scores` / `PlannerScores` — computed, serialized, never read by anything (confirmed: no engine/ui_meta/test/API/frontend consumer). Not removed in Phase 7 because it's a bigger structural change (whole class, ~9 construction sites) than the single-field cleanup done there — deferred to its own small phase.
+- `apps/chatbot/tests.py` (3-line stub) coexists with `apps/chatbot/tests/` (real package) — breaks bare `python manage.py test` with no args (`ImportError: 'tests' module incorrectly imported`). Same issue exists for `apps/knowledge`. Always use explicit labels: `python manage.py test apps.chatbot.tests --keepdb`. Pre-existing, not fixed.
+- `apps/importer` crashes the interpreter (`SIGFPE` inside numpy's macOS `_mac_os_check` at import time, triggered via openpyxl) when run in the same process as other apps in this dev environment — pre-existing, unrelated to chatbot work, exclude it from combined full-suite runs on this machine.
+
+## 13. Source-of-truth files (chatbot)
+
+| Concern | File |
+|---|---|
+| NLU prompt contract | `apps/chatbot/nlu/prompts.py` |
+| NLU provider chain / budget | `apps/chatbot/nlu/classifier.py` |
+| NLU deadline mechanics | `apps/chatbot/nlu/deadline.py` |
+| Entity/doctor/service resolution (DB) | `apps/chatbot/nlu/resolvers.py` |
+| Confidence policy | `apps/chatbot/routing/confidence.py` |
+| Pure message sensors (shared prod/eval) | `apps/chatbot/planner.py::compute_message_sensors` |
+| Planner / ExecutionPlan | `apps/chatbot/planner.py` |
+| Engine orchestration | `apps/chatbot/engine.py` |
+| Service SQL handler | `apps/chatbot/sql_tool/handlers/services.py` |
+| SQL dispatch | `apps/chatbot/sql_tool/service.py` |
+| Vector search | `apps/knowledge/services/similarity_search.py` |
+| Local embedding provider | `apps/knowledge/embeddings/local.py` |
+| Embedding warm-up | `apps/knowledge/apps.py`, `apps/knowledge/embeddings/factory.py` |
+| Large LLM synthesis | `apps/chatbot/response_llm.py` |
+| Booking UI eligibility | `apps/chatbot/ui_meta.py` |
+| Conversation state | `apps/chatbot/conversation_state.py` |
+| Offline eval battery | `apps/chatbot/eval/runner.py`, `apps/chatbot/eval/cases.py` |
+| NLU tests | `apps/chatbot/tests/test_nlu.py` |
+| Service resolution tests | `apps/chatbot/tests/test_service_resolver_authority.py`, `apps/chatbot/tests/test_services_category_filter.py` |
+| Embedding warm-up tests | `apps/knowledge/tests/test_embedding_warmup.py` |
+
+If this document conflicts with actual code, trust the code, then fix
+whichever one is wrong — including this file.

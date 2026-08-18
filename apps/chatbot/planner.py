@@ -184,26 +184,6 @@ VALID_TOPICS = frozenset(
 )
 
 
-@dataclass(frozen=True)
-class PlannerScores:
-    emergency: float = 0.0
-    direct: float = 0.0
-    booking: float = 0.0
-    sql: float = 0.0
-    vector: float = 0.0
-    clarify: float = 0.0
-
-    def to_dict(self) -> dict[str, float]:
-        return {
-            "emergency": self.emergency,
-            "direct": self.direct,
-            "booking": self.booking,
-            "sql": self.sql,
-            "vector": self.vector,
-            "clarify": self.clarify,
-        }
-
-
 class UIPriority(str, Enum):
     """How much interactive chrome the renderer may attach this turn."""
 
@@ -228,7 +208,6 @@ class ExecutionPlan:
     vector_tasks: list[str] = field(default_factory=list)
     use_response_llm: bool = False
     reason: str = ""
-    scores: PlannerScores = field(default_factory=PlannerScores)
     facts: dict[str, Any] = field(default_factory=dict)
     # Soft medical → specialty discovery without RAG
     soft_medical: bool = False
@@ -334,7 +313,6 @@ class ExecutionPlan:
             "vector_tasks": list(self.vector_tasks),
             "use_response_llm": self.use_response_llm,
             "reason": self.reason,
-            "scores": self.scores.to_dict(),
             "facts": self.facts,
             "primary_lane": self.primary_lane.value,
             "lane": self.primary_lane.value,
@@ -349,7 +327,6 @@ class ExecutionPlan:
         """Compatibility projection for existing callers/tests."""
         return PlannerDecision(
             lane=self.primary_lane,
-            scores=self.scores,
             sql_tool=self.sql_tasks[0] if self.sql_tasks else None,
             reason=self.reason,
             direct_mode=self.direct_mode,
@@ -364,7 +341,6 @@ class PlannerDecision:
     """Compatibility wrapper over ExecutionPlan (migration)."""
 
     lane: Lane
-    scores: PlannerScores
     sql_tool: str | None = None
     reason: str = ""
     direct_mode: str | None = None
@@ -375,7 +351,6 @@ class PlannerDecision:
     def to_dict(self) -> dict[str, Any]:
         base = {
             "lane": self.lane.value,
-            "scores": self.scores.to_dict(),
             "sql_tool": self.sql_tool,
             "reason": self.reason,
             "direct_mode": self.direct_mode,
@@ -393,17 +368,13 @@ class PlannerFacts:
 
     message: str = ""
     is_booking_intent: bool = False
-    booking_commit: bool = False
     soft_medical: bool = False
     knowledge_q: bool = False
     specialty_list: bool = False
     service_list: bool = False
     has_catalog: bool = False
     doc_match: bool = False
-    matched_doc_ids: tuple[str, ...] = ()
     matched_service_ids: tuple[str, ...] = ()
-    service_hit: bool = False
-    prefer_vector: bool = False
     prefer_clarify: bool = False
     allow_hybrid: bool = False
     degraded: bool = False
@@ -414,22 +385,17 @@ class PlannerFacts:
     doctor_availability_query: bool = False
     urgent_availability: bool = False
     topic: str | None = None
-    confidence_band: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "is_booking_intent": self.is_booking_intent,
-            "booking_commit": self.booking_commit,
             "soft_medical": self.soft_medical,
             "knowledge_q": self.knowledge_q,
             "specialty_list": self.specialty_list,
             "service_list": self.service_list,
             "has_catalog": self.has_catalog,
             "doc_match": self.doc_match,
-            "matched_doc_ids": list(self.matched_doc_ids),
             "matched_service_ids": list(self.matched_service_ids),
-            "service_hit": self.service_hit,
-            "prefer_vector": self.prefer_vector,
             "prefer_clarify": self.prefer_clarify,
             "allow_hybrid": self.allow_hybrid,
             "degraded": self.degraded,
@@ -440,7 +406,6 @@ class PlannerFacts:
             "doctor_availability_query": self.doctor_availability_query,
             "urgent_availability": self.urgent_availability,
             "topic": self.topic,
-            "confidence_band": self.confidence_band,
         }
 
 
@@ -592,17 +557,13 @@ def build_planner_facts(
     message: str,
     nlu: NLUResult,
     is_booking_intent: bool = False,
-    booking_commit: bool = False,
     soft_medical: bool = False,
     knowledge_q: bool = False,
     specialty_list: bool = False,
     service_list: bool = False,
     has_catalog: bool = False,
     doc_match: bool = False,
-    matched_doc_ids: list[str] | None = None,
     matched_service_ids: list[str] | None = None,
-    service_hit: bool = False,
-    prefer_vector: bool = False,
     prefer_clarify: bool = False,
     allow_hybrid: bool = False,
     degraded: bool = False,
@@ -612,24 +573,19 @@ def build_planner_facts(
     doctor_followup: bool = False,
     doctor_availability_query: bool = False,
     urgent_availability: bool = False,
-    confidence_band: str = "",
 ) -> PlannerFacts:
     """Assemble runtime facts for the planner. No I/O."""
     topic = _resolve_topic(nlu, message)
     return PlannerFacts(
         message=message or "",
         is_booking_intent=is_booking_intent,
-        booking_commit=booking_commit,
         soft_medical=soft_medical,
         knowledge_q=knowledge_q,
         specialty_list=specialty_list,
         service_list=service_list,
         has_catalog=has_catalog,
         doc_match=doc_match,
-        matched_doc_ids=tuple(matched_doc_ids or ()),
         matched_service_ids=tuple(matched_service_ids or ()),
-        service_hit=service_hit,
-        prefer_vector=prefer_vector,
         prefer_clarify=prefer_clarify,
         allow_hybrid=allow_hybrid,
         degraded=degraded,
@@ -640,7 +596,6 @@ def build_planner_facts(
         doctor_availability_query=doctor_availability_query,
         urgent_availability=urgent_availability,
         topic=topic,
-        confidence_band=confidence_band,
     )
 
 
@@ -663,13 +618,11 @@ def build_execution_plan(*, nlu: NLUResult, facts: PlannerFacts) -> ExecutionPla
 
     # ── Safety overrides ────────────────────────────────────────────────────
     if nlu.is_emergency or nlu.intent == Intent.EMERGENCY:
-        scores = PlannerScores(emergency=1.0, direct=1.0)
         return ExecutionPlan(
             emergency=True,
             direct=True,
             direct_mode="emergency",
             reason="planner_emergency_override",
-            scores=scores,
             facts=fact_dict,
         )
 
@@ -678,7 +631,6 @@ def build_execution_plan(*, nlu: NLUResult, facts: PlannerFacts) -> ExecutionPla
             direct=True,
             direct_mode="doctor_ranking_refusal",
             reason="planner_doctor_ranking_refusal",
-            scores=PlannerScores(direct=0.98),
             facts=fact_dict,
         )
 
@@ -687,7 +639,6 @@ def build_execution_plan(*, nlu: NLUResult, facts: PlannerFacts) -> ExecutionPla
             direct=True,
             direct_mode="prompt_injection_refusal",
             reason="planner_prompt_injection_refusal",
-            scores=PlannerScores(direct=0.99),
             facts=fact_dict,
         )
 
@@ -696,7 +647,6 @@ def build_execution_plan(*, nlu: NLUResult, facts: PlannerFacts) -> ExecutionPla
             direct=True,
             direct_mode="unknown_doctor_refusal",
             reason="planner_unknown_doctor_refusal",
-            scores=PlannerScores(direct=0.97),
             facts=fact_dict,
         )
 
@@ -711,7 +661,6 @@ def build_execution_plan(*, nlu: NLUResult, facts: PlannerFacts) -> ExecutionPla
             direct=True,
             direct_mode="medical_advice_refusal",
             reason="planner_medical_advice_refusal",
-            scores=PlannerScores(direct=0.96),
             facts=fact_dict,
         )
 
@@ -725,7 +674,6 @@ def build_execution_plan(*, nlu: NLUResult, facts: PlannerFacts) -> ExecutionPla
                 direct=True,
                 direct_mode="template",
                 reason=f"planner_direct:{nlu.intent.value}",
-                scores=PlannerScores(direct=0.92 + min(0.08, conf * 0.08)),
                 facts=fact_dict,
             )
 
@@ -921,7 +869,6 @@ def build_execution_plan(*, nlu: NLUResult, facts: PlannerFacts) -> ExecutionPla
             direct_mode="doctor_followup",
             doctor_followup=True,
             reason="planner_doctor_followup",
-            scores=PlannerScores(direct=0.9),
             facts=fact_dict,
         )
 
@@ -932,7 +879,6 @@ def build_execution_plan(*, nlu: NLUResult, facts: PlannerFacts) -> ExecutionPla
             direct_mode="soft_medical",
             soft_medical=True,
             reason="planner_soft_medical_direct",
-            scores=PlannerScores(direct=0.85),
             facts=fact_dict,
         )
 
@@ -944,15 +890,6 @@ def build_execution_plan(*, nlu: NLUResult, facts: PlannerFacts) -> ExecutionPla
         use_response_llm = False
         if not sql_tasks and not booking:
             clarify = True
-
-    scores = PlannerScores(
-        emergency=0.0,
-        direct=0.2 if (not sql_tasks and not vector_tasks and not booking) else 0.0,
-        booking=0.90 + min(0.08, conf * 0.08) if booking else 0.0,
-        sql=0.65 + min(0.25, conf * 0.25) if sql_tasks else 0.0,
-        vector=0.70 + min(0.25, conf * 0.20) if vector_tasks else 0.0,
-        clarify=0.60 + (0.12 if facts.degraded else 0.0) if clarify else 0.0,
-    )
 
     # Pre-authorize a SQL→vector fallback for SQL-only plans, so the engine
     # never has to invent one after the fact (see resolve_plan_after_sql).
@@ -989,7 +926,6 @@ def build_execution_plan(*, nlu: NLUResult, facts: PlannerFacts) -> ExecutionPla
         vector_tasks=vector_tasks,
         use_response_llm=use_response_llm,
         reason="|".join(reason_parts),
-        scores=scores,
         facts=fact_dict,
         soft_medical=facts.soft_medical,
         doctor_followup=facts.doctor_followup,
@@ -1028,25 +964,25 @@ def choose_plan(
 ) -> PlannerDecision:
     """Compatibility wrapper: build ExecutionPlan, project PlannerDecision.
 
-    ``needs_vector`` is accepted for call-site compat but ignored for task
-    selection (deprecated LLM orchestration path).
+    ``needs_vector``, ``booking_commit``, ``matched_doc_ids``, ``service_hit``,
+    ``prefer_vector``, and ``confidence_band`` are accepted for call-site
+    compat but no longer forwarded — build_execution_plan never read them
+    off PlannerFacts (Phase 7 cleanup; see PlannerFacts' reduced field
+    list above). Kept here only so existing callers don't need updating.
     """
     del needs_vector  # deprecated — planner derives vector from capability tables
+    del booking_commit, matched_doc_ids, service_hit, prefer_vector, confidence_band
     facts = build_planner_facts(
         message=message,
         nlu=nlu,
         is_booking_intent=is_booking_intent,
-        booking_commit=booking_commit,
         soft_medical=soft_medical,
         knowledge_q=knowledge_q,
         specialty_list=specialty_list,
         service_list=service_list,
         has_catalog=has_catalog,
         doc_match=doc_match,
-        matched_doc_ids=matched_doc_ids,
         matched_service_ids=matched_service_ids,
-        service_hit=service_hit,
-        prefer_vector=prefer_vector,
         prefer_clarify=prefer_clarify,
         allow_hybrid=allow_hybrid,
         degraded=degraded,
@@ -1056,7 +992,6 @@ def choose_plan(
         doctor_followup=doctor_followup,
         doctor_availability_query=doctor_availability_query,
         urgent_availability=urgent_availability,
-        confidence_band=confidence_band,
     )
     plan = build_execution_plan(nlu=nlu, facts=facts)
     return plan.to_planner_decision()

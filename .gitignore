@@ -45,3 +45,8 @@ Thumbs.db
 
 # uv / tooling
 .python-version
+
+.AGENTS.md
+.ARCHITECTURE.md
+.CLAUDE.md
+.ROADMAP.md

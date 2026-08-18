@@ -233,6 +233,11 @@ NLU_PROVIDER = env("NLU_PROVIDER", default="openai")
 NLU_MODEL = env("NLU_MODEL", default="gpt-4.1-nano")
 GOOGLE_API_KEY = env("GOOGLE_API_KEY", default="")
 NLU_API_TIMEOUT_SECONDS = env.float("NLU_API_TIMEOUT_SECONDS", default=3.5)
+# Wall-clock ceiling for the whole provider chain (primary → mini fallback →
+# secondary). Per-provider timeouts still apply per attempt; this stops
+# sequential attempts from stacking them. Initial tunable default — raise it to
+# let more of the chain run before rules take over, lower it for a tighter cap.
+NLU_TOTAL_BUDGET_SECONDS = env.float("NLU_TOTAL_BUDGET_SECONDS", default=5.0)
 NLU_CONFIDENCE_THRESHOLD = env.float("NLU_CONFIDENCE_THRESHOLD", default=0.75)
 CHAT_CONFIDENCE_HIGH = env.float("CHAT_CONFIDENCE_HIGH", default=0.90)
 CHAT_CONFIDENCE_MID = env.float("CHAT_CONFIDENCE_MID", default=0.70)

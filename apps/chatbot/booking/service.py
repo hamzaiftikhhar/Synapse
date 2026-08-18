@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, OperationalError, transaction
 from django.utils import timezone
 
 from apps.chatbot.booking.config import get_booking_config
@@ -727,11 +727,15 @@ class BookingService:
         if timezone.is_naive(end):
             end = timezone.make_aware(end, ZoneInfo("UTC"))
 
-        # Collision check
+        # Collision check — overlap, not just an identical start_time, so this
+        # matches the excl_appointments_no_overlap constraint the insert will
+        # hit anyway. Matching only on start_time let partial overlaps through
+        # to surface as a raw IntegrityError instead of a clean message.
         conflict = Appointment.objects.filter(
             clinic=clinic,
             doctor=doctor,
-            start_time=start,
+            start_time__lt=end,
+            end_time__gt=start,
         ).exclude(
             status__in=[AppointmentStatus.CANCELLED, AppointmentStatus.RESCHEDULED],
         ).exists()
@@ -791,6 +795,21 @@ class BookingService:
         except IntegrityError as exc:
             raise BookingError(
                 "Could not create appointment — slot may have been taken.",
+                status_code=409,
+            ) from exc
+        except OperationalError as exc:
+            # Simultaneous inserts for the same doctor can deadlock inside the
+            # overlap constraint's GiST check. Losing that race means the slot
+            # went to the other request, so answer like any other conflict
+            # rather than letting a 500 reach the widget.
+            logger.warning(
+                "Booking insert lost a database race for doctor %s at %s: %s",
+                doctor.id,
+                start.isoformat(),
+                exc,
+            )
+            raise BookingError(
+                "That time slot is no longer available. Please choose another time.",
                 status_code=409,
             ) from exc
 

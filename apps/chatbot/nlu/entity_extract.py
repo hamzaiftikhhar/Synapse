@@ -10,6 +10,20 @@ from apps.chatbot.nlu.emergency_patterns import SYMPTOM_CUE_RE as _SYMPTOM_CUE_R
 _DATE_PATTERNS = [
     r"\bnext\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
     r"\b(?:next\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+    # Abbreviations that are never ordinary English words, so they stand
+    # alone safely with no framing required.
+    r"\b(?:tues|weds|thurs|thur|mon|tue|thu|fri)\b",
+    # wed/sat are occasionally real words ("wed" the verb, "sat" past tense
+    # of sit) but rarely collide in clinic chat, so a wider set of framing
+    # words is safe.
+    r"\b(?:on|this|next|for|of)\s+(?:wed|sat)\b",
+    # sun stays strictly framed — "sun damage"/"sun exposure"/"protection
+    # from/for sun" is routine phrasing at a dermatology clinic, so "for"/
+    # "of" would misread it as Sunday. Only on/this/next (or the correctly-
+    # spelled time-of-day suffix below) count.
+    r"\b(?:on|this|next)\s+sun\b",
+    r"\b(?:wed|sat|sun)\s+"
+    r"(?:morning|afternoon|evening|night|noon)\b",
     r"\btoday\b",
     r"\btomorrow\b",
     r"\bnext week\b",

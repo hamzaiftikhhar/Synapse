@@ -30,6 +30,11 @@ _TIMEOUT_CLARIFY = (
     "check clinic hours, or ask about insurance?"
 )
 
+# run_with_deadline() waits max(0.1, seconds) — see nlu/deadline.py. Handing an
+# attempt less than that floor would spend longer than the budget still allows,
+# so the chain stops instead of starting an attempt it cannot afford.
+_MIN_ATTEMPT_SECONDS = 0.1
+
 
 def classify_message(
     *,
@@ -95,15 +100,30 @@ def classify_message(
                 return _finalize_rules(strong, started, message=message)
 
     timeout = float(getattr(settings, "NLU_API_TIMEOUT_SECONDS", 3.5))
+    total_budget = float(getattr(settings, "NLU_TOTAL_BUDGET_SECONDS", 5.0))
     last_error: NLUError | None = None
 
     # Ordered provider attempts: configured primary, then secondary / mini fallback
     attempts = _provider_attempts(provider)
+    # One deadline for the whole chain. Each attempt keeps its own cap, but also
+    # gets no more than the time left, so sequential failures can no longer add
+    # their timeouts together (3.5 + 3.0 + 3.0 previously reached ~9.5s).
+    budget_started = time.monotonic()
     for attempt in attempts:
         name = attempt["name"]
         if not circuit_breaker.is_available(name):
             logger.info("NLU skip provider=%s circuit_open", name)
             continue
+        remaining = total_budget - (time.monotonic() - budget_started)
+        if remaining < _MIN_ATTEMPT_SECONDS:
+            # Not a provider failure — do not trip its breaker.
+            logger.info(
+                "NLU stop provider=%s nlu_budget_exhausted remaining=%.2fs budget=%.2fs",
+                name,
+                remaining,
+                total_budget,
+            )
+            break
         try:
             attempt_timeout = attempt.get("timeout")
             if attempt_timeout is None:
@@ -111,7 +131,7 @@ def classify_message(
             raw = attempt["provider"].classify(
                 message=message,
                 conversation_context=conversation_context,
-                timeout=min(timeout, float(attempt_timeout)),
+                timeout=min(timeout, float(attempt_timeout), remaining),
             )
             if isinstance(raw, dict):
                 raw.setdefault("_classifier_source", name)

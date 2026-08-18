@@ -90,7 +90,15 @@ export function BookingWizard({
     [setSessionToken]
   );
 
+  // `start` is rebuilt whenever the session token changes, and it changes the
+  // token itself — so the mount effect re-fires before the first response sets
+  // `started`. Three identical POSTs raced the same slot: one booked it and the
+  // other two came back 409 next to the success card.
+  const startInFlight = useRef(false);
+
   const start = useCallback(async () => {
+    if (startInFlight.current) return;
+    startInFlight.current = true;
     setLoading(true);
     setError(null);
     setOtpSent(false);
@@ -120,6 +128,7 @@ export function BookingWizard({
     } catch (e) {
       setError(getApiErrorMessage(e));
     } finally {
+      startInFlight.current = false;
       setLoading(false);
     }
   }, [
@@ -315,7 +324,7 @@ export function BookingWizard({
       ) : null}
 
       <div className="min-h-0 max-h-[min(52dvh,420px)] overflow-y-auto px-3.5 py-3">
-        {error ? (
+        {error && step !== "confirmed" ? (
           <p className="mb-3 rounded-xl border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
             {error}
           </p>
@@ -1189,14 +1198,13 @@ function formatConfirmDate(raw?: string | null): string {
 
 function formatConfirmTime(raw?: string | null): string {
   if (!raw) return "";
-  // ISO or HH:MM
-  const asDate = new Date(raw);
-  if (!Number.isNaN(asDate.getTime()) && raw.includes("T")) {
-    return asDate.toLocaleTimeString(undefined, {
-      hour: "numeric",
-      minute: "2-digit",
-    });
-  }
+  // Read the wall-clock hour/minute directly from the string — it's
+  // already clinic-local time from the backend (same rule as slotHour()
+  // above). Never Date()/toLocaleTimeString() here: that silently
+  // re-interprets the instant in the *viewer's* browser timezone, which
+  // showed a clinic's 9:30 AM slot as "9:30 PM" for a viewer in a
+  // different zone (Pacific clinic + a ~12h-offset viewer timezone
+  // preserves the hour digits while flipping AM/PM — easy to miss).
   const m = raw.match(/(\d{1,2}):(\d{2})/);
   if (m) {
     const h = Number(m[1]);

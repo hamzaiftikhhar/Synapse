@@ -73,20 +73,41 @@ def parse_natural_date(raw: str | None, *, tz: ZoneInfo | None = None) -> date |
     if m:
         return today + timedelta(days=int(m.group(1)))
 
-    day_map = {
+    def next_weekday(weekday: int) -> date:
+        return today + timedelta(days=(weekday - today.weekday()) % 7 or 7)
+
+    # Full names, plus abbreviations that are not also ordinary English words.
+    # Whole word only — a bare substring test read "sunscreen" as Sunday.
+    for name, weekday in {
         "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
         "friday": 4, "saturday": 5, "sunday": 6,
-        "mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6,
-    }
-    for name, weekday in day_map.items():
-        if re.search(rf"\bnext\s+{name}\b", raw):
-            days_ahead = (weekday - today.weekday()) % 7
-            if days_ahead == 0:
-                days_ahead = 7
-            return today + timedelta(days=days_ahead)
-        if name in raw:
-            days_ahead = (weekday - today.weekday()) % 7 or 7
-            return today + timedelta(days=days_ahead)
+        "tues": 1, "weds": 2, "thurs": 3, "thur": 3,
+        "mon": 0, "tue": 1, "thu": 3, "fri": 4,
+    }.items():
+        if re.search(rf"\b{name}\b", raw):
+            return next_weekday(weekday)
+
+    # "wed"/"sat" are occasionally real words but rarely collide in clinic
+    # chat, so a wider set of framing words (or the day standing alone, or
+    # a correctly-spelled time-of-day suffix) is safe.
+    for name, weekday in {"wed": 2, "sat": 5}.items():
+        if re.search(
+            rf"(?:^|\b(?:on|this|next|for|of)\s+){name}"
+            rf"(?:\s+(?:morning|afternoon|evening|night|noon))?$",
+            raw,
+        ):
+            return next_weekday(weekday)
+
+    # "sun" stays strictly framed — this is a dermatology clinic where "sun
+    # damage"/"protection for sun exposure" is routine phrasing, so "for"/
+    # "of" would misread it as Sunday. Only on/this/next, the day standing
+    # alone, or a correctly-spelled time-of-day suffix count.
+    if re.search(
+        r"(?:^|\b(?:on|this|next)\s+)sun"
+        r"(?:\s+(?:morning|afternoon|evening|night|noon))?$",
+        raw,
+    ):
+        return next_weekday(6)
 
     for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%B %d", "%b %d"):
         try:

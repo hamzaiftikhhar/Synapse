@@ -224,7 +224,10 @@ class PatientAppointmentsTests(SQLToolTestBase):
         self.assertEqual(result.rows[0]["confirmation_code"], "SQL001")
         when = result.rows[0]["when"]
         self.assertRegex(when, r"\d{1,2}:\d{2} [AP]M")
-        self.assertNotIn("T", when)
+        # No raw ISO datetime separator leaked through (e.g. "...T10:00...").
+        # A bare "T" substring check is flaky here: the weekday abbreviation
+        # itself is "Tue" or "Thu" roughly 2 days out of 7.
+        self.assertNotRegex(when, r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}")
         text = format_sql_results([result.to_dict()])
         self.assertIn(when, text)
         self.assertNotIn("T10:00", text)

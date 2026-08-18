@@ -195,6 +195,59 @@ class RescheduleAtomicSwapTests(TestCase):
         self.old_appt.refresh_from_db()
         self.assertEqual(self.old_appt.status, AppointmentStatus.CONFIRMED)
 
+    def test_confirm_rejects_a_partially_overlapping_appointment(self):
+        """The re-check has to cover overlap, not just an identical start_time.
+
+        A longer appointment straddling the wanted slot used to slip past the
+        pre-check and fail on the database's exclusion constraint instead, so
+        the patient got the generic insert error rather than the clean
+        "pick another time" message.
+        """
+        self.chat_session.is_authenticated = False
+        self.chat_session.save(update_fields=["is_authenticated"])
+
+        new_start = self.old_start.replace(hour=15)
+        new_end = new_start + timedelta(minutes=30)
+        result = BookingService.start(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            reason="Reschedule",
+            doctor_id=str(self.doctor.id),
+            doctor_name=self.doctor.full_name,
+            slot_start=new_start.isoformat(),
+            slot_end=new_end.isoformat(),
+            replaces_appointment_id=str(self.old_appt.id),
+        )
+        self.chat_session.refresh_from_db()
+
+        other_patient = Patient.objects.create(
+            clinic=self.clinic, phone="+15550004444", first_name="Over", last_name="Lap"
+        )
+        # Starts 15 minutes earlier and runs an hour — overlaps, never equal.
+        Appointment.objects.create(
+            clinic=self.clinic,
+            doctor=self.doctor,
+            patient=other_patient,
+            start_time=new_start - timedelta(minutes=15),
+            end_time=new_start + timedelta(minutes=45),
+            status=AppointmentStatus.CONFIRMED,
+            confirmation_code="OVRLAP",
+        )
+
+        with self.assertRaises(BookingError) as caught:
+            BookingService.confirm(
+                clinic=self.clinic,
+                chat_session=self.chat_session,
+                booking_id=result["booking_id"],
+                patient=self.patient,
+                otp_verified=True,
+            )
+
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertIn("no longer available", str(caught.exception))
+        self.old_appt.refresh_from_db()
+        self.assertEqual(self.old_appt.status, AppointmentStatus.CONFIRMED)
+
     def test_reschedule_ignores_appointment_owned_by_another_patient(self):
         """Defense in depth: replaces_appointment_id for someone else's
         appointment must not cancel it, even though the new booking still

@@ -194,7 +194,6 @@ class ChatEngine:
             )
         ctx = save_timeline(ctx, timeline)
 
-        service_hit = sensors.service_hit
         knowledge_q = sensors.knowledge_q
         conf_policy = sensors.policy
         timings["confidence_band"] = conf_policy.band.value
@@ -274,17 +273,13 @@ class ChatEngine:
             message=message,
             nlu=nlu_result,
             is_booking_intent=is_booking_intent,
-            booking_commit=booking_commit,
             soft_medical=soft_medical,
             knowledge_q=knowledge_q,
             specialty_list=is_specialty_list_query(message),
             service_list=is_service_list_query(message),
             has_catalog=has_catalog,
             doc_match=doc_match,
-            matched_doc_ids=matched_docs or [],
             matched_service_ids=sensors.matched_service_ids,
-            service_hit=service_hit,
-            prefer_vector=conf_policy.prefer_vector,
             prefer_clarify=conf_policy.prefer_clarify,
             allow_hybrid=bool(conf_policy.allow_hybrid),
             degraded=degraded,
@@ -294,7 +289,6 @@ class ChatEngine:
             doctor_followup=doctor_followup,
             doctor_availability_query=doctor_availability_query,
             urgent_availability=urgent_availability,
-            confidence_band=conf_policy.band.value,
         )
         exec_plan = build_execution_plan(nlu=nlu_result, facts=facts)
         nlu_result = apply_plan_to_nlu(nlu_result, exec_plan)

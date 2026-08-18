@@ -192,6 +192,52 @@ class RuleClassifierTests(SimpleTestCase):
         self.assertIsNotNone(hit)
         self.assertEqual(hit["intent"], "doctor_availability")
 
+    def test_informal_fit_me_in_reaches_availability_not_faq(self):
+        """Regression: these exact phrasings reached the Small LLM in
+        production and were sometimes classified as faq instead of
+        doctor_availability, stranding the patient in prose negotiation
+        instead of ever running real SQL availability. Must be caught at
+        the fast tier (unconditional pre-LLM), not the dormant strong tier
+        (opt-in via NLU_RULES_BEFORE_LLM, off by default)."""
+        for msg, expect_date in (
+            ("can you hope me in for tue night", "tue"),
+            ("can you slip me in for sat morning", None),
+            ("can you hop me in tomorrow", "tomorrow"),
+            ("can you fit me in this week", "this week"),
+            ("can you pencil me in for friday", "friday"),
+        ):
+            with self.subTest(msg=msg):
+                hit = try_rule_classify(msg, tier="fast")
+                self.assertIsNotNone(hit, msg)
+                self.assertEqual(hit["intent"], "doctor_availability")
+                self.assertEqual(hit["_classifier_source"], "rules_fast")
+                if expect_date:
+                    self.assertIn(expect_date, hit["entities"]["date"])
+                else:
+                    self.assertIsNotNone(hit["entities"]["date"])
+
+    def test_fit_me_in_false_positive_guards(self):
+        """"hope"/"work" are common words — must not fire outside the
+        specific "<verb> me in" idiom."""
+        for msg in (
+            "I hope the doctor is available",
+            "I hope you can help me",
+            "can you work on my prescription",
+        ):
+            with self.subTest(msg=msg):
+                hit = try_rule_classify(msg, tier="fast")
+                if hit is not None:
+                    self.assertNotEqual(hit["intent"], "doctor_availability", msg)
+
+    def test_squeeze_me_in_unaffected_by_fast_tier_change(self):
+        """"squeeze me in" is deliberately not part of the new fast-tier
+        pattern — it stays governed by the separate, pre-existing
+        strong-tier rule only (dormant by default; entangled with the
+        long-standing adversarial_booking_slang_squeeze eval case, out of
+        scope here). Confirms this fix didn't touch that."""
+        hit = try_rule_classify("yo can yall squeeze me in today", tier="fast")
+        self.assertIsNone(hit)
+
     def test_emergency_symptoms_clean(self):
         text = "I have intense chest pain and left arm numbness, when can I see a doctor?"
         hit = try_rule_classify(text, tier="safety")
@@ -234,6 +280,32 @@ class EntityExtractTests(SimpleTestCase):
         self.assertTrue(
             any("aetna" in p.lower() for p in entities["insurance_provider"])
         )
+
+    def test_day_abbreviations_extracted(self):
+        for message, token in (
+            ("is there any doctor available on thurs afternoon", "thurs"),
+            ("is there any doctor available on fri afternoon", "fri"),
+            ("is there any doctor available on sun afternoon", "sun"),
+            ("anything on tues", "tues"),
+        ):
+            with self.subTest(message=message):
+                dates = extract_entities(message)["date"]
+                self.assertIsNotNone(dates, f"no date entity for {message!r}")
+                self.assertTrue(
+                    any(token in d for d in dates),
+                    f"{token!r} missing from {dates!r}",
+                )
+
+    def test_sun_words_are_not_read_as_sunday(self):
+        # A dermatology clinic talks about sun constantly — none of it is a day.
+        for message in (
+            "i have sun damage on my cheeks",
+            "do you treat sunburn",
+            "which sunscreen do you recommend",
+            "we picked a date after the wedding",
+        ):
+            with self.subTest(message=message):
+                self.assertIsNone(extract_entities(message)["date"])
 
 
 @override_settings(
@@ -317,3 +389,204 @@ class IntentEntityServiceMockedTests(SimpleTestCase):
         self.assertTrue(result.clarification_needed or result.intent == Intent.UNKNOWN)
         self.assertLess(result.timings.total_ms, 100)
         self.assertLessEqual(result.confidence, 0.5)
+
+
+class _FakeClock:
+    """Deterministic monotonic clock — advances only when a provider is called."""
+
+    def __init__(self, start: float = 1000.0) -> None:
+        self.now = start
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+class _RecordingProvider:
+    """Records the timeout it was handed and burns that much simulated time."""
+
+    def __init__(self, name, clock, *, burn=None, payload=None):
+        self.provider_name = name
+        self.model_name = f"{name}-model"
+        self._clock = clock
+        self._burn = burn
+        self._payload = payload
+        self.timeouts: list[float] = []
+
+    def classify(self, *, message, conversation_context=None, timeout=None):
+        self.timeouts.append(timeout)
+        self._clock.advance(self._burn if self._burn is not None else float(timeout))
+        if self._payload is not None:
+            return dict(self._payload)
+        raise NLUError(f"{self.provider_name} API timed out after {timeout}s")
+
+
+@override_settings(
+    NLU_ENABLE_RULES=False,
+    NLU_RULES_BEFORE_LLM=False,
+    NLU_API_TIMEOUT_SECONDS=3.5,
+    NLU_TOTAL_BUDGET_SECONDS=5.0,
+)
+class NLUTotalBudgetTests(SimpleTestCase):
+    """One deadline across the provider chain — attempts cannot stack timeouts.
+
+    Deterministic: a fake monotonic clock advances by exactly the timeout each
+    provider is handed, so nothing depends on real wall-clock timing.
+    """
+
+    MESSAGE = "what are your saturday hours"
+
+    def setUp(self):
+        from apps.chatbot.providers import circuit_breaker
+
+        circuit_breaker.reset()
+        self.addCleanup(circuit_breaker.reset)
+
+    # Caps _provider_attempts() builds in production: primary uncapped (falls
+    # back to NLU_API_TIMEOUT_SECONDS), then min(NLU_API_TIMEOUT_SECONDS, 3.0).
+    CAPS = [None, 3.0, 3.0]
+
+    def _run(self, providers):
+        """Run classify_message against a fixed chain with per-provider caps."""
+        from unittest.mock import patch
+
+        from apps.chatbot.nlu import classifier
+
+        clock = providers[0]._clock
+        attempts = [
+            {"name": p.provider_name, "provider": p, "timeout": cap}
+            for p, cap in zip(providers, self.CAPS)
+        ]
+        with (
+            patch.object(classifier, "_provider_attempts", return_value=attempts),
+            patch.object(classifier.time, "monotonic", clock),
+        ):
+            result = classifier.classify_message(message=self.MESSAGE)
+        return result, clock
+
+    def _chain(self, *, primary_payload=None):
+        """Production-shaped chain: openai 3.5s → openai_fallback 3.0s → gemini 3.0s."""
+        clock = _FakeClock()
+        return [
+            _RecordingProvider("openai", clock, payload=primary_payload),
+            _RecordingProvider("openai_fallback", clock),
+            _RecordingProvider("gemini", clock),
+        ]
+
+    def test_primary_keeps_its_full_per_provider_cap(self):
+        chain = self._chain()
+        self._run(chain)
+        # Not budget/3 — the primary's own cap is preserved so today's
+        # successful ~2.3s classifications keep succeeding.
+        self.assertEqual(chain[0].timeouts, [3.5])
+
+    def test_second_attempt_gets_only_the_remaining_budget(self):
+        chain = self._chain()
+        self._run(chain)
+        # 5.0 budget - 3.5 spent = 1.5, which is below its own 3.0 cap.
+        self.assertEqual(chain[1].timeouts, [1.5])
+
+    def test_exhausted_budget_skips_provider_without_tripping_breaker(self):
+        from apps.chatbot.providers import circuit_breaker
+
+        chain = self._chain()
+        self._run(chain)
+        self.assertEqual(chain[2].timeouts, [])
+        self.assertEqual(circuit_breaker.status("gemini")["failures"], 0)
+        self.assertFalse(circuit_breaker.status("gemini")["open"])
+
+    def test_total_attempt_budget_is_never_exceeded(self):
+        chain = self._chain()
+        _, clock = self._run(chain)
+        handed_out = sum(t for p in chain for t in p.timeouts)
+        self.assertLessEqual(handed_out, 5.0)
+        self.assertLessEqual(clock.now - 1000.0, 5.0)
+
+    def test_all_providers_failing_still_returns_degraded_clarify(self):
+        chain = self._chain()
+        result, _ = self._run(chain)
+        self.assertEqual(result["_classifier_source"], "rules_fallback")
+        self.assertTrue(result["_degraded"])
+        self.assertTrue(result["clarification_needed"])
+
+    def test_successful_primary_does_not_consume_fallbacks(self):
+        chain = self._chain(
+            primary_payload={"intent": "clinic_hours", "confidence": 0.9, "entities": {}}
+        )
+        result, _ = self._run(chain)
+        self.assertEqual(result["intent"], "clinic_hours")
+        self.assertEqual(chain[1].timeouts, [])
+        self.assertEqual(chain[2].timeouts, [])
+
+    def test_slow_primary_leaves_nothing_for_the_chain(self):
+        clock = _FakeClock()
+        chain = [
+            _RecordingProvider("openai", clock, burn=5.0),
+            _RecordingProvider("openai_fallback", clock),
+            _RecordingProvider("gemini", clock),
+        ]
+        self._run(chain)
+        self.assertEqual(chain[0].timeouts, [3.5])
+        self.assertEqual(chain[1].timeouts, [])
+        self.assertEqual(chain[2].timeouts, [])
+
+    def test_real_session_total_outage_converges_to_instant_degradation(self):
+        """Simulates what the original bug report actually was: a patient
+        sending several messages back to back while every configured
+        provider is down. Each of Cursor's other tests resets the circuit
+        breaker per call, which is right for isolating the budget math, but
+        none of them show what a real multi-turn conversation experiences
+        over a sustained outage.
+
+        First finding (not a bug, just not obvious from a single call):
+        openai_fallback fails on every turn same as openai, so its breaker
+        opens in lockstep with openai's after 5 turns. gemini, third in the
+        chain, gets starved of budget for those first 5 turns and is never
+        actually called — so it hasn't accumulated any failures yet, and
+        turn 6 hands it the *entire* budget alone. Only after 5 more turns
+        of gemini failing on its own does its breaker finally open too.
+
+        The reassuring end state: once all three breakers are open, the
+        whole provider loop skips every attempt without touching the clock
+        at all, and classify_message returns near-instantly instead of
+        continuing to pay latency turn after turn during a real outage.
+        """
+        chain = self._chain()  # same 3.5s/3.0s/3.0s production-shaped chain
+
+        # Turns 0-4: openai (3.5s) then openai_fallback (leftover 1.5s) are
+        # tried every time; gemini never gets reached (budget exhausted).
+        # LLM_CIRCUIT_FAILURE_THRESHOLD defaults to 5 consecutive failures,
+        # so both of their breakers open right at the end of this block.
+        for turn in range(5):
+            result, _ = self._run(chain)
+            self.assertTrue(result["_degraded"], f"turn {turn} should still degrade")
+            self.assertEqual(chain[0].timeouts[turn], 3.5)
+            self.assertEqual(chain[1].timeouts[turn], 1.5)
+        self.assertEqual(chain[2].timeouts, [], "gemini never reached — budget ran out first")
+
+        # Turns 5-9: openai and openai_fallback are now skipped via the
+        # breaker (not attempted, not timed out again) — gemini alone gets
+        # the freed-up budget, capped at its own 3.0s, for 5 more turns
+        # until its failures reach the same threshold.
+        for turn in range(5):
+            result, _ = self._run(chain)
+            self.assertTrue(result["_degraded"], f"turn {5 + turn} should still degrade")
+            self.assertEqual(chain[2].timeouts[turn], 3.0)
+        self.assertEqual(len(chain[0].timeouts), 5, "openai stayed skipped")
+        self.assertEqual(len(chain[1].timeouts), 5, "openai_fallback stayed skipped")
+
+        # Turn 10: total outage — all three breakers are open. The loop
+        # should skip every attempt without calling any provider or
+        # advancing the clock, and still return the same degraded fallback
+        # a patient would have gotten on turn 0, just without paying ~5s
+        # of latency for it.
+        clock_before = chain[0]._clock.now
+        result, clock = self._run(chain)
+        self.assertTrue(result["_degraded"])
+        self.assertEqual(result["_classifier_source"], "rules_fallback")
+        self.assertEqual(len(chain[0].timeouts), 5)
+        self.assertEqual(len(chain[1].timeouts), 5)
+        self.assertEqual(len(chain[2].timeouts), 5)
+        self.assertEqual(clock.now, clock_before, "no provider was actually called")

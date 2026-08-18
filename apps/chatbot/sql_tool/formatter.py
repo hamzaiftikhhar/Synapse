@@ -2,7 +2,20 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
+
+
+def _day_label(row: dict[str, Any] | None) -> str:
+    """"Thursday, August 20" from a row's ISO date, or "" if unparseable."""
+    raw = str((row or {}).get("date") or "")[:10]
+    if not raw:
+        return ""
+    try:
+        day = datetime.strptime(raw, "%Y-%m-%d").date()
+    except ValueError:
+        return ""
+    return f"{day.strftime('%A')}, {day.strftime('%B')} {day.day}"
 
 
 def _format_hours_grouped(rows: list[dict[str, Any]]) -> str:
@@ -39,17 +52,24 @@ def _format_hours_grouped(rows: list[dict[str, Any]]) -> str:
 
 
 def _format_availability(rows: list[dict[str, Any]], *, recommended: dict | None = None) -> str:
+    # Name the day. Asking for "thurs" and being offered an unlabelled 12:00 PM
+    # gave no way to notice the slots were for a different date than requested.
+    day = _day_label(recommended or (rows[0] if rows else None))
+    on_day = f" on {day}" if day else ""
     if recommended:
         doc = recommended.get("doctor") or recommended.get("doctor_name") or "A doctor"
         when = recommended.get("time") or recommended.get("label") or ""
-        return f"Earliest opening: {doc} at {when}."
+        return f"Earliest opening{on_day}: {doc} at {when}."
     preview = rows[:3]
     if len(preview) == 1:
         r = preview[0]
-        return f"{r.get('doctor', 'A doctor')} has an opening at {r.get('time', r.get('start', ''))}."
+        return (
+            f"{r.get('doctor', 'A doctor')} has an opening{on_day} "
+            f"at {r.get('time', r.get('start', ''))}."
+        )
     lines = [f"{r.get('doctor')} at {r.get('time', r.get('start', ''))}" for r in preview]
     more = f" (+{len(rows) - 3} more)" if len(rows) > 3 else ""
-    return "Openings" + more + ": " + "; ".join(lines) + "."
+    return f"Openings{more}{on_day}: " + "; ".join(lines) + "."
 
 # Backend-owned honesty copy — never invent call-the-clinic availability
 EMPTY_AVAILABILITY = (

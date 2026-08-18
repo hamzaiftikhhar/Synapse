@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, time, timezone as dt_timezone
+from datetime import date, datetime, time, timedelta, timezone as dt_timezone
 from zoneinfo import ZoneInfo
 
 from django.test import SimpleTestCase
@@ -12,6 +12,7 @@ from apps.chatbot.sql_tool.utils import (
     format_clinic_when,
     is_asap_request,
     is_same_day_request,
+    parse_natural_date,
     parse_time_floor,
 )
 
@@ -89,6 +90,40 @@ class EntityExtractDateTimePatternsTests(SimpleTestCase):
         self.assertIn("same day", same_day["date"])
         asap = extract_entities("need an appointment asap")
         self.assertIn("asap", asap["date"])
+
+
+class ParseNaturalDateWeekdayTests(SimpleTestCase):
+    TZ = ZoneInfo("America/Los_Angeles")
+
+    def _next(self, weekday: int) -> date:
+        today = datetime.now(self.TZ).date()
+        return today + timedelta(days=(weekday - today.weekday()) % 7 or 7)
+
+    def test_weekday_abbreviations(self):
+        for raw, weekday in (
+            ("thursday", 3),
+            ("thurs", 3),
+            ("thur", 3),
+            ("thu", 3),
+            ("tuesday", 1),
+            ("tues", 1),
+            ("tue", 1),
+            ("weds", 2),
+            ("wed", 2),
+            ("fri", 4),
+            ("sun", 6),
+        ):
+            with self.subTest(raw=raw):
+                self.assertEqual(parse_natural_date(raw, tz=self.TZ), self._next(weekday))
+
+    def test_day_survives_a_trailing_time_of_day(self):
+        self.assertEqual(parse_natural_date("thurs afternoon", tz=self.TZ), self._next(3))
+        self.assertEqual(parse_natural_date("Sunday afternoon", tz=self.TZ), self._next(6))
+
+    def test_words_merely_containing_a_day_are_not_dates(self):
+        for raw in ("sunscreen", "sun damage treatment", "wedding", "monsoon"):
+            with self.subTest(raw=raw):
+                self.assertIsNone(parse_natural_date(raw, tz=self.TZ))
 
 
 class FormatClinicWhenTests(SimpleTestCase):

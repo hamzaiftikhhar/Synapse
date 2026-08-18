@@ -255,6 +255,29 @@ def _match_fast(text: str) -> dict[str, Any] | None:
             _classifier_source="rules_fast",
         )
 
+    # Informal "accommodate me" phrasing ("can you hope/slip/fit me in for
+    # tue night") — confirmed from real production logs to reach the Small
+    # LLM and sometimes get classified as faq instead of an availability
+    # request, stranding the patient in open-ended prose negotiation
+    # instead of ever reaching real SQL availability. "squeeze me in" is
+    # deliberately not included here — it's already covered by the
+    # separate (dormant-by-default) strong-tier rule below, which is
+    # entangled with the existing adversarial_booking_slang_squeeze eval
+    # case; kept independent rather than touched by this fix. "hope" also
+    # covers the "hop me in" reading — both spellings showed up verbatim
+    # in the logs this was found from.
+    if re.search(r"\b(?:hope?|slip|fit|pencil|work)\s+me\s+in\b", text):
+        return _base_payload(
+            intent=Intent.DOCTOR_AVAILABILITY.value,
+            confidence=0.91,
+            needs_sql=True,
+            needs_vector=False,
+            needs_llm=False,
+            sql_tool="doctors",
+            reasoning_short="Informal fit-me-in phrasing (rule)",
+            _classifier_source="rules_fast",
+        )
+
     return None
 
 
