@@ -913,6 +913,17 @@ class ChatEngine:
         if exec_plan.direct_mode == "medical_advice_refusal":
             return self._medical_advice_refusal_reply()
 
+        # A temporal refusal is a decision Python already made — the date has
+        # passed, the month isn't open yet, the expression can't be read. The
+        # response LLM does not get to revisit it. Given the same refusal in
+        # its context it has been observed answering "I couldn't find any
+        # available slots for January 13, 2024", asserting a search that never
+        # ran, and then citing that invention back to itself next turn.
+        refusal = self._temporal_refusal_text(sql_rows)
+        if refusal:
+            timings["degraded_reason"] = "temporal_refusal"
+            return refusal
+
         if exec_plan.use_response_llm or exec_plan.vector_tasks:
             if not vector_rows:
                 if self._sql_found(sql_rows):
@@ -976,6 +987,27 @@ class ChatEngine:
             return self._fast_path_from_plan(exec_plan, nlu, message, clinic, None)
 
         return self._fast_path_from_plan(exec_plan, nlu, message, clinic, None)
+
+    @staticmethod
+    def _temporal_refusal_text(sql_rows: list[dict[str, Any]]) -> str:
+        """The reply for a turn whose date could not be honoured, or "".
+
+        Only fires for availability blocks the temporal layer marked
+        non-searchable, so ordinary "no slots that day" answers keep their
+        normal lane and can still be phrased by the LLM.
+        """
+        for block in sql_rows or []:
+            if block.get("handler") != "doctor_availability":
+                continue
+            meta = block.get("meta") or {}
+            if not meta.get("authoritative_summary"):
+                continue
+            if meta.get("temporal_searchable", True):
+                continue
+            summary = (block.get("summary") or "").strip()
+            if summary:
+                return summary
+        return ""
 
     def _run_vector(
         self,

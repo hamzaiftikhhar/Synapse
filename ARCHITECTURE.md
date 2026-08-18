@@ -50,6 +50,34 @@ progressively closed these gaps. **It is not fully true yet** — see §7 for
 the one confirmed remaining violation (service-existence questions
 sometimes still reach vector/RAG instead of SQL).
 
+### 2a. Dates are a special case of that rule (Phase 13)
+
+**The LLM may interpret. Deterministic code decides.** Dates are not an NLU
+string that downstream layers each re-read; they are a cross-layer domain
+object resolved exactly once, in `apps/chatbot/temporal.py`:
+
+```
+message → scan_temporal_expressions()  ─┐
+        → entity_extract (weekday/rel) ─┼→ rank by TemporalPrecision,
+        → NLU entities (grounded-check)─┘  then groundedness
+                                        → TemporalQuery (canonical)
+                                        → horizon validation
+                                        → SQL scan │ reply text │ chips │ booking
+```
+
+`TemporalQuery` is the single source of truth. Nothing downstream re-derives
+a date from the patient's words — not `formatter.py`, not `ui_meta.py`, and
+not `BookingService`, which consumed its own `parse_natural_date(dates[0])`
+until Phase 13. Ranking is by precision (EXPLICIT_DATE > MONTH > WEEKDAY >
+RELATIVE > FLEXIBLE) and never by entity order, so "16 oct friday" means
+October 16 and the weekday is only a consistency check.
+
+Statuses `PAST`, `UNRESOLVED`, `AMBIGUOUS`, and `BEYOND_HORIZON` are
+*authoritative refusals*: `ChatEngine._temporal_refusal_text()` returns them
+verbatim before any lane can reach the response LLM, and `ui_meta.py` renders
+no chips for them. The horizon comes from the clinic's configured
+`date_horizon_days` (default 30), never a hard-coded window.
+
 ## 3. NLU — `apps/chatbot/nlu/`
 
 **The system prompt is already minimal and semantic-only** — verified by

@@ -363,6 +363,118 @@ nothing else running; not touched by this or the prior round's changes).
 
 ---
 
+## Phase 12 — Temporal availability correctness ✅
+
+**Bug, reproduced against current code before anything changed.** Asked on
+2026-08-18, "is there any appointment available in December 12 morning"
+answered with August slots, and "anything in November" answered with next
+week's. Three independent defects fed the same output:
+
+1. **`dates[0]` decided the search.** The NLU emits every date-ish string it
+   found, unordered. Real logged payload for that December question:
+   `["2023-12-12", "december 12"]` — the patient's own words *and* an ISO
+   date the model normalized against its training cutoff. Position 0 won, so
+   a year the patient never typed became the query, and the reply's weekday
+   ("Tuesday, December 12") was correct for 2023 and wrong for 2026.
+2. **Bare months parsed to nothing and silently became tomorrow.**
+   `parse_natural_date("November")` returns `None`; the handler's
+   `if target_date is None: target_date = tomorrow` turned an unanswerable
+   question into a confidently wrong answer. Confirmed for both "November"
+   and "December".
+3. **Nothing downstream checked scope.** `ui_meta.py`'s availability branch
+   maps `rows[:6]` into clickable chips and never reads `meta.target_date`,
+   so August slots rendered as "Earliest openings" under December prose —
+   one tap from a real booking on the wrong date.
+
+**Root cause, one sentence:** temporal information was an unvalidated list of
+strings read positionally, not resolved state — the same gap
+`resolved_service_ids` closed for services in Phase 4.
+
+**Fix:** new `apps/chatbot/temporal.py` — `TemporalQuery` (status, inclusive
+`start`/`end`, `is_range`, `scope_label`, `horizon_end`) produced by
+`resolve_temporal_query()`. Every entity becomes a dated candidate; each is
+scored on **groundedness** — whether all its tokens appear in what the
+patient actually typed. `"december 12"` is grounded, `"2023-12-12"` is not
+(no `2023` anywhere in the message), so entity order stops mattering and a
+model-invented past date is discarded rather than merely deprioritized.
+Deliberately *not* fixed with `dates[-1]` or any other positional rule.
+Five outcomes replace the boolean parse: `RESOLVED`, `UNSPECIFIED` (no
+constraint given, or "asap" — forward scan, still works), `UNRESOLVED`
+(constraint given but unreadable — ask, never substitute tomorrow), `PAST`,
+`BEYOND_HORIZON`. Months stay months (`2026-11-01 → 2026-11-30`) and the
+handler walks the range for the earliest real opening instead of collapsing
+to one arbitrary day; the scan is bounded at 62 days and skips weekdays the
+roster never works. Weekday now comes from `day_label(canonical_date)`
+only.
+
+**Booking horizon, separated from requested scope:** `get_booking_config`
+advertised `date_horizon_days: 30` and then coerced with `or 14`, so any
+clinic storing a blank value silently got 14. Both fallbacks now come from
+`DEFAULT_BOOKING_CONFIG` itself (applied to all five numeric keys, since
+that's how the two drifted apart), capped by a new `MAX_HORIZON_DAYS = 365`,
+and exposed as `booking_horizon_days(clinic)`. The availability layer
+enforces it: November past a 30-day horizon returns "This clinic is
+scheduling appointments through Thursday, September 17, so November 2026
+isn't open for booking yet" — not August slots. Default stays 30; raising it
+is now a per-clinic `WidgetSettings` value that actually takes effect.
+
+**Scope invariant at the UI boundary:** the handler puts `scope_start`/
+`scope_end` on the SQL block and `ui_meta._slots_in_scope()` drops any row
+outside it before mapping chips. Upstream resolution already guarantees the
+rows match; the check stays because a mismatched chip is worse than no chip.
+`formatter.py` also needed an `authoritative_summary` flag — its
+`"No available" in summary` string sniff would otherwise have replaced every
+new honest refusal with the generic "couldn't retrieve availability" copy.
+
+**Before → after** (today = 2026-08-18, horizon 30d):
+
+| Question | Before | After |
+|---|---|---|
+| "…available in November" | silent tomorrow → Aug 19 slots | `beyond_horizon`, Nov 1–30, no chips |
+| "…available in December" | silent tomorrow → Aug 19 slots | `beyond_horizon`, Dec 1–31, no chips |
+| "…in December 12 morning" | 2023-12-12 "Tuesday" | 2026-12-12 **Saturday** |
+| "…in December 15 morning" | 2023-12-15 "Friday" | 2026-12-15 **Tuesday** |
+| "…for Monday morning" | 2026-08-24 | 2026-08-24 (unchanged) |
+| "anything asap" | silent tomorrow | forward scan to horizon |
+
+**Files:** new `apps/chatbot/temporal.py`; `sql_tool/handlers/doctors.py`,
+`booking/config.py`, `ui_meta.py`, `sql_tool/formatter.py`.
+**Tests:** new `apps/chatbot/tests/test_temporal_scope.py`, 36 tests
+covering all seven transcript phrasings end-to-end through the handler
+(asserting the slot payload, not just the prose), the hallucinated-year
+cases in both entity orders, month ranges and year rollover, horizon refusal
+and clamping, the config fallback, and the required weekday proofs
+(Dec 12 2026 → Saturday, Dec 15 2026 → Tuesday).
+**Verified:** 447 chatbot+appointments tests, up from a 411/411 baseline
+measured on this machine with the same command; eval unchanged **674/682**
+(the same 8 pre-existing `adversarial_booking_slang_squeeze` /
+`adversarial_medical_slang_pediatric` failures, untouched — no expected
+values edited). Confirmed the new tests are real: stashing only the four
+production diffs makes **12 of the 36 fail**, all in the handler / horizon /
+formatter / UI-invariant groups.
+One pre-existing failure, not counted as a pass and not caused here: the
+already-documented `ConcurrentBookingTests.test_two_parallel_inserts_only_
+one_succeeds` Postgres deadlock. It passed on the first full-suite run and
+errored on the second. **It has degraded since it was last recorded** — the
+earlier note says ~2/3 pass in isolation; it now fails 3/3 in isolation, and
+**3/3 with this phase's four diffs stashed**, so the degradation predates
+this work. The test inserts via `Appointment.objects.create()` directly, so
+it bypasses the `OperationalError` → 409 handling added to
+`BookingService.confirm()` in the prior round and hits the exclusion
+constraint raw. Left alone deliberately (out of scope); worth its own pass.
+
+**Deliberately untouched** (each remains its own phase): "Sure"
+conversation-state handling, casual squeeze-me-in intent, service-existence
+routing, doctor-resolution evidence, booking-picker redesign, RAG behavior.
+
+**Noted, not fixed:** the deferred cross-turn day-of-week memory item above
+no longer produces a *wrong* day — an unreadable follow-up now resolves to
+`UNSPECIFIED` and scans forward rather than asserting tomorrow — but it
+still doesn't remember "Tuesday" from the previous turn. Unchanged in
+scope; it's conversation state, not per-message parsing.
+
+---
+
 ## ⏳ Phase 9C — Honest RAG degraded states
 
 **Not started.** See ARCHITECTURE.md §7 for the confirmed bug: 4 different
@@ -381,6 +493,68 @@ this is an intent/mode classification fix, not a RAG-authority fix (RAG
 already correctly respects SQL facts when SQL runs). Regression battery:
 6 phrasings of the same HydraFacial-style question must produce the same
 service-existence answer.
+
+## ✅ Phase 13 — Temporal authority layer
+
+**Done.** Phase 12 added a canonical `TemporalQuery` but left the LLM as a
+*source* of dates rather than a suggestion to be checked. A follow-up audit
+against a live transcript found nine defects sharing one root cause: nothing
+in the system read the patient's own message for a date.
+
+The rule this phase establishes: **the LLM may interpret, deterministic code
+decides.** Three candidate sources, ranked by `TemporalPrecision`
+(EXPLICIT_DATE > MONTH > WEEKDAY > RELATIVE > FLEXIBLE) and then by
+groundedness — never by entity order:
+
+1. `scan_temporal_expressions()` reads the message. Grounded by construction.
+2. `entity_extract` for weekdays/relatives (reused, not re-implemented — it
+   holds the "sun damage is not Sunday" collision tiering).
+3. NLU entities, believed only where the message backs them component by
+   component.
+
+Why this mattered, from the logs: for "16 nov friday" the model emitted
+`2023-11-17`, moving the patient's day from the 16th to the 17th so the
+weekday would fit a year they never said. For "16 oct friday" it emitted
+`2023-10-16` — a Monday. Two appointments were booked on 19 August by
+patients who had asked about November and January.
+
+Behaviour now: an explicit date outranks any weekday said with it (a
+mismatch records `conflict=True` and is stated in the reply, never silently
+moved). "tuesday 25" → Aug 25, "tuesday 1" → Sep 1, "tuesday 2" → AMBIGUOUS,
+ask. Unreadable constraints ("coming januray", "13-January-202") return
+UNRESOLVED and offer **no** alternative slots — per product decision the
+assistant may mention that an earlier opening exists but must not query,
+render, or book one until asked. `asap`/unconstrained still forward-scan.
+
+Five invariants, one test class each in `test_temporal_authority.py`:
+explicit date wins; no silent substitution; a refusal yields no rows and no
+chips; SQL date == stated date == chip date; **booking consumes the same
+canonical state**. That last one was live: `_apply_date_time_hint` still ran
+its own `parse_natural_date(dates[0])` and seeded the *next Friday* for "16
+oct friday" — the wizard disagreeing with the answer just shown.
+
+Also fixed: F0, a latent circular import (`temporal` → `sql_tool.utils` →
+package `__init__` → `handlers.doctors` → `temporal`) that survived only
+because production imported `sql_tool` first; and the NLU filing "Friday"
+and "2" under the `time` entity, which produced "No available slots on
+Friday, August 21 **for Friday**".
+
+Two Phase 12 test *fixtures* were corrected, not loosened. Both had messages
+that accidentally contradicted what they asserted: one checked "an ungrounded
+ISO date is distrusted" using a message containing "december" (now correctly
+resolvable from the message), the other expected chips from a
+`beyond_horizon` block, which the new hard invariant forbids outright. The
+assertions are unchanged.
+
+Deliberately unsupported: bare numeric `12/01` stays UNRESOLVED rather than
+guessing US vs. international order. Booking concurrency untouched.
+
+Result: **428/428 relevant tests** (412 chatbot + 16 knowledge), 82 of them
+temporal; eval **674/682 (98.8%)**, unchanged from baseline. Two pre-existing
+environment failures reproduced in isolation and unrelated to this diff:
+`apps.knowledge.tests.test_embedding_warmup` (numpy SIGFPE on this machine)
+and `ConcurrentBookingTests.test_two_parallel_inserts_only_one_succeeds`
+(DB deadlock; imports nothing this phase changed).
 
 ## ⏳ Phase 11 — Doctor resolution evidence floor
 
