@@ -198,7 +198,7 @@ def build_ui_meta(
             meta.setdefault("specialties", mapped)
 
         elif handler == "doctor_availability" and rows:
-            mapped = [_map_slot(r) for r in rows[:6]]
+            mapped = [_map_slot(r) for r in _slots_in_scope(rows, block.get("meta"))[:6]]
             if mapped:
                 meta["recommended"] = {
                     "type": "slot",
@@ -529,6 +529,32 @@ def _map_specialty(row: dict[str, Any]) -> dict[str, Any]:
         "doctor_count": row.get("doctor_count", 0),
         "select_message": f"I need a {row.get('name')} doctor",
     }
+
+
+def _slots_in_scope(
+    rows: list[dict[str, Any]], meta: dict[str, Any] | None
+) -> list[dict[str, Any]]:
+    """Drop slots the patient's question doesn't cover.
+
+    A chip is one tap from a real appointment, so this is a hard invariant
+    rather than a display nicety: two bookings in the production logs were
+    made on 19 August by patients who had asked about November and January.
+    Nothing renders unless the temporal layer resolved a scope and the slot
+    falls inside it.
+    """
+    meta = meta or {}
+    start = meta.get("scope_start")
+    end = meta.get("scope_end")
+    if "temporal_status" in meta and not meta.get("temporal_searchable"):
+        return []
+    if not start or not end:
+        return rows
+    kept = []
+    for row in rows:
+        day = str(row.get("date") or "")[:10]
+        if not day or start <= day <= end:
+            kept.append(row)
+    return kept
 
 
 def _map_slot(row: dict[str, Any]) -> dict[str, Any]:
