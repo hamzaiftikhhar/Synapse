@@ -19,6 +19,13 @@ class BookingStep(str, Enum):
     TIME = "time"
     DETAILS = "details"
     OTP = "otp"
+    # Reached only when a booking would otherwise auto-confirm with no
+    # deliberate user gesture at all (an already-authenticated session, or
+    # a clinic with verification disabled) — the normal DETAILS→OTP path
+    # already requires entering a received code, which is itself a
+    # confirming action, so it goes straight to CONFIRMED. See
+    # BookingService._route_to_review_if_authenticated.
+    REVIEW = "review"
     CONFIRMED = "confirmed"
 
 

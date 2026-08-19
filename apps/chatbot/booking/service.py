@@ -119,7 +119,7 @@ class BookingService:
         # prior book), skip re-collecting contact + OTP — same short-circuit
         # as select_time / select_hero.
         if session.step == BookingStep.DETAILS.value:
-            skip = cls._confirm_if_already_authenticated(
+            skip = cls._route_to_review_if_authenticated(
                 clinic=clinic, chat_session=chat_session, session=session
             )
             if skip is not None:
@@ -495,7 +495,7 @@ class BookingService:
             session.doctor_name = doctor_name or cls._doctor_name(clinic, doctor_id)
             # Hold immediately when selecting time (before details)
             cls._hold_internal(session, clinic)
-            skip = cls._confirm_if_already_authenticated(
+            skip = cls._route_to_review_if_authenticated(
                 clinic=clinic, chat_session=chat_session, session=session
             )
             if skip is not None:
@@ -523,7 +523,7 @@ class BookingService:
                 session.slot_start = start
                 session.slot_end = end
                 cls._hold_internal(session, clinic)
-                skip = cls._confirm_if_already_authenticated(
+                skip = cls._route_to_review_if_authenticated(
                     clinic=clinic, chat_session=chat_session, session=session
                 )
                 if skip is not None:
@@ -583,23 +583,40 @@ class BookingService:
             session.patient_phone = phone
             session.patient_email = email
             if vmode == "none":
+                # No OTP to type — without a REVIEW stop here, nothing between
+                # this form and a real Appointment would ever require a
+                # deliberate "yes, book it" gesture from the patient.
+                session.step = BookingStep.REVIEW.value
+                cls._touch(session)
                 cls._save(chat_session, session)
-                return cls.confirm(
-                    clinic=clinic,
-                    chat_session=chat_session,
-                    booking_id=session.booking_id,
-                    patient=None,
-                    otp_verified=False,
-                )
+                return serialize_step(clinic, session)
             session.step = BookingStep.OTP.value
             cls._touch(session)
             cls._save(chat_session, session)
             return serialize_step(clinic, session)
 
+        if action == "confirm_review":
+            if session.step != BookingStep.REVIEW.value:
+                raise BookingError("Nothing to confirm yet")
+            patient = None
+            otp_verified = False
+            if getattr(chat_session, "is_authenticated", False) and getattr(
+                chat_session, "patient", None
+            ):
+                patient = chat_session.patient
+                otp_verified = True
+            return cls.confirm(
+                clinic=clinic,
+                chat_session=chat_session,
+                booking_id=session.booking_id,
+                patient=patient,
+                otp_verified=otp_verified,
+            )
+
         raise BookingError(f"Unknown action: {action}")
 
     @classmethod
-    def _confirm_if_already_authenticated(
+    def _route_to_review_if_authenticated(
         cls,
         *,
         clinic: Any,
@@ -607,29 +624,35 @@ class BookingService:
         session: BookingSession,
     ) -> dict[str, Any] | None:
         """
-        Skip the details/OTP steps and confirm immediately when this chat
+        Skip the details/OTP steps and go straight to REVIEW when this chat
         session already has a verified patient — e.g. the patient verified
         earlier this session to view/reschedule/cancel an appointment, or
         booked one already. Re-collecting their name and contact info and
         sending them a second OTP would be asking them to authenticate a
         second time for no reason; `chat_session.is_authenticated` /
-        `.patient` is already the source of truth. Mirrors the existing
-        verification_mode == "none" short-circuit in submit_details, just
-        gated on session auth instead of clinic config.
+        `.patient` is already the source of truth.
 
-        Returns the confirm() payload if it confirmed, else None (meaning:
-        proceed to the normal details/OTP step).
+        This used to call confirm() directly here, creating the real
+        Appointment with no user action between picking a time slot and
+        being told "you're confirmed" — the normal DETAILS→OTP path always
+        has the patient enter a received code as a deliberate confirming
+        gesture, but this shortcut had none at all. Routing to REVIEW
+        instead means every path now ends on an explicit "Confirm booking"
+        tap before anything is actually created (BookingStep.REVIEW).
+
+        Returns the review-step payload if this session should review, else
+        None (meaning: proceed to the normal details/OTP step).
         """
         if not getattr(chat_session, "is_authenticated", False):
             return None
         patient = getattr(chat_session, "patient", None)
         if patient is None:
             return None
-        # The confirmation card reads these off the session, not the Patient
-        # row — populate them since we're skipping the details step that
-        # would normally have set them. Email-only patients store a hashed
-        # placeholder in Patient.phone (`email:<digest>`); never surface that
-        # internal stand-in as a real phone number.
+        # The review/confirmation cards read these off the session, not the
+        # Patient row — populate them since we're skipping the details step
+        # that would normally have set them. Email-only patients store a
+        # hashed placeholder in Patient.phone (`email:<digest>`); never
+        # surface that internal stand-in as a real phone number.
         phone = (patient.phone or "").strip()
         if phone.startswith("email:"):
             phone = ""
@@ -637,14 +660,10 @@ class BookingService:
         session.patient_last_name = patient.last_name
         session.patient_phone = phone
         session.patient_email = patient.email or ""
+        session.step = BookingStep.REVIEW.value
+        cls._touch(session)
         cls._save(chat_session, session)
-        return cls.confirm(
-            clinic=clinic,
-            chat_session=chat_session,
-            booking_id=session.booking_id,
-            patient=chat_session.patient,
-            otp_verified=True,
-        )
+        return serialize_step(clinic, session)
 
     @classmethod
     def hold_slot(

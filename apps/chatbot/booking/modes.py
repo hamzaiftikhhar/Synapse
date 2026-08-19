@@ -21,6 +21,7 @@ _SERVICE_FIRST_STEPS = [
     BookingStep.TIME,
     BookingStep.DETAILS,
     BookingStep.OTP,
+    BookingStep.REVIEW,
     BookingStep.CONFIRMED,
 ]
 
@@ -34,6 +35,7 @@ MODE_STEPS: dict[str, list[BookingStep]] = {
         BookingStep.TIME,
         BookingStep.DETAILS,
         BookingStep.OTP,
+        BookingStep.REVIEW,
         BookingStep.CONFIRMED,
     ],
     # Earliest clinic appointment — no specialty/doctor picker; slot binds a doctor.
@@ -42,6 +44,7 @@ MODE_STEPS: dict[str, list[BookingStep]] = {
         BookingStep.TIME,
         BookingStep.DETAILS,
         BookingStep.OTP,
+        BookingStep.REVIEW,
         BookingStep.CONFIRMED,
     ],
     "general": [
@@ -49,6 +52,7 @@ MODE_STEPS: dict[str, list[BookingStep]] = {
         BookingStep.TIME,
         BookingStep.DETAILS,
         BookingStep.OTP,
+        BookingStep.REVIEW,
         BookingStep.CONFIRMED,
     ],
 }

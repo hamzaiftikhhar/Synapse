@@ -27,6 +27,7 @@ def serialize_step(clinic: Any, session: BookingSession) -> dict[str, Any]:
         "service_chip": None,
         "options": {},
         "hold": None,
+        "review": None,
         "confirmation": None,
     }
 
@@ -66,6 +67,22 @@ def serialize_step(clinic: Any, session: BookingSession) -> dict[str, Any]:
             "email": session.patient_email,
             "verification_mode": cfg.get("verification_mode") or "sms",
             "slot_summary": _slot_summary(session),
+        }
+        if session.hold_expires_at:
+            payload["hold"] = {"expires_at": session.hold_expires_at}
+    elif step == BookingStep.REVIEW.value:
+        # Same shape as CONFIRMED below, minus the fields that don't exist
+        # until confirm() actually runs — the frontend renders this as the
+        # same card, with a Confirm button in place of the code line.
+        payload["review"] = {
+            "slot_summary": _slot_summary(session),
+            "doctor_name": session.doctor_name,
+            "service_name": session.service_name,
+            "date": session.date,
+            "start": session.slot_start,
+            "end": session.slot_end,
+            "first_name": session.patient_first_name,
+            "last_name": session.patient_last_name,
         }
         if session.hold_expires_at:
             payload["hold"] = {"expires_at": session.hold_expires_at}
