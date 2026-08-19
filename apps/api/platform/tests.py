@@ -9,7 +9,13 @@ from apps.accounts.models import ClinicStaff, StaffAuthToken, StaffAuthTokenPurp
 from apps.api.auth.jwt import create_staff_access_token
 from apps.api.test_helpers import make_clinic_admin
 from apps.billing.models import Plan, Subscription, SubscriptionStatus
-from apps.clinics.models import Clinic, ClinicApplication, ClinicApplicationStatus, ClinicStatus
+from apps.clinics.models import (
+    Clinic,
+    ClinicApplication,
+    ClinicApplicationSource,
+    ClinicApplicationStatus,
+    ClinicStatus,
+)
 
 User = get_user_model()
 
@@ -169,6 +175,51 @@ class ApplicationApprovalProvisioningTests(TestCase):
             data={}, content_type="application/json", headers=self.admin_headers,
         )
         self.assertEqual(resp.status_code, 400)
+
+
+class DemoRequestApprovalTests(TestCase):
+    """A demo request has no plan_slug of its own — approval must accept
+    one in the request body rather than assuming/guessing a default."""
+
+    def setUp(self):
+        self.plan = Plan.objects.create(slug="growth", name="Growth", is_active=True)
+        self.admin, self.admin_headers = make_super_admin(email="root2@synapse.test")
+        self.app = ClinicApplication.objects.create(
+            clinic_name="Riverside Dental", owner_name="Sam Rivera",
+            work_email="sam@riverside.example.com", plan_slug="",
+            source=ClinicApplicationSource.DEMO_REQUEST,
+        )
+
+    def test_approve_without_a_plan_is_rejected_with_a_clear_message(self):
+        resp = self.client.post(
+            f"/api/v1/platform/applications/{self.app.id}/approve",
+            data={}, content_type="application/json", headers=self.admin_headers,
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("plan", resp.json()["detail"].lower())
+        self.assertFalse(Clinic.objects.exists())
+
+    def test_approve_with_plan_slug_override_provisions_correctly(self):
+        resp = self.client.post(
+            f"/api/v1/platform/applications/{self.app.id}/approve",
+            data={"plan_slug": "growth"}, content_type="application/json",
+            headers=self.admin_headers,
+        )
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["application"]["status"], "converted")
+        clinic = Clinic.objects.get(id=body["clinic"]["id"])
+        sub = Subscription.objects.get(clinic=clinic)
+        self.assertEqual(sub.plan_id, self.plan.id)
+
+    def test_approve_with_unknown_plan_slug_override_rejected(self):
+        resp = self.client.post(
+            f"/api/v1/platform/applications/{self.app.id}/approve",
+            data={"plan_slug": "does-not-exist"}, content_type="application/json",
+            headers=self.admin_headers,
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(Clinic.objects.exists())
 
 
 class PlatformOpsTests(TestCase):
