@@ -22,6 +22,7 @@ from apps.api.platform.router import router as platform_router
 from apps.api.platform.ops import router as platform_ops_router
 from apps.api.services.router import router as services_router
 from apps.api.specialties.router import router as specialties_router
+from apps.api.verification.router import router as verification_router
 
 api = NinjaAPI(
     title="Synapse API",
@@ -57,6 +58,7 @@ api.add_router("/appointments", appointments_router)
 api.add_router("/billing", billing_router)
 api.add_router("/analytics", analytics_router)
 api.add_router("/applications", applications_router)
+api.add_router("/verification", verification_router)
 
 if settings.DEBUG:
     from apps.api.debug.router import router as debug_router

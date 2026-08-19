@@ -48,7 +48,26 @@ class PatientAuthContext:
 
 
 def _blocked_status(clinic: Clinic) -> bool:
-    return clinic.status in {ClinicStatus.SUSPENDED, ClinicStatus.CANCELLED}
+    if clinic.status in {ClinicStatus.SUSPENDED, ClinicStatus.CANCELLED}:
+        return True
+    return _billing_blocked(clinic)
+
+
+def _billing_blocked(clinic: Clinic) -> bool:
+    """Billing-driven access block — deliberately separate from
+    Clinic.status (an admin-controlled field with its own meaning; see
+    apps/billing/models.py's module docstring on why Paddle's subscription
+    status and this app's access decision are kept as distinct concepts).
+    A clinic with no Subscription row at all (super-admin-created clinics,
+    seed/demo data) is never blocked here — this only restricts clinics
+    that have billing that has actually gone bad."""
+    from apps.billing.models import AccessStatus, Subscription
+
+    try:
+        subscription = clinic.subscription
+    except Subscription.DoesNotExist:
+        return False
+    return subscription.access_status == AccessStatus.SUSPENDED
 
 
 def resolve_clinic_ref(ref: str) -> Clinic | None:

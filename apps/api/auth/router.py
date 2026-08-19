@@ -55,9 +55,19 @@ from apps.api.auth.schemas import (
 from apps.clinics.features import default_widget_configuration
 from apps.clinics.models import Clinic, ClinicStatus
 from apps.notifications.service import NotificationService
+from core.ratelimit import check_rate_limit
 
 User = get_user_model()
 router = Router(tags=["Auth — Staff"])
+
+# Local tunables, not settings — matches this codebase's convention for
+# small, endpoint-local constants (e.g. doctors.py's _MAX_DAYS_SCANNED)
+# rather than growing settings.py for every knob.
+_LOGIN_MAX_PER_IP, _LOGIN_WINDOW_S = 10, 900
+_LOGIN_MAX_PER_EMAIL, _LOGIN_EMAIL_WINDOW_S = 10, 900
+_REGISTER_MAX_PER_IP, _REGISTER_WINDOW_S = 5, 3600
+_FORGOT_PW_MAX_PER_IP, _FORGOT_PW_WINDOW_S = 5, 3600
+_FORGOT_PW_MAX_PER_EMAIL, _FORGOT_PW_EMAIL_WINDOW_S = 5, 3600
 
 _PASSWORD_MIN = 8
 
@@ -150,6 +160,10 @@ def _unique_username(email: str) -> str:
 @router.post("/register", response=MessageOut, auth=None)
 def register(request, payload: StaffRegisterIn):
     """Create staff user only — clinic is created after email verification."""
+    check_rate_limit(
+        "register_ip", client_ip(request) or "",
+        limit=_REGISTER_MAX_PER_IP, window_seconds=_REGISTER_WINDOW_S,
+    )
     email = (payload.email or "").strip().lower()
     if not email or "@" not in email:
         raise HttpError(400, "Valid email is required")
@@ -224,7 +238,15 @@ def resend_verification(request, payload: ResendVerificationIn):
 
 @router.post("/forgot-password", response=MessageOut, auth=None)
 def forgot_password(request, payload: ForgotPasswordIn):
+    check_rate_limit(
+        "forgot_password_ip", client_ip(request) or "",
+        limit=_FORGOT_PW_MAX_PER_IP, window_seconds=_FORGOT_PW_WINDOW_S,
+    )
     email = (payload.email or "").strip().lower()
+    check_rate_limit(
+        "forgot_password_email", email,
+        limit=_FORGOT_PW_MAX_PER_EMAIL, window_seconds=_FORGOT_PW_EMAIL_WINDOW_S,
+    )
     user = User.objects.filter(email=email, is_active=True).first()
     if user:
         _, raw = StaffAuthToken.issue(
@@ -331,7 +353,15 @@ def change_password(request, payload: ChangePasswordIn):
 @router.post("/login", response=StaffTokenOut, auth=None)
 def login(request, payload: StaffLoginIn):
     """Authenticate only — tenant selected afterward (or via X-Tenant-ID for Super Admin)."""
+    check_rate_limit(
+        "login_ip", client_ip(request) or "",
+        limit=_LOGIN_MAX_PER_IP, window_seconds=_LOGIN_WINDOW_S,
+    )
     email = (payload.email or "").strip().lower()
+    check_rate_limit(
+        "login_email", email,
+        limit=_LOGIN_MAX_PER_EMAIL, window_seconds=_LOGIN_EMAIL_WINDOW_S,
+    )
     user = authenticate(request, username=email, password=payload.password)
     if user is None:
         raise HttpError(401, "Invalid credentials")
