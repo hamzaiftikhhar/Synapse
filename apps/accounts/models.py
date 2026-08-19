@@ -38,6 +38,7 @@ class User(AbstractUser):
     phone_number = models.CharField(max_length=20, blank=True, default="")
     is_clinic_owner = models.BooleanField(default=False)
     email_verified_at = models.DateTimeField(null=True, blank=True)
+    phone_verified_at = models.DateTimeField(null=True, blank=True)
     two_factor_enabled = models.BooleanField(default=False)
     last_login_ip = models.GenericIPAddressField(null=True, blank=True)
 
@@ -50,6 +51,10 @@ class User(AbstractUser):
     @property
     def email_verified(self) -> bool:
         return self.email_verified_at is not None
+
+    @property
+    def phone_verified(self) -> bool:
+        return self.phone_verified_at is not None
 
     def __str__(self) -> str:
         return f"{self.email} ({self.role})"
@@ -149,6 +154,9 @@ class AuditAction(models.TextChoices):
     EMAIL_VERIFY = "email_verify", "Email verify"
     PASSWORD_RESET = "password_reset", "Password reset"
     PASSWORD_CHANGE = "password_change", "Password change"
+    PHONE_VERIFY_REQUESTED = "phone_verify_requested", "Phone verification requested"
+    PHONE_VERIFY_APPROVED = "phone_verify_approved", "Phone verification approved"
+    PHONE_VERIFY_FAILED = "phone_verify_failed", "Phone verification failed"
     ENTER_CLINIC = "enter_clinic", "Enter clinic"
     EXIT_CLINIC = "exit_clinic", "Exit clinic"
     CLINIC_CREATE = "clinic_create", "Clinic create"
