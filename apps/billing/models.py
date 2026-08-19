@@ -10,7 +10,11 @@ directly themselves.
 
 from __future__ import annotations
 
+from datetime import timedelta
+
+from django.conf import settings
 from django.db import models
+from django.utils import timezone
 
 from core.models import TimestampedModel, UUIDModel
 
@@ -71,6 +75,15 @@ class SubscriptionStatus(models.TextChoices):
     CANCELED = "canceled", "Canceled"
 
 
+class AccessStatus(models.TextChoices):
+    """The application's access decision — distinct from SubscriptionStatus
+    (Paddle's own status). See Subscription.access_status."""
+
+    ACTIVE = "active", "Active"
+    GRACE_PERIOD = "grace_period", "Grace period"
+    SUSPENDED = "suspended", "Suspended"
+
+
 class Subscription(UUIDModel, TimestampedModel):
     """One per Clinic — this repo has no Organization/BillingAccount layer
     above Clinic (confirmed via repo audit), so Clinic is the natural,
@@ -103,6 +116,11 @@ class Subscription(UUIDModel, TimestampedModel):
     # stale/out-of-order delivery with an older occurred_at than this must
     # never overwrite newer state. See webhook_processor.py.
     occurred_at = models.DateTimeField(null=True, blank=True)
+    # Set when `status` transitions *into* PAST_DUE, cleared when it
+    # transitions *out of* PAST_DUE (recovered or canceled) — see
+    # webhook_processor.py::_apply_subscription_event. Powers access_status
+    # below; not touched for any other status.
+    grace_period_started_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         db_table = "billing_subscriptions"
@@ -119,6 +137,51 @@ class Subscription(UUIDModel, TimestampedModel):
         does not revoke access — access lasts until the period actually
         ends and Paddle sends the terminal canceled event."""
         return self.status in {SubscriptionStatus.TRIALING, SubscriptionStatus.ACTIVE}
+
+    @property
+    def access_status(self) -> str:
+        """The application's own interpretation of Paddle's status —
+        deliberately a separate concept from `status` itself (see module
+        docstring: Paddle owns billing truth, this is *our* access
+        decision). PAST_DUE gets a grace window before we actually restrict
+        anything; PAUSED/CANCELED (a subscription that *was* paying and
+        stopped) are immediately SUSPENDED.
+
+        INCOMPLETE is deliberately grouped with ACTIVE here, not SUSPENDED
+        — it means checkout hasn't been confirmed *yet* (the normal state
+        for a clinic mid-onboarding), never that access was revoked. Access
+        control for that stage is `Clinic.status` staying `onboarding`
+        (a completely different, pre-existing gate) — this property must
+        not also lock the owner out of finishing checkout in the first
+        place. (Regression caught by apps.clinics.tests.
+        OnboardingBillingGateTests before this shipped.)
+
+        Evaluated lazily at read time (there is no scheduled-job runner in
+        this codebase to flip a stored value the instant a grace period
+        elapses) — see apps/api/auth/deps.py for where this is enforced.
+        """
+        if self.status in {
+            SubscriptionStatus.INCOMPLETE,
+            SubscriptionStatus.TRIALING,
+            SubscriptionStatus.ACTIVE,
+        }:
+            return AccessStatus.ACTIVE
+        if self.status == SubscriptionStatus.PAST_DUE:
+            if self.grace_period_started_at is None:
+                return AccessStatus.GRACE_PERIOD
+            days = getattr(settings, "BILLING_GRACE_PERIOD_DAYS", 7)
+            deadline = self.grace_period_started_at + timedelta(days=days)
+            return AccessStatus.GRACE_PERIOD if timezone.now() < deadline else AccessStatus.SUSPENDED
+        return AccessStatus.SUSPENDED  # PAUSED, CANCELED
+
+    @property
+    def grace_period_ends_at(self):
+        """When the current grace window closes, or None outside one —
+        display-only companion to access_status for the billing UI."""
+        if self.status != SubscriptionStatus.PAST_DUE or self.grace_period_started_at is None:
+            return None
+        days = getattr(settings, "BILLING_GRACE_PERIOD_DAYS", 7)
+        return self.grace_period_started_at + timedelta(days=days)
 
 
 class BillingEventStatus(models.TextChoices):
