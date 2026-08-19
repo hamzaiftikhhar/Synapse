@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 from uuid import UUID
 
@@ -19,6 +20,8 @@ from apps.api.auth.schemas import ClinicOut
 from apps.clinics.features import default_widget_configuration
 from apps.clinics.models import Clinic, ClinicApplication, ClinicApplicationStatus, ClinicStatus
 from apps.notifications.service import NotificationService
+
+logger = logging.getLogger(__name__)
 
 router = Router(tags=["Platform — Super Admin"])
 
@@ -125,6 +128,7 @@ class ClinicApplicationOut(Schema):
     current_scheduling_system: str
     notes: str
     plan_slug: str
+    source: str
     status: str
     rejection_reason: str = ""
     converted_clinic_id: UUID | None = None
@@ -135,6 +139,9 @@ class ApproveApplicationIn(Schema):
     # Auto-derived from clinic_name if omitted — override only if the
     # applicant's name collides or needs adjusting before provisioning.
     slug: str | None = None
+    # Required when the application has no plan_slug of its own (demo
+    # requests never ask the visitor to pick one) — ignored otherwise.
+    plan_slug: str | None = None
 
 
 class RejectApplicationIn(Schema):
@@ -158,6 +165,7 @@ def _application_out(app: ClinicApplication) -> ClinicApplicationOut:
         current_scheduling_system=app.current_scheduling_system,
         notes=app.notes,
         plan_slug=app.plan_slug,
+        source=app.source,
         status=app.status,
         rejection_reason=app.rejection_reason,
         converted_clinic_id=app.converted_clinic_id,
@@ -453,9 +461,16 @@ def approve_application(request, application_id: UUID, payload: ApproveApplicati
 
     from apps.billing.models import Plan, Subscription
 
-    plan = Plan.objects.filter(slug=app.plan_slug, is_active=True).first()
+    plan_slug = (payload.plan_slug or "").strip() or app.plan_slug
+    if not plan_slug:
+        raise HttpError(
+            400,
+            "This application has no plan yet (a demo request) — provide plan_slug "
+            "to approve it.",
+        )
+    plan = Plan.objects.filter(slug=plan_slug, is_active=True).first()
     if plan is None:
-        raise HttpError(400, "The plan requested on this application is no longer available")
+        raise HttpError(400, "The requested plan is no longer available")
 
     slug = slugify(payload.slug)[:64] if payload.slug else ""
     slug = slug or _unique_slug(app.clinic_name)
@@ -473,7 +488,11 @@ def approve_application(request, application_id: UUID, payload: ApproveApplicati
 
     WidgetSettings.objects.create(clinic=clinic, configuration=default_widget_configuration())
 
-    Subscription.objects.create(clinic=clinic, plan=plan)
+    subscription = Subscription.objects.create(clinic=clinic, plan=plan)
+    logger.info(
+        "subscription_created clinic=%s subscription=%s plan=%s",
+        clinic.id, subscription.id, plan.slug,
+    )
 
     name_parts = app.owner_name.strip().split(maxsplit=1)
     first_name = name_parts[0] if name_parts else ""
@@ -498,6 +517,8 @@ def approve_application(request, application_id: UUID, payload: ApproveApplicati
         NotificationService.send_clinic_owner_invite_email(
             to=app.work_email, token=raw, clinic_name=clinic.name, first_name=first_name
         )
+        # Never log the raw token — it's the invite link's credential.
+        logger.info("invitation_sent clinic=%s user=%s", clinic.id, owner.id)
     # An existing (already-active) user simply gets clinic access added —
     # they can just log in, no separate invite needed.
 
