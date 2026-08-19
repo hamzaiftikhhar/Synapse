@@ -3,10 +3,12 @@ both — the old one stays live until the new one is actually confirmed, then
 both changes land atomically in BookingService.confirm.
 
 When the chat session is already OTP-authenticated, picking a concrete slot
-(select_time / select_hero / start with slot_*) calls confirm immediately —
-that *is* the confirm step, so the old appointment is cancelled in that same
-request. Intermediate wizard steps (start without a slot, select_date) must
-still leave the old appointment untouched.
+(select_time / select_hero / start with slot_*) skips straight to the
+REVIEW step rather than calling confirm() directly — the actual confirm
+step is now the explicit confirm_review action, so the old appointment
+stays live through REVIEW too and is only cancelled once that fires.
+Intermediate wizard steps (start without a slot, select_date) must still
+leave the old appointment untouched.
 """
 
 from __future__ import annotations
@@ -91,8 +93,10 @@ class RescheduleAtomicSwapTests(TestCase):
         self.chat_session.refresh_from_db()
         return result["booking_id"]
 
-    def test_authenticated_slot_prefill_confirms_and_cancels_old_together(self):
-        """Authenticated start(slot_*) is the confirm step — create+cancel atomically."""
+    def test_authenticated_slot_prefill_reviews_then_confirms_and_cancels_old_together(self):
+        """Authenticated start(slot_*) lands on REVIEW, not a committed
+        booking — the old appointment must still be untouched there, and
+        only the explicit confirm_review action creates+cancels atomically."""
         new_start = self.old_start.replace(hour=11)
         new_end = new_start + timedelta(minutes=30)
         result = BookingService.start(
@@ -105,8 +109,18 @@ class RescheduleAtomicSwapTests(TestCase):
             slot_end=new_end.isoformat(),
             replaces_appointment_id=str(self.old_appt.id),
         )
+        self.assertEqual(result["step"], BookingStep.REVIEW.value)
+        self.old_appt.refresh_from_db()
+        self.assertEqual(self.old_appt.status, AppointmentStatus.CONFIRMED)
 
-        self.assertEqual(result["step"], BookingStep.CONFIRMED.value)
+        confirmed = BookingService.apply_step(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            booking_id=result["booking_id"],
+            action="confirm_review",
+            value={},
+        )
+        self.assertEqual(confirmed["step"], BookingStep.CONFIRMED.value)
         self.old_appt.refresh_from_db()
         self.assertEqual(self.old_appt.status, AppointmentStatus.CANCELLED)
 
@@ -279,7 +293,15 @@ class RescheduleAtomicSwapTests(TestCase):
             replaces_appointment_id=str(others_appt.id),
         )
 
-        self.assertEqual(result["step"], BookingStep.CONFIRMED.value)
+        self.assertEqual(result["step"], BookingStep.REVIEW.value)
+        confirmed = BookingService.apply_step(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            booking_id=result["booking_id"],
+            action="confirm_review",
+            value={},
+        )
+        self.assertEqual(confirmed["step"], BookingStep.CONFIRMED.value)
         others_appt.refresh_from_db()
         self.assertEqual(others_appt.status, AppointmentStatus.CONFIRMED)
         self.old_appt.refresh_from_db()

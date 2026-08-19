@@ -1,4 +1,10 @@
-"""Authenticated patients must not re-enter DETAILS/OTP after picking a slot."""
+"""Authenticated patients must not re-enter DETAILS/OTP after picking a
+slot — but they must still see a REVIEW step and take an explicit "Confirm
+booking" action before a real Appointment is created. Skipping DETAILS/OTP
+used to mean skipping straight to a committed, CONFIRMED appointment with
+zero deliberate user gesture between picking a time and being told
+"you're confirmed" — these tests originally asserted that old behavior;
+they're updated here to assert the new REVIEW gate instead, not loosened."""
 
 from __future__ import annotations
 
@@ -9,7 +15,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from apps.appointments.models import Appointment, AppointmentStatus
-from apps.chatbot.booking.service import BookingService
+from apps.chatbot.booking.service import BookingError, BookingService
 from apps.chatbot.booking.state import BookingStep
 from apps.chatbot.models import ChatSession, ChatSessionStatus
 from apps.clinics.models import Clinic
@@ -93,7 +99,7 @@ class AuthSkipConfirmTests(TestCase):
         self.slot_start = start.isoformat()
         self.slot_end = end.isoformat()
 
-    def test_select_time_skips_details_when_authenticated(self):
+    def test_select_time_skips_details_to_review_when_authenticated(self):
         started = BookingService.start(
             clinic=self.clinic, chat_session=self.chat_session
         )
@@ -109,6 +115,42 @@ class AuthSkipConfirmTests(TestCase):
                 "doctor": self.doctor.full_name,
             },
         )
+        self.assertEqual(result["step"], BookingStep.REVIEW.value)
+        self.assertEqual(result["review"]["first_name"], "Ali")
+        # Landing on review must not itself create the appointment — only
+        # an explicit confirm_review action does.
+        self.assertFalse(
+            Appointment.objects.filter(clinic=self.clinic, patient=self.patient).exists()
+        )
+
+    def test_confirm_review_creates_the_appointment(self):
+        """The actual new behavior: picking a time only ever *holds* it for
+        an authenticated patient now — the real Appointment is created
+        exactly once, on the explicit confirm_review tap, never before."""
+        started = BookingService.start(
+            clinic=self.clinic, chat_session=self.chat_session
+        )
+        reviewed = BookingService.apply_step(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            booking_id=started["booking_id"],
+            action="select_time",
+            value={
+                "start": self.slot_start,
+                "end": self.slot_end,
+                "doctor_id": str(self.doctor.id),
+                "doctor": self.doctor.full_name,
+            },
+        )
+        self.assertEqual(reviewed["step"], BookingStep.REVIEW.value)
+
+        result = BookingService.apply_step(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            booking_id=started["booking_id"],
+            action="confirm_review",
+            value={},
+        )
         self.assertEqual(result["step"], BookingStep.CONFIRMED.value)
         self.assertEqual(result["confirmation"]["first_name"], "Ali")
         self.assertTrue(
@@ -119,8 +161,24 @@ class AuthSkipConfirmTests(TestCase):
             ).exists()
         )
 
-    def test_slot_prefill_start_skips_details_when_authenticated(self):
-        """Availability-card / hero deep-link into start(slot_*) must also skip."""
+    def test_confirm_review_rejected_before_review_step_reached(self):
+        """A client can't skip straight to confirm_review from an earlier
+        step — there must be something real to confirm."""
+        started = BookingService.start(
+            clinic=self.clinic, chat_session=self.chat_session
+        )
+        with self.assertRaises(BookingError):
+            BookingService.apply_step(
+                clinic=self.clinic,
+                chat_session=self.chat_session,
+                booking_id=started["booking_id"],
+                action="confirm_review",
+                value={},
+            )
+
+    def test_slot_prefill_start_skips_details_to_review_when_authenticated(self):
+        """Availability-card / hero deep-link into start(slot_*) must also skip
+        straight to REVIEW, not all the way to a committed appointment."""
         result = BookingService.start(
             clinic=self.clinic,
             chat_session=self.chat_session,
@@ -129,8 +187,11 @@ class AuthSkipConfirmTests(TestCase):
             slot_start=self.slot_start,
             slot_end=self.slot_end,
         )
-        self.assertEqual(result["step"], BookingStep.CONFIRMED.value)
-        self.assertEqual(result["confirmation"]["first_name"], "Ali")
+        self.assertEqual(result["step"], BookingStep.REVIEW.value)
+        self.assertEqual(result["review"]["first_name"], "Ali")
+        self.assertFalse(
+            Appointment.objects.filter(clinic=self.clinic, patient=self.patient).exists()
+        )
 
     def test_unauthenticated_still_lands_on_details(self):
         self.chat_session.is_authenticated = False
@@ -168,8 +229,109 @@ class AuthSkipConfirmTests(TestCase):
             slot_start=self.slot_start,
             slot_end=self.slot_end,
         )
-        self.assertEqual(result["step"], BookingStep.CONFIRMED.value)
+        self.assertEqual(result["step"], BookingStep.REVIEW.value)
         self.chat_session.refresh_from_db()
         booking = self.chat_session.conversation_context["booking"]
         self.assertEqual(booking["patient_email"], email)
         self.assertFalse((booking.get("patient_phone") or "").startswith("email:"))
+
+
+class NoVerificationModeReviewTests(TestCase):
+    """The clinic's second zero-review bypass: verification_mode="none"
+    used to call BookingService.confirm() directly from submit_details, the
+    instant contact details were typed in — no OTP, no review, nothing.
+    Same fix as the authenticated-session bypass above: land on REVIEW and
+    require an explicit confirm_review action."""
+
+    def setUp(self):
+        from apps.widget.models import WidgetSettings
+
+        self.clinic = Clinic.objects.create(
+            slug="no-verify-clinic",
+            name="No Verify Clinic",
+            email="no-verify@clinic.com",
+            phone="+12125550101",
+            timezone="America/New_York",
+        )
+        WidgetSettings.objects.create(
+            clinic=self.clinic,
+            configuration={"booking": {"verification_mode": "none"}},
+        )
+        self.doctor = Doctor.objects.create(clinic=self.clinic, full_name="Dr. Open")
+        self.target_date = _next_weekday(timezone.localdate().weekday(), from_days_ahead=1)
+        DoctorSchedule.objects.create(
+            clinic=self.clinic,
+            doctor=self.doctor,
+            day_of_week=self.target_date.weekday(),
+            start_time=time(9, 0),
+            end_time=time(11, 0),
+            slot_duration_min=30,
+        )
+        self.chat_session = ChatSession.objects.create(
+            clinic=self.clinic,
+            session_token="tok-no-verify-1",
+            status=ChatSessionStatus.ACTIVE,
+            is_authenticated=False,
+        )
+        start = datetime(
+            self.target_date.year,
+            self.target_date.month,
+            self.target_date.day,
+            9,
+            0,
+            tzinfo=_TZ,
+        )
+        end = start + timedelta(minutes=30)
+        self.slot_start = start.isoformat()
+        self.slot_end = end.isoformat()
+
+    def test_submit_details_lands_on_review_not_confirmed(self):
+        started = BookingService.start(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            doctor_id=str(self.doctor.id),
+            doctor_name=self.doctor.full_name,
+            slot_start=self.slot_start,
+            slot_end=self.slot_end,
+        )
+        self.assertEqual(started["step"], BookingStep.DETAILS.value)
+
+        result = BookingService.apply_step(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            booking_id=started["booking_id"],
+            action="submit_details",
+            value={"first_name": "Sam", "phone": "+15559990000"},
+        )
+        self.assertEqual(result["step"], BookingStep.REVIEW.value)
+        self.assertFalse(Appointment.objects.filter(clinic=self.clinic).exists())
+
+    def test_confirm_review_then_creates_the_appointment(self):
+        started = BookingService.start(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            doctor_id=str(self.doctor.id),
+            doctor_name=self.doctor.full_name,
+            slot_start=self.slot_start,
+            slot_end=self.slot_end,
+        )
+        BookingService.apply_step(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            booking_id=started["booking_id"],
+            action="submit_details",
+            value={"first_name": "Sam", "phone": "+15559990000"},
+        )
+        result = BookingService.apply_step(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            booking_id=started["booking_id"],
+            action="confirm_review",
+            value={},
+        )
+        self.assertEqual(result["step"], BookingStep.CONFIRMED.value)
+        self.assertTrue(
+            Appointment.objects.filter(
+                clinic=self.clinic, status=AppointmentStatus.CONFIRMED
+            ).exists()
+        )
