@@ -666,6 +666,18 @@ export type BookingStepPayload = {
   hold?: { expires_at: string } | null;
   /** Set when a select_hero action's slot was taken between render and tap. */
   stale_hero?: boolean;
+  /** Present on step "review" — same shape as `confirmation` below, minus
+   * the fields that don't exist until the patient taps Confirm. */
+  review?: {
+    slot_summary?: string;
+    doctor_name?: string;
+    service_name?: string;
+    date?: string;
+    start?: string;
+    end?: string;
+    first_name?: string;
+    last_name?: string;
+  } | null;
   confirmation?: {
     confirmation_code?: string;
     appointment_id?: string;

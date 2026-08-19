@@ -428,6 +428,16 @@ export function BookingWizard({
           />
         ) : null}
 
+        {step === "review" && state?.review ? (
+          <ReviewStep
+            review={state.review}
+            patientFirstName={details.first_name || state.review.first_name || ""}
+            brandColor={brandColor}
+            loading={loading}
+            onConfirm={() => void runStep("confirm_review")}
+          />
+        ) : null}
+
         {step === "confirmed" && state?.confirmation ? (
           <ConfirmedStep
             confirmation={state.confirmation}
@@ -445,7 +455,7 @@ export function BookingWizard({
         ) : null}
       </div>
 
-      {interactive && step && step !== "path" ? (
+      {interactive && step && step !== "path" && step !== "review" ? (
         <div className="shrink-0 border-t border-border/70 px-3.5 py-2.5">
           <Button
             type="button"
@@ -1059,6 +1069,65 @@ function OtpStep({
         onClick={onConfirm}
       >
         Confirm appointment
+      </Button>
+    </div>
+  );
+}
+
+function ReviewStep({
+  review,
+  patientFirstName,
+  brandColor,
+  onConfirm,
+  loading,
+}: {
+  review: NonNullable<BookingStepPayload["review"]>;
+  patientFirstName?: string;
+  brandColor?: string;
+  onConfirm: () => void;
+  loading: boolean;
+}) {
+  const accent = brandColor || "var(--primary)";
+  const name = (patientFirstName || review.first_name || "").trim();
+  const headline = name
+    ? `${name}, please review your appointment before we confirm it.`
+    : "Please review your appointment before we confirm it.";
+
+  const timeLabel = formatConfirmTime(review.start);
+  const dateLabel = formatConfirmDate(review.date);
+  const doctor = review.doctor_name?.trim();
+  const primaryLine = [timeLabel, doctor].filter(Boolean).join("  ·  ");
+
+  return (
+    <div className="flex flex-col items-center gap-4 px-1 py-6 text-center">
+      <CalendarCheckIcon color={accent} />
+      <div className="space-y-2">
+        <p className="text-[15px] font-semibold leading-snug text-foreground">
+          {headline}
+        </p>
+        {primaryLine ? (
+          <p className="text-base font-semibold tracking-tight text-foreground">
+            {primaryLine}
+          </p>
+        ) : review.slot_summary ? (
+          <p className="text-sm font-medium text-foreground">{review.slot_summary}</p>
+        ) : null}
+        {dateLabel ? (
+          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+            {dateLabel}
+          </p>
+        ) : null}
+        {review.service_name ? (
+          <p className="text-xs text-muted-foreground">{review.service_name}</p>
+        ) : null}
+      </div>
+      <Button
+        type="button"
+        className="w-full rounded-xl"
+        disabled={loading}
+        onClick={onConfirm}
+      >
+        {loading ? "Confirming…" : "Confirm booking"}
       </Button>
     </div>
   );
