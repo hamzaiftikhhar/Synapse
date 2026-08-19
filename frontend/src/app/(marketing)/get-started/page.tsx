@@ -66,6 +66,7 @@ export default function GetStartedPage() {
         current_scheduling_system: values.current_scheduling_system || "",
         plan_slug: planSlug === "professional" ? "growth" : planSlug,
         notes: values.notes || "",
+        source: "get_started",
       });
       setSubmitted(true);
     } catch (err) {

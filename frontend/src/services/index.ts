@@ -211,10 +211,10 @@ export const platformService = {
     );
     return data;
   },
-  async approveApplication(id: string, slug?: string) {
+  async approveApplication(id: string, options?: { slug?: string; plan_slug?: string }) {
     const { data } = await api.post<import("@/types/api").ApplicationActionResponse>(
       `/platform/applications/${id}/approve`,
-      { slug: slug || null }
+      { slug: options?.slug || null, plan_slug: options?.plan_slug || null }
     );
     return data;
   },

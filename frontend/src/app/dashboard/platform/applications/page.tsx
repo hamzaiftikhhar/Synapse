@@ -6,9 +6,17 @@ import { PageHeader } from "@/components/dashboard/page-header";
 import { EmptyState } from "@/components/dashboard/shell";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { usePlatformApplications } from "@/hooks/api";
+import { usePlans, usePlatformApplications } from "@/hooks/api";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { platformService } from "@/services";
 import { getApiErrorMessage } from "@/lib/api/client";
 import { useRequireSuperAdmin } from "@/features/platform/use-require-super-admin";
@@ -33,7 +41,9 @@ export default function PlatformApplicationsPage() {
   const { data, isLoading } = usePlatformApplications(status, ready);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [reason, setReason] = useState("");
+  const [approvalPlanSlug, setApprovalPlanSlug] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
+  const { data: plans } = usePlans();
 
   async function refresh() {
     await qc.invalidateQueries({ queryKey: queryKeys.platformApplications(status) });
@@ -46,6 +56,7 @@ export default function PlatformApplicationsPage() {
       toast.success(ok);
       setExpandedId(null);
       setReason("");
+      setApprovalPlanSlug("");
       await refresh();
     } catch (err) {
       toast.error(getApiErrorMessage(err));
@@ -93,9 +104,16 @@ export default function PlatformApplicationsPage() {
                 <CardContent className="px-5 py-4">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
-                      <p className="text-sm font-semibold text-navy">{app.clinic_name}</p>
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm font-semibold text-navy">{app.clinic_name}</p>
+                        {app.source === "demo_request" ? (
+                          <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+                            Demo request
+                          </span>
+                        ) : null}
+                      </div>
                       <p className="mt-0.5 text-xs text-muted-foreground">
-                        {app.plan_slug} · {app.owner_name} · {app.work_email}
+                        {app.plan_slug || "No plan yet"} · {app.owner_name} · {app.work_email}
                       </p>
                       <p className="mt-1 text-[11px] text-muted-foreground">
                         {formatWhen(app.created_at)}
@@ -139,6 +157,28 @@ export default function PlatformApplicationsPage() {
                       ) : null}
                       {actionable ? (
                         <div className="space-y-2 pt-1">
+                          {!app.plan_slug ? (
+                            <div className="space-y-1">
+                              <Label className="text-xs text-muted-foreground">
+                                This demo request has no plan yet — choose one to provision
+                              </Label>
+                              <Select
+                                value={approvalPlanSlug}
+                                onValueChange={(value) => setApprovalPlanSlug(value ?? "")}
+                              >
+                                <SelectTrigger size="sm" className="w-full sm:w-56">
+                                  <SelectValue placeholder="Choose a plan…" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {(plans ?? []).map((p) => (
+                                    <SelectItem key={p.slug} value={p.slug}>
+                                      {p.name}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                          ) : null}
                           <Textarea
                             rows={2}
                             placeholder="Rejection reason (optional)"
@@ -164,11 +204,14 @@ export default function PlatformApplicationsPage() {
                             ) : null}
                             <Button
                               size="sm"
-                              disabled={busyId === app.id}
+                              disabled={busyId === app.id || (!app.plan_slug && !approvalPlanSlug)}
                               onClick={() =>
                                 void run(
                                   app.id,
-                                  () => platformService.approveApplication(app.id),
+                                  () =>
+                                    platformService.approveApplication(app.id, {
+                                      plan_slug: approvalPlanSlug || undefined,
+                                    }),
                                   "Clinic provisioned — invite sent"
                                 )
                               }

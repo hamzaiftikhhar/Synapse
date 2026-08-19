@@ -824,6 +824,8 @@ export type ClinicApplicationStatus =
   | "rejected"
   | "converted";
 
+export type ClinicApplicationSource = "get_started" | "demo_request";
+
 export type ClinicApplicationInput = {
   clinic_name: string;
   owner_name: string;
@@ -832,8 +834,11 @@ export type ClinicApplicationInput = {
   website?: string;
   num_doctors?: number | null;
   current_scheduling_system?: string;
-  plan_slug: string;
+  // Required for source "get_started"; omitted/ignored for "demo_request",
+  // which doesn't ask the visitor to pick a plan.
+  plan_slug?: string;
   notes?: string;
+  source: ClinicApplicationSource;
 };
 
 export type ClinicApplicationSubmitResponse = {
@@ -853,6 +858,7 @@ export type ClinicApplication = {
   current_scheduling_system: string;
   notes: string;
   plan_slug: string;
+  source: ClinicApplicationSource;
   status: ClinicApplicationStatus;
   rejection_reason: string;
   converted_clinic_id: string | null;
