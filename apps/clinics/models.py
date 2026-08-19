@@ -96,11 +96,21 @@ class ClinicApplicationStatus(models.TextChoices):
     CONVERTED = "converted", "Converted"
 
 
+class ClinicApplicationSource(models.TextChoices):
+    # The full "Get Started" flow (pricing → plan → application) — plan_slug
+    # is always present for this source.
+    GET_STARTED = "get_started", "Get Started"
+    # The marketing site's lighter "Book a Demo" contact form — no plan
+    # chosen yet; Super Admin picks one at approval time.
+    DEMO_REQUEST = "demo_request", "Demo Request"
+
+
 class ClinicApplication(UUIDModel, TimestampedModel):
-    """A prospective clinic's self-serve "Get Started" submission — the
-    pre-tenant intake record. Never the tenant itself; Super Admin review
-    turns an approved application into a real Clinic + owner ClinicStaff
-    + Subscription (see apps/api/platform/router.py `approve_application`).
+    """A prospective clinic's self-serve submission — the pre-tenant intake
+    record, shared by both entry points named in `ClinicApplicationSource`.
+    Never the tenant itself; Super Admin review turns an approved
+    application into a real Clinic + owner ClinicStaff + Subscription (see
+    apps/api/platform/router.py `approve_application`).
     """
 
     clinic_name = models.CharField(max_length=255)
@@ -111,10 +121,18 @@ class ClinicApplication(UUIDModel, TimestampedModel):
     num_doctors = models.PositiveSmallIntegerField(null=True, blank=True)
     current_scheduling_system = models.CharField(max_length=255, blank=True, default="")
     notes = models.TextField(blank=True, default="")
+    source = models.CharField(
+        max_length=20,
+        choices=ClinicApplicationSource.choices,
+        default=ClinicApplicationSource.GET_STARTED,
+    )
     # The Plan slug requested at submission time (apps.billing.models.Plan) —
     # stored as a slug, not a FK, so this pre-tenant model never depends on
-    # the billing app; resolved to a real Plan only at approval time.
-    plan_slug = models.CharField(max_length=64)
+    # the billing app; resolved to a real Plan only at approval time. Blank
+    # for DEMO_REQUEST submissions, which don't ask the visitor to pick a
+    # plan — approve_application requires one be supplied at approval time
+    # for those.
+    plan_slug = models.CharField(max_length=64, blank=True, default="")
 
     status = models.CharField(
         max_length=16,
