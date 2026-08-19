@@ -189,11 +189,30 @@ TWILIO_FROM_NUMBER = env("TWILIO_FROM_NUMBER", default="")
 OTP_CODE_LENGTH = env.int("OTP_CODE_LENGTH", default=6)
 OTP_EXPIRE_MINUTES = env.int("OTP_EXPIRE_MINUTES", default=10)
 
+# apps.verification — provider-agnostic account/sensitive-action verification.
+# Separate from the OTP_*/TWILIO_* block above, which belongs to the existing
+# patient-booking OTP flow (apps.chatbot.services.otp_service) and is
+# untouched by this app. TWILIO_API_KEY/SECRET (not the main auth token)
+# are Twilio's recommended production credential shape for a Verify Service.
+OTP_PROVIDER = env("OTP_PROVIDER", default="mock")
+TWILIO_API_KEY = env("TWILIO_API_KEY", default="")
+TWILIO_API_SECRET = env("TWILIO_API_SECRET", default="")
+TWILIO_VERIFY_SERVICE_SID = env("TWILIO_VERIFY_SERVICE_SID", default="")
+VERIFICATION_CODE_LENGTH = env.int("VERIFICATION_CODE_LENGTH", default=6)
+VERIFICATION_CODE_TTL_SECONDS = env.int("VERIFICATION_CODE_TTL_SECONDS", default=600)
+VERIFICATION_RESEND_COOLDOWN_SECONDS = env.int(
+    "VERIFICATION_RESEND_COOLDOWN_SECONDS", default=30
+)
+VERIFICATION_MAX_CHECK_ATTEMPTS = env.int("VERIFICATION_MAX_CHECK_ATTEMPTS", default=5)
+
 # Paddle Billing — SaaS subscriptions (clinic owner → plan). Sandbox by
 # default so local/dev/test never accidentally talk to live Paddle.
 PADDLE_ENVIRONMENT = env("PADDLE_ENVIRONMENT", default="sandbox")  # "sandbox" | "live"
 PADDLE_API_KEY = env("PADDLE_API_KEY", default="")
 PADDLE_WEBHOOK_SECRET = env("PADDLE_WEBHOOK_SECRET", default="")
+# How long a past_due subscription keeps full access before
+# Subscription.access_status reports SUSPENDED (see apps/billing/models.py).
+BILLING_GRACE_PERIOD_DAYS = env.int("BILLING_GRACE_PERIOD_DAYS", default=7)
 
 # Frontend / email
 FRONTEND_URL = env("FRONTEND_URL", default="http://localhost:3000")
@@ -203,6 +222,9 @@ EMAIL_PORT = env.int("EMAIL_PORT", default=587)
 EMAIL_HOST_USER = env("EMAIL_HOST_USER", default="")
 EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD", default="")
 EMAIL_USE_TLS = env.bool("EMAIL_USE_TLS", default=True)
+# Internal recipient for platform notifications (new demo requests/
+# applications). Optional — sending is skipped with a log line when unset.
+PLATFORM_NOTIFICATION_EMAIL = env("PLATFORM_NOTIFICATION_EMAIL", default="")
 
 # ─── OpenAI (embeddings + chat) ───────────────────────────────────────────────
 
