@@ -57,6 +57,7 @@ LOCAL_APPS = [
     "apps.notifications.apps.NotificationsConfig",
     "apps.billing.apps.BillingConfig",
     "apps.importer.apps.ImporterConfig",
+    "apps.verification.apps.VerificationConfig",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
