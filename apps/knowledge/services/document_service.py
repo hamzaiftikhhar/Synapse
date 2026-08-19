@@ -24,7 +24,7 @@ class DocumentServiceError(Exception):
     """User-facing upload error (bad file type, storage failure, …)."""
 
 
-ALLOWED_FILE_TYPES = {"pdf"}
+ALLOWED_FILE_TYPES = {"pdf", "csv", "xlsx"}
 
 
 def upload_document(
@@ -39,7 +39,8 @@ def upload_document(
     ext = Path(uploaded_file.name or "").suffix.lower().lstrip(".")
     if ext not in ALLOWED_FILE_TYPES:
         raise DocumentServiceError(
-            f"Unsupported file type: {ext or 'unknown'}. Only PDF is allowed."
+            f"Unsupported file type: {ext or 'unknown'}. "
+            f"Allowed: {', '.join(sorted(t.upper() for t in ALLOWED_FILE_TYPES))}."
         )
 
     try:

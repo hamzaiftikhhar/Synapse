@@ -6,7 +6,9 @@ from django.http import FileResponse
 from ninja import File, Form, Router, UploadedFile
 from ninja.errors import HttpError
 
-from apps.api.auth.deps import clinic_from, jwt_auth
+from apps.accounts.models import AuditAction
+from apps.accounts.services.audit import write_audit
+from apps.api.auth.deps import client_ip, clinic_from, jwt_auth
 from apps.api.knowledge.schemas import ChunkOut, DocumentOut, DocumentUpdateIn
 from apps.knowledge.models import Document, KnowledgeChunk
 from apps.knowledge.services import document_service as docs
@@ -88,7 +90,8 @@ def upload_document(
     title: str = Form(""),
     file: UploadedFile = File(...),  # noqa: B008
 ):
-    """Upload a PDF; ingestion runs in the background (poll GET for status/stage)."""
+    """Upload a document (PDF/CSV/XLSX); ingestion runs in the background
+    (poll GET for status/stage)."""
     clinic = clinic_from(request)
     try:
         document = docs.upload_document(
@@ -102,6 +105,15 @@ def upload_document(
     except docs.DocumentServiceError as exc:
         raise HttpError(400, str(exc)) from exc
 
+    write_audit(
+        action=AuditAction.DOCUMENT_UPLOAD,
+        actor=request.auth.user,
+        clinic=clinic,
+        object_type="document",
+        object_id=str(document.id),
+        metadata={"file_type": document.file_type, "file_name": document.file_name},
+        ip_address=client_ip(request),
+    )
     return 201, _serialize(document)
 
 

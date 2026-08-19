@@ -43,6 +43,10 @@ def ingest_document(
         raise IngestionError(document.error_message)
 
     _set_stage(document, DocumentStatus.PROCESSING, ProcessingStage.EXTRACTING)
+    logger.info(
+        "document_processing_started document=%s clinic=%s file_type=%s",
+        document.id, document.clinic_id, document.file_type,
+    )
     _raise_if_cancelled(document)
 
     try:
@@ -151,7 +155,7 @@ def ingest_document(
             )
 
         logger.info(
-            "Ingested document %s — %s chunks (embeddings=%s)",
+            "document_processing_completed document=%s chunks=%s embeddings=%s",
             document.id,
             document.chunk_count,
             bool(vectors),
@@ -162,7 +166,7 @@ def ingest_document(
         _cancel(document, str(exc))
         raise
     except Exception as exc:
-        logger.exception("Ingestion failed for document %s", document.id)
+        logger.exception("document_processing_failed document=%s", document.id)
         _fail(document, str(exc))
         raise IngestionError(str(exc)) from exc
 
