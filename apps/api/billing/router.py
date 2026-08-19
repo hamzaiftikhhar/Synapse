@@ -29,7 +29,7 @@ from apps.api.billing.schemas import (
     PlanOut,
     SubscriptionOut,
 )
-from apps.billing.models import Plan, Subscription, SubscriptionStatus
+from apps.billing.models import AccessStatus, Plan, Subscription, SubscriptionStatus
 from apps.billing.services import paddle_client
 from apps.billing.services.webhook_processor import SignatureError, process_webhook
 from django.conf import settings
@@ -58,7 +58,17 @@ def _plan_out(plan: Plan) -> PlanOut:
 
 def _subscription_out(sub: Subscription | None) -> SubscriptionOut:
     if sub is None:
-        return SubscriptionOut(status=SubscriptionStatus.INCOMPLETE, has_access=False)
+        # For display only — "no subscription" reads as SUSPENDED here so
+        # the billing UI can tell the customer they need to check out.
+        # apps/api/auth/deps.py's actual access *enforcement* treats a
+        # missing Subscription more leniently (never blocks), so an
+        # operationally-created clinic without billing set up yet isn't
+        # locked out — the two are deliberately different concerns.
+        return SubscriptionOut(
+            status=SubscriptionStatus.INCOMPLETE,
+            has_access=False,
+            access_status=AccessStatus.SUSPENDED,
+        )
     return SubscriptionOut(
         status=sub.status,
         plan=_plan_out(sub.plan) if sub.plan_id else None,
@@ -67,6 +77,8 @@ def _subscription_out(sub: Subscription | None) -> SubscriptionOut:
         cancel_at_period_end=sub.cancel_at_period_end,
         canceled_at=sub.canceled_at,
         has_access=sub.has_access,
+        access_status=sub.access_status,
+        grace_period_ends_at=sub.grace_period_ends_at,
     )
 
 

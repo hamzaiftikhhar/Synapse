@@ -23,6 +23,12 @@ class SubscriptionOut(Schema):
     cancel_at_period_end: bool = False
     canceled_at: datetime | None = None
     has_access: bool = False
+    # "active" | "grace_period" | "suspended" — the app's own access
+    # decision, separate from `status` (Paddle's). Lets the UI show "we
+    # couldn't process your payment, you're still active while we retry"
+    # instead of a hard failure the moment status flips to past_due.
+    access_status: str = "active"
+    grace_period_ends_at: datetime | None = None
 
 
 class CheckoutIn(Schema):
