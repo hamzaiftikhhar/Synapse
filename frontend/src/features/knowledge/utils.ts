@@ -5,6 +5,17 @@ export const ACCEPTED_PDF = {
   extensions: [".pdf"],
 };
 
+export const ACCEPTED_KNOWLEDGE_UPLOAD = {
+  mime: [
+    "application/pdf",
+    "text/csv",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ],
+  extensions: [".pdf", ".csv", ".xlsx"],
+  accept: ".pdf,.csv,.xlsx,application/pdf,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+};
+
 export const PROCESSING_STAGES: {
   id: ProcessingStage;
   label: string;
@@ -24,6 +35,14 @@ export function isPdfFile(file: File): boolean {
     file.type === "application/pdf" ||
     name.endsWith(".pdf") ||
     ACCEPTED_PDF.mime.includes(file.type)
+  );
+}
+
+export function isKnowledgeUploadFile(file: File): boolean {
+  const name = file.name.toLowerCase();
+  return (
+    ACCEPTED_KNOWLEDGE_UPLOAD.mime.includes(file.type) ||
+    ACCEPTED_KNOWLEDGE_UPLOAD.extensions.some((ext) => name.endsWith(ext))
   );
 }
 

@@ -5,12 +5,14 @@ import { toast } from "sonner";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { DataTableShell, EmptyState } from "@/components/dashboard/shell";
 import {
+  ACCEPTED_KNOWLEDGE_UPLOAD,
   DocumentDetailDialog,
   DocumentsTable,
   EditDocumentDialog,
   ProcessingPanel,
   UploadDropzone,
   type UploadItemState,
+  isKnowledgeUploadFile,
   openBlobInNewTab,
   triggerBlobDownload,
 } from "@/features/knowledge";
@@ -170,11 +172,18 @@ export default function KnowledgePage() {
     <div>
       <PageHeader
         title="Knowledge Base"
-        description="Upload clinic PDFs for RAG answers in the patient chatbot."
+        description="Upload clinic documents for RAG answers in the patient chatbot."
       />
 
       <div className="mb-6">
-        <UploadDropzone onFiles={(files) => void runUploads(files)} />
+        <UploadDropzone
+          onFiles={(files) => void runUploads(files)}
+          accept={ACCEPTED_KNOWLEDGE_UPLOAD.accept}
+          validate={isKnowledgeUploadFile}
+          title="Drag & drop documents here"
+          hint="or click to browse · PDF, CSV, XLSX · multiple files supported"
+          rejectionLabel="Supported formats: PDF, CSV, XLSX."
+        />
       </div>
 
       <ProcessingPanel
