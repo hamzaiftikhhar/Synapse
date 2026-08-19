@@ -592,6 +592,618 @@ uncapped catalog fetch, before revisiting deletion.
 
 ---
 
+## SaaS Lifecycle Phases
+
+A separate initiative from the chatbot-pipeline phases above — OTP
+verification, SaaS onboarding, transactional email, and Paddle billing
+lifecycle. Tracked with its own `SaaS-Phase N` numbering rather than folded
+into the chatbot's `Phase N` sequence above, since the two subsystems are
+unrelated and sharing a counter would make both histories harder to read.
+Same working agreement applies (see below): one phase, one focus, report
+before starting the next, every found-but-not-fixed item gets a line here.
+
+Repo audit before any of this started (full detail, not reproduced here):
+staff auth/JWT/multi-tenant membership (`ClinicStaff`, already many-to-many),
+roles, audit logging (`AuditLog`/`write_audit`), password reset/invite/
+activation (`StaffAuthToken`), and Paddle webhook signature verification +
+idempotency were all already real and correct. The actual gaps were
+narrower than the original request assumed: a generic OTP provider
+abstraction (existing OTP was patient-booking-specific, no Twilio Verify
+usage), rate limiting (absent everywhere), HTML email templates (plain-text
+only), reaction to Paddle `transaction.*` events (logged, never applied),
+and a `DemoRequest`-shaped model that turned out to already exist as
+`ClinicApplication`.
+
+### ✅ SaaS-Phase 1 — Verification provider abstraction
+
+**What changed.** New `apps/verification/` app: `VerificationService` (the
+only entry point application code calls) → `OTPProvider` ABC → `MockOTPProvider`
+/ `TwilioVerifyProvider`, selected by `OTP_PROVIDER=mock|twilio`. Both
+providers return one shared `VerificationOutcome` vocabulary
+(`VerificationStatus`: pending/approved/canceled/max_attempts_reached/
+expired/failed/already_verified/not_found/invalid_recipient), so callers
+never branch on which provider is active — proved by an AST-based test that
+`service.py` never imports `twilio` or a concrete provider class.
+
+**Root cause / design notes.**
+- `TwilioVerifyProvider` uses the real Verify API (`Verifications`/
+  `VerificationCheck`), not a hand-rolled state machine, per Twilio's own
+  guidance. No local state — the Verify Service is authoritative. Auth via
+  `TWILIO_API_KEY`/`TWILIO_API_SECRET` (Twilio's recommended production
+  credential shape), separate from the legacy `TWILIO_AUTH_TOKEN` used by
+  the existing raw-SMS sender.
+- `MockOTPProvider` fully simulates the lifecycle locally (hashed-at-rest
+  codes, expiry, resend cooldown, max attempts, already-verified, not-found)
+  since there's no real backend behind it. Codes are always random
+  (`secrets.randbelow`) — never a fixed value. Plaintext code
+  (`dev_code`) is populated only when `settings.DEBUG` is True; Twilio never
+  populates it at all.
+- Wrong code vs. technical failure are kept distinct: an incorrect code with
+  attempts remaining returns `PENDING` (matches Twilio's real semantics);
+  `FAILED` is reserved for actual provider/API errors. An unrecognized
+  Twilio status maps to `FAILED`, never `APPROVED` — the one direction that
+  can't be silently wrong.
+- Phone normalization requires E.164 (`+`-prefixed) input and refuses to
+  guess a country code for a bare local number — this codebase already has
+  one incident this session of a parser guessing wrong (see Phase 12/13
+  above); this abstraction doesn't repeat that mistake.
+- Hardening follow-up: added `apps/verification/checks.py`, a Django system
+  check (`verification.E001`) so `OTP_PROVIDER=twilio` with incomplete
+  credentials fails loudly at `check`/`runserver`/`migrate` time instead of
+  silently degrading every request to `FAILED`. Verified directly (not just
+  by test): partial config (this machine's real `.env`, missing only
+  `TWILIO_VERIFY_SERVICE_SID`) is correctly caught and named.
+
+**Deliberately not done in this phase:** no endpoint wired yet (added in
+Phase 2 below), no UI, no rate limiting, patient-booking OTP
+(`apps.chatbot.services.otp_service`) and the raw-SMS sender
+(`apps.chatbot.integrations.twilio_sms`) both left untouched — confirmed via
+empty `git diff` both before and after.
+
+**Tests.** `apps/verification/tests/` — 50/50 (mock provider lifecycle
+matrix, Twilio provider against a mocked HTTP boundary — no real Twilio
+calls anywhere in the suite, provider-parity contract tests through
+`VerificationService`, system-check tests). Full regression
+(`apps.chatbot.tests apps.knowledge.tests apps.accounts apps.billing
+apps.clinics`) unchanged at 506/506.
+
+**Found but not fixed:** a pre-existing, unrelated `accounts.AuditAction`
+migration drift (confirmed via `git stash` to exist independent of this
+work) — folded into and resolved by SaaS-Phase 2's own accounts migration
+below, since that phase touched the same field.
+
+### ✅ SaaS-Phase 2 — Verification API + rate limiting + audit wiring
+
+**What changed.** Real endpoints: `POST /api/v1/verification/{send,resend,
+check}` (`apps/api/verification/router.py`), staff-authenticated
+(`auth=staff_jwt_auth`) — today's use case is an already-logged-in user
+confirming their own phone number, since in this codebase `accept-invite`
+already issues a JWT before any "optional phone verification" step would
+run. On a genuine `APPROVED` outcome where `to` matches the caller's own
+`User.phone_number`, sets a new `User.phone_verified_at` field (mirrors the
+existing `email_verified_at` pattern exactly, including a `phone_verified`
+property). New `core/ratelimit.py` — a small cache-backed limiter
+(`check_rate_limit(scope, identifier, limit=, window_seconds=)`, raises
+`HttpError(429)`) — applied to the three new verification endpoints
+(per-recipient and per-IP) and retrofitted onto the existing `/auth/login`
+(per-email + per-IP), `/auth/register` (per-IP), and `/auth/forgot-password`
+(per-email + per-IP) endpoints, none of which had any throttling before.
+Three new `AuditAction` values (`phone_verify_requested/approved/failed`)
+wired through the existing `write_audit()` helper — failures are only
+logged for a *terminal* bad outcome (expired/max-attempts/not-found/failed),
+not for every wrong-code keystroke (`PENDING`), to keep the audit log
+meaningful rather than noisy.
+
+**Root cause / design notes.**
+- Rate limiter is intentionally minimal: `django.core.cache.cache` with an
+  atomic `incr`/`set` pattern, no new dependency. Honest limitation
+  documented in the module's own docstring: correct today (default
+  `LocMemCache`, single process); a production deployment running multiple
+  worker processes/machines needs a shared cache backend (Redis/memcached)
+  for the counts to be accurate across workers — a deployment config change,
+  not a code change.
+- The 429 error message never echoes the rate-limited identifier (email/
+  phone/IP) — covered by a dedicated test — so a 429 response can't be used
+  to enumerate which emails/numbers exist.
+- Generated the `accounts` migration for `phone_verified_at`; Django folded
+  the pre-existing `AuditAction` choices drift (flagged, not fixed, in
+  Phase 1) into the same migration since it's the same field — confirmed
+  `makemigrations --check` is clean repo-wide afterward.
+- Real bugs caught and fixed during this phase's own test-writing, not
+  shipped: router tests initially used `**self.headers` instead of Django
+  test client's `headers=self.headers` kwarg, so every "authenticated" call
+  was silently hitting the endpoint unauthenticated (401) and the
+  assertions were vacuous; a rate-limit test asserted per-email isolation
+  without accounting for the *also-real* per-IP limiter interfering, since
+  the test client reuses one IP for every request — fixed by simulating
+  distinct `X-Forwarded-For` values per email in that one test, not by
+  weakening either limiter.
+
+**Tests.** `apps/accounts/tests.py` (new `AuthEndpointRateLimitTests`),
+`apps/verification/tests/test_router.py` (new — auth gating, audit writes,
+`phone_verified_at` side effect including the *no*-side-effect-on-a-
+different-number case, cross-tenant audit scoping, rate limiting, invalid
+recipient never 500s), `core/tests.py` (new `RateLimitTests`). 78/78 for
+`apps.accounts apps.verification core`. Full regression
+(`apps.chatbot.tests apps.knowledge.tests apps.billing apps.clinics`)
+unchanged at 499/499.
+
+**Found but not fixed:** none new this phase.
+
+**Recommended next:** SaaS-Phase 3 (demo request → Super Admin, reusing
+`ClinicApplication` rather than a new model).
+
+### ✅ SaaS-Phase 3 — Demo request → Super Admin
+
+**What changed.** The marketing site's "Book a Demo" form
+(`/contact`) was a UI-only stub with no backend ("This form is UI-only until
+a contact API exists"). Rather than building the `DemoRequest` model/status-
+machine/admin-queue the original request sketched, extended the existing
+`ClinicApplication` — confirmed field-for-field structurally identical
+(name/email/phone/org name/message → status → super-admin review →
+convert). Added `ClinicApplicationSource` (`get_started`/`demo_request`) and
+made `plan_slug` optional (blank for demo requests, which don't ask the
+visitor to commit to a plan). `POST /applications` now accepts `source` and
+only requires a valid `plan_slug` for the `get_started` source.
+`approve_application` gained an optional `plan_slug` override on
+`ApproveApplicationIn`, required when the application itself has none.
+`/contact` is now a real, controlled form posting to the same endpoint
+`/get-started` already uses. Super Admin's applications list
+(`dashboard/platform/applications`) shows a "Demo request" badge and, for a
+plan-less application, a plan picker (reusing the existing `usePlans()`
+hook) that must be filled before "Approve & provision" is enabled.
+
+New internal-team notification email
+(`NotificationService.send_demo_request_notification_email`, new
+`PLATFORM_NOTIFICATION_EMAIL` setting, deep-links to
+`/dashboard/platform/applications` — there's no per-record detail route, so
+that's the accurate link) fires once per new application (not on
+resubmission), for both sources — this is the one genuinely new email in
+this phase, since the existing `send_application_received_email` is
+applicant-facing. Demo requests get a distinct, lighter applicant
+confirmation (`send_demo_request_received_email` — "We received your demo
+request", not "application") rather than reusing the plan-application
+copy.
+
+**Root cause / design notes.**
+- Silently skips (with a log line, not an error) when
+  `PLATFORM_NOTIFICATION_EMAIL` is unset — matches this codebase's existing
+  pattern for every other optional integration (Twilio/Paddle unconfigured
+  in local dev).
+- An unrecognized `source` value falls back to `get_started` rather than
+  rejecting the request — a demo-request-shaped submission from an old
+  cached frontend build should never suddenly 400.
+- `approve_application`'s error message when no plan is resolvable
+  (`payload.plan_slug` and `app.plan_slug` both empty) names the actual
+  problem ("this application has no plan yet — provide plan_slug") instead
+  of the pre-existing generic "plan no longer available" message, which
+  would have been actively misleading for a demo request that never had a
+  plan to begin with.
+
+**Tests.** `apps/api/applications/tests.py` (new `DemoRequestSubmissionTests`
+— no-plan-required, plan_slug ignored/cleared for demo requests, correct
+applicant email copy per source, internal notification sent/skipped/not-
+duplicated-on-resubmission), `apps/api/platform/tests.py` (new
+`DemoRequestApprovalTests` — approval blocked without a plan with a clear
+message, approval succeeds with a plan override, unknown override plan
+rejected). 612/612 across
+`apps.chatbot.tests apps.knowledge.tests apps.accounts apps.verification
+apps.billing apps.clinics apps.api.applications apps.api.platform core`.
+`npx tsc --noEmit` clean except one pre-existing, unrelated error in
+`insurance-card.tsx` (confirmed via empty `git status` on that file — not
+touched this phase).
+
+**Found but not fixed:** the pre-existing `insurance-card.tsx:13` possibly-
+null `plan` TypeScript error noted above — unrelated to this phase, not
+fixed to keep the change scoped.
+
+**Recommended next:** SaaS-Phase 4 (email templates + billing lifecycle
+emails — the biggest remaining gap, since email today is plain-text only
+and Paddle's `transaction.*` events are logged but never acted on).
+
+### ✅ SaaS-Phase 4 — Email templates + billing lifecycle emails
+
+**What changed.** New `apps/notifications/templating.py::render_email()` —
+one Django HTML template per email (`templates/emails/*.html`, extending a
+shared `base.html` layout) renders both parts; plain text is *derived* from
+the HTML via `strip_tags()` rather than hand-maintained as a second copy
+that drifts. `NotificationService.send_templated_email()` is purely
+additive on top of the existing `send_email`/`EmailProvider` machinery —
+every pre-existing plain-text email method is untouched. Six new billing
+lifecycle emails (`send_payment_successful_email`,
+`send_payment_failed_email`, `send_payment_past_due_email`,
+`send_payment_recovered_email`, `send_subscription_paused_email`,
+`send_subscription_canceled_email`), each with its own template.
+
+Wired into `apps/billing/services/webhook_processor.py`, the one real gap
+found in Phase 1's audit of otherwise-correct webhook handling:
+`transaction.completed` → payment successful, `transaction.payment_failed`
+→ payment failed, `transaction.past_due` → payment past due (a new
+`_apply_transaction_event`, resolving the Subscription via the existing
+`_find_subscription` without mutating it — transaction events are money-
+movement notifications, `subscription.*` events already own state).
+`_apply_subscription_event` now captures `previous_status` before mutation
+and a new `_send_status_transition_email` fires on genuine transitions
+only: →paused, →canceled, and specifically `past_due→active` as "payment
+recovered" (not any other transition into active, e.g. trialing→active,
+which isn't a recovery).
+
+**Root cause / design notes.**
+- Deliberately did **not** wire `transaction.paid` — Paddle can fire both
+  `completed` and `paid` for one real payment, and `completed` is what
+  Paddle's own docs point to for fulfillment confirmation; wiring both
+  risks double-notifying a customer for a single payment.
+- Duplicate webhook delivery must not double-send. `_apply_subscription_event`
+  was already safe (its own `occurred_at` staleness guard returns before
+  reaching the save+email code on a redelivery). `_apply_transaction_event`
+  has no state of its own to check against, so it takes an explicit
+  `send_email: bool` from the caller — `not already_processed`, using the
+  exact boolean `process_webhook` already computes for its own idempotency
+  check. Verified with a real duplicate-delivery test (same signed body,
+  same `event_id`, posted twice) — exactly one email.
+- Clinic-id resolution in `process_webhook` was scoped to `event_type.
+  startswith("subscription.")` only; extended to also cover `"transaction."`
+  so `BillingEvent.clinic_id` gets backfilled for transaction events too,
+  reusing the existing (already-correct) `_find_subscription`/
+  `_resolve_clinic_id` machinery rather than writing a second lookup path.
+- Templates use inline styles (email clients don't reliably support
+  external/`<style>`-block CSS) and a table-based layout for client
+  compatibility; brand colors pulled from the actual frontend
+  (`--navy: #0b0e2e`, `--primary: #5b21b6` in `globals.css`) rather than
+  invented. CTA links point at `/dashboard/billing` (confirmed to exist).
+  No unsubscribe link — every one of these is transactional, not marketing,
+  per the original request's own instruction not to conflate the two.
+
+**Tests.** `apps/notifications/tests.py` (new — every template renders
+valid HTML with a clean derived text part, missing context doesn't crash,
+CTA button correctly present/absent), `apps/billing/tests/
+test_lifecycle_emails.py` (new — one test per transaction event type, the
+deliberate `transaction.paid` non-wiring, unresolvable customer / no-email
+clinic graceful skips, every transition case including the two "must NOT
+send" cases: redundant same-status redelivery, and trialing→active not
+mislabeled as a recovery). 630/630 across `apps.chatbot.tests
+apps.knowledge.tests apps.accounts apps.verification apps.billing
+apps.clinics apps.api.applications apps.api.platform apps.notifications
+core`.
+
+**Found but not fixed:** none new this phase.
+
+**Recommended next:** SaaS-Phase 5 (billing state machine — an explicit
+internal access-state layer, e.g. a grace period between `past_due` and
+actually restricting access, distinct from Paddle's own subscription
+status).
+
+### ✅ SaaS-Phase 5 — Billing state machine: grace period + suspension
+
+**What changed.** New `Subscription.access_status` property (`active` /
+`grace_period` / `suspended`) and `grace_period_ends_at`, plus a new
+`grace_period_started_at` field — deliberately a separate concept from
+`Subscription.status` (Paddle's own vocabulary), per the module's own
+docstring on why the two are decoupled. `_apply_subscription_event` now
+starts the grace timer the instant a subscription first enters `past_due`
+and clears it the instant it leaves (recovered or canceled) — never reset
+by a redundant redelivery of the same status.
+
+The enforcement discovery for this phase: `apps/api/auth/deps.py` already
+had a `_blocked_status()` helper checked on **every** authenticated
+request via `StaffJWTAuth.authenticate()`/`PatientJWTAuth.authenticate()`
+(not just at login) — for `Clinic.status` suspension/cancellation only.
+Extended it with `_billing_blocked()`, which checks
+`subscription.access_status == SUSPENDED`, gracefully returning "not
+blocked" when a clinic has no `Subscription` row at all (super-admin-
+created clinics, seed/demo data never had one). This gets billing
+enforcement across the whole staff dashboard *and* the patient booking
+widget for free, correctly, without adding a new gate.
+
+`GET /billing/subscription` now also returns `access_status` and
+`grace_period_ends_at` so the billing UI can show "we couldn't process
+your payment, you're still active while we retry" instead of a hard
+failure the moment status flips to `past_due` (Part 18's own example).
+One new email: `send_account_reactivated_email`, fired specifically on a
+`paused→active` transition — distinct from `send_payment_recovered_email`
+(Phase 4), which is specifically `past_due→active` and uses payment-
+failure framing that would be wrong copy for "someone just resumed a
+voluntarily-paused subscription."
+
+**A real regression was caught by this phase's own full-suite run, not
+shipped:** the first version of `access_status` mapped
+`SubscriptionStatus.INCOMPLETE` (the normal state for a clinic mid-
+onboarding, before Paddle confirms checkout — not a billing failure) into
+`SUSPENDED`, alongside `PAUSED`/`CANCELED`. Wired into `_billing_blocked`,
+this meant a clinic owner would get 401'd out of their own account while
+trying to *complete* onboarding, before they'd ever had a chance to pay —
+caught by `apps.clinics.tests.OnboardingBillingGateTests.
+test_complete_with_pending_subscription_stays_onboarding` failing with 401
+instead of 200 on the very next full-regression run. Root cause: conflating
+"never started paying" with "was paying, then stopped" under one status.
+Fixed by grouping `INCOMPLETE` with `ACTIVE`/`TRIALING` in `access_status`
+— access control for the onboarding stage is `Clinic.status` staying
+`onboarding` (a separate, pre-existing gate); this property must only
+reflect an actual billing *problem*. A regression test was added at both
+the property level (`test_incomplete_is_active_not_suspended`) and the
+enforcement level (`test_incomplete_subscription_is_not_blocked`), not
+just the one that happened to catch it.
+
+**Root cause / design notes.**
+- Grace-period exhaustion is evaluated **lazily**, at read time
+  (`access_status` computes against `timezone.now()` on every access), not
+  by a scheduled job flipping a stored value — this codebase has no
+  Celery/cron runner. This is an honest, deliberate limitation: there is no
+  way to send a proactive "your account has just been suspended" email at
+  the exact moment a grace period lapses without one. The customer already
+  received the payment-failed/past-due emails (Phase 4) before that point,
+  and will see a clear 403 the next time they try to use the app after
+  expiry — but no new email fires at the exact suspension instant. Flagged
+  here rather than built around with a hack.
+- `Clinic.status` itself is deliberately **not** mutated by billing
+  suspension — kept as two separate signals (`Clinic.status` is admin-
+  controlled, with its own meaning; `Subscription.access_status` is
+  billing-derived) rather than one flipping the other and risking drift
+  between an admin's manual suspension and a billing-driven one.
+- `GET /billing/subscription` reports `access_status="suspended"` for a
+  clinic with **no** `Subscription` row at all — deliberately inconsistent
+  with `_billing_blocked`'s more lenient "never blocks" stance for that
+  same case, and deliberately so: one is a display concern ("tell the
+  truth about billing status"), the other an operational safety net ("don't
+  lock out a clinic we forgot to bill"). Documented inline at both sites.
+
+**Tests.** `apps/billing/tests/test_access_status.py` (new — every
+`SubscriptionStatus` → `access_status` mapping including the INCOMPLETE
+regression, grace-window boundary cases, configurable grace days, real
+webhook-driven timer set/clear/no-redundant-reset, the `/billing/
+subscription` endpoint's exposed fields), `apps/billing/tests/
+test_lifecycle_emails.py` (new `account_reactivated` case, confirming it's
+distinct from `payment_recovered`), `apps/accounts/tests.py` (new
+`BillingAccessEnforcementTests` — every status against a real
+`GET /auth/me` call, the no-subscription safety net, the INCOMPLETE
+regression, and confirming `Clinic.status` suspension keeps working
+independently). 654/654 across `apps.chatbot.tests apps.knowledge.tests
+apps.accounts apps.verification apps.billing apps.clinics
+apps.api.applications apps.api.platform apps.notifications core`
+(caught the regression above, then confirmed clean after the fix).
+
+**Found but not fixed:** the lazy-evaluation "no proactive suspension
+email" gap described above — would need a scheduled-job mechanism (this
+repo has none) to close properly; not building one as a side effect of
+this phase.
+
+**Recommended next:** SaaS-Phase 6 (onboarding: knowledge-base upload
+formats beyond PDF, readiness-checklist copy).
+
+### ✅ SaaS-Phase 6 — Knowledge-base upload formats; onboarding UX verified, not changed
+
+**What changed.** `apps/knowledge`'s upload pipeline accepts CSV/XLSX
+alongside PDF. `apps/knowledge/pipeline/extract.py` gained
+`_extract_tabular_pages()`, reusing `apps.importer.services.parser`'s
+`parse_csv`/`parse_xlsx` (headers, rows, BOM/encoding handling, malformed-
+file guards) rather than a second parsing implementation — a genuinely
+different downstream use than the importer's own (rows become readable
+`"Header: value"` text blocks for chunking/embedding, not mapped entity
+fields), but the same parsing layer. The whole table becomes one `PageText`
+"page"; downstream chunking already handles splitting long text, exactly as
+it does for a long PDF page — no changes needed anywhere past extraction.
+`document_service.ALLOWED_FILE_TYPES` extended to `{pdf, csv, xlsx}`.
+Frontend: `UploadDropzone` (already generic — `accept`/`validate`/`hint`
+props existed from prior work) wired with a new
+`isKnowledgeUploadFile`/`ACCEPTED_KNOWLEDGE_UPLOAD` in
+`features/knowledge/utils.ts` at the one real call site
+(`dashboard/knowledge/page.tsx`).
+
+**Root cause / design notes.**
+- Legacy `.xls` (binary Excel) is deliberately unsupported — matches
+  `apps.importer`'s own existing scope decision (`SUPPORTED_FILE_TYPES =
+  {"csv", "xlsx"}`), and adding a second Excel-parsing library for an aging
+  format nothing in this codebase already needs isn't justified.
+- **Investigated, found already correct, changed nothing:** the plan called
+  for improving onboarding-readiness-checklist copy per the original
+  request's example ("Missing: • Clinic hours • Doctor availability...").
+  Direct inspection of `frontend/src/features/onboarding/steps/
+  review-step.tsx` and `components/dashboard/setup-checklist.tsx` found
+  this already fully built — both render the complete missing-items list
+  from `GET /me/onboarding-status`'s checklist (not a single error
+  message), each item links directly to the step that fixes it, and the
+  wizard's "Go to Dashboard" button is `disabled` until every required item
+  is ready. The backend's single-item `_MISSING_MESSAGES`/400 path in
+  `complete_onboarding` is consequently unreachable from the actual UI (the
+  button can't be clicked while anything is missing) — left as-is, since
+  it's a reasonable defensive fallback for a direct API call and improving
+  its wording further has no user-facing effect through any real screen in
+  this app.
+
+**Tests.** `apps/knowledge/tests/test_extract_tabular.py` (new — CSV/XLSX
+→ readable text blocks, empty values omitted, header-only/malformed-
+encoding/missing-file/unsupported-type all raise `ExtractionError` cleanly,
+never leak a raw exception type), `apps/knowledge/tests/
+test_upload_file_types.py` (new — CSV/XLSX/PDF accepted, unsupported types
+and legacy XLS still rejected with a clear message). 667/667 across
+`apps.chatbot.tests apps.knowledge.tests apps.accounts apps.verification
+apps.billing apps.clinics apps.api.applications apps.api.platform
+apps.notifications core`. `npx tsc --noEmit` clean except the same one
+pre-existing, unrelated `insurance-card.tsx` error noted in SaaS-Phase 3.
+
+**Found but not fixed:** none new this phase.
+
+**Recommended next:** SaaS-Phase 7 (observability + security hardening —
+structured logging for the event list from the original request, confirm
+no secret is ever logged, `.env.example` sweep).
+
+### ✅ SaaS-Phase 7 — Observability + security hardening
+
+**What changed.** Structured `logger.info(...)` lines added for every event
+in the original request's observability list that wasn't already covered:
+`demo_request_created` (`apps/api/applications/router.py`, on first
+creation only, matching the existing dedup-on-resubmission pattern),
+`subscription_created` + `invitation_sent` (`apps/api/platform/router.py`
+`approve_application`), `document_processing_started` (join the pre-
+existing `completed`/`failed` lines, renamed to the same `document_
+processing_*` vocabulary for consistency/greppability), `subscription_
+past_due` / `subscription_suspended` / `subscription_reactivated`
+(`webhook_processor.py::_send_status_transition_email` — logs the
+transition even for a clinic with no email on file, since logging and
+notifying are separate concerns; this was a real gap, since the function
+previously returned before doing anything at all when `clinic.email` was
+empty), `payment_succeeded` / `payment_failed` / `payment_past_due`
+(`_apply_transaction_event`, gated on the same `send_email` dedup flag so
+a duplicate webhook redelivery doesn't double-log either). Also added the
+one missing `AuditLog` entry for an event that already had an `AuditAction`
+enum value defined but was never actually written anywhere:
+`DOCUMENT_UPLOAD`, now written in `apps/api/knowledge/router.py`'s upload
+endpoint (previously only a plain `logger.info` in the service layer, not
+in the Super Admin's audit trail).
+
+Already covered before this phase, confirmed by direct inspection rather
+than assumed: `account_created` (`REGISTER` audit), `account_activated`
+(`EMAIL_VERIFY`/`INVITE_ACCEPTED` audit), `password_reset_requested`
+(`PASSWORD_RESET` audit), `otp_requested`/`otp_verified`/`otp_failed`
+(`PHONE_VERIFY_*` audit, SaaS-Phase 2).
+
+**Security verification, not just logging additions:**
+- Every `logger.*` call across all SaaS-lifecycle code (verification,
+  billing, applications, platform, knowledge, notifications, auth) read
+  and manually checked, one by one — none logs a password, OTP code,
+  activation/invite/reset token, or Twilio/Paddle secret. The two
+  `exc.code` log calls in `TwilioVerifyProvider` log Twilio's numeric
+  *error* code (e.g. `20404`), never request/response payloads or
+  credentials. `webhook_processor.py::verify_signature` — the one function
+  in this codebase that directly handles a webhook secret — has zero
+  logging calls of any kind.
+- `.env.example` cross-checked against every setting actually declared in
+  `config/settings/base.py` from this session's work — found and fixed two
+  real gaps: `BILLING_GRACE_PERIOD_DAYS` and `PLATFORM_NOTIFICATION_EMAIL`
+  were usable settings with no documented example. While in there, also
+  documented three settings that predate this session but had no
+  `.env.example` entry at all (`FRONTEND_URL`, `DEFAULT_FROM_EMAIL`, the
+  `EMAIL_*` SMTP block) — genuinely in scope for "a full sweep," not
+  unrelated cleanup, since this session's own new billing/notification
+  emails depend on `FRONTEND_URL` being set correctly. Scanned the file for
+  anything real-looking (`sk-`, Twilio SID/key patterns, Paddle key
+  patterns) — clean, placeholders/blank only.
+- Secret rotation for the previously-flagged Twilio dev credentials is the
+  user's own action (confirmed explicitly), not performed here.
+
+**Tests.** No new dedicated test suite — these are additive `logger.info`
+calls with no behavioral change, verified by running the full regression
+unchanged rather than writing tests that assert on log message strings
+(low value for the churn risk of pinning log wording). 667/667 across
+`apps.chatbot.tests apps.knowledge.tests apps.accounts apps.verification
+apps.billing apps.clinics apps.api.applications apps.api.platform
+apps.notifications core` — identical count to SaaS-Phase 6, confirming
+zero behavioral change.
+
+**Found but not fixed:** none new this phase.
+
+**Recommended next:** SaaS-Phase 8 (one end-to-end journey test spanning
+demo request → approval → invite → activation → onboarding → document
+upload → verification → billing lifecycle; then a full, honestly-reported
+regression baseline for the whole initiative).
+
+### ✅ SaaS-Phase 8 — End-to-end journey test + final regression baseline
+
+**What changed.** One real, HTTP-driven `TestCase`
+(`apps/billing/tests/test_e2e_saas_lifecycle.py`) walking the entire chain
+built across SaaS-Phases 1–7 in chronological order: demo request submitted
+→ Super Admin approves with a plan override → owner accepts the invite →
+onboarding checklist filled in and `complete_onboarding` correctly defers
+to the billing step (real Subscription, not yet paid) → CSV knowledge-base
+upload → phone verification via the mock provider → Paddle confirms the
+subscription and the clinic activates → a successful payment → a failed
+payment enters grace period (access still granted) → payment recovers →
+subscription is canceled and the owner's own JWT is locked out on its very
+next use. Every step goes through the real endpoint, not direct model
+manipulation, except the onboarding prerequisites themselves
+(doctor/service/hours/availability), which are pre-existing, separately-
+tested CRUD — what this test verifies is that the onboarding-readiness
+read path correctly sees them, not that creating a doctor works.
+
+**Deliberately not extended into a real patient booking flow** — that's a
+separate, pre-existing, already-extensively-tested subsystem (the chatbot-
+pipeline phases earlier in this file). Re-deriving it here would test
+something this initiative didn't touch, not something it did; the E2E test
+says so explicitly in its own module docstring rather than silently
+narrowing scope.
+
+**Final baseline for the whole SaaS-lifecycle initiative** (SaaS-Phases
+1–8, `apps.chatbot.tests apps.knowledge.tests apps.accounts
+apps.verification apps.billing apps.clinics apps.api.applications
+apps.api.platform apps.notifications core`):
+
+- **668/668 tests pass.** Zero pre-existing failures folded in — every
+  number reported in every phase above was reproduced fresh at that
+  phase's own boundary, not carried forward as an assumption.
+- `python manage.py makemigrations --check` — clean, zero pending
+  migrations across the whole repo (this also resolved a pre-existing,
+  unrelated `accounts.AuditAction` migration drift, found in SaaS-Phase 1
+  and folded into SaaS-Phase 2's own migration since it touched the same
+  field).
+- Chatbot eval battery: **674/682 (98.8%)** — identical to the baseline
+  recorded before this initiative started, with the same two known, pre-
+  existing, unrelated failures (`squeeze me in`, pediatric slang).
+  Confirms zero regression to the chatbot pipeline despite eight phases of
+  unrelated work in the same repository.
+- `npx tsc --noEmit` — clean except one pre-existing, unrelated error in
+  `insurance-card.tsx:13` (confirmed via empty `git status` on that file at
+  every phase boundary it was checked — never touched by this work).
+- One real regression was caught and fixed during this initiative, not
+  shipped: SaaS-Phase 5's `access_status` originally suspended
+  `SubscriptionStatus.INCOMPLETE` (the normal pre-payment onboarding
+  state), which would have 401'd clinic owners out of their own accounts
+  mid-checkout. Caught by this repo's own full-regression discipline
+  (`apps.clinics.tests.OnboardingBillingGateTests`), root-caused, fixed
+  with a one-line change, and given regression tests at both the property
+  and enforcement layers — documented in full under SaaS-Phase 5 above.
+
+**Known limitations, stated plainly (not fixed as a side effect of this
+phase):**
+- No scheduled-job/cron infrastructure exists anywhere in this repo. Grace-
+  period exhaustion is evaluated lazily at request time; there is no
+  proactive "your account was just suspended" email at the exact moment a
+  grace period lapses (SaaS-Phase 5).
+- `PLATFORM_NOTIFICATION_EMAIL`/SMTP are both optional and silently
+  no-op when unset in local dev — by design, matching the rest of this
+  codebase's optional-integration pattern, but worth remembering when
+  testing the demo-request flow manually.
+- Rate limiting (`core/ratelimit.py`) is correct under the default
+  single-process `LocMemCache`; a real multi-worker production deployment
+  needs a shared cache backend (Redis/memcached) for the counts to be
+  accurate across workers — a deployment configuration change, not a code
+  change (SaaS-Phase 2).
+- Legacy `.xls` (binary Excel) is not supported for knowledge-base uploads,
+  matching `apps.importer`'s own existing scope decision (SaaS-Phase 6).
+- `TwilioVerifyProvider` is built and fully tested against a mocked HTTP
+  boundary but has never been exercised against the real Twilio Verify API
+  — this project's own Twilio account is a trial account that can't
+  reliably send real Verify SMS yet (stated as a known constraint at the
+  very start of this initiative).
+
+**Manual testing checklist** (for exercising this locally with a browser,
+not just the automated suite):
+1. `OTP_PROVIDER=mock` (default) — visit `/contact`, submit a demo request,
+   confirm it appears in Super Admin → Applications with a "Demo request"
+   badge and no plan shown.
+2. Approve it, picking a plan from the picker that appears specifically
+   because it has none — confirm a Clinic + invite email (console output in
+   dev) appear.
+3. Accept the invite, set a password, log in, complete onboarding —
+   confirm the clinic lands on the billing step rather than activating
+   immediately (a real Subscription exists, unpaid).
+4. Upload a `.csv` file on the Knowledge Base page — confirm it's accepted
+   and processes to "Indexed".
+5. From an authenticated session, `POST /api/v1/verification/send` then
+   `/check` with the `dev_code` from the response (visible because `OTP_
+   PROVIDER=mock` and `DEBUG=True`) — confirm `approved`.
+6. Simulate the Paddle webhooks in this phase's E2E test manually (or with
+   real sandbox Paddle checkout) to watch the clinic activate, then a
+   `past_due` → `active` cycle, then `canceled` — confirm the owner's
+   session is rejected on the next request after cancellation.
+
+**This closes the SaaS Lifecycle initiative (SaaS-Phases 1–8) as
+originally scoped in the plan approved at the start.** Further work
+(the dormant knowledge-base multi-format edge cases, a scheduled-job layer
+for proactive suspension emails, real Twilio Verify sandbox testing) is
+each its own future phase, not started here.
+
+---
+
 ## Working agreement (why phases stay this small)
 
 - One phase, one focus. Report before starting the next.
