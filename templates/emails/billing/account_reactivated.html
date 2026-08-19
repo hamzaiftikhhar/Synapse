@@ -1,0 +1,11 @@
+{% extends "emails/base.html" %}
+{% block title %}Welcome back{% endblock %}
+{% block content %}
+<h1 style="margin:0 0 16px;font-size:20px;color:#0b0e2e;">Welcome back</h1>
+<p style="margin:0 0 12px;">Hi there,</p>
+<p style="margin:0 0 12px;">
+  Your subscription for <strong>{{ clinic_name }}</strong> is active again — everything's ready
+  to go.
+</p>
+{% include "emails/_cta_button.html" with cta_url=cta_url cta_label="Go to dashboard" %}
+{% endblock %}

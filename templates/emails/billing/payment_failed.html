@@ -1,0 +1,14 @@
+{% extends "emails/base.html" %}
+{% block title %}We couldn't process your payment{% endblock %}
+{% block content %}
+<h1 style="margin:0 0 16px;font-size:20px;color:#0b0e2e;">We couldn't process your payment</h1>
+<p style="margin:0 0 12px;">Hi there,</p>
+<p style="margin:0 0 12px;">
+  We tried to charge the payment method on file for <strong>{{ clinic_name }}</strong> and it
+  didn't go through. Your account remains active while we retry.
+</p>
+{% include "emails/_cta_button.html" with cta_url=cta_url cta_label="Update payment method" %}
+<p style="margin:16px 0 0;color:#6b7085;">
+  If your payment method is still current, no action is needed — we'll try again automatically.
+</p>
+{% endblock %}

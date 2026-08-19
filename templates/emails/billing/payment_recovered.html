@@ -1,0 +1,12 @@
+{% extends "emails/base.html" %}
+{% block title %}Payment recovered{% endblock %}
+{% block content %}
+<h1 style="margin:0 0 16px;font-size:20px;color:#0b0e2e;">You're all set</h1>
+<p style="margin:0 0 12px;">Hi there,</p>
+<p style="margin:0 0 12px;">
+  Good news — we successfully charged the payment method on file for
+  <strong>{{ clinic_name }}</strong> and your account is back in good standing. Thanks for
+  updating your details.
+</p>
+{% include "emails/_cta_button.html" with cta_url=cta_url cta_label="View billing" %}
+{% endblock %}

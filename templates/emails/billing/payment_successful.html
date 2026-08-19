@@ -1,0 +1,14 @@
+{% extends "emails/base.html" %}
+{% block title %}Payment successful{% endblock %}
+{% block content %}
+<h1 style="margin:0 0 16px;font-size:20px;color:#0b0e2e;">Payment successful</h1>
+<p style="margin:0 0 12px;">Hi there,</p>
+<p style="margin:0 0 12px;">
+  We've received your payment for <strong>{{ clinic_name }}</strong>{% if plan_name %} on the
+  <strong>{{ plan_name }}</strong> plan{% endif %}. Thanks for staying with Synapse.
+</p>
+{% include "emails/_cta_button.html" with cta_url=cta_url cta_label="View billing" %}
+<p style="margin:16px 0 0;color:#6b7085;">
+  You can review your invoices and payment method any time from your billing settings.
+</p>
+{% endblock %}

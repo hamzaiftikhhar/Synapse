@@ -1,0 +1,12 @@
+{% extends "emails/base.html" %}
+{% block title %}Your payment is past due{% endblock %}
+{% block content %}
+<h1 style="margin:0 0 16px;font-size:20px;color:#0b0e2e;">Your payment is past due</h1>
+<p style="margin:0 0 12px;">Hi there,</p>
+<p style="margin:0 0 12px;">
+  We still haven't been able to collect payment for <strong>{{ clinic_name }}</strong> after a
+  few attempts. Your account remains active for now, but please update your payment method soon
+  to avoid any interruption.
+</p>
+{% include "emails/_cta_button.html" with cta_url=cta_url cta_label="Update payment method" %}
+{% endblock %}

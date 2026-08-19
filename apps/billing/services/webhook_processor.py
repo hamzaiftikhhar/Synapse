@@ -179,6 +179,122 @@ def _resolve_plan(price_id: str) -> Plan | None:
     ).first()
 
 
+# Paddle transaction events that get a customer-facing email. Deliberately
+# narrow: transaction.completed (not also transaction.paid, which can fire
+# for the same real payment — Paddle's own docs point to `completed` as the
+# fulfillment-confirmation event) avoids double-notifying for one payment.
+_TRANSACTION_EMAIL_SENDERS = {
+    "transaction.completed": "send_payment_successful_email",
+    "transaction.payment_failed": "send_payment_failed_email",
+    "transaction.past_due": "send_payment_past_due_email",
+}
+
+# Structured-log event names (see the original request's observability
+# list) — deliberately distinct from the email method names above, which
+# describe the notification, not the log line.
+_TRANSACTION_LOG_EVENTS = {
+    "transaction.completed": "payment_succeeded",
+    "transaction.payment_failed": "payment_failed",
+    "transaction.past_due": "payment_past_due",
+}
+
+
+def _apply_transaction_event(
+    data: dict[str, Any], event_type: str, *, send_email: bool
+) -> Subscription | None:
+    """Transaction events don't change Subscription state (subscription.*
+    events already own that) — this only resolves which clinic a payment
+    notification belongs to and sends it.
+
+    `send_email` must be False when this event_id was already marked
+    PROCESSED before this call (the "backfill a missing clinic_id on an
+    already-processed event" retry path in process_webhook below) — unlike
+    `_apply_subscription_event`, which has its own occurred_at staleness
+    guard that already blocks a resend, this function has no state of its
+    own to check against, so the caller must say so explicitly."""
+    sub = _find_subscription(data)
+    if sub is None:
+        logger.warning(
+            "Paddle webhook: no Subscription for transaction event customer_id=%s",
+            data.get("customer_id") or "",
+        )
+        return None
+
+    method_name = _TRANSACTION_EMAIL_SENDERS.get(event_type)
+    if send_email:
+        log_event = _TRANSACTION_LOG_EVENTS.get(event_type)
+        if log_event:
+            logger.info(
+                "%s clinic=%s subscription=%s", log_event, sub.clinic_id, sub.id
+            )
+    if send_email and method_name and sub.clinic.email:
+        from apps.notifications.service import NotificationService
+
+        method = getattr(NotificationService, method_name)
+        kwargs = {"to": sub.clinic.email, "clinic_name": sub.clinic.name}
+        if method_name == "send_payment_successful_email":
+            kwargs["plan_name"] = sub.plan.name
+        method(**kwargs)
+    return sub
+
+
+def _send_status_transition_email(sub: Subscription, *, previous_status: str) -> None:
+    """Only a genuine transition gets an email — re-applying the same
+    status (a redundant subscription.updated, or two events landing in the
+    same status) must not re-notify. `previous_status` is read before
+    `sub.status` is mutated by the caller, so this only compares real
+    before/after state, not the freshly-assigned value against itself.
+
+    Also the one place that logs the billing lifecycle events from the
+    original request's observability list (subscription_past_due,
+    subscription_suspended, subscription_reactivated) — logged whenever the
+    transition actually happens, even for a clinic with no email on file to
+    notify (logging and notifying are separate concerns)."""
+    if sub.status == previous_status:
+        return
+
+    if sub.status == SubscriptionStatus.PAST_DUE:
+        logger.info("subscription_past_due clinic=%s subscription=%s", sub.clinic_id, sub.id)
+    elif sub.status in {SubscriptionStatus.PAUSED, SubscriptionStatus.CANCELED}:
+        logger.info(
+            "subscription_suspended clinic=%s subscription=%s reason=%s",
+            sub.clinic_id, sub.id, sub.status,
+        )
+    elif sub.status in {SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIALING} and previous_status in {
+        SubscriptionStatus.PAST_DUE, SubscriptionStatus.PAUSED, SubscriptionStatus.CANCELED,
+    }:
+        logger.info(
+            "subscription_reactivated clinic=%s subscription=%s from=%s",
+            sub.clinic_id, sub.id, previous_status,
+        )
+
+    if not sub.clinic.email:
+        return
+    from apps.notifications.service import NotificationService
+
+    if sub.status == SubscriptionStatus.PAUSED:
+        NotificationService.send_subscription_paused_email(
+            to=sub.clinic.email, clinic_name=sub.clinic.name
+        )
+    elif sub.status == SubscriptionStatus.CANCELED:
+        NotificationService.send_subscription_canceled_email(
+            to=sub.clinic.email, clinic_name=sub.clinic.name
+        )
+    elif sub.status == SubscriptionStatus.ACTIVE and previous_status == SubscriptionStatus.PAST_DUE:
+        NotificationService.send_payment_recovered_email(
+            to=sub.clinic.email, clinic_name=sub.clinic.name
+        )
+    elif (
+        sub.status in {SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIALING}
+        and previous_status == SubscriptionStatus.PAUSED
+    ):
+        # Distinct from "payment recovered" above — resuming a paused
+        # subscription isn't a payment-failure story, it's "you're back".
+        NotificationService.send_account_reactivated_email(
+            to=sub.clinic.email, clinic_name=sub.clinic.name
+        )
+
+
 def _apply_subscription_event(data: dict[str, Any], occurred_at: datetime) -> Subscription | None:
     customer_id = data.get("customer_id") or ""
     sub = _find_subscription(data)
@@ -198,9 +314,19 @@ def _apply_subscription_event(data: dict[str, Any], occurred_at: datetime) -> Su
         )
         return
 
+    previous_status = sub.status
     paddle_status = data.get("status") or ""
     if paddle_status in _PADDLE_STATUS_MAP:
         sub.status = _PADDLE_STATUS_MAP[paddle_status]
+
+    # Grace-period timer: starts the instant a subscription first becomes
+    # past_due, clears the instant it leaves that status (recovered or
+    # canceled) — never reset by a redundant past_due redelivery, which
+    # would otherwise keep extending someone's grace window indefinitely.
+    if sub.status == SubscriptionStatus.PAST_DUE and previous_status != SubscriptionStatus.PAST_DUE:
+        sub.grace_period_started_at = occurred_at
+    elif sub.status != SubscriptionStatus.PAST_DUE and sub.grace_period_started_at is not None:
+        sub.grace_period_started_at = None
 
     paddle_subscription_id = data.get("id")
     if paddle_subscription_id:
@@ -237,9 +363,12 @@ def _apply_subscription_event(data: dict[str, Any], occurred_at: datetime) -> Su
             "canceled_at",
             "plan",
             "occurred_at",
+            "grace_period_started_at",
             "updated_at",
         ]
     )
+
+    _send_status_transition_email(sub, previous_status=previous_status)
 
     from apps.billing.services.activation import maybe_activate_clinic
 
@@ -271,7 +400,7 @@ def process_webhook(*, raw_body: bytes, signature_header: str | None, secret: st
     occurred_at = _parse_occurred_at(occurred_at_raw)
     clinic_id = (
         _resolve_clinic_id(data.get("customer_id") or "", data)
-        if event_type.startswith("subscription.")
+        if event_type.startswith(("subscription.", "transaction."))
         else None
     )
 
@@ -293,6 +422,10 @@ def process_webhook(*, raw_body: bytes, signature_header: str | None, secret: st
             applied = None
             if event_type.startswith("subscription."):
                 applied = _apply_subscription_event(data, occurred_at)
+            elif event_type.startswith("transaction."):
+                applied = _apply_transaction_event(
+                    data, event_type, send_email=not already_processed
+                )
             event.status = BillingEventStatus.PROCESSED
             event.processed_at = dj_timezone.now()
             event.error = ""

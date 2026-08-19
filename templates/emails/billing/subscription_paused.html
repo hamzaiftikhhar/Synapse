@@ -1,0 +1,11 @@
+{% extends "emails/base.html" %}
+{% block title %}Your subscription is paused{% endblock %}
+{% block content %}
+<h1 style="margin:0 0 16px;font-size:20px;color:#0b0e2e;">Your subscription is paused</h1>
+<p style="margin:0 0 12px;">Hi there,</p>
+<p style="margin:0 0 12px;">
+  The subscription for <strong>{{ clinic_name }}</strong> has been paused. Your data is safe,
+  and you can resume any time.
+</p>
+{% include "emails/_cta_button.html" with cta_url=cta_url cta_label="Manage subscription" %}
+{% endblock %}
