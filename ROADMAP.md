@@ -556,16 +556,647 @@ environment failures reproduced in isolation and unrelated to this diff:
 and `ConcurrentBookingTests.test_two_parallel_inserts_only_one_succeeds`
 (DB deadlock; imports nothing this phase changed).
 
-## ⏳ Phase 11 — Doctor resolution evidence floor
+## ✅ Phase 14 — Flexible/past temporal semantics
 
-**Not started.** Confirmed from a real transcript: "Schedule me with Dr."
-(no name at all) resolves to a specific doctor instead of asking which one.
-Root cause not yet fully traced (partial investigation pointed at
-`resolve_doctor_candidates`'s stopword filtering leaving a stray word as a
-weak fuzzy-match candidate, but wasn't confirmed against the actual booking-
-flow code path). Needs: minimum-evidence rule (exact name / sufficiently
-distinctive partial name / explicit UI-provided doctor ID) before ever
-entering booking with a resolved doctor.
+**Done.** Phase 13's authority layer was kept. Two edge cases from a live
+transcript (2026-08-19, session `01a0150b-…`) were classified as UNRESOLVED
+when they already had a defined status.
+
+Root cause: `looks_temporal()` treated `_FLEXIBLE` words (`earliest`, `asap`,
+`next available`, …) as "a date constraint we failed to read". Combined with
+NLU sending `date=null` for "When is dr maya availabel earliest", there was
+no candidate, so the resolver asked for a calendar date (and cited January
+2027 in the refusal template). Separately, `parse_natural_date` returned
+`None` for `yesterday`, and the scanner did not emit it either.
+
+Fix, smallest: strip flexible phrases before the unreadable-constraint check
+so they fall through to the existing `UNSPECIFIED` forward-scan; parse
+`yesterday` against the resolver's `today` (not the wall clock) and emit it
+from the message scanner so status is `PAST`. `today`/`tomorrow` unchanged.
+Did not add a new enum value. Did not touch booking drafts, REVIEW, or
+follow-up binding.
+
+Result: 428/428 chatbot tests, 16/16 knowledge (warmup/xlsx SIGFPE excluded,
+pre-existing), eval 674/682 (98.8%) unchanged.
+
+## ✅ Phase 15 — Booking draft isolation
+
+**Done.** Same 2026-08-19 transcript: after an Adult Cleaning REVIEW draft
+for Dr Aris, "book appointment with dr maya instantly" (and variants that
+name a different doctor, no service, no slot tap) resumed the leftover
+service and the leftover REVIEW slot. A new booking utterance was treated
+as a continuation of a commitment this turn never made.
+
+Root cause, two inheritance paths:
+
+1. `BookingService._apply_prefill` already cleared date/slot on
+   `changed_doctor`, but did **not** drop `service_id` when this call named
+   a doctor and omitted a service. `start()` also never passed `slot_start`
+   into `_apply_prefill`, so a leftover REVIEW/DETAILS/OTP step could not
+   be distinguished from an explicit chip tap.
+2. `ui_meta.build_ui_meta` injected `last_service` on every non-generic
+   restart, including "put me on Dr Lin's list" which named only a doctor.
+
+Fix, smallest: `stale_service` (doctor passed, service not, session still
+has a service) clears the leftover service; `stale_commitment` (doctor or
+service named, no `slot_start` this call, leftover slot or DETAILS/OTP/REVIEW)
+clears date/slot/hold and drops back to DATE. `start()` now forwards
+`slot_start` so a real tap is not stale. `last_service` is injected only if
+this turn named a service, or named neither doctor nor service.
+
+Tests use varied wording, not the transcript line three times: "could you
+get me in with Dr Lin right away", "put me down for Maya as soon as you
+can", "put me on Dr Lin's list as soon as you can", "book the cleaning we
+already discussed". Did not treat `"instantly"` as ASAP. Did not touch
+hybrid RAG or NLU `doctor_name` pollution.
+
+## ✅ Phase 16 — Pending-offer uptake
+
+**Done.** Same transcript: after "Would you like me to check other days
+for Dr. Maya Lin?", "Sure" / "yes" / "Yep." classified as
+`insurance_verification` 0.95 and answered "Search your plan…". `"Yep."`
+is not an intent; it takes up whatever offer the previous turn recorded.
+
+Root cause: `pending_clarification` was stored and never bound. NLU
+classified the short turn in a vacuum. No `if text.lower() in ["sure",
+"yes"]` list was added — that would misfire on "yes, Thursday morning".
+
+Fix: `classify_uptake(message)` is a whole-message speech-act (max 48
+chars) → `affirm` / `decline` / `None`. Engine runs it after entity
+resolution, before sensors/planner. Affirm + `availability_alternative`
+rewrites NLU to `DOCTOR_AVAILABILITY` with the offered `doctor_id` on
+`resolved_ids` (not `doctor_name` on entities — that would make
+`resolve_doctor_candidates(clinic, "Yep.")` run). Affirm +
+`service_followup` pins the service and shows availability, not a forced
+booking. Decline is `OFF_TOPIC` with "No problem — what else can I help
+you with?". `pending_offer_from_turn` records the offer after compose:
+empty searchable `doctor_availability`, or a service-answer
+(`services_offered` / `medical_question` / `faq` / `pricing`) that matched
+a service.
+
+Tests cover varied patient phrasing on purpose: Yep / Sure / Please do /
+Go ahead / sounds good / ok; Not now / No thanks / maybe later / nope;
+and non-uptake "yes, Thursday morning if she's free", "is Cigna on the
+accepted list here", "what time do you close on Saturdays". Engine tests
+mock NLU as `insurance_verification` 0.95 — the live failure mode — so
+they prove the binder, not the model.
+
+Result of Phases 15+16 together: **444/444 chatbot tests**, 21/21
+knowledge (warmup/xlsx SIGFPE excluded, pre-existing), eval **674/682
+(98.8%)** unchanged. Same 8 eval failures as Phase 3/14
+(`adversarial_booking_slang_squeeze`, `adversarial_medical_slang_pediatric`).
+
+Found, not fixed (unchanged from the transcript review): hybrid RAG on a
+resolved empty availability day; NLU stuffing extra tokens into
+`doctor_name` (`"maya yesterday"`, `"maya instantly"`); `"instantly"` is
+not an ASAP synonym in the temporal layer.
+
+## ✅ Phase 17 — No hybrid RAG on resolved empty availability
+
+**Done.** Empty `doctor_availability` SQL is a resolved answer ("nothing
+open that day"), not a thin miss that clinic documents might fill. Mid-
+confidence + `allow_hybrid` / `knowledge_q` still pre-authorized
+`fallback_vector_tasks` for *any* SQL-only plan with a catalog, so an
+empty Tuesday scan could escalate to RAG and invent openings.
+
+Fix, smallest: skip fallback pre-authorization when `sql_tasks` includes
+`availability`. Insurance / services / FAQ empty still may hybrid — those
+are the cases documents can actually complete. Did not change
+`resolve_plan_after_sql`'s contract or `_sql_found`.
+
+Tests (varied wording): "when's the soonest Maya has a gap on Tuesday",
+"any openings with Lin that afternoon", "can she see me Tuesday or is she
+booked solid" — no fallback. Contrasts: Cigna accepted-list and
+HydraFacial existence still pre-authorize hybrid.
+
+## ✅ Phase 18 — Strip temporal junk from `doctor_name`
+
+**Done.** `_DOCTOR_RE` captures the next two tokens after `Dr.`, so
+"dr maya yesterday" / "dr maya instantly" became the name. NLU did the
+same. Grounding kept the string because both tokens appear in the message;
+SQL `full_name__icontains "maya yesterday"` then missed Maya.
+
+Fix: `clean_doctor_name()` peels temporal/ASAP tokens (and `right away`)
+off the value. Used by `_extract_doctors` and `sanitize_entities`. Two-
+part names still survive a following day word ("dr maya lin tomorrow" →
+"maya lin"). Did not put this in an LLM prompt.
+
+Tests: extract + sanitize on yesterday / instantly / immediately /
+right away phrasings, plus "is Dr Hamza free this afternoon" still Hamza.
+
+## ✅ Phase 19 — `instantly` / `immediately` / `right away` as ASAP
+
+**Done.** Same transcript family as "book with Dr Maya instantly". Temporal
+already fell through to UNSPECIFIED (no date words), but booking
+`is_asap_request` and the urgent-availability signal did not treat those
+phrases as "you pick", so the wizard stayed on DATE instead of seeding
+today the way `asap` does.
+
+Fix: add the three phrases to `_FLEXIBLE` (temporal), `_ASAP_RE`
+(booking seed), and `_URGENT_AVAILABILITY_RE`. Did **not** add them to
+`entity_extract` date patterns — that would emit a FLEXIBLE candidate and
+rescue an unreadable date (`coming januray instantly` must stay
+UNRESOLVED, same as `coming januray earliest`).
+
+## ✅ Phase 20 — Doctor resolution evidence floor
+
+**Done.** "Schedule me with Dr." (no name) fuzzy-matched a real roster
+member because `schedule` survived the word filter (`STOPWORDS` +
+`{doctor, dr, doc, book}` only) and scored above 0.60 against a surname.
+
+Fix: `_name_evidence_tokens` drops booking/availability verbs and
+honorifics; token-fuzzy only runs on what's left. Exact last-name /
+full-name substring matches still work ("Schedule me with Dr Thorne",
+"could you get me in with Aris this week"). Honorific-only / "book with
+a doctor" / "I want to see a doctor please" → `unknown`. This is the
+Phase 11 evidence floor, implemented against the confirmed transcript
+cause rather than a guessed one.
+
+Result of Phases 17–20: **454/454 chatbot tests**, 21/21 knowledge
+(warmup/xlsx SIGFPE excluded, pre-existing), eval **674/682 (98.8%)**
+unchanged.
+
+## ✅ Phase 11 — Doctor resolution evidence floor
+
+**Done in Phase 20.** The guessed cause was right: `resolve_doctor_candidates`
+left `"schedule"` as a fuzzy token on "Schedule me with Dr." See Phase 20
+for the evidence-floor fix and tests.
+
+## ✅ Phase 21 — Code-review pass on Phases 13–20; two new regressions found and fixed
+
+**Done.** Requested scope: verify Phases 13–20 (pasted as an external
+report) against actual source rather than the prose, find any additional
+bugs, run the real suites, and assess whether the remaining deferred items
+are worth pursuing. Every claimed fix in Phases 13–20 was independently
+re-derived from the diff and re-run — all correct as documented. Two
+regressions were found in the Phase 15/16 code itself, both reachable
+through normal chat flow, neither mentioned in the pasted report.
+
+**Bug A — `stale_service` had no step-scoping.** `booking/service.py`'s
+Phase 15 fix cleared a session's `service_id` whenever a doctor was named
+without a service, with no check on how committed the draft was — unlike
+its sibling `stale_commitment`, which correctly gates on
+`_SLOT_COMMITTED_STEPS`. Reproduced directly: `start()` with only a
+service, then `start()` naming a doctor with no service (an entirely
+ordinary SERVICE→DOCTOR progression within one live conversation) wiped
+the just-picked service. `ui_meta.py`'s
+`if named_service or not named_doctor: booking["service_id"] = ...`
+confirms this is reachable through real chat, not just a direct API call.
+
+Fix: `stale_service` now additionally requires `session.slot_start` or
+`session.step in cls._SLOT_COMMITTED_STEPS` — the same commitment gate
+`stale_commitment` already used. A genuinely stale REVIEW/DETAILS/OTP
+draft still gets its service cleared; a same-turn SERVICE→DOCTOR pick does
+not. Regression test:
+`test_booking_resume.BookingDraftIsolationTests.test_service_picked_moments_ago_survives_an_immediate_doctor_pick`.
+
+**Bug B — `pending_clarification` never expired.** Phase 16's offer-uptake
+mechanism recorded `availability_alternative` / `service_followup` offers
+but only ever cleared them on an explicit affirm or decline — an unrelated
+intervening turn left the offer armed indefinitely. Reproduced directly: an
+availability offer for Dr. Maya, then an unrelated "what are your hours"
+turn, then a later unrelated "sure" (classified live as
+`insurance_verification`, the exact failure Phase 16 exists to catch) still
+wrongly bound to the two-turns-stale Dr. Maya offer instead of being judged
+on its own NLU classification.
+
+Fix: `engine.py` now clears `pending_clarification` on any turn where it is
+present, of type `availability_alternative` or `service_followup`, and was
+not itself consumed as an affirm/decline this turn — i.e. it survives
+exactly one turn (the reply it was offered for) and no longer. The
+longer-lived `type="doctor"` disambiguation use of the same field is
+deliberately untouched — different lifecycle, not part of this bug.
+Regression test: `test_pending_uptake.PendingUptakeEngineTests.test_stale_offer_expires_after_an_unrelated_turn`.
+
+Both fixes verified independently (before/after reproduction scripts) and
+together: **494/494 chatbot+knowledge tests** (492 baseline + 2 new
+regression tests), eval **674/682 (98.8%)** unchanged — same 8 pre-existing
+failures as Phase 3/14/20.
+
+**Remaining deferred items — assessed, not started:**
+- **Phase 9C (honest RAG degraded states)** and **Phase 10
+  (service-existence → SQL)** are still open and still well-scoped; no
+  reason found this pass to reprioritize or redesign either.
+- **Coreference ("book with him")** is real and unfixed. Still correctly
+  deferred — it's implicit reference resolution, a different problem from
+  the explicit-evidence work in Phase 11/20, and needs its own
+  conversation-state design pass rather than a bolt-on.
+- **`ThreadPoolExecutor` saturation** is unmeasured under real concurrent
+  load. No new evidence this pass either way; still correctly deferred
+  rather than fixed opportunistically.
+- No architectural alternative surfaced during this review that would
+  replace any of these three more cheaply than doing the deferred work
+  itself — the existing scoping stands.
+
+## ✅ Phase 22 — Chat card collapse-on-supersede (stacked booking UIs)
+
+**Done, two passes.** Reported symptom: after picking a time from the
+"Earliest openings" quick-suggestion card, the "Book Appointment" wizard
+appeared *below* it in the transcript instead of replacing it. First pass
+(just disabling the old slot buttons) was reported back as insufficient —
+user follow-up with screenshots showed a second, worse instance: a
+previously-abandoned wizard, shown inactive as a full-size "Booking closed"
+card, still sitting on screen with a brand-new wizard stacked below it
+after an unrelated insurance question.
+
+Root cause (verified against the real render tree, not assumed): the chat
+transcript in `chat-widget.tsx` is a plain `messages` array rendered in
+order — nothing ever removes an old message. `activeWizardId` already
+computes "only the most recent, non-dismissed, non-completed wizard is
+active" correctly (confirmed by reading it — every mint path, client- and
+server-side, funnels through it), so only one wizard is ever *interactive*
+at a time. The actual bug was purely visual: an inactive wizard still
+rendered its full header + step-progress + card frame, just swapping the
+inner content for "Booking closed" text — so it still occupied a full
+card's worth of screen exactly as if it were live. Same problem, smaller
+version, in the standalone `time_slots` quick-suggestion card, which had no
+"already used" state at all.
+
+Ruled out via direct reproduction against the real backend (not just
+frontend reasoning) rather than assumed: hypothesized that
+`meta.booking`/`primary_component` might get re-attached to an *unrelated*
+turn (e.g. an insurance question) whenever an abandoned-but-unconfirmed
+draft sits in `conversation_context`, auto-reminting a wizard the user
+never asked for. Reproduced the exact scenario — `BookingService.start()`
+with a slot prefill (mirroring what the wizard's mount does on a slot
+click), left unconfirmed, then a mocked `INSURANCE_ACCEPTED` turn through
+the real `ChatEngine().process()` — and `meta.booking` came back `None`.
+The planner correctly excludes booking meta for unrelated intents; this
+hypothesis does not hold, so it was not "fixed." The second wizard in the
+report is almost certainly a genuine new "Book Appointment" chip click,
+which is correct behavior — the actual bug is that neither it nor the
+abandoned first draft collapse visually, which is what this phase fixes.
+Checked the "re-fetch on Back" half of the report against the backend too:
+`serializers.py::_time_options` runs `_slots_for_day` as a fresh DB query
+on every `apply_step` call including `"back"` — the wizard's own internal
+time step was already correct.
+
+Fix: `TimeSlotsMessage` now collapses to a one-line "✓ 12:30 PM · Nora
+Hassan" receipt the instant a slot is picked, replacing the grid entirely
+rather than just disabling its buttons. `BookingWizard` now returns a
+compact one-line "Booking closed · <doctor>" summary instead of its full
+header/step-progress/body frame whenever `active=false` and the draft
+never reached `confirmed` (a genuinely confirmed booking keeps its full
+`ConfirmedStep` receipt — that one is a legitimate persistent record, not
+a closed draft). No chat-widget.tsx changes needed — `activeWizardId` was
+already correctly scoped; only the *rendering* of "not active" needed to
+shrink. Net effect: at any moment, the transcript shows a run of one-line
+receipts for past picks/attempts and exactly one full-size, live booking
+UI — matching "swap content of a single container" without a rewrite of
+the transcript architecture.
+
+Found, not fixed (same latent gap, not part of the reported bug):
+`doctor-card.tsx` and `service-card.tsx` have the identical "no lock after
+select" gap. Not touched this phase to keep the change scoped to what was
+reported.
+
+Verified via `tsc --noEmit` (clean on both touched files; the only
+reported error is a pre-existing, unrelated one in `insurance-card.tsx`),
+by tracing the render/activeWizardId logic directly, and by a real
+backend reproduction (`ChatEngine().process()` through the mocked-NLU
+pipeline) for the ruled-out auto-remint hypothesis. `eslint` could not run
+in this environment (pre-existing Node v16.17 vs. the toolchain's
+`structuredClone` requirement — unrelated to this change).
+
+**Environment finding, not a code bug:** the user's running dev server had
+been started under Node v16.17.0 (the default on `PATH`; `nvm` has 20.20.2
+installed but not selected) against a Next.js version requiring 18.18+.
+Under the unsupported version Turbopack kept serving stale compiled output
+across the fix without erroring, so the first live retest still showed the
+pre-fix behavior despite correct source and a passing `tsc`. Killed and
+restarted the dev server under Node 20.20.2 with a clean Turbopack cache
+— confirmed working after that. Anyone running this frontend locally
+needs `nvm use` (or equivalent) before `npm run dev`.
+
+**Follow-up round, after live retest:** user confirmed the collapse fix
+resolved the stacking, then asked for two more changes to the same flow:
+
+1. The collapsed slot receipt (a one-line "✓ 9:00 AM · Nora Hassan" pill)
+   was itself redundant — the wizard's own header already states the same
+   fact. `TimeSlotsMessage` now returns `null` once a slot is picked
+   instead of rendering a receipt, so the transcript shows literally one
+   card once the wizard is up.
+2. The REVIEW step had no Back button (`step !== "review"` was excluded
+   from the footer's Back condition on purpose from the earlier REVIEW-gate
+   phase). Removed that exclusion — but doing so surfaced a real backend
+   gap first: `apply_step("back")`'s `prev_step()` is purely list-order
+   based (`[..., DETAILS, OTP, REVIEW, CONFIRMED]`), so Back from REVIEW
+   would always compute OTP as the previous step — even though REVIEW is
+   *only* ever reached by skipping OTP entirely (confirmed by grepping
+   every `session.step = BookingStep.REVIEW.value` assignment in
+   `service.py`: exactly two sites, `_route_to_review_if_authenticated`
+   and `submit_details`'s `verification_mode="none"` branch — there is no
+   third path where OTP was genuinely completed before reaching REVIEW).
+   Fixed `apply_step("back")` to skip past OTP straight to DETAILS
+   whenever the session is authenticated or the clinic's
+   `verification_mode` is `"none"` — the same two conditions that skip OTP
+   going forward, now honored going backward too.
+
+Tests added to `test_booking_auth_skip.py`: `test_back_from_review_skips_
+otp_straight_to_details_when_authenticated`, `test_back_from_otp_itself_
+still_lands_on_details_when_unauthenticated` (proves the fix doesn't touch
+the ordinary back-from-OTP case, which is the only "back" a non-skip
+patient ever exercises), and `NoVerificationModeReviewTests::test_back_
+from_review_skips_otp_straight_to_details` for the second skip-reason.
+Verified: `tsc --noEmit` clean; `test_booking_auth_skip.py` 13/13; full
+suite **497/497** chatbot+knowledge (494 + 3 new); eval **674/682 (98.8%)**
+unchanged. Still not driven through a live browser session on this side —
+flagging per this repo's UI-testing convention; the user is expected to
+confirm visually since that's what surfaced the environment issue above.
+
+**Second live-test round, same day:** live retest on the fixed dev server
+found two more real issues, both fixed:
+
+1. **Back-from-DETAILS-skip was too narrow.** The first fix only skipped
+   OTP going back from REVIEW, landing an authenticated patient on DETAILS
+   — but `_route_to_review_if_authenticated` skips *both* DETAILS and OTP
+   going forward, so DETAILS was never a real stop for that session either.
+   Confirmed live: Back showed a contact-details form asking an
+   already-verified patient to re-enter an "email or phone for
+   verification" — then picking a time again from the step before it
+   skipped straight past DETAILS to REVIEW, proving the DETAILS stop was a
+   Back-only dead end. **Important distinction caught before landing
+   wrong**: the `verification_mode="none"` skip is a *different* shortcut
+   that genuinely shows and submits DETAILS (only OTP is skipped after
+   it) — a first pass at this fix conflated the two conditions and would
+   have wrongly skipped DETAILS for that case too, discarding a
+   genuinely-filled-in form. Split into two independent checks in
+   `apply_step("back")`: OTP is skipped for either shortcut,  DETAILS is
+   additionally skipped only for the true authenticated-with-patient case
+   (`is_authenticated and patient is not None`, matching
+   `_route_to_review_if_authenticated`'s own guard exactly). Updated
+   `test_back_from_review_skips_details_and_otp_straight_to_time_when_
+   authenticated` to assert landing on TIME (not DETAILS) and to close the
+   loop — re-picking a time from there must route straight back to REVIEW,
+   not resurrect DETAILS.
+2. **Duplicate doctor name on the TIME step.** The wizard's shared header
+   already shows the doctor's name once a doctor is picked (via
+   `state.options.doctor_name`, present in `_time_options`' and
+   `_date_options`' payloads) — `TimeStep`'s own body was *also* rendering
+   `[doctor_name, date]`, showing the name twice on one screen. Checked
+   `DateStep` for the same pattern — clean, its body never reads
+   `doctor_name` — so this was isolated to `TimeStep`. Fix: `TimeStep`'s
+   subtitle now shows only the date; the header still carries the doctor
+   name once.
+
+Verified: `test_booking_auth_skip.py` 13/13 (updated, not just re-passed),
+full suite **497/497** unchanged, `tsc --noEmit` clean, dev server
+recompiled successfully on both edits. Still pending a live visual
+confirmation from the user.
+
+## ✅ Phase 23 — NLU cold-first-message failures
+
+**Reported:** the very first message of a session, sent right after a page
+refresh, frequently comes back as the generic "I want to make sure I help
+with the right thing — find a doctor, book, hours, or insurance?"
+clarification, regardless of what was actually asked. Subsequent messages
+in the same session work fine.
+
+**Reproduced directly against the live dev backend** (port 8000, not
+guessed): sent real first-messages to brand-new sessions and read
+`timings.nlu_ms` / `intent` / `confidence` off the actual response.
+`intent="unknown", confidence=0.5` is the exact, hardcoded payload
+`classifier.py` returns when the whole provider chain (primary → mini
+fallback → secondary) exhausts `NLU_TOTAL_BUDGET_SECONDS` — confirmed this
+is genuinely what fires, not a misclassification by a working model.
+
+**Two real causes found, both fixed:**
+
+1. **A fresh `OpenAI` client was constructed on every single `classify()`
+   call** (`openai_provider.py`), not just the first one of a session —
+   each call built its own `httpx` transport with an empty connection
+   pool, paying a TCP+TLS handshake to `api.openai.com` on top of real
+   inference time, every time. `get_nlu_provider()` already caches one
+   provider instance per worker process, so the client is now cached
+   there too (lazy-init in `_get_client()`) and reused for the process's
+   lifetime — the way OpenAI's own SDK docs recommend. Confirmed safe:
+   `run_with_deadline()` already enforces the real per-call timeout
+   independently in a worker thread, so the client's own timeout is just
+   a generous outer bound now, not the actual budget.
+2. **The timeout ceiling itself was too tight for the real, measured
+   latency distribution.** Even after fix #1, direct measurement against
+   the live backend showed genuine (would-have-succeeded) primary-provider
+   calls landing anywhere from 1.4s to 3.3s in normal conditions — with
+   the old 3.5s per-provider / 5.0s total budget (set in Phase 9A off a
+   much worse ~9.5s-latency incident), a non-trivial fraction of ordinary,
+   correct calls had too little margin and got cut off mid-flight,
+   falling through to the clarify fallback. Raised
+   `NLU_API_TIMEOUT_SECONDS` 3.5→5.0 and `NLU_TOTAL_BUDGET_SECONDS` 5.0→7.0
+   in `.env`, `.env.example`, and `config/settings/base.py`'s defaults (so
+   an environment without an explicit override is also protected).
+
+**Also isolated, not fixed (correctly out of scope):** a separate ~5.8-6s
+outlier appeared, but only ever on the first request immediately after the
+Django dev worker process itself had just restarted (confirmed by
+comparing against the same test run on an already-warm, non-just-restarted
+worker: 3.3s, not 5.9s) — ordinary Django/Python process cold-start cost,
+unrelated to the NLU-specific fixes here, and not representative of a real
+deployment where workers don't restart between sessions. Not touched.
+
+**Files:** `apps/chatbot/nlu/openai_provider.py`, `.env`, `.env.example`,
+`config/settings/base.py`. `GeminiNLUProvider` was checked for the same
+per-call-client anti-pattern — it uses raw `urllib.request` per call with
+no persistent-client concept to fix, and is only a secondary/rarely-used
+fallback provider, so left alone.
+
+**Verified:** `apps.chatbot.tests` **459/459**, eval **674/682 (98.8%)**
+unchanged. Live re-measurement after both fixes: 8 fresh sessions,
+**0/8 fallbacks** — including one call that took 5.9s (would have
+timed out and failed under the old 3.5s/5.0s ceiling) and completed
+correctly under the new 5.0s/7.0s one. This is the single clearest piece
+of evidence the fix works: an otherwise-identical slow call that used to
+fail now succeeds.
+
+## ✅ Phase 24 — Booking wizard UI/UX pass
+
+**Reported:** double top margin above the wizard card vs. the earlier
+time-slots card; a visible "jerk" and scroll-jump-to-mid-card when the
+wizard renders; inconsistent card height step to step; the review step
+showing "Step 6 of 6" as literally the first screen an authenticated
+patient sees; a general ask for an industry-standard styling/wording pass.
+
+**Root causes, each confirmed by reading the actual render path — none
+guessed:**
+
+1. **Double margin.** `MessageRenderer` always wraps its output in
+   `<div className="w-full">`, even when the inner component (e.g.
+   `TimeSlotsMessage` after Phase 22's collapse-to-null) renders nothing.
+   The message list's `gap-4` applies on both sides of every flex child
+   regardless of content, so an empty wrapper silently doubles the visual
+   gap between the two real messages around it. Fixed: `MessageRenderer`
+   now returns `null` outright when there's no body and no context
+   actions to show — no DOM node, no gap contribution at all.
+2. **Scroll jerk.** `BookingWizard` mounts with a short "Preparing your
+   booking…" placeholder, and the message-list auto-scroll fires
+   immediately when the wizard message is *added* — before `start()`
+   resolves and the card grows to its real height. The scroll settles on
+   the short placeholder's height; nothing re-triggers it once the card
+   grows, leaving the view stuck mid-card. Fixed: `handleBookingStarted`
+   (already wired to the wizard's `onStarted` callback, which fires right
+   as the loaded state is set) now re-settles scroll position once the
+   browser has painted the loaded content, gated behind the same
+   `stickToBottom` check the rest of the auto-scroll logic already
+   respects — so a patient who deliberately scrolled up to re-read
+   something is never yanked back down.
+3. **Inconsistent card height.** The wizard's scrollable body had a max
+   height but no minimum, so a short step (Review: an icon and two lines)
+   collapsed the whole card while a tall step (Time: a multi-section slot
+   grid) stretched it near its ceiling. Added a `min-h-[240px]` floor so
+   short steps no longer visibly shrink the card between steps.
+4. **"Step 6 of 6" on the first screen.** Root cause was real, not
+   cosmetic: `step_index()` counted every step in the mode's abstract
+   sequence, including DETAILS and OTP — steps this specific
+   authenticated, slot-prefilled session never shows at all (see Phase
+   23's sibling fix for the same skip mechanism). Fixed properly, not
+   patched: added `details_skipped`/`otp_skipped` fields to
+   `BookingSession`, set once at the exact moment each shortcut actually
+   fires (`_route_to_review_if_authenticated` sets both;
+   `verification_mode="none"` sets only `otp_skipped`, since that path
+   genuinely shows and submits DETAILS). `step_index()` now excludes
+   skipped steps from the count. As a bonus, this let the `back` action's
+   Phase 23 fix collapse down to reading these same two persisted flags
+   instead of re-deriving `is_authenticated`/`verification_mode` fresh on
+   every "back" click — one source of truth for both consumers, checked
+   against real UX research: "the step counter should show only the
+   steps that are currently visible to the user, and steps hidden by
+   conditions or branching should not be counted from the visible total"
+   ([UXPin, progress tracker best practices](https://www.uxpin.com/studio/blog/design-progress-trackers/)).
+
+**Researched, deliberately not changed:** searched current chatbot-UI and
+healthcare-chat-color best practice
+([Parallel](https://www.parallelhq.com/blog/chatbot-ux-design),
+[Webstacks](https://www.webstacks.com/blog/healthcare-website-design))
+before touching anything cosmetic. Findings validated more than they
+prescribed: "one thing per screen" progressive disclosure and hybrid
+button+free-text input are already this wizard's actual architecture, not
+a gap. On color specifically: the widget's primary color is already a
+per-clinic config value (`configuration.widget.primary_color`), and the
+research is explicit that a chat widget should match the *host business's*
+own branding, not a single fixed palette — so a global recolor here would
+work against the multi-tenant design already in place, not with it.
+Deliberately left alone rather than overriding a live, per-clinic brand
+setting on a real product.
+
+**Files:** `frontend/src/features/chat/messages/message-renderer.tsx`,
+`frontend/src/features/chat/chat-widget.tsx`,
+`frontend/src/features/booking/booking-wizard.tsx`,
+`apps/chatbot/booking/state.py`, `apps/chatbot/booking/modes.py`,
+`apps/chatbot/booking/serializers.py`, `apps/chatbot/booking/service.py`,
+`apps/chatbot/tests/test_booking_auth_skip.py` (new
+`test_review_progress_excludes_steps_this_session_never_shows`, asserting
+the exact `{"current": 4, "total": 4}` this fix produces where it used to
+report 6 of 6).
+
+**Verified:** `tsc --noEmit` clean; `test_booking_auth_skip.py` 14/14; full
+suite **498/498** chatbot+knowledge (497 + 1 new); eval **674/682 (98.8%)**
+unchanged. Not driven through a live browser session on this side, per
+this repo's standing UI-testing convention — margin/jerk/sizing fixes are
+mechanically well-understood from the render path (empty flex child,
+async-load-after-scroll, missing min-height) but should still get a real
+visual pass from the user.
+
+**Known remaining nuance, not chased further:** the "4 of 4" fix excludes
+DETAILS/OTP from the count, but a slot-prefilled authenticated booking
+*also* never shows DOCTOR/DATE/TIME as separate screens (they're
+prefilled from the triggering message, same as before) — those aren't
+tracked as "skipped" the way DETAILS/OTP now are, so the count is more
+accurate than before but not a literal "1 of 1." Chasing full accuracy
+here starts touching prefill semantics well beyond the reported bug;
+flagging honestly rather than overclaiming precision the fix doesn't have.
+
+## ✅ Phase 25 — Stale server env var + missing small-talk rule coverage
+
+**Reported:** Phase 23's NLU timeout fix appeared not to have taken —
+pasted pipeline-debug logs still showed "OpenAI API timed out after 3.5s"
+(the pre-fix value) well after that fix shipped. Separately: "how is
+everything going on" classified as `intent=faq` and got an oddly formal
+clarify reply; user suspected a hardcoded FAQ route.
+
+**Issue 1 — genuinely not the same bug reappearing, a different one:**
+confirmed via `ps eww -p <pid>` that the specific `manage.py runserver`
+process the user's frontend was hitting had `NLU_API_TIMEOUT_SECONDS=3.5`
+baked into its actual OS-level environment — not sourced from `.zshrc` /
+`.zprofile` (checked, absent), most likely set once, interactively, in
+that terminal's long-lived shell session (alive since the prior Monday)
+and inherited by every process it launched since. Real environment
+variables take precedence over `.env`-file values in this stack, so
+Phase 23's `.env` edit was silently ignored for this one variable — while
+`NLU_TOTAL_BUDGET_SECONDS` (never separately exported) *did* pick up the
+new 7.0s correctly, which is why the total chain ran ~7s instead of the
+old ~5s, but the primary attempt itself stayed capped at the old 3.5s
+and still failed on real latency spikes. Fixed by killing that server
+process tree and starting a fresh one from a clean shell — confirmed via
+`ps eww` on the new PID that `NLU_API_TIMEOUT_SECONDS=5.0` /
+`NLU_TOTAL_BUDGET_SECONDS=7.0` are now actually what the live process is
+running, not just what `manage.py shell` reports in a separate process.
+
+**Issue 2 — real, not hardcoded, but a genuine gap:** `intent=faq` was a
+live GPT-4.1-nano classification, not a hardcoded route — verified this
+isn't fabricated by checking `nlu/rules.py`'s existing `_GREETING_EXACT`
+set, which already special-cases *many* "how are you" phrasings
+("how's it going", "how are things", "how do you do", …) as a free,
+~0ms, rule-based `greeting` response, entirely bypassing the LLM. "How is
+everything going on" just wasn't in that set or matched by its regex, so
+it fell through to a real, several-second LLM call that landed on a
+defensible-but-not-great `faq` label for what's plainly small talk.
+Extended `_GREETING_EXACT` with the "how's/how is everything (going)
+(on)?" family, and fixed a related latent gap while there: the exact-set
+lookup never stripped trailing punctuation before matching (regex-based
+greeting matches already did, and `_FAREWELL_EXACT` two lines down
+already had this exact fix for farewell) — "how's everything going on?"
+was failing the new test until this was added too, one line, matching an
+already-established convention in the same file rather than inventing a
+new one.
+
+**Files:** `apps/chatbot/nlu/rules.py`,
+`apps/chatbot/tests/test_nlu.py` (new
+`test_how_is_everything_going_is_a_greeting_not_an_llm_round_trip`).
+
+**Verified:** `apps.chatbot.tests` **461/461** (459 + 2 new), eval
+**674/682 (98.8%)** unchanged. Live re-test against the restarted server:
+"how is everything going on" → `intent=greeting`, 0.31s wall (rule-based,
+was previously several seconds through the LLM landing on `faq`); a real
+booking/insurance question through the same server still gets genuine LLM
+classification and a real answer, confirming the greeting-rule extension
+didn't overreach into stealing real questions.
+
+**Process note for future phases:** a settings/`.env` fix is only as good
+as the process that's actually running it — verifying via a fresh
+`manage.py shell` invocation confirms what a *new* process would compute,
+not what an already-running long-lived server process has baked into its
+actual environment. Checking `ps eww -p <pid>` against the specific
+listening PID is the reliable way to confirm a config change reached a
+live server, not just the settings module.
+
+## ✅ Phase 26 — Doctor/service cards collapse-on-select
+
+**Reported:** picking a doctor from a `doctor_cards` list left the whole
+card (including the *other*, still-clickable doctors' Select buttons)
+sitting above the newly-launched booking wizard — the exact "two UIs
+stacked" complaint from Phase 22, now hitting a different card type.
+
+**Not a new bug — the latent gap Phase 22 explicitly flagged and deferred**
+("`doctor-card.tsx` and `service-card.tsx` have the identical 'no lock
+after select' gap... worth its own small pass if it's ever reported as a
+live bug rather than a latent one"). It was, so it got one.
+
+**Fix:** same pattern as `TimeSlotsMessage` — `DoctorCards` and
+`ServiceCards` each track whether any card in the list has been picked
+and return `null` outright once one has, collapsing the whole list rather
+than leaving other options live next to an already-launched wizard.
+Checked `CardsMessage` (the generic specialty-list card) for the same
+risk first — it's architecturally different: its clicks go through
+`onAction("suggested", msg)`, a normal chat round-trip (new user message
+→ new assistant response), not an instant client-side wizard mint, so
+there's no direct stacking risk the same way. Left alone.
+
+**Files:** `frontend/src/features/chat/messages/doctor-card.tsx`,
+`frontend/src/features/chat/messages/service-card.tsx`.
+
+**Verified:** `tsc --noEmit` clean. Not driven through a live browser
+session on this side — same standing caveat as the rest of this UI/UX
+line of fixes; mechanically identical to the already-confirmed-working
+`TimeSlotsMessage` fix from Phase 22, but worth a real visual check.
 
 ## 💤 Deferred — Conversation state / coreference
 
