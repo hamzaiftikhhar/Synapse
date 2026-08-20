@@ -320,6 +320,34 @@ class WidgetSettingsTests(TestCase):
         self.assertIn("verification_mode", config["booking"])
         self.assertIn("widget", config)
 
+    def test_patch_widget_appearance_survives_merge(self):
+        self.client.get("/api/v1/clinics/me/widget-settings", headers=self.headers)
+        resp = self.client.patch(
+            "/api/v1/clinics/me/widget-settings",
+            data={
+                "configuration": {
+                    "widget": {
+                        "primary_color": "#0f766e",
+                        "corner_radius": 8,
+                        "text_color": "#ffffff",
+                        "avatar_url": "data:image/png;base64,aa",
+                        "avatar_zoom": 1.4,
+                    }
+                }
+            },
+            content_type="application/json",
+            headers=self.headers,
+        )
+        self.assertEqual(resp.status_code, 200)
+        widget = resp.json()["configuration"]["widget"]
+        self.assertEqual(widget["primary_color"], "#0f766e")
+        self.assertEqual(widget["corner_radius"], 8)
+        self.assertEqual(widget["text_color"], "#ffffff")
+        self.assertEqual(widget["avatar_url"], "data:image/png;base64,aa")
+        self.assertEqual(widget["avatar_zoom"], 1.4)
+        self.assertEqual(widget["greeting"], "Hi! How can I help you today?")
+        self.assertEqual(widget["position"], "bottom-right")
+
 
 class OnboardingStatusTests(TestCase):
     def setUp(self):
