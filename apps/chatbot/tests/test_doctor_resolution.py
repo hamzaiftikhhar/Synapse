@@ -73,3 +73,28 @@ class DoctorResolutionBandsTests(TestCase):
             resolution = resolve_doctor_candidates(self.clinic, message)
             self.assertEqual(resolution.status, "unknown", message)
             self.assertIsNone(resolution.doctor, message)
+
+    def test_honorific_only_does_not_pick_a_doctor(self):
+        """'Schedule me with Dr.' names no one. Fuzzy matching on leftover
+        verbs like 'schedule' must not resolve to a real roster member."""
+        for message in (
+            "Schedule me with Dr.",
+            "book with a doctor",
+            "I want to see a doctor please",
+            "can you schedule me with the doctor",
+        ):
+            with self.subTest(message=message):
+                resolution = resolve_doctor_candidates(self.clinic, message)
+                self.assertEqual(resolution.status, "unknown", message)
+                self.assertIsNone(resolution.doctor, message)
+
+    def test_named_doctor_still_resolves_in_booking_talk(self):
+        for message in (
+            "Schedule me with Dr Thorne",
+            "could you get me in with Aris this week",
+            "is doc aris free monday",
+        ):
+            with self.subTest(message=message):
+                resolution = resolve_doctor_candidates(self.clinic, message)
+                self.assertEqual(resolution.status, "resolved", message)
+                self.assertEqual(resolution.doctor["id"], str(self.thorne.id), message)
