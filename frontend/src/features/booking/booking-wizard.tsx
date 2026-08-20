@@ -270,6 +270,29 @@ export function BookingWizard({
   const step = state?.step;
   const interactive = active && step !== "confirmed";
 
+  // A superseded/dismissed draft (not a confirmed booking — that keeps its
+  // full ConfirmedStep receipt below) collapses to a one-line summary
+  // instead of keeping the full form frame on screen. Otherwise it reads as
+  // a second, still-present booking UI sitting right above whatever comes
+  // next, even though nothing in it is interactive anymore.
+  if (!active && step && step !== "confirmed") {
+    const who =
+      (state?.options as { doctor_name?: string } | undefined)?.doctor_name ||
+      doctorName;
+    return (
+      <div
+        className={cn(
+          "flex items-center gap-1.5 px-3.5 py-2.5 text-xs text-muted-foreground",
+          className
+        )}
+      >
+        <span className="truncate">
+          Booking closed{who ? ` · ${who}` : ""}
+        </span>
+      </div>
+    );
+  }
+
   return (
     <div className={cn("flex flex-col", className)}>
       <div className="flex items-start justify-between gap-2 border-b border-border/70 px-3.5 py-3">
@@ -323,7 +346,7 @@ export function BookingWizard({
         </div>
       ) : null}
 
-      <div className="min-h-0 max-h-[min(52dvh,420px)] overflow-y-auto px-3.5 py-3">
+      <div className="min-h-[240px] max-h-[min(52dvh,420px)] overflow-y-auto px-3.5 py-3">
         {error && step !== "confirmed" ? (
           <p className="mb-3 rounded-xl border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
             {error}
@@ -455,7 +478,7 @@ export function BookingWizard({
         ) : null}
       </div>
 
-      {interactive && step && step !== "path" && step !== "review" ? (
+      {interactive && step && step !== "path" ? (
         <div className="shrink-0 border-t border-border/70 px-3.5 py-2.5">
           <Button
             type="button"
@@ -823,7 +846,7 @@ function TimeStep({
       <p className="text-xs text-muted-foreground">
         {options.clinic_assigned
           ? "Clinic will confirm the doctor with your slot"
-          : [options.doctor_name, options.date].filter(Boolean).join(" · ")}
+          : (options.date as string) || ""}
         {options.clinic_assigned && options.date
           ? ` · ${String(options.date)}`
           : null}

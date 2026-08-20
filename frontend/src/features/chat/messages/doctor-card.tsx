@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { ChatInlineCard } from "@/features/chat/components/chat-inline-card";
@@ -61,10 +62,26 @@ export function DoctorCards({
   doctors: DoctorCardData[];
   onAction?: ChatActionHandler;
 }) {
+  // Same fix as TimeSlotsMessage (Phase 22): once a doctor is picked, the
+  // booking wizard it launches becomes the one live card in the transcript
+  // — this list must not stay behind it with every other doctor's Select
+  // button still clickable. See ROADMAP.md "Chat card collapse-on-
+  // supersede" / Phase 24's follow-up report for the reproduction.
+  const [picked, setPicked] = useState(false);
+
+  if (picked) return null;
+
   return (
     <ChatInlineCard className="grid gap-2">
       {doctors.map((d, i) => (
-        <DoctorCard key={d.id || i} doctor={d} onAction={onAction} />
+        <DoctorCard
+          key={d.id || i}
+          doctor={d}
+          onAction={(action, data) => {
+            if (action === "select_doctor") setPicked(true);
+            onAction?.(action, data);
+          }}
+        />
       ))}
     </ChatInlineCard>
   );

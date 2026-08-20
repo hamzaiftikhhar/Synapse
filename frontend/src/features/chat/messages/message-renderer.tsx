@@ -175,17 +175,27 @@ export function MessageRenderer({
   const payloadActions = Array.isArray(message.payload?.actions)
     ? (message.payload.actions as BackendAction[])
     : [];
+  const showActions =
+    showContextActions &&
+    payloadActions.length > 0 &&
+    Boolean(onBackendAction) &&
+    message.role === "assistant";
+
+  // A message that renders nothing (e.g. a time-slot card that collapsed
+  // to null after being picked) must not leave behind an empty flex child
+  // here — the message list's `gap-4` applies on both sides of every
+  // child regardless of whether it has visible content, so an empty div
+  // silently doubles the visual gap between the two real messages around
+  // it. Render nothing at all instead of an empty wrapper.
+  if (body === null && !showActions) return null;
 
   return (
     <div className="w-full">
       {body}
-      {showContextActions &&
-      payloadActions.length > 0 &&
-      onBackendAction &&
-      message.role === "assistant" ? (
+      {showActions ? (
         <ContextActionChips
           actions={payloadActions}
-          onAction={onBackendAction}
+          onAction={onBackendAction!}
         />
       ) : null}
     </div>
