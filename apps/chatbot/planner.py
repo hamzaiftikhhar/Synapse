@@ -903,7 +903,13 @@ def build_execution_plan(*, nlu: NLUResult, facts: PlannerFacts) -> ExecutionPla
     if sql_tasks and not vector_tasks and not booking and facts.has_catalog:
         from apps.chatbot.routing.lanes import HYBRID_SQL_INTENTS
 
-        if nlu.intent in HYBRID_SQL_INTENTS or facts.knowledge_q or facts.allow_hybrid:
+        # Empty availability is a resolved answer ("nothing open that day"),
+        # not a thin SQL miss that clinic documents might fill. RAG must not
+        # invent slots. Insurance/services/FAQ empty still may hybrid.
+        availability_is_authoritative = "availability" in sql_tasks
+        if not availability_is_authoritative and (
+            nlu.intent in HYBRID_SQL_INTENTS or facts.knowledge_q or facts.allow_hybrid
+        ):
             fallback_vector_tasks = [_vector_task_for_intent(nlu.intent, message, topic)]
 
     reason_parts = ["planner_execution_plan"]
