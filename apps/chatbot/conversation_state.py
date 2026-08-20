@@ -245,3 +245,149 @@ def recovery_reply(recovery: RecoveryAction, timeline: ConversationTimeline) -> 
         name = timeline.doctor.get("name") or "that doctor"
         return f"I can book you with {name} again — checking openings."
     return None
+
+
+# Short turns that take up a pending offer rather than starting a new request.
+# Whole-message only: "yes, Thursday morning" is a new date, not uptake.
+_AFFIRM_RE = re.compile(
+    r"^\s*(?:yes|yeah|yep|yup|ya|sure|ok|okay|"
+    r"go\s+ahead|sounds\s+good|that\s+works|please\s+do|"
+    r"do\s+it|alright|all\s+right|of\s+course|definitely|"
+    r"absolutely|please)\s*[.!?]*\s*$",
+    re.I,
+)
+_DECLINE_RE = re.compile(
+    r"^\s*(?:no|nope|nah|no\s+thanks|no\s+thank\s+you|"
+    r"not\s+now|not\s+really|maybe\s+later)\s*[.!?]*\s*$",
+    re.I,
+)
+
+
+def classify_uptake(message: str) -> str | None:
+    """'affirm', 'decline', or None.
+
+    This is a speech-act on the whole turn, not an intent classifier. A
+    pending offer is what gives 'Yep.' its meaning; without one these
+    strings are ignored.
+    """
+    text = (message or "").strip()
+    if not text or len(text) > 48:
+        return None
+    if _AFFIRM_RE.match(text):
+        return "affirm"
+    if _DECLINE_RE.match(text):
+        return "decline"
+    return None
+
+
+def apply_pending_uptake(nlu: Any, pending: dict[str, Any]) -> Any:
+    """Rewrite NLU so the planner executes the pending offer, not a hallucinated intent."""
+    from dataclasses import replace
+
+    from apps.chatbot.nlu.schemas import ExtractedEntities, Intent, ResolvedIds
+
+    kind = str(pending.get("type") or "")
+    entities = nlu.entities or ExtractedEntities()
+    resolved = nlu.resolved_ids or ResolvedIds()
+    raw = dict(nlu.raw or {})
+    raw["_pending_uptake"] = "affirm"
+    raw["_pending_type"] = kind
+
+    if kind == "availability_alternative":
+        return replace(
+            nlu,
+            intent=Intent.DOCTOR_AVAILABILITY,
+            confidence=max(float(nlu.confidence or 0), 0.9),
+            clarification_needed=False,
+            is_off_topic=False,
+            entities=replace(
+                entities,
+                date=None,
+                time=None,
+                insurance_provider=None,
+            ),
+            resolved_ids=replace(
+                resolved,
+                doctor_id=pending.get("doctor_id") or resolved.doctor_id,
+            ),
+            raw=raw,
+        )
+
+    if kind == "service_followup":
+        service_name = pending.get("service_name")
+        return replace(
+            nlu,
+            intent=Intent.DOCTOR_AVAILABILITY,
+            confidence=max(float(nlu.confidence or 0), 0.9),
+            clarification_needed=False,
+            is_off_topic=False,
+            entities=replace(
+                entities,
+                date=None,
+                service=service_name or entities.service,
+                insurance_provider=None,
+            ),
+            resolved_ids=replace(
+                resolved,
+                service_id=pending.get("service_id") or resolved.service_id,
+            ),
+            raw=raw,
+        )
+    return nlu
+
+
+def mark_pending_decline(nlu: Any) -> Any:
+    from dataclasses import replace
+
+    from apps.chatbot.nlu.schemas import Intent
+
+    raw = dict(nlu.raw or {})
+    raw["_pending_uptake"] = "decline"
+    return replace(
+        nlu,
+        intent=Intent.OFF_TOPIC,
+        confidence=0.9,
+        clarification_needed=False,
+        is_off_topic=True,
+        raw=raw,
+    )
+
+
+def pending_offer_from_turn(
+    *,
+    sql_rows: list[dict[str, Any]] | None,
+    nlu: Any,
+    last_doctor: dict[str, Any] | None,
+    matched_services: list[dict[str, Any]] | None,
+) -> dict[str, Any] | None:
+    """What this turn just offered the patient, if anything.
+
+    Recorded so a later short 'yes' executes this offer instead of being
+    classified in a vacuum.
+    """
+    for block in sql_rows or []:
+        if block.get("handler") != "doctor_availability":
+            continue
+        meta = block.get("meta") or {}
+        if meta.get("temporal_searchable") and not block.get("found"):
+            doctor = last_doctor or {}
+            return {
+                "type": "availability_alternative",
+                "action": "forward_scan",
+                "doctor_id": doctor.get("id"),
+                "doctor_name": doctor.get("name"),
+            }
+
+    intent = getattr(nlu, "intent", None)
+    intent_val = intent.value if hasattr(intent, "value") else str(intent or "")
+    if intent_val in {"services_offered", "medical_question", "faq", "pricing"}:
+        services = [s for s in (matched_services or []) if s.get("id")]
+        if services:
+            svc = services[0]
+            return {
+                "type": "service_followup",
+                "action": "show_availability",
+                "service_id": svc.get("id"),
+                "service_name": svc.get("name"),
+            }
+    return None

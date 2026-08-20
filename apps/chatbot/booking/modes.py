@@ -117,10 +117,28 @@ def prev_step(mode: str, current: str) -> BookingStep | None:
     return steps[idx - 1]
 
 
-def step_index(mode: str, current: str) -> tuple[int, int]:
-    """Progress after PATH. PATH itself reports (0, total)."""
+def step_index(
+    mode: str,
+    current: str,
+    *,
+    details_skipped: bool = False,
+    otp_skipped: bool = False,
+) -> tuple[int, int]:
+    """Progress after PATH. PATH itself reports (0, total).
+
+    details_skipped/otp_skipped drop those steps from the count for
+    sessions that never show them (see BookingSession's own fields) — a
+    prefilled, already-authenticated booking landing straight on REVIEW
+    must not report "Step 6 of 6" as its very first screen; it only ever
+    had one real step to show.
+    """
     steps = steps_for_mode(mode)
-    visible = [s for s in steps if s != BookingStep.CONFIRMED]
+    skip = set()
+    if details_skipped:
+        skip.add(BookingStep.DETAILS)
+    if otp_skipped:
+        skip.add(BookingStep.OTP)
+    visible = [s for s in steps if s != BookingStep.CONFIRMED and s not in skip]
     if current == BookingStep.PATH.value:
         return 0, len(visible)
     try:

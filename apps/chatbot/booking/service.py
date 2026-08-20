@@ -100,6 +100,7 @@ class BookingService:
             doctor_name=doctor_name,
             service_id=service_id,
             service_name=service_name,
+            slot_start=slot_start,
             resuming=resuming,
         )
         cls._apply_date_time_hint(session, clinic, text)
@@ -150,6 +151,14 @@ class BookingService:
             return None
         return session
 
+    # Steps that mean "a slot is already picked and pending confirmation" —
+    # reachable only via an explicit slot selection. A fresh doctor/service
+    # prefill arriving here without its own explicit slot means the
+    # *previous* attempt's commitment, never re-affirmed in this call.
+    _SLOT_COMMITTED_STEPS = frozenset(
+        {BookingStep.DETAILS.value, BookingStep.OTP.value, BookingStep.REVIEW.value}
+    )
+
     @classmethod
     def _apply_prefill(
         cls,
@@ -162,6 +171,7 @@ class BookingService:
         doctor_name: str | None,
         service_id: str | None = None,
         service_name: str | None = None,
+        slot_start: str | None = None,
         resuming: bool,
     ) -> None:
         """Update the draft in place with newly-known service/doctor/specialty.
@@ -174,6 +184,45 @@ class BookingService:
             session.specialty_id or ""
         )
         changed_doctor = bool(doctor_id) and str(doctor_id) != (session.doctor_id or "")
+
+        # A new utterance that names who to book, but not what, must not keep
+        # a previous *committed* draft's service. "Put me down with Dr Lin
+        # as soon as you can" is not a continuation of leftover Adult
+        # Cleaning left over from an already-reviewed/held booking.
+        #
+        # Scoped to _SLOT_COMMITTED_STEPS on purpose, not "any time doctor_id
+        # arrives without service_id" — that broader version also fired
+        # during completely normal, uninterrupted SERVICE -> DOCTOR
+        # progression (pick a service, then immediately pick a doctor for
+        # it), silently dropping a service the patient had just chosen
+        # seconds earlier in the same live flow. Reproduced directly:
+        # start(service_id=Cleaning) -> start(doctor_id=Maya, no service_id)
+        # wiped Cleaning even though nothing about that flow was stale.
+        stale_service = (
+            bool(doctor_id)
+            and not service_id
+            and bool(session.service_id)
+            and (
+                bool(session.slot_start)
+                or session.step in cls._SLOT_COMMITTED_STEPS
+            )
+        )
+
+        # A doctor/service named in this call, with no slot tapped alongside
+        # it, must not inherit a previous attempt's held time — including
+        # leftover REVIEW/DETAILS. An explicit slot_start is a tap and wins.
+        stale_commitment = (
+            bool(doctor_id or service_id)
+            and not slot_start
+            and (
+                bool(session.slot_start)
+                or session.step in cls._SLOT_COMMITTED_STEPS
+            )
+        )
+
+        if stale_service:
+            session.service_id = None
+            session.service_name = None
 
         if changed_service:
             session.service_id = str(service_id)
@@ -191,7 +240,7 @@ class BookingService:
         if session.service_name and not session.reason:
             session.reason = session.service_name
 
-        if changed_doctor or changed_service:
+        if changed_doctor or changed_service or stale_commitment or stale_service:
             session.date = None
             session.slot_start = None
             session.slot_end = None
@@ -214,13 +263,14 @@ class BookingService:
                 session.step = BookingStep.PATH.value
             return
 
-        if changed_doctor and session.step in {
+        if (changed_doctor or stale_commitment) and session.step in {
             BookingStep.PATH.value,
             BookingStep.SERVICE.value,
             BookingStep.SPECIALTY.value,
             BookingStep.TIME.value,
             BookingStep.DETAILS.value,
             BookingStep.OTP.value,
+            BookingStep.REVIEW.value,
         }:
             session.mode = "choose_doctor"
             session.step = BookingStep.DATE.value
@@ -233,6 +283,7 @@ class BookingService:
             BookingStep.TIME.value,
             BookingStep.DETAILS.value,
             BookingStep.OTP.value,
+            BookingStep.REVIEW.value,
         }:
             session.mode = "service_first"
             session.step = BookingStep.DOCTOR.value
@@ -352,6 +403,20 @@ class BookingService:
 
         if action == "back":
             prev = prev_step(session.mode, session.step)
+            # Walk the same shortcut this session's forward path actually
+            # took, in reverse — session.otp_skipped/details_skipped are set
+            # once, at the moment a forward step genuinely skipped them (see
+            # _route_to_review_if_authenticated and submit_details'
+            # verification_mode="none" branch), so Back can't stop at a step
+            # this particular session never showed. Confirmed live: without
+            # this, Back landed on a contact-details screen, then re-picking
+            # a time from the step before it skipped straight past DETAILS
+            # to REVIEW again — proving DETAILS was never a real stop for
+            # that session, just a Back-only dead end.
+            if prev == BookingStep.OTP and session.otp_skipped:
+                prev = prev_step(session.mode, prev.value)
+            if prev == BookingStep.DETAILS and session.details_skipped:
+                prev = prev_step(session.mode, prev.value)
             if prev:
                 session.step = prev.value
                 if prev == BookingStep.PATH:
@@ -586,6 +651,7 @@ class BookingService:
                 # No OTP to type — without a REVIEW stop here, nothing between
                 # this form and a real Appointment would ever require a
                 # deliberate "yes, book it" gesture from the patient.
+                session.otp_skipped = True
                 session.step = BookingStep.REVIEW.value
                 cls._touch(session)
                 cls._save(chat_session, session)
@@ -660,6 +726,8 @@ class BookingService:
         session.patient_last_name = patient.last_name
         session.patient_phone = phone
         session.patient_email = patient.email or ""
+        session.details_skipped = True
+        session.otp_skipped = True
         session.step = BookingStep.REVIEW.value
         cls._touch(session)
         cls._save(chat_session, session)

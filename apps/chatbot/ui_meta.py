@@ -119,6 +119,12 @@ def build_ui_meta(
         from apps.chatbot.routing.signals import is_generic_book_request
 
         nlu_pins = _nlu_has_booking_pins(nlu)
+        named_doctor = False
+        named_service = False
+        ents = getattr(nlu, "entities", None) if nlu is not None else None
+        if ents is not None:
+            named_doctor = _entity_nonempty(getattr(ents, "doctor_name", None))
+            named_service = _entity_nonempty(getattr(ents, "service", None))
         generic_restart = is_generic_book_request(message) and not nlu_pins
         booking_in_progress = (
             bool(active_booking)
@@ -143,18 +149,16 @@ def build_ui_meta(
         }
         if booking_in_progress:
             booking["booking_id"] = active_booking.get("booking_id")
-        # A bare "book an appointment" must not inherit last turn's doctor.
         if last_doctor and not generic_restart:
             booking["doctor_id"] = last_doctor.get("id")
             booking["doctor_name"] = last_doctor.get("name")
-        # Only pin specialty when the patient already chose one in this session
-        # (e.g. specialty chip). AI suggestions stay in suggested_specialties only.
         if last_specialty and last_specialty.get("id") and not generic_restart:
             booking["specialty_id"] = last_specialty.get("id")
             booking["specialty_name"] = last_specialty.get("name")
         if last_service and last_service.get("id") and not generic_restart:
-            booking["service_id"] = last_service.get("id")
-            booking["service_name"] = last_service.get("name")
+            if named_service or not named_doctor:
+                booking["service_id"] = last_service.get("id")
+                booking["service_name"] = last_service.get("name")
         if last_insurance and last_insurance.get("name"):
             booking["insurance_name"] = last_insurance.get("name")
         meta["booking"] = booking

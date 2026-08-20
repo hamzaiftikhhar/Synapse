@@ -93,10 +93,14 @@ class ChatEngine:
 
         ctx = conversation_context or self._build_context(session) or {}
         from apps.chatbot.conversation_state import (
+            apply_pending_uptake,
             apply_recovery,
+            classify_uptake,
             detect_recovery,
             load_timeline,
+            mark_pending_decline,
             merge_turn_context,
+            pending_offer_from_turn,
             recovery_reply,
             save_timeline,
             should_apply_recovery_override,
@@ -145,6 +149,45 @@ class ChatEngine:
             nlu_result,
             resolved_ids=resolve_entities(clinic, nlu_result.entities),
         )
+
+        # Bind a short yes/no to the offer the previous turn actually made,
+        # before the planner sees NLU's independent (often hallucinated) intent.
+        uptake = classify_uptake(message)
+        pending = timeline.pending_clarification
+        if pending and uptake == "affirm":
+            nlu_result = apply_pending_uptake(nlu_result, pending)
+            if pending.get("doctor_id"):
+                nlu_result = replace(
+                    nlu_result,
+                    resolved_ids=replace(
+                        nlu_result.resolved_ids,
+                        doctor_id=str(pending.get("doctor_id") or ""),
+                    ),
+                )
+            timeline.pending_clarification = None
+            ctx = save_timeline(ctx, timeline)
+        elif pending and uptake == "decline":
+            nlu_result = mark_pending_decline(nlu_result)
+            timeline.pending_clarification = None
+            ctx = save_timeline(ctx, timeline)
+        elif pending and pending.get("type") in {
+            "availability_alternative",
+            "service_followup",
+        }:
+            # These are short-lived speech-act offers ("want me to check
+            # another day?") — meaningful only as the very next reply, not
+            # something that should still be armed turns later. Reproduced
+            # directly: an unrelated intervening turn ("what are your
+            # hours") left this pending unchanged, and a LATER unrelated
+            # "sure" — itself misclassified by live NLU as
+            # insurance_verification, the exact failure this feature exists
+            # to catch — got wrongly bound to a two-turns-stale Dr. Maya
+            # availability offer instead of being treated as expired.
+            # Doctor-disambiguation pending_clarification (type="doctor")
+            # is a different, longer-lived use of this same field and is
+            # deliberately left untouched here.
+            timeline.pending_clarification = None
+            ctx = save_timeline(ctx, timeline)
 
         from apps.chatbot.routing.signals import (
             is_service_list_query,
@@ -518,6 +561,16 @@ class ChatEngine:
                 response_text = clarify_text
 
         if session is not None:
+            offer = pending_offer_from_turn(
+                sql_rows=sql_rows,
+                nlu=nlu_result,
+                last_doctor=last_doctor,
+                matched_services=matched_services,
+            )
+            if offer:
+                timeline = merge_turn_context(
+                    timeline, pending_clarification=offer
+                )
             self._save_messages(session, message, response_text, nlu_result)
             self._update_memory(
                 session,
@@ -845,6 +898,8 @@ class ChatEngine:
                 return nlu.clarification_question
             return get_response("CLARIFY_GENERIC")
         template_id = resolve_direct_template(nlu.intent.value, message)
+        if (getattr(nlu, "raw", None) or {}).get("_pending_uptake") == "decline":
+            return "No problem — what else can I help you with?"
         return get_response(template_id, clinic_phone=clinic_phone)
 
     def _compose_from_plan(

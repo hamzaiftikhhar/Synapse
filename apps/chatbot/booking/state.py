@@ -60,6 +60,15 @@ class BookingSession:
     suggested_specialty_ids: list[str] = field(default_factory=list)
     show_all_times: bool = False
     time_hint: str | None = None  # ISO time floor, e.g. "17:00:00" — filters TIME step options
+    # Set once, at the moment a forward shortcut actually skips these steps
+    # (_route_to_review_if_authenticated sets both; verification_mode="none"
+    # sets only otp_skipped, since it genuinely shows/submits DETAILS first).
+    # Read by step_index() so the progress counter reflects what this
+    # session will actually show, and by apply_step("back") so Back walks
+    # the same shortcut in reverse instead of stopping at a step the
+    # forward flow never showed this patient.
+    details_skipped: bool = False
+    otp_skipped: bool = False
     created_at: str = ""
     updated_at: str = ""
 

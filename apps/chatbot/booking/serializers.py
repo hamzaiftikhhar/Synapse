@@ -16,7 +16,12 @@ from apps.chatbot.sql_tool.utils import clinic_timezone, doctor_to_dict
 def serialize_step(clinic: Any, session: BookingSession) -> dict[str, Any]:
     """Full wizard response for the current step."""
     cfg = get_booking_config(clinic)
-    current, total = step_index(session.mode, session.step)
+    current, total = step_index(
+        session.mode,
+        session.step,
+        details_skipped=session.details_skipped,
+        otp_skipped=session.otp_skipped,
+    )
     payload: dict[str, Any] = {
         "booking_id": session.booking_id,
         "mode": session.mode,
