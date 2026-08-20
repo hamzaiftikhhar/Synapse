@@ -9,6 +9,9 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useUpdateWidgetSettings, useWidgetSettings } from "@/hooks/api";
 import { getApiErrorMessage } from "@/lib/api/client";
+import { appearanceFromConfig, appearanceToConfig } from "@/features/chat/widget-theme";
+import { WidgetAppearanceEditor } from "@/features/chat/widget-appearance-editor";
+import { useAuth } from "@/providers/auth-provider";
 import { cn } from "@/lib/utils";
 
 const SECTIONS = [
@@ -88,23 +91,29 @@ function BookingSection() {
 }
 
 function WidgetSection() {
+  const { clinic } = useAuth();
   const { data, isLoading } = useWidgetSettings();
   const update = useUpdateWidgetSettings();
-  const [color, setColor] = useState("#5b21b6");
   const [greeting, setGreeting] = useState("");
+  const [appearance, setAppearance] = useState(() => appearanceFromConfig());
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     if (!data || loaded) return;
-    setColor(data.configuration.widget?.primary_color ?? "#5b21b6");
     setGreeting(data.configuration.widget?.greeting ?? "");
+    setAppearance(appearanceFromConfig(data.configuration.widget));
     setLoaded(true);
   }, [data, loaded]);
 
   async function onSave() {
     try {
       await update.mutateAsync({
-        configuration: { widget: { primary_color: color, greeting: greeting.trim() } },
+        configuration: {
+          widget: {
+            ...appearanceToConfig(appearance),
+            greeting: greeting.trim(),
+          },
+        },
       });
       toast.success("Widget settings saved");
     } catch (err) {
@@ -117,24 +126,18 @@ function WidgetSection() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       <h2 className="text-sm font-semibold">Widget</h2>
-      <div className="grid gap-4 sm:grid-cols-2">
-        <div className="space-y-1.5">
-          <Label>Brand color</Label>
-          <div className="flex items-center gap-2">
-            <span
-              className="size-8 shrink-0 rounded-full border border-border"
-              style={{ backgroundColor: color }}
-            />
-            <Input value={color} onChange={(e) => setColor(e.target.value)} className="w-28" />
-          </div>
-        </div>
-      </div>
       <div className="space-y-1.5">
         <Label>Greeting</Label>
         <Input value={greeting} onChange={(e) => setGreeting(e.target.value)} />
       </div>
+      <WidgetAppearanceEditor
+        value={appearance}
+        onChange={setAppearance}
+        clinicName={clinic?.name}
+        greeting={greeting}
+      />
       <Button onClick={onSave} disabled={update.isPending}>
         {update.isPending ? "Saving…" : "Save"}
       </Button>

@@ -1,8 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -13,12 +12,18 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { WidgetAppearanceEditor } from "@/features/chat/widget-appearance-editor";
+import {
+  appearanceFromConfig,
+  appearanceToConfig,
+  type WidgetAppearance,
+} from "@/features/chat/widget-theme";
 import {
   useUpdateWidgetSettings,
   useWidgetSettings,
 } from "@/hooks/api";
 import { getApiErrorMessage } from "@/lib/api/client";
-import { cn } from "@/lib/utils";
+import { useAuth } from "@/providers/auth-provider";
 import { StepHint } from "../step-hint";
 import { ONBOARDING_FORM_ID, type OnboardingStepProps } from "../steps";
 
@@ -30,24 +35,34 @@ const LEAD_TIME_OPTIONS = [
   { value: "custom", label: "Custom" },
 ];
 
-const COLOR_PRESETS = ["#5c67f2", "#0f766e", "#b45309", "#1d4ed8", "#be123c", "#1a1e26"];
-
 export function BookingStep({ onNext }: OnboardingStepProps) {
+  const { clinic } = useAuth();
   const { data, isLoading } = useWidgetSettings();
   const update = useUpdateWidgetSettings();
 
-  const savedLeadTime = data?.configuration.booking?.lead_time_hours ?? 24;
-  const savedColor = data?.configuration.widget?.primary_color ?? COLOR_PRESETS[0];
-  const savedPolicy = data?.configuration.booking?.cancellation_policy ?? "";
-
-  const [leadTimeChoice, setLeadTimeChoice] = useState<string>(
-    LEAD_TIME_OPTIONS.some((o) => o.value === String(savedLeadTime))
-      ? String(savedLeadTime)
-      : "custom"
+  const [leadTimeChoice, setLeadTimeChoice] = useState("24");
+  const [customLeadTime, setCustomLeadTime] = useState("24");
+  const [policy, setPolicy] = useState("");
+  const [greeting, setGreeting] = useState("");
+  const [appearance, setAppearance] = useState<WidgetAppearance>(() =>
+    appearanceFromConfig()
   );
-  const [customLeadTime, setCustomLeadTime] = useState(String(savedLeadTime));
-  const [policy, setPolicy] = useState(savedPolicy);
-  const [color, setColor] = useState(savedColor);
+  const [hydrated, setHydrated] = useState(false);
+
+  useEffect(() => {
+    if (!data || hydrated) return;
+    const savedLeadTime = data.configuration.booking?.lead_time_hours ?? 24;
+    setLeadTimeChoice(
+      LEAD_TIME_OPTIONS.some((o) => o.value === String(savedLeadTime))
+        ? String(savedLeadTime)
+        : "custom"
+    );
+    setCustomLeadTime(String(savedLeadTime));
+    setPolicy(data.configuration.booking?.cancellation_policy ?? "");
+    setGreeting(data.configuration.widget?.greeting ?? "");
+    setAppearance(appearanceFromConfig(data.configuration.widget));
+    setHydrated(true);
+  }, [data, hydrated]);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -59,7 +74,10 @@ export function BookingStep({ onNext }: OnboardingStepProps) {
       await update.mutateAsync({
         configuration: {
           booking: { lead_time_hours: leadTimeHours, cancellation_policy: policy.trim() },
-          widget: { primary_color: color },
+          widget: {
+            ...appearanceToConfig(appearance),
+            greeting: greeting.trim(),
+          },
         },
       });
       onNext();
@@ -68,16 +86,13 @@ export function BookingStep({ onNext }: OnboardingStepProps) {
     }
   }
 
-  if (isLoading) {
+  if (isLoading && !hydrated) {
     return <p className="text-sm text-muted-foreground">Loading…</p>;
   }
 
   return (
     <form id={ONBOARDING_FORM_ID} onSubmit={onSubmit} className="space-y-8">
-      <StepHint>
-        Lead time and cancellation copy appear in the patient chatbot. You can
-        change all of this later from Settings.
-      </StepHint>
+      <StepHint>Patients see these in the chat widget. You can change them later.</StepHint>
       <div className="space-y-3">
         <Label>How soon can patients book?</Label>
         <div className="flex flex-wrap items-center gap-2">
@@ -122,36 +137,27 @@ export function BookingStep({ onNext }: OnboardingStepProps) {
         />
       </div>
 
-      <div className="space-y-3">
-        <Label>
-          Brand color{" "}
+      <div className="space-y-2">
+        <Label htmlFor="widget-greeting">
+          Greeting{" "}
           <span className="font-normal text-muted-foreground">(optional)</span>
         </Label>
-        <div className="flex flex-wrap items-center gap-2">
-          {COLOR_PRESETS.map((preset) => (
-            <button
-              key={preset}
-              type="button"
-              aria-label={`Use ${preset}`}
-              aria-pressed={color === preset}
-              onClick={() => setColor(preset)}
-              className={cn(
-                "size-8 rounded-full ring-2 ring-offset-2 ring-offset-background transition-shadow",
-                color === preset ? "ring-foreground" : "ring-transparent"
-              )}
-              style={{ backgroundColor: preset }}
-            />
-          ))}
-          <Input
-            value={color}
-            onChange={(e) => setColor(e.target.value)}
-            className="w-28"
-            aria-label="Custom brand color (hex)"
-          />
-        </div>
-        <p className="text-xs text-muted-foreground">
-          Used for your booking widget. Defaults to Synapse&apos;s palette if left as-is.
-        </p>
+        <Input
+          id="widget-greeting"
+          value={greeting}
+          onChange={(e) => setGreeting(e.target.value)}
+          placeholder={`Hi! How can ${clinic?.name || "we"} help you today?`}
+        />
+      </div>
+
+      <div className="space-y-3">
+        <Label>How the chat looks on your site</Label>
+        <WidgetAppearanceEditor
+          value={appearance}
+          onChange={setAppearance}
+          clinicName={clinic?.name}
+          greeting={greeting}
+        />
       </div>
     </form>
   );

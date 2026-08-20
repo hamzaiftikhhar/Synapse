@@ -60,7 +60,7 @@ export function TypingIndicator({
       />
       <div className="min-w-0 max-w-[85%]">
         <BotMetaRow name={assistantName} />
-        <div className="rounded-[18px] rounded-bl-md border border-border/80 bg-card px-3.5 py-3 shadow-sm">
+        <div className="synapse-chat-bubble synapse-chat-bubble--bot border border-border/80 bg-card px-3.5 py-3 shadow-sm">
           <p
             key={fadeKey}
             className={cn(

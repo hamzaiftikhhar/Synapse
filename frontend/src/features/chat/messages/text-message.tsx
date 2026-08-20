@@ -51,10 +51,10 @@ export function TextMessage({
         ) : null}
         <div
           className={cn(
-            "px-3.5 py-2.5 text-sm leading-relaxed",
+            "px-3.5 py-2.5 text-sm leading-relaxed synapse-chat-bubble",
             isUser
-              ? "rounded-[18px] rounded-br-md bg-primary text-primary-foreground shadow-sm"
-              : "rounded-[18px] rounded-bl-md border border-border/80 bg-card text-foreground shadow-sm",
+              ? "synapse-chat-bubble--user bg-primary text-primary-foreground shadow-sm"
+              : "synapse-chat-bubble--bot border border-border/80 bg-card text-foreground shadow-sm",
             streaming && !isUser && "synapse-stream-cursor"
           )}
         >

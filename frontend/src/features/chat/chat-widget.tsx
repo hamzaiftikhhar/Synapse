@@ -45,6 +45,11 @@ import { useWidget, type AssistantMode } from "@/providers/widget-provider";
 import type { BookingStepPayload } from "@/types/api";
 import type { AppointmentCardData, ChatMessage, TimeSlotData } from "@/types/chat";
 import { waitForNaturalReplyPace } from "@/features/chat/natural-pace";
+import {
+  WidgetThemeProvider,
+  appearanceFromConfig,
+  widgetThemeStyle,
+} from "@/features/chat/widget-theme";
 
 export type ChatWidgetProps = {
   mode?: "widget" | "embedded";
@@ -195,6 +200,11 @@ export function ChatWidget({
     (resolvedMode === "marketing"
       ? "Hi! How can Synapse help you today?"
       : `Hi! How can ${displayName} help you today?`);
+  const applyClinicTheme = resolvedMode !== "marketing";
+  const clinicAppearance = applyClinicTheme
+    ? appearanceFromConfig(widgetConfig?.configuration?.widget)
+    : null;
+  const themeStyle = clinicAppearance ? widgetThemeStyle(clinicAppearance) : undefined;
 
   const starters =
     resolvedMode === "marketing" ? MARKETING_STARTERS : CLINIC_STARTERS;
@@ -524,6 +534,15 @@ export function ChatWidget({
           : m
       )
     );
+    // The wizard mounts with an empty "Preparing your booking…" placeholder,
+    // then grows once start() resolves — the auto-scroll that fired when the
+    // (still-empty) card was first added already settled on the shorter
+    // height, so the sudden growth leaves the view stuck mid-card. Re-settle
+    // once the browser has painted the now-loaded content, and only if the
+    // patient hasn't deliberately scrolled away to re-read something.
+    if (stickToBottom.current) {
+      requestAnimationFrame(() => scrollToBottom(true));
+    }
   }
 
   function handleAction(action: string, data?: unknown) {
@@ -790,7 +809,7 @@ export function ChatWidget({
         />
         <div className="min-w-0 max-w-[85%]">
           <BotMetaRow name={`${displayName} Assistant`} time="Just now" />
-          <div className="rounded-[18px] rounded-bl-md border border-border/80 bg-card px-3.5 py-2.5 text-sm leading-relaxed text-foreground shadow-sm">
+          <div className="synapse-chat-bubble synapse-chat-bubble--bot border border-border/80 bg-card px-3.5 py-2.5 text-sm leading-relaxed text-foreground shadow-sm">
             {greeting}
           </div>
         </div>
@@ -882,20 +901,21 @@ export function ChatWidget({
     <div
       className={cn(
         "synapse-chat-panel relative flex flex-col overflow-hidden border border-border/70 bg-card shadow-[0_18px_50px_-18px_rgba(11,14,46,0.28)]",
-        mode === "embedded" && "h-full min-h-[420px] w-full rounded-[18px]",
+        mode === "embedded" && "h-full min-h-[420px] w-full",
         mode === "widget" &&
           !expanded &&
-          "h-[min(740px,calc(100dvh-5.5rem))] w-[min(560px,calc(100vw-1.25rem))] rounded-[18px]",
+          "h-[min(740px,calc(100dvh-5.5rem))] w-[min(560px,calc(100vw-1.25rem))]",
         mode === "widget" &&
           expanded &&
-          "h-[min(80dvh,900px)] w-[min(78vw,1080px)] rounded-[18px]",
+          "h-[min(80dvh,900px)] w-[min(78vw,1080px)]",
         mode === "widget" &&
-          "max-sm:fixed max-sm:inset-x-0 max-sm:bottom-0 max-sm:top-auto max-sm:h-[min(92dvh,820px)] max-sm:w-full max-sm:max-w-none max-sm:rounded-b-none max-sm:rounded-t-[18px]",
+          "max-sm:fixed max-sm:inset-x-0 max-sm:bottom-0 max-sm:top-auto max-sm:h-[min(92dvh,820px)] max-sm:w-full max-sm:max-w-none max-sm:rounded-b-none",
         expanded &&
           mode === "widget" &&
           "max-sm:inset-0 max-sm:h-[100dvh] max-sm:rounded-none",
         className
       )}
+      style={themeStyle}
     >
       <ChatHeader
         clinicName={displayName}
@@ -910,11 +930,13 @@ export function ChatWidget({
   );
 
   if (mode === "embedded") {
-    return panel;
+    return (
+      <WidgetThemeProvider appearance={clinicAppearance}>{panel}</WidgetThemeProvider>
+    );
   }
 
   return (
-    <>
+    <WidgetThemeProvider appearance={clinicAppearance}>
       {open && expanded ? (
         <div
           className="pointer-events-auto fixed inset-0 z-[55] bg-black/20"
@@ -923,7 +945,10 @@ export function ChatWidget({
         />
       ) : null}
 
-      <div className="pointer-events-none fixed inset-x-0 bottom-0 z-[60] flex flex-col items-end p-3 sm:inset-x-auto sm:right-5 sm:bottom-5 sm:p-0">
+      <div
+        className="pointer-events-none fixed inset-x-0 bottom-0 z-[60] flex flex-col items-end p-3 sm:inset-x-auto sm:right-5 sm:bottom-5 sm:p-0"
+        style={themeStyle}
+      >
         {open ? (
           <div
             className={cn(
@@ -939,7 +964,7 @@ export function ChatWidget({
         <button
           type="button"
           onClick={() => (open ? closeAll() : setOpen(true))}
-          className="pointer-events-auto flex size-14 items-center justify-center rounded-full shadow-lg ring-2 ring-background"
+          className="pointer-events-auto flex size-14 items-center justify-center overflow-hidden rounded-full shadow-lg ring-2 ring-black/10"
           aria-label={open ? "Close chat" : "Open Synapse Assistant"}
         >
           {open ? (
@@ -947,10 +972,10 @@ export function ChatWidget({
               <X className="size-5" />
             </span>
           ) : (
-            <RobotLauncherIcon className="rounded-full bg-primary" />
+            <RobotLauncherIcon className="rounded-full" />
           )}
         </button>
       </div>
-    </>
+    </WidgetThemeProvider>
   );
 }
