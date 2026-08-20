@@ -61,10 +61,30 @@ class AsapSameDayTests(SimpleTestCase):
         self.assertTrue(is_asap_request("can you squeeze me in ASAP"))
         self.assertTrue(is_asap_request("what's the next available slot"))
         self.assertFalse(is_asap_request("I want to book Friday"))
+        for message in (
+            "book with Dr Maya instantly",
+            "can she take me immediately",
+            "get me in right away if there's a gap",
+        ):
+            self.assertTrue(is_asap_request(message), msg=message)
+
+    def test_friday_is_not_asap(self):
+        self.assertFalse(is_asap_request("I want to book Friday"))
 
     def test_is_same_day_request(self):
         self.assertTrue(is_same_day_request("do you have same day appointments"))
         self.assertFalse(is_same_day_request("do you have appointments tomorrow"))
+
+    def test_yesterday_is_the_previous_calendar_day(self):
+        tz = ZoneInfo("America/Los_Angeles")
+        today = datetime.now(tz).date()
+        self.assertEqual(parse_natural_date("yesterday", tz=tz), today - timedelta(days=1))
+
+    def test_today_and_tomorrow_are_unchanged(self):
+        tz = ZoneInfo("America/Los_Angeles")
+        today = datetime.now(tz).date()
+        self.assertEqual(parse_natural_date("today", tz=tz), today)
+        self.assertEqual(parse_natural_date("tomorrow", tz=tz), today + timedelta(days=1))
 
 
 class EntityExtractDateTimePatternsTests(SimpleTestCase):

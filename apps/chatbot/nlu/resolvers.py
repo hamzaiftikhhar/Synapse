@@ -17,6 +17,20 @@ HIGH_CONFIDENCE = 0.85
 MEDIUM_CONFIDENCE = 0.65
 DEFAULT_THRESHOLD = 0.60
 
+# Words that appear in booking/availability talk but are never a doctor's
+# name. "Schedule me with Dr." used to leave "schedule" as the only token,
+# which then fuzzy-matched a real doctor.
+_DOCTOR_QUERY_NOISE = frozenset(
+    {
+        "doctor", "dr", "doc", "book", "booking", "schedule", "scheduling",
+        "appointment", "appointments", "available", "availability",
+        "free", "open", "slot", "slots", "visit", "see", "get",
+        "please", "want", "need", "looking", "find", "list",
+        "today", "tomorrow", "yesterday", "tonight", "asap",
+        "instantly", "immediately", "earliest", "soonest",
+    }
+)
+
 
 @dataclass(frozen=True)
 class DoctorCandidate:
@@ -164,6 +178,28 @@ def _doctor_name_tokens(full_name: str) -> list[str]:
     return [t for t in cleaned.split() if len(t) > 2]
 
 
+def _name_evidence_tokens(query: str) -> list[str]:
+    """Tokens that could actually be a doctor's name.
+
+    Honorifics and booking verbs are stripped. An empty result means the
+    message named no one — fuzzy matching must not invent a doctor.
+    """
+    tokens: list[str] = []
+    for raw in query.split():
+        word = raw.strip(".,!?")
+        if len(word) <= 2:
+            continue
+        lower = word.lower()
+        if lower in STOPWORDS or lower in _DOCTOR_QUERY_NOISE:
+            continue
+        bare = _strip_doctor_prefix(word)
+        bare_lower = bare.lower()
+        if not bare or bare_lower in STOPWORDS or bare_lower in _DOCTOR_QUERY_NOISE:
+            continue
+        tokens.append(bare or word)
+    return tokens
+
+
 def resolve_doctor_candidates(
     clinic: Clinic, text: str | None, *, limit: int = 3
 ) -> DoctorResolution:
@@ -179,6 +215,7 @@ def resolve_doctor_candidates(
         .only("id", "full_name", "title", "bio")[:100]
     )
     lower = query.lower()
+    evidence = _name_evidence_tokens(query)
     scored: list[DoctorCandidate] = []
 
     for doctor in doctors:
@@ -202,21 +239,13 @@ def resolve_doctor_candidates(
                     score = max(score, 0.95)
                     match_type = "first_last"
 
-            words = [
-                w.strip(".,!?")
-                for w in query.split()
-                if len(w.strip(".,!?")) > 2
-                and w.lower() not in STOPWORDS
-                and w.lower() not in {"doctor", "dr", "doc", "book"}
-            ]
-            for word in words:
-                bare = _strip_doctor_prefix(word)
+            for word in evidence:
                 for token in parts:
-                    token_score = _fuzzy_score(bare or word, token)
+                    token_score = _fuzzy_score(word, token)
                     if token_score > score:
                         score = token_score
                         match_type = "token_fuzzy"
-                whole_score = _fuzzy_score(bare or word, doctor.full_name)
+                whole_score = _fuzzy_score(word, doctor.full_name)
                 if whole_score > score:
                     score = whole_score
                     match_type = "name_fuzzy"

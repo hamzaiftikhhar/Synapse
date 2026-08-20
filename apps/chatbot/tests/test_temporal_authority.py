@@ -132,6 +132,60 @@ class Invariant2NoSilentSubstitutionTests(TestCase):
         scope = _resolve(["asap"], message="I need something asap")
         self.assertIs(scope.status, TemporalStatus.UNSPECIFIED)
 
+    def test_earliest_without_a_date_entity_is_a_forward_scan(self):
+        # Live NLU for this exact sentence sent date=null. looks_temporal
+        # still saw "earliest" and the resolver asked which January 2027
+        # they meant. Flexible words are not an unreadable constraint.
+        scope = _resolve([], message="When is dr maya availabel earliest")
+        self.assertIs(scope.status, TemporalStatus.UNSPECIFIED)
+        self.assertIsNotNone(scope.start)
+        self.assertIsNotNone(scope.end)
+
+    def test_flexible_phrases_without_a_date_all_forward_scan(self):
+        for message in (
+            "When is dr maya available earliest",
+            "I need something asap",
+            "what's the next available slot",
+            "as soon as possible please",
+            "book with Dr Maya instantly",
+            "can she take me immediately",
+            "get me in right away",
+        ):
+            scope = _resolve([], message=message)
+            self.assertIs(scope.status, TemporalStatus.UNSPECIFIED, msg=message)
+            self.assertTrue(scope.searchable, msg=message)
+
+    def test_a_flexible_word_does_not_rescue_an_unreadable_date(self):
+        for message in (
+            "coming januray earliest",
+            "coming januray instantly",
+        ):
+            scope = _resolve([], message=message)
+            self.assertIs(scope.status, TemporalStatus.UNRESOLVED, msg=message)
+
+    def test_yesterday_is_past_not_unresolved(self):
+        for entities in ([], ["yesterday"]):
+            scope = _resolve(
+                entities,
+                message="can you please book me with dr maya yesterday afternoon",
+            )
+            self.assertIs(scope.status, TemporalStatus.PAST, msg=repr(entities))
+            self.assertEqual(scope.start, _TODAY - timedelta(days=1))
+            self.assertFalse(scope.searchable)
+
+    def test_tomorrow_is_still_the_next_calendar_day(self):
+        scope = _resolve(
+            ["tomorrow"],
+            message="can you please book me with dr maya tomorrow afternoon",
+        )
+        self.assertIs(scope.status, TemporalStatus.RESOLVED)
+        self.assertEqual(scope.start, _TODAY + timedelta(days=1))
+
+    def test_today_is_still_today(self):
+        scope = _resolve(["today"], message="is dr maya available today")
+        self.assertIs(scope.status, TemporalStatus.RESOLVED)
+        self.assertEqual(scope.start, _TODAY)
+
     def test_sun_damage_is_not_a_sunday_constraint(self):
         scope = _resolve([], message="do you treat sun damage")
         self.assertIs(scope.status, TemporalStatus.UNSPECIFIED)
@@ -298,6 +352,26 @@ class Invariant3RefusalBlocksSlotsTests(_AvailabilityCase):
     def test_a_refusal_asks_for_the_full_date(self):
         result = self.run_handler("is there any slot available for coming januray")
         self.assertIn("couldn't confidently work out", result.summary)
+
+    def test_earliest_forward_scans_instead_of_refusing(self):
+        # The live log for this sentence returned UNRESOLVED and asked for
+        # January 12, 2027. Flexible requests must search, not ask.
+        result = self.run_handler("When is dr maya availabel earliest")
+        self.assertTrue(result.meta["temporal_searchable"])
+        self.assertNotEqual(result.meta.get("temporal_status"), "unresolved")
+        self.assertNotIn("January 12, 2027", result.summary)
+        self.assertNotIn("couldn't confidently work out", result.summary)
+
+    def test_yesterday_is_refused_as_past(self):
+        result = self.run_handler(
+            "can you please book me with dr maya yesterday afternoon",
+            dates=["yesterday"],
+            times=["afternoon"],
+        )
+        self.assertFalse(result.found)
+        self.assertEqual(result.rows, [])
+        self.assertEqual(result.meta.get("temporal_status"), "past")
+        self.assertIn("already passed", result.summary)
 
 
 class Invariant4OneDateEverywhereTests(_AvailabilityCase):

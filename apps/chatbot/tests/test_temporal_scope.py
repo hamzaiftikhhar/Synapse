@@ -126,6 +126,15 @@ class NoSilentTomorrowTests(TestCase):
         scope = _resolve(["asap"], message="I need something asap")
         self.assertIs(scope.status, TemporalStatus.UNSPECIFIED)
 
+    def test_earliest_in_the_message_is_a_forward_scan_even_without_nlu(self):
+        scope = _resolve([], message="When is dr maya availabel earliest")
+        self.assertIs(scope.status, TemporalStatus.UNSPECIFIED)
+
+    def test_yesterday_is_past(self):
+        scope = _resolve(["yesterday"], message="book me yesterday afternoon")
+        self.assertIs(scope.status, TemporalStatus.PAST)
+        self.assertEqual(scope.start, _TODAY - timedelta(days=1))
+
     def test_a_real_date_beats_a_flexible_one_in_the_same_turn(self):
         scope = _resolve(
             ["asap", "monday"], message="asap, monday works", horizon=60
