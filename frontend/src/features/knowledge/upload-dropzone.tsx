@@ -2,6 +2,7 @@
 
 import { useCallback, useRef, useState } from "react";
 import { FileUp, Upload } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { isPdfFile } from "./utils";
 
@@ -24,6 +25,8 @@ type Props = {
   title?: string;
   hint?: string;
   rejectionLabel?: string;
+  /** Visible browse button — the whole zone stays clickable either way. */
+  actionLabel?: string;
 };
 
 export function UploadDropzone({
@@ -34,6 +37,7 @@ export function UploadDropzone({
   title,
   hint,
   rejectionLabel = "Only PDF is supported.",
+  actionLabel,
 }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
@@ -118,6 +122,11 @@ export function UploadDropzone({
         <p className="mt-1 text-xs text-muted-foreground">
           {hint ?? "or click to browse · PDF only · multiple files supported"}
         </p>
+        {actionLabel ? (
+          <Button type="button" variant="outline" size="sm" className="pointer-events-none mt-4">
+            {actionLabel}
+          </Button>
+        ) : null}
         <input
           ref={inputRef}
           type="file"

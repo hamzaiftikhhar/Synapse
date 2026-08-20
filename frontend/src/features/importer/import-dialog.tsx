@@ -101,8 +101,7 @@ export function ImportDialog({
         <DialogHeader>
           <DialogTitle>Import {RECORD_TYPE_LABEL[recordType].toLowerCase()}</DialogTitle>
           <DialogDescription>
-            Use the sample below, or upload your own CSV / Excel. Nothing is added until you
-            confirm.
+            Columns marked * are required. Nothing is added until you confirm.
           </DialogDescription>
         </DialogHeader>
 
@@ -114,9 +113,10 @@ export function ImportDialog({
               onFiles={onFiles}
               accept={SPREADSHEET_ACCEPT}
               validate={isSpreadsheetFile}
-              title="Drop your spreadsheet here"
-              hint="or click to browse · CSV or XLSX"
-              rejectionLabel="Only CSV and XLSX files are supported."
+              title="Drop your file here"
+              hint="CSV or Excel"
+              actionLabel="Choose file"
+              rejectionLabel="Use a CSV or Excel (.xlsx) file."
             />
           </div>
         ) : null}
