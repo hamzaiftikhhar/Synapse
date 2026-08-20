@@ -228,3 +228,124 @@ class BookingSlotFillingIntegrationTests(TestCase):
         for slot in slots:
             start = datetime.fromisoformat(slot["start"])
             self.assertGreaterEqual(start.time(), time(17, 0))
+
+
+class BookingDraftIsolationTests(TestCase):
+    """A new booking utterance must not inherit who/what/when it did not pin."""
+
+    def setUp(self):
+        self.clinic = Clinic.objects.create(
+            slug="isolate-clinic",
+            name="Isolate Clinic",
+            email="iso@clinic.com",
+            phone="+12125550055",
+            timezone="America/Los_Angeles",
+        )
+        self.chat_session = ChatSession.objects.create(
+            clinic=self.clinic,
+            session_token="tok-isolate-1",
+            status=ChatSessionStatus.ACTIVE,
+        )
+        self.maya = Doctor.objects.create(clinic=self.clinic, full_name="Dr. Maya Lin")
+        self.aris = Doctor.objects.create(clinic=self.clinic, full_name="Dr. Aris Thorne")
+        self.cleaning = Service.objects.create(
+            clinic=self.clinic, name="Adult Cleaning, Exam & X-Rays"
+        )
+
+    def _seed_review_draft(self, *, doctor, service):
+        BookingService.start(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            doctor_id=str(doctor.id),
+            doctor_name=doctor.full_name,
+            service_id=str(service.id),
+            service_name=service.name,
+        )
+        self.chat_session.refresh_from_db()
+        booking = self.chat_session.conversation_context["booking"]
+        booking["step"] = BookingStep.REVIEW.value
+        booking["date"] = timezone.localdate().isoformat()
+        booking["slot_start"] = timezone.now().isoformat()
+        booking["slot_end"] = (timezone.now() + timedelta(minutes=30)).isoformat()
+        booking["service_id"] = str(service.id)
+        booking["service_name"] = service.name
+        self.chat_session.conversation_context["booking"] = booking
+        self.chat_session.save(update_fields=["conversation_context"])
+        return booking["booking_id"]
+
+    def test_naming_a_doctor_drops_leftover_service_and_held_slot(self):
+        leftover_id = self._seed_review_draft(doctor=self.aris, service=self.cleaning)
+        result = BookingService.start(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            message="could you get me in with Dr Lin right away",
+            doctor_id=str(self.maya.id),
+            doctor_name=self.maya.full_name,
+        )
+        self.chat_session.refresh_from_db()
+        updated = self.chat_session.conversation_context["booking"]
+        self.assertEqual(updated["booking_id"], leftover_id)
+        self.assertEqual(updated["doctor_id"], str(self.maya.id))
+        self.assertIsNone(updated["service_id"])
+        self.assertIsNone(updated["slot_start"])
+        self.assertNotEqual(updated["step"], BookingStep.REVIEW.value)
+
+    def test_same_doctor_reasked_without_a_slot_does_not_reuse_review(self):
+        self._seed_review_draft(doctor=self.maya, service=self.cleaning)
+        result = BookingService.start(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            message="put me down for Maya as soon as you can",
+            doctor_id=str(self.maya.id),
+            doctor_name=self.maya.full_name,
+        )
+        self.chat_session.refresh_from_db()
+        updated = self.chat_session.conversation_context["booking"]
+        self.assertIsNone(updated["service_id"])
+        self.assertIsNone(updated["slot_start"])
+        self.assertNotEqual(result["step"], BookingStep.REVIEW.value)
+
+    def test_explicit_slot_tap_is_not_treated_as_stale(self):
+        self._seed_review_draft(doctor=self.maya, service=self.cleaning)
+        start = timezone.now().replace(microsecond=0)
+        end = start + timedelta(minutes=30)
+        # Slot revalidation needs an open schedule; if the slot is closed
+        # start() falls back to DATE, which is still not leftover REVIEW.
+        result = BookingService.start(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            doctor_id=str(self.maya.id),
+            slot_start=start.isoformat(),
+            slot_end=end.isoformat(),
+        )
+        self.assertNotEqual(result["step"], BookingStep.PATH.value)
+
+    def test_service_picked_moments_ago_survives_an_immediate_doctor_pick(self):
+        """Regression: an earlier version of stale_service fired on *any*
+        doctor_id-without-service_id call, not just a committed (REVIEW/
+        DETAILS/OTP) draft — so picking a service and then, in the very next
+        action of the same live flow, picking a doctor silently dropped the
+        service the patient had just chosen seconds earlier. Reproduced
+        directly against BookingService.start() before this test existed:
+        service_id survived the first call, then came back None after the
+        very next start() call that only named a doctor."""
+        result = BookingService.start(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            service_id=str(self.cleaning.id),
+            service_name=self.cleaning.name,
+        )
+        self.assertEqual(result["step"], BookingStep.DOCTOR.value)
+
+        result = BookingService.start(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            message="actually with dr maya",
+            doctor_id=str(self.maya.id),
+            doctor_name=self.maya.full_name,
+        )
+        self.chat_session.refresh_from_db()
+        updated = self.chat_session.conversation_context["booking"]
+        self.assertEqual(updated["service_id"], str(self.cleaning.id))
+        self.assertEqual(updated["service_name"], self.cleaning.name)
+        self.assertEqual(updated["doctor_id"], str(self.maya.id))

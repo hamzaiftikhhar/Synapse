@@ -123,6 +123,25 @@ class AuthSkipConfirmTests(TestCase):
             Appointment.objects.filter(clinic=self.clinic, patient=self.patient).exists()
         )
 
+    def test_review_progress_excludes_steps_this_session_never_shows(self):
+        """Regression: an authenticated, slot-prefilled booking landed on
+        REVIEW reporting "Step 6 of 6" — the full choose_doctor step count
+        including DETAILS and OTP, neither of which this session ever
+        actually showed. Progress must reflect only the steps this session
+        can show (DOCTOR, DATE, TIME, REVIEW = 4), not the abstract mode
+        list, so a patient's very first screen isn't mislabeled as the
+        tail end of a sequence they never saw the start of."""
+        result = BookingService.start(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            doctor_id=str(self.doctor.id),
+            doctor_name=self.doctor.full_name,
+            slot_start=self.slot_start,
+            slot_end=self.slot_end,
+        )
+        self.assertEqual(result["step"], BookingStep.REVIEW.value)
+        self.assertEqual(result["progress"], {"current": 4, "total": 4})
+
     def test_confirm_review_creates_the_appointment(self):
         """The actual new behavior: picking a time only ever *holds* it for
         an authenticated patient now — the real Appointment is created
@@ -192,6 +211,96 @@ class AuthSkipConfirmTests(TestCase):
         self.assertFalse(
             Appointment.objects.filter(clinic=self.clinic, patient=self.patient).exists()
         )
+
+    def test_back_from_review_skips_details_and_otp_straight_to_time_when_authenticated(
+        self,
+    ):
+        """Review's Back button must honor the same skip invariant as the
+        forward path — an authenticated patient was never shown DETAILS or
+        OTP (see _route_to_review_if_authenticated skips *both*), so Back
+        must not stop at either. Landing on DETAILS alone was tried first
+        and confirmed wrong live: re-picking a time from the step before it
+        skipped straight past DETAILS to REVIEW again, proving DETAILS was
+        never a real stop for this session — just a Back-only dead end that
+        asked an already-verified patient to re-enter contact info."""
+        started = BookingService.start(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            doctor_id=str(self.doctor.id),
+            doctor_name=self.doctor.full_name,
+            slot_start=self.slot_start,
+            slot_end=self.slot_end,
+        )
+        self.assertEqual(started["step"], BookingStep.REVIEW.value)
+
+        result = BookingService.apply_step(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            booking_id=started["booking_id"],
+            action="back",
+            value={},
+        )
+        self.assertEqual(result["step"], BookingStep.TIME.value)
+        self.assertEqual(result["options"]["doctor_name"], self.doctor.full_name)
+        self.assertTrue(result["options"]["slots"])
+
+        # And picking a time from here must route straight back to REVIEW
+        # again, not resurrect a DETAILS stop — closing the loop the live
+        # report found.
+        reselected = BookingService.apply_step(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            booking_id=started["booking_id"],
+            action="select_time",
+            value={
+                "start": self.slot_start,
+                "end": self.slot_end,
+                "doctor_id": str(self.doctor.id),
+                "doctor": self.doctor.full_name,
+            },
+        )
+        self.assertEqual(reselected["step"], BookingStep.REVIEW.value)
+
+    def test_back_from_otp_itself_still_lands_on_details_when_unauthenticated(self):
+        """The skip-OTP-on-back fix only applies when going back *from
+        REVIEW* (where OTP was never actually shown). A patient genuinely
+        sitting on the OTP step and tapping Back must land on DETAILS as
+        before — REVIEW is never reached after a real OTP step (entering
+        the code calls confirm() directly), so this is the only "back"
+        exercised in the normal, non-skip flow."""
+        self.chat_session.is_authenticated = False
+        self.chat_session.patient = None
+        self.chat_session.save(update_fields=["is_authenticated", "patient"])
+        started = BookingService.start(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            doctor_id=str(self.doctor.id),
+            doctor_name=self.doctor.full_name,
+            slot_start=self.slot_start,
+            slot_end=self.slot_end,
+        )
+        self.assertEqual(started["step"], BookingStep.DETAILS.value)
+        submitted = BookingService.apply_step(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            booking_id=started["booking_id"],
+            action="submit_details",
+            value={
+                "first_name": "Sam",
+                "phone": "+15559990000",
+                "email": "sam@example.com",
+            },
+        )
+        self.assertEqual(submitted["step"], BookingStep.OTP.value)
+
+        result = BookingService.apply_step(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            booking_id=started["booking_id"],
+            action="back",
+            value={},
+        )
+        self.assertEqual(result["step"], BookingStep.DETAILS.value)
 
     def test_unauthenticated_still_lands_on_details(self):
         self.chat_session.is_authenticated = False
@@ -305,6 +414,38 @@ class NoVerificationModeReviewTests(TestCase):
         )
         self.assertEqual(result["step"], BookingStep.REVIEW.value)
         self.assertFalse(Appointment.objects.filter(clinic=self.clinic).exists())
+
+    def test_back_from_review_skips_otp_straight_to_details(self):
+        """Same invariant as the authenticated-session case: OTP was never
+        shown for a verification_mode="none" clinic, so Back from REVIEW
+        must land on DETAILS (with the typed-in details preserved), not
+        strand the patient on an OTP screen this clinic doesn't even use."""
+        started = BookingService.start(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            doctor_id=str(self.doctor.id),
+            doctor_name=self.doctor.full_name,
+            slot_start=self.slot_start,
+            slot_end=self.slot_end,
+        )
+        submitted = BookingService.apply_step(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            booking_id=started["booking_id"],
+            action="submit_details",
+            value={"first_name": "Sam", "phone": "+15559990000"},
+        )
+        self.assertEqual(submitted["step"], BookingStep.REVIEW.value)
+
+        result = BookingService.apply_step(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            booking_id=started["booking_id"],
+            action="back",
+            value={},
+        )
+        self.assertEqual(result["step"], BookingStep.DETAILS.value)
+        self.assertEqual(result["options"]["first_name"], "Sam")
 
     def test_confirm_review_then_creates_the_appointment(self):
         started = BookingService.start(

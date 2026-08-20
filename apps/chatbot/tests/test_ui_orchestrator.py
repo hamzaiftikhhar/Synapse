@@ -282,3 +282,53 @@ class UiOrchestratorTests(SimpleTestCase):
         self.assertTrue(meta["booking"]["launch"])
         self.assertNotIn("doctor_id", meta["booking"])
         self.assertNotIn("booking_id", meta["booking"])
+
+    def _booking_nlu(self, **ents):
+        fields = {
+            "date": None,
+            "time": None,
+            "doctor_name": None,
+            "service": None,
+            "specialty": None,
+        }
+        fields.update(ents)
+        return type(
+            "N",
+            (),
+            {
+                "entities": type("E", (), fields)(),
+                "service_filter_mode": None,
+            },
+        )()
+
+    @patch("apps.chatbot.booking.discovery.suggest_specialties", return_value=([], ""))
+    def test_naming_a_doctor_does_not_inherit_leftover_service(self, _mock_suggest):
+        meta = build_ui_meta(
+            clinic=type("C", (), {"name": "Test", "phone": ""})(),
+            intent="book_appointment",
+            route="direct_response",
+            sql_results=[],
+            message="put me on Dr Lin's list as soon as you can",
+            nlu=self._booking_nlu(doctor_name=["Lin"]),
+            ui_priority="booking",
+            exec_plan_booking=True,
+            last_doctor={"id": "maya", "name": "Dr. Maya Lin"},
+            last_service={"id": "clean-1", "name": "Adult Cleaning, Exam & X-Rays"},
+        )
+        self.assertIn("booking", meta)
+        self.assertNotIn("service_id", meta["booking"])
+
+    @patch("apps.chatbot.booking.discovery.suggest_specialties", return_value=([], ""))
+    def test_this_turn_naming_the_service_still_pins_it(self, _mock_suggest):
+        meta = build_ui_meta(
+            clinic=type("C", (), {"name": "Test", "phone": ""})(),
+            intent="book_appointment",
+            route="direct_response",
+            sql_results=[],
+            message="book the cleaning we already discussed",
+            nlu=self._booking_nlu(service="cleaning"),
+            ui_priority="booking",
+            exec_plan_booking=True,
+            last_service={"id": "clean-1", "name": "Adult Cleaning, Exam & X-Rays"},
+        )
+        self.assertEqual(meta["booking"]["service_id"], "clean-1")
