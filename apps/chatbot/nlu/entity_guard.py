@@ -39,6 +39,12 @@ def sanitize_entities(message: str, entities: ExtractedEntities) -> ExtractedEnt
         elif kept != raw:
             updates[field] = kept
 
+    doctor_raw = updates.get("doctor_name", getattr(entities, "doctor_name", None))
+    if doctor_raw is not None:
+        cleaned_doctor = _clean_doctor_name_values(doctor_raw)
+        if cleaned_doctor != doctor_raw:
+            updates["doctor_name"] = cleaned_doctor
+
     from apps.chatbot.nlu.entity_extract import extract_entities
 
     extracted = extract_entities(msg)
@@ -89,6 +95,23 @@ def _filter_grounded_values(value: str | list[str], message: str) -> str | list[
     if entity_grounded_in_message(str(value), message):
         return value
     return None
+
+
+def _clean_doctor_name_values(value: str | list[str] | None) -> str | list[str] | None:
+    from apps.chatbot.nlu.entity_extract import clean_doctor_name
+
+    if value is None:
+        return None
+    if isinstance(value, list):
+        kept: list[str] = []
+        for item in value:
+            cleaned = clean_doctor_name(str(item))
+            if cleaned:
+                kept.append(cleaned)
+        if not kept:
+            return None
+        return kept if len(kept) > 1 else kept[0]
+    return clean_doctor_name(str(value))
 
 
 def _normalize(text: str) -> str:

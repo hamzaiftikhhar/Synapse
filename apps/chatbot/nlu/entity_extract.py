@@ -226,16 +226,43 @@ def extract_emergency_symptoms(text: str) -> list[str]:
 
 _DOCTOR_NAME_STOPWORDS = frozenset(
     {
-        "available", "is", "are", "the", "a", "an", "please", "here", "there",
-        "near", "for", "me", "my", "our", "your", "today", "tomorrow", "now",
+        "available", "availability", "is", "are", "the", "a", "an", "please",
+        "here", "there", "near", "for", "me", "my", "our", "your",
+        "today", "tomorrow", "yesterday", "tonight", "now",
         "who", "that", "this", "with", "and", "or", "to", "from", "about",
         "list", "find", "help", "need", "want", "looking", "good", "best",
-        # Availability phrasing mistaken for names: "is any dr free on tuesday"
         "free", "open", "any", "some", "all", "on", "in", "at", "by",
-        "morning", "afternoon", "evening", "tonight", "slot", "slots",
+        "morning", "afternoon", "evening", "slot", "slots",
         "appointment", "appointments", "schedule", "scheduling",
+        "asap", "instantly", "immediately", "earliest", "soonest",
+        "whenever", "anytime", "away",
+        "dr", "doctor", "doc", "doctors",
     }
 )
+
+_DOCTOR_NAME_PHRASE_NOISE = (
+    r"\bright\s+away\b",
+    r"\bas\s+soon\s+as\s+possible\b",
+    r"\bnext\s+available\b",
+)
+
+
+def clean_doctor_name(value: str | None) -> str | None:
+    """Drop temporal/ASAP tokens the model glued onto a doctor name.
+
+    'maya yesterday' / 'maya instantly' still mention Maya; the extra
+    tokens must not survive into SQL `icontains` filters.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for phrase in _DOCTOR_NAME_PHRASE_NOISE:
+        text = re.sub(phrase, " ", text, flags=re.I)
+    tokens = re.findall(r"[A-Za-z][A-Za-z'-]*", text)
+    kept = [t for t in tokens if t.lower() not in _DOCTOR_NAME_STOPWORDS]
+    if not kept:
+        return None
+    return " ".join(kept)
 
 
 def _extract_doctors(text: str) -> list[str] | None:
@@ -246,13 +273,10 @@ def _extract_doctors(text: str) -> list[str] | None:
         # Skip common non-name tokens after Dr./doctor
         if first.lower() in _DOCTOR_NAME_STOPWORDS:
             continue
-        if last and last.lower() in _DOCTOR_NAME_STOPWORDS:
-            last = None
         name = first if not last else f"{first} {last}"
-        cleaned = name.strip(" .,?!")
+        cleaned = clean_doctor_name(name)
         if cleaned and cleaned.lower() not in {n.lower() for n in names}:
-            if cleaned.lower() not in _DOCTOR_NAME_STOPWORDS:
-                names.append(cleaned)
+            names.append(cleaned)
     return names or None
 
 
