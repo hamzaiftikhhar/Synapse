@@ -120,10 +120,7 @@ export function ReviewStep({
 
   return (
     <div className="space-y-8">
-      <StepHint>
-        Check each section before activating. Edit anything that looks off —
-        you can still change all of this later from the dashboard.
-      </StepHint>
+      <StepHint>Edit anything that looks off — you can still change this later.</StepHint>
       <div className="rounded-2xl border border-border bg-card">
         <div className="divide-y divide-border px-5">
           <SummaryRow

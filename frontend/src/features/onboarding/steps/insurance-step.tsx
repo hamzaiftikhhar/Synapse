@@ -5,7 +5,6 @@ import { toast } from "sonner";
 import { Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ImportGuide } from "@/features/importer/import-guide";
 import { ImportTriggerButton } from "@/features/importer/import-trigger-button";
 import { StepHint } from "@/features/onboarding/step-hint";
 import {
@@ -56,11 +55,7 @@ export function InsuranceStep({ onNext }: OnboardingStepProps) {
   return (
     <div className="space-y-6">
       <form id={ONBOARDING_FORM_ID} onSubmit={onContinue} />
-      <StepHint>
-        Insurance is optional. A payer name is enough — plan and network help
-        the chatbot answer coverage questions more precisely. You can skip this
-        and add them later, or import a spreadsheet.
-      </StepHint>
+      <StepHint>A payer name is enough. Skip this if you don&apos;t take insurance.</StepHint>
 
       <div className="space-y-4 rounded-2xl border border-border bg-card p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
@@ -131,7 +126,6 @@ export function InsuranceStep({ onNext }: OnboardingStepProps) {
             <Plus className="size-4" /> Add
           </Button>
         </div>
-        {plans.length === 0 ? <ImportGuide recordType="insurance" compact /> : null}
       </div>
     </div>
   );

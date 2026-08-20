@@ -21,28 +21,26 @@ import { ONBOARDING_STAGES } from "./steps";
 function StageProgress({ activeIndex }: { activeIndex: number }) {
   return (
     <div className="mb-8">
-      <div className="flex gap-1.5">
+      <div className="grid grid-cols-8 gap-1.5">
         {ONBOARDING_STAGES.map((stage, i) => (
-          <div
-            key={stage.key}
-            className={cn(
-              "h-1.5 flex-1 rounded-full transition-colors",
-              i <= activeIndex ? "bg-primary" : "bg-muted"
-            )}
-          />
-        ))}
-      </div>
-      <div className="mt-2 hidden justify-between sm:flex">
-        {ONBOARDING_STAGES.map((stage, i) => (
-          <span
-            key={stage.key}
-            className={cn(
-              "text-[11px] text-muted-foreground",
-              i === activeIndex && "font-medium text-foreground"
-            )}
-          >
-            {stage.label}
-          </span>
+          <div key={stage.key} className="min-w-0">
+            <div
+              className={cn(
+                "h-1.5 w-full rounded-full transition-colors",
+                i <= activeIndex ? "bg-primary" : "bg-muted"
+              )}
+            />
+            <span
+              className={cn(
+                "mt-2 hidden text-center text-[11px] leading-tight sm:block",
+                i === activeIndex
+                  ? "font-medium text-foreground"
+                  : "text-muted-foreground"
+              )}
+            >
+              {stage.label}
+            </span>
+          </div>
         ))}
       </div>
       <p className="mt-2 text-[11px] font-medium text-foreground sm:hidden">
@@ -109,9 +107,9 @@ export function OnboardingShell({
 
   return (
     <TooltipProvider>
-      <div className="theme-instrument theme-light min-h-screen bg-background">
+      <div className="theme-instrument theme-light flex h-dvh flex-col overflow-hidden bg-background">
         {impersonating ? (
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-warning/25 bg-warning/10 px-4 py-2.5 sm:px-6">
+          <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-warning/25 bg-warning/10 px-4 py-2.5 sm:px-6">
             <p className="text-sm text-foreground">
               <span className="font-semibold">{clinic?.name}</span>
               <span className="text-muted-foreground">
@@ -139,7 +137,7 @@ export function OnboardingShell({
             </div>
           </div>
         ) : null}
-        <header className="border-b border-border">
+        <header className="shrink-0 border-b border-border">
           <div className={cn("flex h-14 items-center justify-between", frame)}>
             <span className="text-sm font-semibold tracking-tight text-navy">
               {APP_NAME}
@@ -164,21 +162,23 @@ export function OnboardingShell({
           </div>
         </header>
 
-        <div className={cn("py-10 pb-32 sm:py-14", frame)}>
-          <StageProgress activeIndex={stageIndex} />
-          <h1 className="text-2xl font-semibold tracking-tight text-navy">
-            {title}
-          </h1>
-          {subtitle ? (
-            <p className="mt-2 max-w-lg text-sm text-muted-foreground">
-              {subtitle}
-            </p>
-          ) : null}
-          <div className="mt-8">{children}</div>
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className={cn("py-10 sm:py-14", frame)}>
+            <StageProgress activeIndex={stageIndex} />
+            <h1 className="text-2xl font-semibold tracking-tight text-navy">
+              {title}
+            </h1>
+            {subtitle ? (
+              <p className="mt-2 max-w-lg text-sm text-muted-foreground">
+                {subtitle}
+              </p>
+            ) : null}
+            <div className="mt-8">{children}</div>
+          </div>
         </div>
 
         {!hideFooter ? (
-          <footer className="fixed inset-x-0 bottom-0 border-t border-border bg-background/95 backdrop-blur">
+          <footer className="shrink-0 border-t border-border bg-background/95 backdrop-blur">
             <div className={cn("flex items-center justify-between gap-3 py-4", frame)}>
               <div>
                 {onBack ? (

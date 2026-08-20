@@ -42,10 +42,7 @@ export function HoursStep({ onNext }: OnboardingStepProps) {
 
   return (
     <form id={ONBOARDING_FORM_ID} onSubmit={onSubmit} className="space-y-4">
-      <StepHint>
-        These hours are the clinic default. Next you&apos;ll set each
-        provider&apos;s schedule — closed days here mean the clinic is closed.
-      </StepHint>
+      <StepHint>Closed days here mean the whole clinic is closed.</StepHint>
       <WeeklyScheduleEditor value={value} onChange={setRows} />
     </form>
   );

@@ -104,10 +104,7 @@ export function LocationStep({ onNext }: OnboardingStepProps) {
 
   return (
     <form id={ONBOARDING_FORM_ID} onSubmit={onSubmit} className="space-y-4">
-      <StepHint>
-        This is the address and phone the chatbot shares with patients. Use the
-        format patients would search for — street, city, state, ZIP.
-      </StepHint>
+      <StepHint>This is the address and phone the chatbot shares with patients.</StepHint>
       <div className="space-y-2">
         <Label htmlFor="line1">Street address</Label>
         <Input

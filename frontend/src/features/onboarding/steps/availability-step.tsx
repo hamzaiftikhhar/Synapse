@@ -52,8 +52,8 @@ export function AvailabilityStep({ onNext }: OnboardingStepProps) {
   return (
     <form id={ONBOARDING_FORM_ID} onSubmit={onSubmit} className="space-y-4">
       <StepHint>
-        Each provider starts from clinic hours. Adjust anyone whose bookable
-        times are different — closed days mean that provider cannot be booked.
+        Each provider starts from clinic hours. Closed days mean they can&apos;t
+        be booked.
       </StepHint>
       <DoctorHoursEditor
         state={hours}

@@ -26,11 +26,11 @@ const STEP_COPY: Record<string, { title: string; subtitle: string }> = {
   },
   providers: {
     title: "Who provides care at your clinic?",
-    subtitle: "Add clinicians by hand, or import a CSV / Excel using the sample format below.",
+    subtitle: "Add clinicians by hand, or import a spreadsheet.",
   },
   specialties: {
     title: "What areas of care do you offer?",
-    subtitle: "Add specialties if you use them — this step is optional.",
+    subtitle: "Optional. Add a few by hand, or import a spreadsheet if you already have a list.",
   },
   services: {
     title: "What can patients book?",
@@ -101,7 +101,11 @@ export function OnboardingFlow() {
       subtitle={copy.subtitle}
       onBack={isFirst ? undefined : goBack}
       formId={ONBOARDING_FORM_ID}
-      wide={stepSlug === "hours" || stepSlug === "availability"}
+          wide={
+            stepSlug === "hours" ||
+            stepSlug === "availability" ||
+            stepSlug === "booking"
+          }
     >
       {stepSlug === "clinic" ? <ClinicStep onNext={goNext} /> : null}
       {stepSlug === "location" ? <LocationStep onNext={goNext} /> : null}

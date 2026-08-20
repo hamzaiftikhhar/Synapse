@@ -14,7 +14,6 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { ImportGuide } from "@/features/importer/import-guide";
 import { ImportTriggerButton } from "@/features/importer/import-trigger-button";
 import { StepHint } from "@/features/onboarding/step-hint";
 import {
@@ -114,11 +113,7 @@ export function ProvidersStep({ onNext }: OnboardingStepProps) {
   return (
     <div className="space-y-4">
       <form id={ONBOARDING_FORM_ID} onSubmit={onContinue} />
-      <StepHint>
-        Add the clinicians patients can book with. Name is enough to continue —
-        credentials, bio, and languages are optional. You can type them in or
-        import a spreadsheet.
-      </StepHint>
+      <StepHint>A name is enough — credentials, bio, and languages are optional.</StepHint>
 
       {isLoading ? (
         <p className="text-sm text-muted-foreground">Loading…</p>
@@ -143,7 +138,6 @@ export function ProvidersStep({ onNext }: OnboardingStepProps) {
               <ImportTriggerButton recordType="providers" />
             </div>
           </div>
-          <ImportGuide recordType="providers" compact />
         </div>
       ) : (
         <div className="space-y-2 rounded-2xl border border-border bg-card p-4">

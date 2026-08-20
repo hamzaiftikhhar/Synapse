@@ -43,10 +43,7 @@ export function ClinicStep({ onNext }: OnboardingStepProps) {
 
   return (
     <form id={ONBOARDING_FORM_ID} onSubmit={onSubmit} className="space-y-8">
-      <StepHint>
-        Use the name patients will recognize. Clinic type only personalizes
-        suggested services — you can change it later.
-      </StepHint>
+      <StepHint>Use the name patients will recognize.</StepHint>
       <div className="space-y-2">
         <Label htmlFor="clinic-name">Clinic name</Label>
         <Input
