@@ -305,3 +305,68 @@ class ExecutionPlanTests(SimpleTestCase):
         )
         self.assertIn("appointments", plan.sql_tasks)
         self.assertFalse(plan.booking)
+
+    def test_empty_availability_does_not_preauthorize_hybrid_rag(self):
+        """Resolved 'no slots that day' is an answer. Documents must not
+        invent openings — even when the catalog exists and hybrid is on."""
+        nlu = parse_nlu_payload(
+            {
+                "intent": "doctor_availability",
+                "confidence": 0.8,
+                "entities": {"doctor_name": ["Maya"]},
+            }
+        )
+        for message in (
+            "when's the soonest Maya has a gap on Tuesday",
+            "any openings with Lin that afternoon",
+            "can she see me Tuesday or is she booked solid",
+        ):
+            with self.subTest(message=message):
+                plan = build_execution_plan(
+                    nlu=nlu,
+                    facts=_facts(
+                        nlu=nlu,
+                        message=message,
+                        has_catalog=True,
+                        allow_hybrid=True,
+                        knowledge_q=True,
+                    ),
+                )
+                self.assertIn("availability", plan.sql_tasks, msg=message)
+                self.assertEqual(plan.fallback_vector_tasks, [], msg=message)
+
+    def test_empty_insurance_sql_still_may_hybrid(self):
+        """Don't over-fix: a thin insurance miss can still consult policy docs."""
+        nlu = parse_nlu_payload(
+            {
+                "intent": "insurance_accepted",
+                "confidence": 0.9,
+                "entities": {"insurance_provider": ["Cigna"]},
+            }
+        )
+        plan = build_execution_plan(
+            nlu=nlu,
+            facts=_facts(
+                nlu=nlu,
+                message="is Cigna on the accepted list here",
+                has_catalog=True,
+                allow_hybrid=True,
+            ),
+        )
+        self.assertIn("insurance", plan.sql_tasks)
+        self.assertTrue(plan.fallback_vector_tasks)
+
+    def test_empty_services_sql_still_may_hybrid(self):
+        nlu = parse_nlu_payload(
+            {"intent": "services_offered", "confidence": 0.9}
+        )
+        plan = build_execution_plan(
+            nlu=nlu,
+            facts=_facts(
+                nlu=nlu,
+                message="do you offer HydraFacial",
+                has_catalog=True,
+            ),
+        )
+        self.assertIn("services", plan.sql_tasks)
+        self.assertTrue(plan.fallback_vector_tasks)
