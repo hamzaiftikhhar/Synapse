@@ -552,8 +552,8 @@ function ServiceStep({
   onSelect: (s: BookingSpecialty) => void;
 }) {
   const suggested = (options.suggested as BookingSpecialty[]) || [];
-  const all = (options.all as BookingSpecialty[]) || [];
   const filtered = useMemo(() => {
+    const all = (options.all as BookingSpecialty[]) || [];
     const q = query.trim().toLowerCase();
     if (!q) return all;
     return all.filter(
@@ -562,7 +562,7 @@ function ServiceStep({
         (s.description || "").toLowerCase().includes(q) ||
         (s.plain_label || "").toLowerCase().includes(q)
     );
-  }, [all, query]);
+  }, [options.all, query]);
 
   return (
     <div className="space-y-3">
@@ -810,7 +810,10 @@ function TimeStep({
   onSelect: (slot: BookingSlot) => void;
   onMore: () => void;
 }) {
-  const slots = (options.slots as BookingSlot[]) || [];
+  const slots = useMemo(
+    () => (options.slots as BookingSlot[]) || [],
+    [options.slots]
+  );
   const hasMore = Boolean(options.has_more);
   const timeHintUnmet = Boolean(options.time_hint_unmet);
   const timeHint = (options.time_hint as string | null) || null;
@@ -1036,7 +1039,6 @@ function DetailsStep({
 function OtpStep({
   phone,
   email,
-  verificationMode = "sms",
   summary,
   code,
   onChange,

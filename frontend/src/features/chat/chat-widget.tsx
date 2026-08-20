@@ -179,15 +179,18 @@ export function ChatWidget({
     if (widgetCtx.sessionToken) sessionTokenRef.current = widgetCtx.sessionToken;
   }, [widgetCtx.sessionToken]);
 
-  function rememberSessionToken(token: string | null | undefined) {
-    if (!token) return;
-    sessionTokenRef.current = token;
-    widgetCtx.setSessionToken(token);
-  }
+  const rememberSessionToken = useCallback(
+    (token: string | null | undefined) => {
+      if (!token) return;
+      sessionTokenRef.current = token;
+      widgetCtx.setSessionToken(token);
+    },
+    [widgetCtx]
+  );
 
-  function patientSessionToken(): string {
+  const patientSessionToken = useCallback((): string => {
     return sessionTokenRef.current || widgetCtx.sessionToken || "";
-  }
+  }, [widgetCtx.sessionToken]);
 
   const displayName =
     clinicName ||
@@ -448,6 +451,8 @@ export function ChatWidget({
       marketingChat,
       widgetCtx,
       dismissedWizards,
+      patientSessionToken,
+      rememberSessionToken,
     ]
   );
 
@@ -506,7 +511,7 @@ export function ChatWidget({
     })();
   }
 
-  function handleBookingConfirmed(_payload: BookingStepPayload) {
+  function handleBookingConfirmed() {
     // Confirmation stays inside the wizard card only — no duplicate chat message
     setMessages((prev) =>
       prev.map((m) =>

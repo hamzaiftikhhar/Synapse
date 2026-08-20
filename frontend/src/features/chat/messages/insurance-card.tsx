@@ -10,7 +10,7 @@ import { ChatInlineCard } from "@/features/chat/components/chat-inline-card";
 import type { ChatActionHandler, InsuranceCardData } from "@/types/chat";
 
 function isAcceptedPlan(plan: InsuranceCardData | null | undefined): boolean {
-  return Boolean(plan) && plan.is_accepted !== false;
+  return plan != null && plan.is_accepted !== false;
 }
 
 export function InsuranceCard({

@@ -57,8 +57,10 @@ export function DocumentDetailDialog({
   const [loadingPdf, setLoadingPdf] = useState(false);
   const [pdfError, setPdfError] = useState<string | null>(null);
 
+  const documentId = document?.id;
+
   useEffect(() => {
-    if (!open || !document) {
+    if (!open || !documentId) {
       setBlobUrl((prev) => {
         if (prev) URL.revokeObjectURL(prev);
         return null;
@@ -74,7 +76,7 @@ export function DocumentDetailDialog({
     setPdfError(null);
 
     documentsService
-      .downloadBlob(document.id, true)
+      .downloadBlob(documentId, true)
       .then((data) => {
         if (revoked) return;
         objectUrl = URL.createObjectURL(data);
@@ -92,7 +94,7 @@ export function DocumentDetailDialog({
       revoked = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [open, document?.id]);
+  }, [open, documentId]);
 
   if (!document) return null;
 

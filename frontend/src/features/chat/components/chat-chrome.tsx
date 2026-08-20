@@ -4,7 +4,6 @@ import { format, isToday, isYesterday } from "date-fns";
 import { Maximize2, Minimize2, MoreHorizontal, RotateCcw, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { RobotAvatar } from "@/features/chat/components/robot-avatar";
-import { cn } from "@/lib/utils";
 
 export function formatMessageTime(iso: string) {
   const d = new Date(iso);
