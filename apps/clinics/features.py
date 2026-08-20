@@ -24,6 +24,12 @@ def default_widget_configuration() -> dict[str, Any]:
             "primary_color": "#5b21b6",
             "position": "bottom-right",
             "greeting": "Hi! How can I help you today?",
+            "corner_radius": 18,
+            "text_color": "auto",
+            "avatar_url": "",
+            "avatar_zoom": 1,
+            "avatar_offset_x": 0,
+            "avatar_offset_y": 0,
         },
         "ai": {"model": "default", "temperature": 0.2},
         "booking": {
