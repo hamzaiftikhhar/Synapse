@@ -30,6 +30,9 @@ _GREETING_EXACT = frozenset(
         "how you doing", "how you doin", "how you been",
         "how have you been", "how's it going", "how is it going",
         "how are things", "how's your day", "how do you do",
+        "how's everything", "how is everything",
+        "how's everything going", "how is everything going",
+        "how's everything going on", "how is everything going on",
         "hi how are you", "hi how are you doing",
         "hello how are you", "hey how are you",
         "yo", "sup", "whats up", "what's up", "wassup", "wazzup",
@@ -199,7 +202,12 @@ def try_rule_classify(
 
 
 def _match_fast(text: str) -> dict[str, Any] | None:
-    if text in _GREETING_EXACT or _GREETING_RE.fullmatch(text) or _HOW_ARE_YOU_RE.fullmatch(text):
+    if (
+        text in _GREETING_EXACT
+        or text.rstrip("!.?") in _GREETING_EXACT
+        or _GREETING_RE.fullmatch(text)
+        or _HOW_ARE_YOU_RE.fullmatch(text)
+    ):
         return _base_payload(
             intent=Intent.GREETING.value,
             confidence=0.99,

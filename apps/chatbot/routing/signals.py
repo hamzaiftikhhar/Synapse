@@ -217,7 +217,8 @@ _URGENT_AVAILABILITY_RE = re.compile(
     r"squeeze\s+me\s+in|asap|as\s+soon\s+as\s+possible|urgent|"
     r"next\s+available|earliest\s+(?:opening|slot|appointment)|"
     r"urgent\s+appointment|emergency\s+appointment|"
-    r"need\s+(?:to\s+)?(?:be\s+)?seen\s+(?:today|asap|soon)"
+    r"need\s+(?:to\s+)?(?:be\s+)?seen\s+(?:today|asap|soon)|"
+    r"instantly|immediately|right\s+away"
     r")\b",
     re.I,
 )

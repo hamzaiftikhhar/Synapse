@@ -250,7 +250,19 @@ _FLEXIBLE = {
     "asap", "as soon as possible", "soonest", "earliest",
     "next available", "next available slot", "next opening",
     "anytime", "any time", "any day", "whenever", "flexible",
+    "instantly", "immediately", "right away",
 }
+# Phrases that mean "you pick", not "I named a date we failed to read".
+# looks_temporal must ignore them: otherwise "when is dr maya available
+# earliest" is flagged as a constraint, no candidate is produced (NLU sent
+# date=null; the scanner does not emit FLEXIBLE), and the resolver asks
+# which January 2027 they meant.
+_FLEXIBLE_RE = re.compile(
+    r"\b(?:"
+    + "|".join(re.escape(p) for p in sorted(_FLEXIBLE, key=len, reverse=True))
+    + r")\b"
+)
+_YESTERDAY_RE = re.compile(r"\byesterday\b")
 _TODAY_WORDS = {"same day", "sameday", "today", "now", "right now"}
 
 _BARE_MONTH_RE = re.compile(
@@ -298,6 +310,12 @@ def looks_temporal(message: str) -> bool:
     bare numbers, which are far more often quantities than dates.
     """
     msg = _norm(message)
+    if not msg:
+        return False
+    # Flexible words are temporal, but they are not a constraint we failed
+    # to parse — they are a request to scan forward. Strip them before the
+    # "did they name a date?" check so they cannot collapse into UNRESOLVED.
+    msg = _norm(_FLEXIBLE_RE.sub(" ", msg))
     if not msg:
         return False
     if _ISO_RE.search(msg) or _D_MON_RE.search(msg) or _MON_D_RE.search(msg):
@@ -513,6 +531,27 @@ def scan_temporal_expressions(
                 )
             )
 
+    # "yesterday" is a concrete relative day, not an unreadable constraint.
+    # parse_natural_date used to return None for it, so a well-extracted NLU
+    # entity still died as UNRESOLVED. Scan it here so the message itself
+    # is enough even when the NLU sends date=null.
+    for match in _YESTERDAY_RE.finditer(msg):
+        if overlaps(match.span()):
+            continue
+        day = today - timedelta(days=1)
+        consumed.append(match.span())
+        candidates.append(
+            _Candidate(
+                raw=match.group(0),
+                start=day,
+                end=day,
+                is_range=False,
+                precision=TemporalPrecision.RELATIVE,
+                label=day_label(day, today=today),
+                grounded=True,
+            )
+        )
+
     return candidates, ambiguous
 
 
@@ -566,6 +605,29 @@ def _parse_entity(
             is_range=False,
             precision=TemporalPrecision.RELATIVE,
             label=day_label(today, today=today),
+        )
+    if text == "yesterday":
+        # Use the resolver's `today`, not parse_natural_date's wall clock —
+        # tests freeze today, and a production call already computed clinic-local
+        # today before it got here.
+        day = today - timedelta(days=1)
+        return _Candidate(
+            raw=raw,
+            start=day,
+            end=day,
+            is_range=False,
+            precision=TemporalPrecision.RELATIVE,
+            label=day_label(day, today=today),
+        )
+    if text in {"tomorrow", "tmrw"}:
+        day = today + timedelta(days=1)
+        return _Candidate(
+            raw=raw,
+            start=day,
+            end=day,
+            is_range=False,
+            precision=TemporalPrecision.RELATIVE,
+            label=day_label(day, today=today),
         )
 
     scanned, _ = scan_temporal_expressions(text, today=today, tz=tz)

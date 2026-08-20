@@ -59,6 +59,8 @@ def parse_natural_date(raw: str | None, *, tz: ZoneInfo | None = None) -> date |
         return today
     if raw == "tomorrow":
         return today + timedelta(days=1)
+    if raw == "yesterday":
+        return today - timedelta(days=1)
     if raw in ("next week", "this week"):
         # Start of next ISO week (Monday) or today for this week
         if raw == "this week":
@@ -122,7 +124,11 @@ def parse_natural_date(raw: str | None, *, tz: ZoneInfo | None = None) -> date |
 
 _TIME_FLOOR_AFTER_RE = re.compile(r"\bafter\s+(\d{1,2})\s*(am|pm)?\b", re.I)
 _AFTER_WORK_RE = re.compile(r"\bafter\s+work\b", re.I)
-_ASAP_RE = re.compile(r"\basap\b|\bas\s+soon\s+as\s+possible\b|\bnext\s+available\b", re.I)
+_ASAP_RE = re.compile(
+    r"\basap\b|\bas\s+soon\s+as\s+possible\b|\bnext\s+available\b|"
+    r"\binstantly\b|\bimmediately\b|\bright\s+away\b",
+    re.I,
+)
 _SAME_DAY_RE = re.compile(r"\bsame\s+day\b", re.I)
 _CLOCK_RE = re.compile(
     r"\b(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)\b",
