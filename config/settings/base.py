@@ -255,12 +255,18 @@ EMBEDDING_DIMENSIONS = env.int("EMBEDDING_DIMENSIONS", default=768)
 NLU_PROVIDER = env("NLU_PROVIDER", default="openai")
 NLU_MODEL = env("NLU_MODEL", default="gpt-4.1-nano")
 GOOGLE_API_KEY = env("GOOGLE_API_KEY", default="")
-NLU_API_TIMEOUT_SECONDS = env.float("NLU_API_TIMEOUT_SECONDS", default=3.5)
+NLU_API_TIMEOUT_SECONDS = env.float("NLU_API_TIMEOUT_SECONDS", default=5.0)
 # Wall-clock ceiling for the whole provider chain (primary → mini fallback →
 # secondary). Per-provider timeouts still apply per attempt; this stops
-# sequential attempts from stacking them. Initial tunable default — raise it to
-# let more of the chain run before rules take over, lower it for a tighter cap.
-NLU_TOTAL_BUDGET_SECONDS = env.float("NLU_TOTAL_BUDGET_SECONDS", default=5.0)
+# sequential attempts from stacking them. Raised from 3.5/5.0 after measuring
+# real primary-provider latency directly against production traffic patterns:
+# successful calls routinely land in the 1.4-3.1s range with real, wide
+# variance (cloud LLM latency, not a code bug), and the old 3.5s per-provider
+# cap left too little margin — occasional legitimate-but-slow calls were
+# getting cut off and falling through to the generic clarification fallback,
+# most visibly on a session's first message. See ROADMAP.md "NLU cold-first-
+# message failures" for the measured evidence.
+NLU_TOTAL_BUDGET_SECONDS = env.float("NLU_TOTAL_BUDGET_SECONDS", default=7.0)
 NLU_CONFIDENCE_THRESHOLD = env.float("NLU_CONFIDENCE_THRESHOLD", default=0.75)
 CHAT_CONFIDENCE_HIGH = env.float("CHAT_CONFIDENCE_HIGH", default=0.90)
 CHAT_CONFIDENCE_MID = env.float("CHAT_CONFIDENCE_MID", default=0.70)
