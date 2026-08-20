@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { toast } from "sonner";
-import { Pencil, Plus, Trash2 } from "lucide-react";
+import { ClipboardList, Pencil, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -13,10 +13,10 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ImportGuide } from "@/features/importer/import-guide";
 import { ImportTriggerButton } from "@/features/importer/import-trigger-button";
 import { ensureDoctorCatalogLinks } from "@/features/onboarding/doctor-catalog-links";
 import { StepHint } from "@/features/onboarding/step-hint";
+import { SuggestionChip } from "@/features/onboarding/suggestion-chip";
 import {
   suggestedServiceTemplates,
   type ServiceTemplate,
@@ -174,26 +174,19 @@ export function ServicesStep({ onNext }: OnboardingStepProps) {
   return (
     <div className="space-y-6">
       <form id={ONBOARDING_FORM_ID} onSubmit={onContinue} />
-      <StepHint>
-        Services are what patients actually book. Add them by hand or import a
-        spreadsheet — download the sample to see the exact columns.
-      </StepHint>
+      <StepHint>These are what patients actually book.</StepHint>
 
       <div className="space-y-3 rounded-2xl border border-border bg-card p-5">
         {suggestions.length > 0 ? (
-          <div className="space-y-1.5">
+          <div className="space-y-2">
             <p className="text-xs font-medium text-muted-foreground">Suggested for you</p>
-            <div className="flex flex-wrap gap-1.5">
+            <div className="flex flex-wrap gap-2">
               {suggestions.map((template) => (
-                <button
+                <SuggestionChip
                   key={template.name}
-                  type="button"
+                  label={template.name}
                   onClick={() => openCreate(template)}
-                  className="inline-flex items-center gap-1 rounded-full border border-dashed border-border px-3 py-1 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary"
-                >
-                  <Plus className="size-3" />
-                  {template.name}
-                </button>
+                />
               ))}
             </div>
           </div>
@@ -202,14 +195,24 @@ export function ServicesStep({ onNext }: OnboardingStepProps) {
         {isLoading ? (
           <p className="text-sm text-muted-foreground">Loading…</p>
         ) : services.length === 0 ? (
-          <div className="space-y-4">
+          <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-start gap-3">
+              <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-muted text-foreground">
+                <ClipboardList className="size-5" strokeWidth={1.75} />
+              </div>
+              <div>
+                <p className="text-sm font-medium text-navy">Add a bookable service</p>
+                <p className="mt-0.5 text-sm text-muted-foreground">
+                  Name, duration, and an optional price. You can import a list instead.
+                </p>
+              </div>
+            </div>
             <div className="flex flex-wrap gap-2">
               <Button type="button" onClick={() => openCreate()}>
                 <Plus className="size-4" /> Add service
               </Button>
               <ImportTriggerButton recordType="services" />
             </div>
-            <ImportGuide recordType="services" compact />
           </div>
         ) : (
           <div className="space-y-2">
