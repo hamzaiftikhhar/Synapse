@@ -24,6 +24,31 @@ class OpenAINLUProvider:
     def __init__(self, *, model_name: str, api_key: str) -> None:
         self.model_name = model_name
         self._api_key = api_key
+        self._client: Any = None
+
+    def _get_client(self) -> Any:
+        # A fresh OpenAI(...) client was previously constructed on every
+        # classify() call — each one builds its own httpx transport with an
+        # empty connection pool, so *every* NLU call (not just the first
+        # one of a session) paid a full TCP+TLS handshake to api.openai.com
+        # on top of real inference time. Measured live: ~3.0s calls landing
+        # within ~85% of the 3.5s per-provider timeout, occasionally tipping
+        # over into the timeout/clarify-fallback path. get_nlu_provider()
+        # already caches one provider instance per worker process, so
+        # caching the client here makes the connection pool persist and
+        # actually get reused across calls, the way the OpenAI SDK is
+        # documented to be used. Thread-safe: the SDK's client is designed
+        # for concurrent use, and a lazy-init race here just risks building
+        # one harmless extra client, never a correctness issue.
+        if self._client is None:
+            from openai import OpenAI
+
+            # run_with_deadline() below is the real, authoritative per-call
+            # timeout enforcement (it races the request in a worker thread
+            # and gives up independently) — this client-level timeout is
+            # only a generous outer safety bound, not the actual budget.
+            self._client = OpenAI(api_key=self._api_key, timeout=30.0)
+        return self._client
 
     def classify(
         self,
@@ -36,7 +61,7 @@ class OpenAINLUProvider:
             raise NLUError("OPENAI_API_KEY is not configured")
 
         try:
-            from openai import OpenAI
+            client = self._get_client()
         except ImportError as exc:
             raise NLUError("openai package is not installed") from exc
 
@@ -55,7 +80,6 @@ class OpenAINLUProvider:
         request_timeout = float(
             timeout if timeout is not None else getattr(settings, "NLU_API_TIMEOUT_SECONDS", 3.5)
         )
-        client = OpenAI(api_key=self._api_key, timeout=request_timeout)
 
         t0 = time.perf_counter()
 
