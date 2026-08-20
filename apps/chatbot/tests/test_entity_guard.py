@@ -58,6 +58,44 @@ class EntityGuardUnitTests(SimpleTestCase):
         cleaned = sanitize_entities("book 2026-08-25", entities)
         self.assertEqual(cleaned.date, "2026-08-25")
 
+    def test_strips_temporal_junk_glued_onto_doctor_name(self):
+        """NLU often emits doctor_name='maya yesterday' / 'maya instantly'.
+        Those extra tokens are in the message so grounding keeps them; the
+        cleaner must still peel them off or SQL icontains misses Maya."""
+        cases = (
+            ("can you please book me with dr maya yesterday afternoon", ["maya yesterday"], "maya"),
+            ("put me down with Maya instantly if you can", ["maya instantly"], "maya"),
+            ("get me in with Dr Lin right away", ["Lin right away"], "Lin"),
+            ("is Dr Hamza free this afternoon", ["Hamza"], "Hamza"),
+        )
+        for message, raw, expected in cases:
+            with self.subTest(message=message):
+                cleaned = sanitize_entities(
+                    message, ExtractedEntities(doctor_name=raw)
+                )
+                names = cleaned.doctor_name
+                if isinstance(names, str):
+                    names = [names]
+                self.assertTrue(
+                    any(expected.lower() == n.lower() for n in (names or [])),
+                    f"{names!r} should be just {expected!r}",
+                )
+                self.assertFalse(
+                    any(
+                        tok in n.lower()
+                        for n in (names or [])
+                        for tok in ("yesterday", "instantly", "away", "afternoon")
+                    ),
+                    names,
+                )
+
+    def test_honorific_only_doctor_name_is_dropped(self):
+        cleaned = sanitize_entities(
+            "Schedule me with Dr.",
+            ExtractedEntities(doctor_name=["Dr"]),
+        )
+        self.assertIsNone(cleaned.doctor_name)
+
 
 class DoctorBrowseSignalTests(SimpleTestCase):
     def test_browse_queries(self):

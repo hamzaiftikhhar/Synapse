@@ -105,6 +105,21 @@ class RuleClassifierTests(SimpleTestCase):
             self.assertIsNotNone(hit, msg)
             self.assertEqual(hit["intent"], "greeting", msg)
 
+    def test_how_is_everything_going_is_a_greeting_not_an_llm_round_trip(self):
+        """Regression: "how is everything going on" fell through the
+        existing "how are you" rule coverage (close but not an exact/regex
+        match), burning a full LLM call that landed on intent=faq and an
+        oddly formal clarify reply for what's plainly small talk."""
+        for msg in (
+            "how is everything going on",
+            "how's everything going on?",
+            "How is everything going",
+            "how's everything",
+        ):
+            hit = try_rule_classify(msg, tier="fast")
+            self.assertIsNotNone(hit, msg)
+            self.assertEqual(hit["intent"], "greeting", msg)
+
     def test_fast_path_does_not_steal_booking_with_schedule(self):
         """Booking language must reach Small LLM — rules_fast used to return
         book_appointment with empty entities and dump the discovery wizard."""
@@ -271,6 +286,32 @@ class EntityExtractTests(SimpleTestCase):
         names = [n.lower() for n in entities["doctor_name"]]
         self.assertTrue(any("rjet" in n for n in names))
         self.assertTrue(any("sharma" in n for n in names))
+
+    def test_trailing_temporal_words_are_not_surnames(self):
+        cases = (
+            ("can you please book me with dr maya yesterday afternoon", "maya"),
+            ("book appointment with dr maya instantly", "maya"),
+            ("is dr lin available immediately", "lin"),
+            ("see dr hamza tomorrow morning", "hamza"),
+        )
+        for message, expected in cases:
+            with self.subTest(message=message):
+                names = [n.lower() for n in (extract_entities(message)["doctor_name"] or [])]
+                self.assertTrue(any(expected in n for n in names), names)
+                self.assertFalse(
+                    any(
+                        junk in n
+                        for n in names
+                        for junk in ("yesterday", "instantly", "immediately", "tomorrow")
+                    ),
+                    names,
+                )
+
+    def test_two_part_name_survives_a_following_day_word(self):
+        names = [n.lower() for n in extract_entities(
+            "book with dr maya lin tomorrow afternoon"
+        )["doctor_name"]]
+        self.assertTrue(any("maya" in n and "lin" in n for n in names), names)
 
     def test_specialty_and_insurance(self):
         entities = extract_entities(
