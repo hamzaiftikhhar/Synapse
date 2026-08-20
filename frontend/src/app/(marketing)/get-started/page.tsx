@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -34,7 +34,7 @@ const schema = z.object({
 
 type FormValues = z.infer<typeof schema>;
 
-export default function GetStartedPage() {
+function GetStartedInner() {
   const searchParams = useSearchParams();
   const planSlug = searchParams.get("plan") || "";
   const plan = PLAN_LABELS[planSlug];
@@ -203,5 +203,13 @@ export default function GetStartedPage() {
         </Button>
       </form>
     </div>
+  );
+}
+
+export default function GetStartedPage() {
+  return (
+    <Suspense fallback={<div className="mx-auto max-w-xl px-4 py-16 text-sm text-muted-foreground">Loading…</div>}>
+      <GetStartedInner />
+    </Suspense>
   );
 }

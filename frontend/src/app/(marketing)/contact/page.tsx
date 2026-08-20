@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, Suspense } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useForm } from "react-hook-form";
@@ -24,7 +24,7 @@ const schema = z.object({
 
 type FormValues = z.infer<typeof schema>;
 
-export default function ContactPage() {
+function ContactInner() {
   const isEnterprise = useSearchParams().get("interest") === "enterprise";
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
@@ -123,5 +123,13 @@ export default function ContactPage() {
         </Button>
       </form>
     </div>
+  );
+}
+
+export default function ContactPage() {
+  return (
+    <Suspense fallback={<div className="mx-auto max-w-xl px-4 py-20 text-sm text-muted-foreground">Loading…</div>}>
+      <ContactInner />
+    </Suspense>
   );
 }

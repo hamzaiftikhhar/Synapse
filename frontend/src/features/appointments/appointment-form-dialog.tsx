@@ -129,8 +129,8 @@ export function AppointmentFormDialog({
   const update = useUpdateAppointment();
   const [patientQuery, setPatientQuery] = useState("");
 
-  const patients = patientsData?.results ?? [];
-  const doctors = doctorsData?.results ?? [];
+  const patients = useMemo(() => patientsData?.results ?? [], [patientsData]);
+  const doctors = useMemo(() => doctorsData?.results ?? [], [doctorsData]);
   const services = servicesData?.results ?? [];
   const insurancePlans = insuranceData?.results ?? [];
 

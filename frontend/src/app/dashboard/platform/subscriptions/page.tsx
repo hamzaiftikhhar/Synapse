@@ -40,7 +40,7 @@ export default function PlatformSubscriptionsPage() {
     ready
   );
 
-  const rows = data ?? [];
+  const rows = useMemo(() => data ?? [], [data]);
   const paying = useMemo(
     () =>
       rows.filter((r) => r.status === "active" || r.status === "trialing").length,

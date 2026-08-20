@@ -42,7 +42,6 @@ import { getActiveTenant, getApiErrorMessage } from "@/lib/api/client";
 import { widgetAppointmentsService } from "@/services";
 import { useAuth } from "@/providers/auth-provider";
 import { useWidget, type AssistantMode } from "@/providers/widget-provider";
-import type { BookingStepPayload } from "@/types/api";
 import type { AppointmentCardData, ChatMessage, TimeSlotData } from "@/types/chat";
 import { waitForNaturalReplyPace } from "@/features/chat/natural-pace";
 import {
@@ -185,7 +184,7 @@ export function ChatWidget({
       sessionTokenRef.current = token;
       widgetCtx.setSessionToken(token);
     },
-    [widgetCtx]
+    [widgetCtx.setSessionToken]
   );
 
   const patientSessionToken = useCallback((): string => {
@@ -449,7 +448,6 @@ export function ChatWidget({
       patientChat,
       guestChat,
       marketingChat,
-      widgetCtx,
       dismissedWizards,
       patientSessionToken,
       rememberSessionToken,
