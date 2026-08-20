@@ -28,6 +28,9 @@ ChatEngine.process()                          apps/chatbot/engine.py
       │      emergency trust, service_filter_mode — NOT lane ownership)
       ├─ 5. Entity resolution — resolve_entities() (DB, doctor/specialty/
       │      service/insurance name → id)
+      ├─ 5a. Pending uptake (Phase 16) — if the previous turn recorded an
+      │      offer and this message is a whole-turn yes/no, rewrite NLU to
+      │      execute that offer *before* sensors/planner see it
       ├─ 6. Sensors — compute_message_sensors() → MessageSensors
       ├─ 7. Planner — build_planner_facts() + build_execution_plan()
       │      → ExecutionPlan
@@ -77,6 +80,31 @@ Statuses `PAST`, `UNRESOLVED`, `AMBIGUOUS`, and `BEYOND_HORIZON` are
 verbatim before any lane can reach the response LLM, and `ui_meta.py` renders
 no chips for them. The horizon comes from the clinic's configured
 `date_horizon_days` (default 30), never a hard-coded window.
+
+`UNSPECIFIED` is the established "no date constraint — forward-scan"
+status. Flexible phrases (`earliest`, `asap`, `next available`,
+`instantly`, `immediately`, `right away`, …) use that status, including
+when they appear only in the message and NLU extracted no date entity.
+They must not be treated as an unreadable constraint.
+`yesterday` is `PAST`. A new temporal status is not required for either.
+`instantly` / `immediately` / `right away` are also `is_asap_request` so
+booking seeds today the same way `asap` does. They are **not** date-extract
+patterns — extracting them would rescue an unreadable date
+(`coming januray instantly` stays `UNRESOLVED`).
+
+### 2b. A new booking utterance only inherits pins it supplied (Phase 15)
+
+`BookingService._apply_prefill` (`apps/chatbot/booking/service.py`) drops a
+leftover service when this call names a doctor and not a service
+(`stale_service`), and drops a leftover held slot / DETAILS / OTP / REVIEW
+commitment when this call names a doctor or service without an explicit
+`slot_start` (`stale_commitment`). `start()` forwards `slot_start` into
+`_apply_prefill` so a real chip tap is not treated as leftover REVIEW.
+
+`ui_meta.build_ui_meta` injects `last_service` only when this turn named a
+service, or named neither doctor nor service (true continuation). Naming a
+doctor without a service must not carry Adult Cleaning into the next draft.
+`last_doctor` / `last_specialty` still inject on a non-generic restart.
 
 ## 3. NLU — `apps/chatbot/nlu/`
 
@@ -131,7 +159,8 @@ whether it should also move to `fast`, be deleted, or stay opt-in — treat
 any `strong`-tier-only behavior as unverified in production until checked.
 
 **Entity resolution** (`nlu/resolvers.py`, DB-backed, fuzzy):
-- `resolve_doctor_candidates` / `resolve_doctor_from_text` — confidence-banded (high/medium/low) doctor matching.
+- `resolve_doctor_candidates` / `resolve_doctor_from_text` — confidence-banded (high/medium/low) doctor matching. Token-fuzzy only runs on `_name_evidence_tokens` (Phase 20): honorific-only "Schedule me with Dr." is `unknown`, not a weak match on `"schedule"`. Exact last-name / full-name substring still resolves.
+- `sanitize_entities` / `clean_doctor_name` (Phase 18) — peel temporal/ASAP tokens the model glued onto `doctor_name` (`"maya yesterday"` → `"maya"`). Grounding alone is not enough because both tokens appear in the message.
 - `_match_specialty`, `_match_insurance`, `_match_service` — per-entity DB fuzzy resolvers, feed `NLUResult.resolved_ids`.
 
 ## 4. Planner — `apps/chatbot/planner.py`
@@ -213,6 +242,9 @@ SQL-only pre-authorizes a `fallback_vector_tasks` entry at planning time
 (never invented ad hoc after the fact) for intents in `HYBRID_SQL_INTENTS`
 (`routing/lanes.py`) or knowledge-shaped messages. If the SQL task comes
 back empty, the engine activates the fallback and runs vector + Large LLM.
+**Exception (Phase 17):** `availability` is never pre-authorized. An empty
+day is a resolved answer; RAG must not invent slots. Insurance / services /
+FAQ empty still may hybrid.
 
 **Known, unfixed gap (target of Phase 10):** "Do you have X?" / "Do you
 offer X?" / "Are you sure you have X?" phrasings do not reliably classify
@@ -300,12 +332,29 @@ lazy-load path is still the fallback if warm-up itself fails.
 Tracks exactly four named slots (`last_doctor`, `last_specialty`,
 `last_service`, `last_insurance`) plus one `pending_clarification`, via
 `ConversationTimeline` / `load_timeline` / `merge_turn_context` /
-`detect_recovery`. **No generic coreference** ("him", "that one", "the
-second doctor") — confirmed by reading the file; a real transcript showing
-"which one treats cancer?" → "Dr. Chloe Bennet" → "book with him" failing
-to resolve "him" is expected behavior today, not a bug in scope for any
-current phase. Deliberately deferred — do not patch ad hoc into doctor
-resolution or booking; it needs its own phase (see ROADMAP.md).
+`detect_recovery`.
+
+`pending_clarification` is bound, not decorative (Phase 16). After entity
+resolution, `classify_uptake(message)` is a whole-message speech-act (max
+48 characters) → `affirm` / `decline` / `None`. `"Yep."` is not an intent;
+it takes up the offer the previous turn recorded. `apply_pending_uptake`
+rewrites NLU before the planner: `availability_alternative` →
+`DOCTOR_AVAILABILITY` with the offered `doctor_id` on `resolved_ids` (do
+**not** put `doctor_name` on entities — that would make
+`resolve_doctor_candidates(clinic, "Yep.")` run); `service_followup` →
+availability for that service, not a forced booking.
+`mark_pending_decline` → `OFF_TOPIC` with a dedicated fast-path reply.
+`"yes, Thursday morning"` is a new request, not uptake.
+`pending_offer_from_turn` records the offer after compose (empty searchable
+availability, or a service-answer that matched a service). Do not add
+`if text.lower() in ["sure", "yes"]`.
+
+**No generic coreference** ("him", "that one", "the second doctor") —
+confirmed by reading the file; a real transcript showing "which one treats
+cancer?" → "Dr. Chloe Bennet" → "book with him" failing to resolve "him"
+is expected behavior today, not a bug in scope for any current phase.
+Deliberately deferred — do not patch ad hoc into doctor resolution or
+booking; it needs its own phase (see ROADMAP.md).
 
 ## 11. Multi-tenancy
 
@@ -320,7 +369,6 @@ flag anything that looks unscoped rather than assuming it's fine.
 - Service-existence question routing (§6) — Phase 10.
 - RAG degraded-state mislabeling (§7) — Phase 9C.
 - `ThreadPoolExecutor` saturation under concurrent NLU load (§8) — deferred, no phase assigned yet.
-- Bare "Dr." (no name) resolves to a specific doctor instead of asking which one — Phase 11.
 - No coreference/reference resolution (§10) — deferred, needs its own phase.
 - `ExecutionPlan.scores` / `PlannerScores` — computed, serialized, never read by anything (confirmed: no engine/ui_meta/test/API/frontend consumer). Not removed in Phase 7 because it's a bigger structural change (whole class, ~9 construction sites) than the single-field cleanup done there — deferred to its own small phase.
 - `apps/chatbot/tests.py` (3-line stub) coexists with `apps/chatbot/tests/` (real package) — breaks bare `python manage.py test` with no args (`ImportError: 'tests' module incorrectly imported`). Same issue exists for `apps/knowledge`. Always use explicit labels: `python manage.py test apps.chatbot.tests --keepdb`. Pre-existing, not fixed.
@@ -334,6 +382,7 @@ flag anything that looks unscoped rather than assuming it's fine.
 | NLU provider chain / budget | `apps/chatbot/nlu/classifier.py` |
 | NLU deadline mechanics | `apps/chatbot/nlu/deadline.py` |
 | Entity/doctor/service resolution (DB) | `apps/chatbot/nlu/resolvers.py` |
+| Doctor-name sanitization | `apps/chatbot/nlu/entity_extract.py` (`clean_doctor_name`), `entity_guard.py` |
 | Confidence policy | `apps/chatbot/routing/confidence.py` |
 | Pure message sensors (shared prod/eval) | `apps/chatbot/planner.py::compute_message_sensors` |
 | Planner / ExecutionPlan | `apps/chatbot/planner.py` |
@@ -345,7 +394,8 @@ flag anything that looks unscoped rather than assuming it's fine.
 | Embedding warm-up | `apps/knowledge/apps.py`, `apps/knowledge/embeddings/factory.py` |
 | Large LLM synthesis | `apps/chatbot/response_llm.py` |
 | Booking UI eligibility | `apps/chatbot/ui_meta.py` |
-| Conversation state | `apps/chatbot/conversation_state.py` |
+| Booking draft isolation | `apps/chatbot/booking/service.py` (`_apply_prefill`) |
+| Conversation state / pending uptake | `apps/chatbot/conversation_state.py` |
 | Offline eval battery | `apps/chatbot/eval/runner.py`, `apps/chatbot/eval/cases.py` |
 | NLU tests | `apps/chatbot/tests/test_nlu.py` |
 | Service resolution tests | `apps/chatbot/tests/test_service_resolver_authority.py`, `apps/chatbot/tests/test_services_category_filter.py` |
