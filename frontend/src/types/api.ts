@@ -93,6 +93,12 @@ export type WidgetSettingsConfig = {
     primary_color?: string;
     position?: string;
     greeting?: string;
+    corner_radius?: number;
+    avatar_url?: string;
+    text_color?: string;
+    avatar_zoom?: number;
+    avatar_offset_x?: number;
+    avatar_offset_y?: number;
   };
   ai?: Record<string, unknown>;
   booking?: {
@@ -582,6 +588,12 @@ export type WidgetConfig = {
       primary_color?: string;
       position?: string;
       greeting?: string;
+      corner_radius?: number;
+      avatar_url?: string;
+      text_color?: string;
+      avatar_zoom?: number;
+      avatar_offset_x?: number;
+      avatar_offset_y?: number;
     };
     booking?: {
       require_auth?: boolean;

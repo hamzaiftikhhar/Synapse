@@ -1,9 +1,58 @@
+.synapse-chat-panel {
+  border-radius: var(--widget-radius, 18px);
+}
+
+.synapse-chat-bubble {
+  border-radius: var(--widget-bubble-radius, 18px);
+}
+
+.synapse-chat-bubble--bot {
+  border-bottom-left-radius: calc(var(--widget-bubble-radius, 18px) * 0.35);
+}
+
+.synapse-chat-bubble--user {
+  border-bottom-right-radius: calc(var(--widget-bubble-radius, 18px) * 0.35);
+}
+
+.synapse-range {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(
+    to right,
+    var(--foreground) var(--synapse-range-pct, 50%),
+    var(--muted) var(--synapse-range-pct, 50%)
+  );
+  cursor: pointer;
+}
+
+.synapse-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--background);
+  border: 2px solid var(--foreground);
+  box-shadow: 0 1px 3px rgb(11 14 46 / 18%);
+}
+
+.synapse-range::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--background);
+  border: 2px solid var(--foreground);
+  box-shadow: 0 1px 3px rgb(11 14 46 / 18%);
+}
+
 /* Chat chrome — token-based so dashboard dark/light inherit correctly.
    Marketing keeps :root (white cards). No decorative motion. */
 
 .synapse-chat-composer {
   position: relative;
-  border-radius: 16px;
+  border-radius: var(--widget-composer-radius, 16px);
   border: 1px solid var(--border);
   background: var(--card);
   box-shadow: 0 1px 2px rgb(28 31 38 / 6%);
