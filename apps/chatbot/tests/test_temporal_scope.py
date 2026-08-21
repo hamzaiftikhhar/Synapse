@@ -143,6 +143,90 @@ class NoSilentTomorrowTests(TestCase):
         self.assertEqual(scope.start.weekday(), 0)
 
 
+class BareTimeOfDayMeansTodayTests(TestCase):
+    """Production transcript, 2026-08-21: "is there any doc available
+    tonight" / "...in the morning" / "...in the afternoon" all landed on
+    the generic UNRESOLVED "give me the full date" reply — "tonight" was
+    detected as temporal (looks_temporal via _RELATIVE_WORDS) but nothing
+    ever resolved it; "morning"/"afternoon" reached here as contaminated
+    NLU date entities (the live NLU sometimes files them under
+    entities.date, observed directly: date="morning") with no fallback.
+    A bare time-of-day word with no other date signal means today —
+    the same "message alone is enough" principle NoSilentTomorrowTests
+    already proves for "yesterday"."""
+
+    def test_tonight_from_the_message_alone(self):
+        scope = _resolve([], message="i there any doc available tonight")
+        self.assertIs(scope.status, TemporalStatus.RESOLVED)
+        self.assertEqual(scope.start, _TODAY)
+        self.assertEqual(scope.end, _TODAY)
+
+    def test_morning_contaminating_the_date_entity(self):
+        scope = _resolve(["morning"], message="i there any doc available in the morning")
+        self.assertIs(scope.status, TemporalStatus.RESOLVED)
+        self.assertEqual(scope.start, _TODAY)
+
+    def test_afternoon_contaminating_the_date_entity(self):
+        scope = _resolve(["afternoon"], message="i there any doc available in the afternoon")
+        self.assertIs(scope.status, TemporalStatus.RESOLVED)
+        self.assertEqual(scope.start, _TODAY)
+
+    def test_evening_and_noon_also_resolve(self):
+        for word in ("evening", "noon", "night"):
+            with self.subTest(word=word):
+                scope = _resolve([word], message=f"any doc free this {word}")
+                self.assertIs(scope.status, TemporalStatus.RESOLVED)
+                self.assertEqual(scope.start, _TODAY)
+
+    def test_a_named_weekday_still_wins_over_a_bare_time_of_day(self):
+        # Must not regress: a more explicit date elsewhere in the same
+        # message always outranks "today" from a bare time-of-day word.
+        scope = _resolve(
+            [], message="is there a doc available next tuesday morning", horizon=60
+        )
+        self.assertIs(scope.status, TemporalStatus.RESOLVED)
+        self.assertNotEqual(scope.start, _TODAY)
+        self.assertEqual(scope.start.weekday(), 1)
+
+    def test_misspelled_month_with_earliest_still_stays_a_forward_scan(self):
+        # Must not regress Phase 12/13's own guard: this specific phrase
+        # must never falsely resolve to a concrete date.
+        scope = _resolve([], message="is there a doc available coming januray earliest")
+        self.assertIs(scope.status, TemporalStatus.UNRESOLVED)
+
+
+class WeekendMeansTheUpcomingSaturdaySundayTests(TestCase):
+    """Same bug class as BareTimeOfDayMeansTodayTests, found by auditing
+    every other _RELATIVE_WORDS entry for the same detected-but-never-
+    resolved gap "tonight" had — "weekend" was in that list too, with no
+    resolution path anywhere. Not yet in a production log; found before it
+    was reported, not after."""
+
+    def test_weekend_from_a_tuesday_is_the_coming_saturday_sunday(self):
+        scope = _resolve([], message="is there a doc available this weekend")
+        self.assertIs(scope.status, TemporalStatus.RESOLVED)
+        self.assertTrue(scope.is_range)
+        self.assertEqual(scope.start, date(2026, 8, 22))
+        self.assertEqual(scope.end, date(2026, 8, 23))
+
+    def test_weekend_from_saturday_itself_starts_today(self):
+        scope = _resolve([], message="any docs open this weekend", today=date(2026, 8, 22))
+        self.assertEqual(scope.start, date(2026, 8, 22))
+        self.assertEqual(scope.end, date(2026, 8, 23))
+
+    def test_weekend_from_sunday_itself_does_not_skip_to_next_weekend(self):
+        # The naive "next Saturday" formula would jump a full week ahead
+        # from a Sunday — this pins that it collapses to just today instead.
+        scope = _resolve([], message="any docs open this weekend", today=date(2026, 8, 23))
+        self.assertEqual(scope.start, date(2026, 8, 23))
+        self.assertEqual(scope.end, date(2026, 8, 23))
+
+    def test_weekend_contaminating_the_date_entity_also_resolves(self):
+        scope = _resolve(["weekend"], message="any docs open weekend")
+        self.assertIs(scope.status, TemporalStatus.RESOLVED)
+        self.assertEqual(scope.start, date(2026, 8, 22))
+
+
 class BookingHorizonTests(TestCase):
     def test_a_month_past_the_horizon_is_refused_not_redirected(self):
         scope = _resolve(["November"], message="anything in November", horizon=30)

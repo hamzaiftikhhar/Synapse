@@ -263,7 +263,22 @@ _FLEXIBLE_RE = re.compile(
     + r")\b"
 )
 _YESTERDAY_RE = re.compile(r"\byesterday\b")
-_TODAY_WORDS = {"same day", "sameday", "today", "now", "right now"}
+_WEEKEND_RE = re.compile(r"\bweekends?\b")
+# Bare time-of-day words mean "today" when they are the only temporal signal
+# — "any doc available tonight/in the morning/this afternoon" all name today,
+# not an unreadable date. Reproduced directly: the NLU sometimes files these
+# under entities.date (observed: date="morning", date="afternoon"), and
+# "tonight" alone (date=null, only in the message) was detected as temporal
+# by looks_temporal() via _RELATIVE_WORDS but never actually resolved by
+# anything — both landed on the generic UNRESOLVED "give me the full date"
+# reply instead of searching today. Safe to fold into _TODAY_WORDS: a more
+# explicit candidate elsewhere in the same message (a weekday, an explicit
+# date) always outranks TemporalPrecision.RELATIVE regardless, so this can
+# never override "next Tuesday morning" meaning Tuesday.
+_TODAY_WORDS = {
+    "same day", "sameday", "today", "now", "right now",
+    "tonight", "morning", "afternoon", "evening", "night", "noon",
+}
 
 _BARE_MONTH_RE = re.compile(
     rf"^(?:in\s+|during\s+|for\s+|coming\s+|next\s+|this\s+)?({_MONTH_ALT})\s*(\d{{4}})?$"
@@ -284,6 +299,16 @@ class _Candidate:
 
 def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", str(text or "").strip().lower())
+
+
+def _weekend_bounds(today: date) -> tuple[date, date]:
+    """Saturday-Sunday of the weekend "today" belongs to or is heading
+    into. If today is already Sat/Sun, start lands on/before today — the
+    caller's own max(start, today) clamp turns that into "just today" for
+    a Sunday query without a separate case here."""
+    wd = today.weekday()  # Mon=0 .. Sun=6
+    sat = today - timedelta(days=wd - 5) if wd >= 5 else today + timedelta(days=5 - wd)
+    return sat, sat + timedelta(days=1)
 
 
 def _end_of_month(year: int, month: int) -> date:
@@ -552,6 +577,28 @@ def scan_temporal_expressions(
             )
         )
 
+    # "weekend"/"weekends" — same gap as "yesterday" had before Phase 14:
+    # detected as temporal by looks_temporal() via _RELATIVE_WORDS, but
+    # nothing ever produced a resolved candidate for it, so "is there a doc
+    # available this weekend" landed on the generic UNRESOLVED "give me the
+    # full date" reply. Reproduced directly before this fix.
+    for match in _WEEKEND_RE.finditer(msg):
+        if overlaps(match.span()):
+            continue
+        sat, sun = _weekend_bounds(today)
+        consumed.append(match.span())
+        candidates.append(
+            _Candidate(
+                raw=match.group(0),
+                start=sat,
+                end=sun,
+                is_range=True,
+                precision=TemporalPrecision.RELATIVE,
+                label=f"the weekend of {day_label(sat, today=today)}",
+                grounded=True,
+            )
+        )
+
     return candidates, ambiguous
 
 
@@ -628,6 +675,21 @@ def _parse_entity(
             is_range=False,
             precision=TemporalPrecision.RELATIVE,
             label=day_label(day, today=today),
+        )
+    if text in {"weekend", "weekends"}:
+        # Not reachable via the scanned/explicit fallback below — that only
+        # accepts EXPLICIT_DATE/MONTH precision, and a weekend range is
+        # RELATIVE. Handled here directly so a weekend fed in as an NLU date
+        # entity resolves the same way it does when scanned from the raw
+        # message.
+        sat, sun = _weekend_bounds(today)
+        return _Candidate(
+            raw=raw,
+            start=sat,
+            end=sun,
+            is_range=True,
+            precision=TemporalPrecision.RELATIVE,
+            label=f"the weekend of {day_label(sat, today=today)}",
         )
 
     scanned, _ = scan_temporal_expressions(text, today=today, tz=tz)

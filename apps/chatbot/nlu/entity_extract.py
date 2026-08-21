@@ -25,6 +25,7 @@ _DATE_PATTERNS = [
     r"\b(?:wed|sat|sun)\s+"
     r"(?:morning|afternoon|evening|night|noon)\b",
     r"\btoday\b",
+    r"\btonight\b",
     r"\btomorrow\b",
     r"\bnext week\b",
     r"\bthis week\b",
