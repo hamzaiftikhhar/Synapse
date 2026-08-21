@@ -56,6 +56,34 @@ def get_or_create_by_phone(
     return patient, True
 
 
+def get_or_create_by_email(
+    *,
+    clinic: Clinic,
+    email: str,
+    first_name: str = "",
+    last_name: str = "",
+) -> tuple[Patient, bool]:
+    """Mirrors get_or_create_by_phone for an email-first registrant — a
+    deterministic placeholder phone (email_placeholder_phone) satisfies
+    Patient.phone's unique constraint without ever surfacing that internal
+    stand-in as a real phone number. Same "OTP/contact capture verifies
+    the record, it does not replace Patient identity" invariant.
+    """
+    email = email.strip().lower()
+    patient = Patient.objects.filter(clinic=clinic, email=email).first()
+    if patient is not None:
+        return patient, False
+
+    placeholder = email_placeholder_phone(email)
+    patient, created = get_or_create_by_phone(
+        clinic=clinic, phone=placeholder, first_name=first_name, last_name=last_name,
+    )
+    if not patient.email:
+        patient.email = email
+        patient.save(update_fields=["email", "updated_at"])
+    return patient, created
+
+
 def mark_phone_verified(patient: Patient) -> Patient:
     patient.is_verified = True
     patient.verified_at = timezone.now()
