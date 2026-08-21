@@ -571,7 +571,7 @@ class ChatEngine:
                 timeline = merge_turn_context(
                     timeline, pending_clarification=offer
                 )
-            self._save_messages(session, message, response_text, nlu_result)
+            self._save_messages(session, message, response_text, nlu_result, ui_meta)
             self._update_memory(
                 session,
                 last_doctor=last_doctor,
@@ -1206,41 +1206,62 @@ class ChatEngine:
         user_message: str,
         assistant_response: str,
         nlu: Any,
+        ui_meta: dict | None = None,
     ) -> None:
         try:
-            from apps.chatbot.models import ChatMessage, MessageRole, MessageType
+            from django.db import transaction
 
-            last = (
-                ChatMessage.objects.filter(session=session)
-                .order_by("-sequence_number")
-                .values_list("sequence_number", flat=True)
-                .first()
-            )
-            seq = (last or 0) + 1
+            from apps.chatbot.models import ChatMessage, ChatSession, MessageRole, MessageType
 
-            ChatMessage.objects.create(
-                clinic=session.clinic,
-                session=session,
-                role=MessageRole.USER,
-                message_type=MessageType.TEXT,
-                content=user_message,
-                sequence_number=seq,
-                metadata={
-                    "intent": nlu.intent.value,
-                    "confidence": nlu.confidence,
-                },
-            )
-            ChatMessage.objects.create(
-                clinic=session.clinic,
-                session=session,
-                role=MessageRole.ASSISTANT,
-                message_type=MessageType.TEXT,
-                content=assistant_response,
-                sequence_number=seq + 1,
-                metadata={},
-            )
-            session.last_active_at = timezone.now()
-            session.save(update_fields=["last_active_at"])
+            with transaction.atomic():
+                # select_for_update locks this session's row for the rest of
+                # the transaction, so two concurrent requests against the
+                # same session (increasingly possible once a visitor can
+                # resume the same session from multiple tabs/devices) can no
+                # longer both read the same "last sequence" and race to
+                # insert the same number. Read-then-write without this lock
+                # let the second insert silently fail against
+                # uq_message_session_sequence, and the bare except below
+                # swallowed it — a genuinely dropped message with no visible
+                # error anywhere.
+                ChatSession.objects.select_for_update().get(pk=session.pk)
+
+                last = (
+                    ChatMessage.objects.filter(session=session)
+                    .order_by("-sequence_number")
+                    .values_list("sequence_number", flat=True)
+                    .first()
+                )
+                seq = (last or 0) + 1
+
+                ChatMessage.objects.create(
+                    clinic=session.clinic,
+                    session=session,
+                    role=MessageRole.USER,
+                    message_type=MessageType.TEXT,
+                    content=user_message,
+                    sequence_number=seq,
+                    metadata={
+                        "intent": nlu.intent.value,
+                        "confidence": nlu.confidence,
+                    },
+                )
+                ChatMessage.objects.create(
+                    clinic=session.clinic,
+                    session=session,
+                    role=MessageRole.ASSISTANT,
+                    message_type=MessageType.TEXT,
+                    content=assistant_response,
+                    sequence_number=seq + 1,
+                    # The same structured payload the live response sends
+                    # as `meta` (doctor/service/insurance cards, booking
+                    # wizard launch params, time slots, ...) — persisted so
+                    # a later /chat/resume or pagination read can rebuild
+                    # this turn's UI exactly, not just its plain text.
+                    metadata=ui_meta or {},
+                )
+                session.last_active_at = timezone.now()
+                session.save(update_fields=["last_active_at"])
         except Exception:
             logger.exception("Failed to save chat messages")
 
