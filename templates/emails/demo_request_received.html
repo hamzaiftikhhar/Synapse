@@ -1,0 +1,11 @@
+{% extends "emails/base.html" %}
+{% block title %}We received your demo request{% endblock %}
+{% block content %}
+<h1 style="margin:0 0 16px;font-size:20px;color:#0b0e2e;">We received your demo request</h1>
+<p style="margin:0 0 12px;">
+  Thanks for your interest in Synapse for <strong>{{ clinic_name }}</strong>.
+</p>
+<p style="margin:0;color:#6b7085;">
+  Our team will reach out shortly to schedule your demo.
+</p>
+{% endblock %}

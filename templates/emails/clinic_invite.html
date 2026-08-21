@@ -1,0 +1,14 @@
+{% extends "emails/base.html" %}
+{% block title %}Your Synapse workspace is ready{% endblock %}
+{% block content %}
+<h1 style="margin:0 0 16px;font-size:20px;color:#0b0e2e;">Your workspace is ready</h1>
+<p style="margin:0 0 12px;">Hi {{ name }},</p>
+<p style="margin:0 0 12px;">
+  Your Synapse clinic workspace for <strong>{{ clinic_name }}</strong> is ready. Set up your
+  account to get started.
+</p>
+{% include "emails/_cta_button.html" with cta_url=link cta_label="Set up your account" %}
+<p style="margin:16px 0 0;color:#6b7085;">
+  This link expires in 7 days and can only be used once.
+</p>
+{% endblock %}

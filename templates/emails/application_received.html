@@ -1,0 +1,11 @@
+{% extends "emails/base.html" %}
+{% block title %}We received your Synapse application{% endblock %}
+{% block content %}
+<h1 style="margin:0 0 16px;font-size:20px;color:#0b0e2e;">We received your application</h1>
+<p style="margin:0 0 12px;">
+  Thanks for applying for Synapse on behalf of <strong>{{ clinic_name }}</strong>.
+</p>
+<p style="margin:0;color:#6b7085;">
+  Our team will review your details and reach out shortly to prepare your workspace.
+</p>
+{% endblock %}

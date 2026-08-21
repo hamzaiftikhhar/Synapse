@@ -1,0 +1,12 @@
+{% extends "emails/base.html" %}
+{% block title %}{{ label }}: {{ clinic_name }}{% endblock %}
+{% block content %}
+<h1 style="margin:0 0 16px;font-size:20px;color:#0b0e2e;">{{ label }}</h1>
+<table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 16px;width:100%;">
+  <tr><td style="padding:4px 0;color:#6b7085;width:96px;">Company</td><td style="padding:4px 0;">{{ clinic_name }}</td></tr>
+  <tr><td style="padding:4px 0;color:#6b7085;">Name</td><td style="padding:4px 0;">{{ requester_name }}</td></tr>
+  <tr><td style="padding:4px 0;color:#6b7085;">Email</td><td style="padding:4px 0;">{{ work_email }}</td></tr>
+  <tr><td style="padding:4px 0;color:#6b7085;">Phone</td><td style="padding:4px 0;">{{ phone|default:"—" }}</td></tr>
+</table>
+{% include "emails/_cta_button.html" with cta_url=link cta_label="Open in Super Admin" %}
+{% endblock %}
