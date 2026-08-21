@@ -1,5 +1,9 @@
 """Development settings — local Postgres, debug tools, relaxed hosts."""
 
+import copy
+
+from django.utils.log import DEFAULT_LOGGING
+
 from .base import *  # noqa: F401, F403
 
 DEBUG = True
@@ -32,3 +36,18 @@ STORAGES = {
 }
 
 EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
+
+# Chat traces print to the runserver console unless .env sets this false.
+# `pipeline_debug_enabled()` still forces them off under `manage.py test`
+# / `run_chat_eval` so those commands stay quiet.
+DEBUG_CHAT_PIPELINE = env.bool("DEBUG_CHAT_PIPELINE", default=True)  # noqa: F405
+
+# App `logger.info` lines (chat_route, EMAIL provider=..., NLU, etc.) do not
+# reach the terminal under Django's default config — only `django` /
+# `django.server` do. Keep Django's defaults and add `apps.*` at INFO.
+LOGGING = copy.deepcopy(DEFAULT_LOGGING)
+LOGGING["loggers"]["apps"] = {
+    "handlers": ["console"],
+    "level": "INFO",
+    "propagate": False,
+}

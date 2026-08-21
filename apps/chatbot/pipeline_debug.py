@@ -1,6 +1,8 @@
 """Structured AI pipeline debugger for chat requests.
 
-Enable with DEBUG_CHAT_PIPELINE=true.
+On in local development by default (`DEBUG_CHAT_PIPELINE`, default True
+in `config.settings.development`). Forced off under `manage.py test` and
+`run_chat_eval` so the suite/eval don't dump a trace per case.
 
 Prints a clean stage-by-stage trace to the terminal and optionally saves
 JSON artifacts under logs/chat/ for later review.
@@ -14,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,8 +26,16 @@ from django.conf import settings
 
 logger = logging.getLogger("apps.chatbot.pipeline")
 
+# Same reason get_email_provider() never selects Resend under `manage.py test`:
+# this process loads development settings (and a True default) but must not
+# print a full pipeline dump for every unit test / eval case.
+_SILENT_PIPELINE_COMMANDS = frozenset({"test", "run_chat_eval"})
+
 
 def pipeline_debug_enabled() -> bool:
+    command = sys.argv[1] if len(sys.argv) > 1 else ""
+    if command in _SILENT_PIPELINE_COMMANDS:
+        return False
     return bool(getattr(settings, "DEBUG_CHAT_PIPELINE", False))
 
 
