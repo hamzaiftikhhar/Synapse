@@ -317,5 +317,8 @@ def verify_otp(
         session.patient = patient
         session.is_authenticated = True
         session.save(update_fields=["patient", "is_authenticated"])
+        from apps.chatbot.services.visitor_service import link_session_visitor_to_patient
+
+        link_session_visitor_to_patient(session, patient)
 
     return OTPVerifyResult(patient=patient, session=session)

@@ -763,7 +763,6 @@ class BookingService:
     ) -> dict[str, Any]:
         from apps.appointments.models import Appointment, AppointmentSource, AppointmentStatus
         from apps.doctors.models import Doctor
-        from apps.patients.models import Patient
         from apps.patients.services import patient_service
 
         session = cls._load(chat_session, booking_id)
@@ -775,29 +774,31 @@ class BookingService:
         cls._ensure_hold(session)
 
         if patient is None:
-            # Get or create patient from booking details
+            # Get or create patient from booking details — routed through
+            # patient_service's shared dedup primitives (Phase 29 Step 3
+            # fix) rather than a raw get_or_create keyed on this wizard's
+            # own phone formatting. This used to be its own inline lookup;
+            # differently-formatted phone input against an existing
+            # SMS-verified record (e.g. missing the "+1" prefix) could
+            # silently create a second Patient row for the same person —
+            # the comment further down about replaces_appointment_id
+            # ownership was already flagging the symptom of this bug.
             phone = session.patient_phone or ""
             email = getattr(session, "patient_email", "") or ""
             if phone:
-                patient, _ = Patient.objects.get_or_create(
+                patient, _ = patient_service.get_or_create_by_phone(
                     clinic=clinic,
                     phone=phone,
-                    defaults={
-                        "first_name": session.patient_first_name,
-                        "last_name": session.patient_last_name,
-                        "email": email,
-                    },
+                    first_name=session.patient_first_name,
+                    last_name=session.patient_last_name,
                 )
             elif email:
-                patient = Patient.objects.filter(clinic=clinic, email=email).first()
-                if patient is None:
-                    patient = Patient.objects.create(
-                        clinic=clinic,
-                        phone=patient_service.email_placeholder_phone(email),
-                        email=email,
-                        first_name=session.patient_first_name,
-                        last_name=session.patient_last_name,
-                    )
+                patient, _ = patient_service.get_or_create_by_email(
+                    clinic=clinic,
+                    email=email,
+                    first_name=session.patient_first_name,
+                    last_name=session.patient_last_name,
+                )
             else:
                 raise BookingError("Patient contact is required")
             updates = []
@@ -927,6 +928,10 @@ class BookingService:
             chat_session.patient = patient
             chat_session.is_authenticated = True
             chat_session.save(update_fields=["patient", "is_authenticated"])
+
+        from apps.chatbot.services.visitor_service import link_session_visitor_to_patient
+
+        link_session_visitor_to_patient(chat_session, patient)
 
         return serialize_step(clinic, session)
 
