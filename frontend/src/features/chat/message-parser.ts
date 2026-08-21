@@ -1,4 +1,4 @@
-import type { ChatMessageResponse } from "@/types/api";
+import type { ChatMessageHistoryOut, ChatMessageResponse } from "@/types/api";
 import type { ChatMessage } from "@/types/chat";
 import type { BackendAction } from "./types";
 
@@ -380,4 +380,66 @@ export function bookingWizardMessage(
       ...payload,
     },
   };
+}
+
+const EMPTY_TIMINGS = {
+  nlu_ms: 0,
+  decision_ms: 0,
+  sql_ms: 0,
+  vector_ms: 0,
+  llm_ms: 0,
+  fast_path_ms: 0,
+  total_ms: 0,
+};
+
+/**
+ * Reconstructs one persisted row from /chat/resume or the pagination
+ * endpoint into the same ChatMessage shape a live turn produces —
+ * deliberately reuses parseChatResponse rather than a second parallel
+ * mapper, so a historical doctor-cards/booking-wizard/time-slots turn
+ * renders through the exact same MessageRenderer path as a live one.
+ * Assistant rows carry the same `meta` dict the live response sent as
+ * `res.meta` (persisted by the backend for exactly this purpose); user
+ * rows are always plain text (the only thing a user ever sends).
+ */
+function hydrateHistoryRow(row: ChatMessageHistoryOut): ChatMessage[] {
+  if (row.role === "user") {
+    return [{ ...userTextMessage(row.content), createdAt: row.created_at }];
+  }
+
+  if (row.role === "assistant") {
+    const fakeResponse: ChatMessageResponse = {
+      response: row.content,
+      route: "",
+      intent: "",
+      confidence: 0,
+      needs_sql: false,
+      needs_vector: false,
+      needs_llm: false,
+      safety_message: null,
+      timings: EMPTY_TIMINGS,
+      meta: row.metadata || {},
+    };
+    const { messages } = parseChatResponse(fakeResponse);
+    return messages.map((m) => ({ ...m, createdAt: row.created_at }));
+  }
+
+  // system/tool rows — no live path ever produces these today, but handle
+  // them as a plain system note rather than silently dropping the turn.
+  return [
+    {
+      id: uid("hist_sys"),
+      role: "system",
+      type: "system",
+      content: row.content,
+      createdAt: row.created_at,
+    },
+  ];
+}
+
+/** Oldest-first page of persisted rows -> the same ChatMessage[] shape the
+ * live chat state already uses. Caller is responsible for prepending vs.
+ * replacing `messages` state — this is a pure mapper, no side effects. */
+export function hydrateHistoryMessages(rows: ChatMessageHistoryOut[]): ChatMessage[] {
+  return rows.flatMap(hydrateHistoryRow);
 }

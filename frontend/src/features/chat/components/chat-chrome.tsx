@@ -4,12 +4,50 @@ import { format, isToday, isYesterday } from "date-fns";
 import { Maximize2, Minimize2, MoreHorizontal, RotateCcw, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { RobotAvatar } from "@/features/chat/components/robot-avatar";
+import { isoToClinicParts } from "@/lib/timezone";
 
 export function formatMessageTime(iso: string) {
   const d = new Date(iso);
   if (isToday(d)) return format(d, "h:mm a");
   if (isYesterday(d)) return `Yesterday ${format(d, "h:mm a")}`;
   return format(d, "MMM d, h:mm a");
+}
+
+/** Calendar-day arithmetic on already clinic-local "YYYY-MM-DD" strings —
+ * UTC-anchored so month/year rollover is handled by Date's own
+ * normalization without ever touching a real timezone offset. */
+function shiftDateString(dateStr: string, deltaDays: number): string {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d + deltaDays)).toISOString().slice(0, 10);
+}
+
+/**
+ * WhatsApp-style day-separator label, grouped by the *clinic's* timezone
+ * — deliberately distinct from formatMessageTime above, which is
+ * browser-local and meant for a single message's timestamp, not for
+ * deciding which day a history separator belongs to.
+ */
+export function clinicDayLabel(iso: string, timeZone: string): string {
+  const { date } = isoToClinicParts(iso, timeZone);
+  const todayDate = isoToClinicParts(new Date().toISOString(), timeZone).date;
+  if (date === todayDate) return "Today";
+  if (date === shiftDateString(todayDate, -1)) return "Yesterday";
+  const [y, m, d] = date.split("-").map(Number);
+  // Noon UTC avoids the display Date crossing a calendar boundary once
+  // date-fns' `format` reads it back out in the *browser's* local zone.
+  return format(new Date(Date.UTC(y, m - 1, d, 12)), "MMMM d, yyyy");
+}
+
+/** Presentation-only — never persisted as a message. Groups consecutive
+ * history rows that fall on the same clinic-local calendar day. */
+export function DateSeparator({ label }: { label: string }) {
+  return (
+    <div className="flex items-center justify-center py-1" role="separator" aria-label={label}>
+      <span className="rounded-full bg-muted px-3 py-1 text-[11px] font-medium text-muted-foreground">
+        {label}
+      </span>
+    </div>
+  );
 }
 
 export function ChatHeader({
