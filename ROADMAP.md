@@ -1445,6 +1445,451 @@ eval-off / explicit-false.
 **Restart `runserver`** after this change — Django settings load at process
 start.
 
+## ✅ Phase 29 — Persistent chat history / visitor identity, Step 1: schema
+
+**Requested:** a large new initiative — persistent chat history across
+browser restarts, a stable anonymous visitor identity, linking that
+identity to a patient by email/phone without recreating the conversation,
+and WhatsApp-style frontend UX (infinite scroll, date separators,
+scroll-to-latest). Full architecture audit + plan written and approved
+first, per the request's own instruction and this repo's established
+convention — see `/Users/apple/.claude/plans/peppy-stirring-grove.md` for
+the complete 14-section design (industry-pattern grounding, the
+cookie-vs-localStorage decision and why, the identity-linking mechanics
+including an explicit cross-device privacy boundary, full API/frontend/
+test plan). Reviewed by an external pass (pasted back by the user) before
+implementation started; several of its corrections were adopted (contact
+capture ≠ authentication stated as a hard rule; an explicit "linking never
+exposes another browser's history" boundary; `visitor_id` moved to a
+header on every endpoint, never a body param; dropped a speculative
+14-day auto-close from v1) and one was evaluated and adapted rather than
+applied literally (its "derive visitor from server-side session" note
+conflicts with the very cookie-vs-localStorage finding that motivated the
+plan — no server-side session exists to derive from by design; the
+header-everywhere convention above is the actionable form of the same
+underlying concern).
+
+**Audit headline finding:** the schema is closer to done than the request
+assumed — `ChatSession` and a separate `ChatMessage` (role/content/
+metadata/sequence_number) already exist and already write a full per-turn
+transcript on every message. The actual gap was narrower: nothing ever
+read that transcript back (frontend `messages` state always started
+empty), there was no identity above a single browser session, and
+`session_token` lived in `sessionStorage` — which is cleared on tab close,
+meaning "close the browser, reopen it, chat is still there" could not have
+worked even in principle before this phase. Confirmed via direct file
+reads, not assumed; see the plan's §1 for the full seven-question audit.
+
+**This phase is Step 1 of the plan's 7-step sequence (§14) only — schema,
+not the API/frontend yet**, per the plan's own explicit recommendation to
+land each step independently rather than as one large change:
+
+1. **New `ChatVisitor` model** (`apps/chatbot/models.py`) — `clinic` FK,
+   `visitor_key` (**globally** unique, not just per-clinic — a deliberate
+   choice from the plan's design review: a query that forgets its `clinic=`
+   filter then fails closed instead of silently returning another
+   tenant's visitor), `patient` FK (nullable, `SET_NULL`), `first_seen_at`/
+   `last_seen_at`. No `email`/`phone` columns — `Patient` already owns
+   those.
+2. **`ChatSession` gains a nullable `visitor` FK** (`SET_NULL`) + a new
+   `[visitor, last_active_at]` index (the resume flow's core query: "this
+   visitor's most recent conversation").
+3. **Real bug found and fixed during design review, not originally in
+   scope:** `ChatEngine._save_messages`'s sequence-number generation
+   (`apps/chatbot/engine.py`) was a bare read-then-write
+   (`last_seq + 1`) with no locking, wrapped in a broad
+   `except Exception: logger.exception(...)` that silently swallows the
+   resulting `IntegrityError` — two concurrent requests against the same
+   session could race, and the second message would vanish with no
+   visible error anywhere. Multi-tab resume (this phase's whole point)
+   makes this measurably more likely to fire, not less, so it's a real
+   prerequisite. Fixed with `transaction.atomic()` +
+   `ChatSession.objects.select_for_update()` locking the session row for
+   the duration of the read-increment-write. **Verified the fix is real,
+   not just plausible**: temporarily reverted it (`git stash`) and
+   confirmed the new concurrency test fails without it (2 messages instead
+   of 4), then restored it and confirmed the test passes — the same
+   discipline as every other fix this session, not just "added a lock and
+   assumed it worked."
+
+**Files:** `apps/chatbot/models.py`, `apps/chatbot/engine.py`,
+`apps/chatbot/migrations/0004_add_chat_visitor.py` (purely additive —
+`CreateModel(ChatVisitor)` + nullable `AddField` + two new indexes, no
+data touched, confirmed via `makemigrations --check` finding nothing
+further pending), `apps/chatbot/tests/test_message_sequencing.py` (new —
+mirrors `apps.appointments.tests.test_overlap_and_slots.
+ConcurrentBookingTests`'s established `TransactionTestCase` +
+`ThreadPoolExecutor` + `connections.close_all()` pattern exactly),
+`apps/chatbot/tests/test_chat_visitor_model.py` (new — global uniqueness,
+multi-session-per-visitor, `SET_NULL` survival, patient linking).
+
+**Verified:** new tests 7/7 (2 sequencing + 5 model). Full suite
+`apps.chatbot.tests apps.knowledge.tests` **520/520**. `apps.patients
+apps.billing` **60/60** (the plan flags `[clinic,patient]`-adjacent
+billing analytics as worth re-checking given the new FK). Eval
+**674/682 (98.8%)** unchanged. `makemigrations --check` clean.
+
+**Not yet built — the remaining 6 steps of the plan, explicitly deferred
+to their own phases, not started:** the resume/pagination/contact API
+endpoints, identity-linking wiring into OTP verification, the booking
+dedup-bug fix, the frontend localStorage/resume/history-hydration work,
+the WhatsApp-style upward-scroll/date-separator/scroll-to-latest UI, and
+analytics event hooks. This phase is schema-only, landed and verified in
+isolation exactly as the plan's own sequencing calls for.
+
+## ✅ Phase 29 Step 2 — Resume + cursor-pagination API
+
+**Scope, exactly as requested — only two new endpoints, nothing else
+touched:** `GET /api/v1/widget/chat/resume` and
+`GET /api/v1/widget/chat/sessions/{session_token}/messages`, added to the
+existing `apps/api/widget/router.py` alongside `/chat/guest` (not a new
+router — this domain already lives here). No frontend, no localStorage, no
+contact-capture endpoint, no OTP/identity-linking wiring, no booking dedup
+change — all explicitly out of scope per the request and left untouched.
+
+**Inspected first, reused directly rather than inventing a parallel
+pattern:** `_resolve_clinic(slug)` (existing, reused as-is for both new
+endpoints); `client_ip()` + `check_rate_limit()` (existing, from
+`apps/api/auth/deps.py` / `core/ratelimit.py` — the exact
+`_X_MAX_PER_IP, _X_IP_WINDOW_S` module-constant + `check_rate_limit(scope,
+identifier, limit=, window_seconds=)` style already used in
+`apps/api/verification/router.py`/`apps/api/auth/router.py`, mirrored
+precisely); `request.headers.get(...)` for the visitor header (matching
+the existing `X-Tenant-ID` custom-header convention in
+`apps/api/auth/deps.py`); the `TestCase` + `self.client.get(url, params,
+headers={...})` testing convention from
+`apps/appointments/tests/test_authz_and_timezone.py::
+WidgetPatientAuthzTests`.
+
+**Compatibility concern found and flagged before writing any code, per
+the request's own instruction:** `_resolve_guest_session()` (the existing
+function `/chat/guest` already uses to find-or-create a session) has no
+visitor concept at all — a session created by a real chat message today
+gets `visitor=NULL`, so `/chat/resume` cannot find it yet. This is
+correct and expected for Step 2 (the plan's own §14 always scoped this
+step to "tested in isolation with fixture sessions, no frontend
+dependency yet") but is a real, necessary follow-up: **something in Step
+3 or the start of Step 4 needs to make `/chat/guest` accept/attach a
+visitor**, or the resume endpoint will never find a real conversation in
+practice. Flagged explicitly below, not silently left for later to
+discover the hard way.
+
+**Design decisions worth stating explicitly (matching what the plan
+already committed to, implemented precisely):**
+- **`/chat/resume` never creates a `ChatSession`.** It may create a
+  `ChatVisitor` (cheap, no conversation implied) but only ever *finds* an
+  existing session, or reports `has_history=false` — verified with a
+  dedicated test (`test_first_time_visitor_does_not_create_a_chat_
+  session`) and by resuming the same known visitor 3 times in a row and
+  confirming the session count never grows past 1. This was the one thing
+  specifically flagged to watch for going in, and it's the actual behavior.
+- **`visitor_key` global uniqueness (from Step 1) is what makes the
+  find-or-create path safe.** A key that resolves to a *different*
+  clinic's visitor is treated identically to an unrecognized key — a
+  fresh visitor is minted, never an error, never a silent cross-tenant
+  resolution. `ChatVisitor.objects.create()` inside `transaction.atomic()`
+  with an `IntegrityError` retry loop handles the astronomically-unlikely
+  token-collision case without ever surfacing a 500.
+- **Cursor pagination via `sequence_number`, strictly `<` the cursor,
+  never offset-based** — the over-fetch-by-one trick
+  (`qs.order_by("-sequence_number")[: limit + 1]`, trim to `limit`, then
+  reverse to ascending) computes `has_more` without a second `COUNT`
+  query. Because the cursor is a strict inequality on an immutable,
+  unique-per-session integer, a page's contents can never shift once
+  computed — new messages arriving elsewhere in the same session (the
+  live tail growing while a reader scrolls up) cannot appear in, or
+  disturb, an already-fetched older page. Verified directly with a test
+  that inserts a new message *between* two paginated fetches and confirms
+  the second (older) page is unaffected.
+- **Ownership check on `/chat/sessions/{token}/messages`: additive, not
+  regressive.** A session with `visitor` set now requires the header to
+  match, or it 404s (same status as "session not found" — never confirms
+  a token is real to someone who can't prove ownership). A pre-Step-1
+  session with `visitor=NULL` keeps working via `session_token` alone,
+  exactly as every other existing endpoint in this app already trusts it
+  — new data gets a strictly stronger guarantee, old data isn't broken.
+
+**Files:**
+- `apps/api/widget/router.py` — two new endpoints, three new schemas
+  (`ChatMessageHistoryOut`, `ChatResumeOut`, `ChatMessagesPageOut`), three
+  new helpers (`_find_or_create_visitor`, `_message_page`,
+  `_serialize_messages`), new rate-limit constants.
+- `apps/api/widget/tests.py` — **new file** (this app had no test file at
+  all before this phase). 25 tests across 6 classes: first-time visitor,
+  existing-visitor resume, tenant isolation, pagination (boundaries at
+  exactly 50/51/100, no-history, clamped limit, invalid cursor, new
+  messages arriving mid-pagination), ownership (correct/missing/wrong
+  visitor header, unknown session, cross-clinic, legacy no-visitor
+  session), rate limiting on both endpoints.
+
+**API examples (live, against the real dev server, not just unit
+tests):**
+```
+GET /api/v1/widget/chat/resume?clinic_slug=fit-me-in-verify-clinic
+(no X-Synapse-Visitor-Id header — first-ever visit)
+→ 200 {"session_token": null, "visitor_id": "oB0Ca...DRygBw",
+       "has_history": false, "messages": [], "has_more": false}
+
+GET /api/v1/widget/chat/resume?clinic_slug=fit-me-in-verify-clinic
+X-Synapse-Visitor-Id: oB0Ca...DRygBw   (now linked to a real 2-message session)
+→ 200 {"session_token": "XFaNG...CGWI", "visitor_id": "oB0Ca...DRygBw",
+       "has_history": true, "has_more": false,
+       "messages": [{"role":"user","content":"what are your hours",...},
+                     {"role":"assistant","content":"We're open Monday–...",...}]}
+
+GET /api/v1/widget/chat/sessions/XFaNG...CGWI/messages
+    ?clinic_slug=fit-me-in-verify-clinic&limit=1
+X-Synapse-Visitor-Id: oB0Ca...DRygBw
+→ 200 {"messages": [{"content": "We're open Monday–Thursday...", "sequence_number": 2}],
+       "has_more": true}
+
+GET /api/v1/widget/chat/sessions/XFaNG...CGWI/messages
+    ?clinic_slug=fit-me-in-verify-clinic
+X-Synapse-Visitor-Id: wrong-visitor
+→ 404  (identical to "session not found" — proves ownership without
+        confirming the token's existence to a non-owner)
+```
+(Resuming required manually attaching the visitor to the session in a
+shell, since `/chat/guest` doesn't do that wiring yet — see the
+compatibility note above; the resume/pagination mechanics themselves are
+fully real, not simulated.)
+
+**Verified:** new tests **25/25**. Full regression —
+`apps.chatbot.tests apps.knowledge.tests apps.patients apps.billing
+apps.api.widget.tests` — **605/605**. Eval **674/682 (98.8%)** unchanged.
+`makemigrations --check` clean (no model changes this step). Migration
+from Step 1 applied to the real dev database (not just the test DB —
+checked explicitly, matching this repo's own recurring gotcha).
+
+**Affects Step 3 directly:** identity-linking (Step 3) needs
+`_resolve_guest_session`/`/chat/guest` to actually attach a `ChatVisitor`
+to sessions it creates/finds — otherwise `/chat/resume` stays correct but
+practically unused, since nothing will ever populate `ChatSession.visitor`
+for a real conversation. Recommend this wiring lands at the start of Step
+3 (small, isolated) before the OTP-linking logic itself, since linking
+depends on sessions already having a visitor to backfill onto.
+
+## ✅ Phase 29 Step 3 — Visitor wiring + anonymous → identified linking
+
+**Scope, exactly as requested:** fixed the Step 2 compatibility gap
+(`_resolve_guest_session` now attaches a `ChatVisitor`), added
+`POST /api/v1/widget/chat/contact` (unverified capture only), and wired
+anonymous→identified linking into both places that resolve a `Patient`
+onto a `ChatSession`. No frontend/localStorage, no infinite scroll/date
+separators/scroll-to-latest, no analytics, no retention/deletion system,
+no unrelated booking refactor — all left untouched.
+
+**Root cause / key finding, not in the original plan text:** the plan's
+§5 named `otp_service.verify_otp` as *the* place a `Patient` gets resolved
+onto a `ChatSession`. Reading `apps/chatbot/booking/service.py::confirm()`
+in full (as instructed) found a **second, independent** call site doing
+the same thing at what was then lines 925-929 — booking's own contact
+step can authenticate a session without OTP ever running (`verification_
+mode="none"`, or an authenticated-skip re-book). Wiring the linking logic
+into only `otp_service.py` would have silently missed every booking-led
+identification. Fixed by extracting one shared primitive both call.
+
+**Files:**
+- `apps/chatbot/services/visitor_service.py` — **new file.**
+  `link_visitor_to_patient(visitor, patient)`: the core primitive — links
+  once (no-ops, doesn't reassign, if the visitor already has a different
+  or the same patient), then `ChatSession.objects.filter(visitor=visitor)
+  .exclude(patient=patient).update(patient=patient)` backfills every
+  session the visitor already owns. Never touches `is_authenticated` —
+  that's a per-session fact about whether *that* session itself completed
+  its own verification, not something a visitor-level backfill should
+  claim on a session's behalf (a session that was never itself OTP-
+  verified must not retroactively look authenticated just because a
+  *different* session for the same visitor was). `link_session_visitor_
+  to_patient(session, patient)` — convenience wrapper for the two call
+  sites below, which already have a session in hand.
+- `apps/chatbot/services/otp_service.py::verify_otp` — one new call,
+  right after the existing `session.patient = patient; is_authenticated =
+  True` write: `link_session_visitor_to_patient(session, patient)`.
+- `apps/chatbot/booking/service.py::confirm()` — two changes:
+  (1) **dedup fix**: the inline `Patient.objects.get_or_create(phone=...)`
+  / manual email lookup-or-create (this file's own comment already flagged
+  it as able to create a duplicate `Patient` for the same person on a
+  differently-formatted phone) is now routed through `patient_service.
+  get_or_create_by_phone`/`get_or_create_by_email` — the same primitives
+  every other identity-resolution path in this app already uses. The
+  downstream fallback-fill block (fill blank first/last/email on an
+  existing patient) is unchanged and still fires for patients found via
+  dedup with missing name info. Dropped the now-unused `Patient` import.
+  (2) `link_session_visitor_to_patient(chat_session, patient)` added,
+  unconditionally, right after the existing `chat_session.patient =
+  patient` block — unconditional (not just inside the `if patient_id is
+  None` guard) because the visitor may still need linking even when
+  `chat_session` already had a patient from an earlier verification.
+- `apps/patients/services/patient_service.py` — added `get_or_create_by_
+  email`, mirroring `get_or_create_by_phone` exactly (dedup by email
+  first, then create via the phone primitive using `email_placeholder_
+  phone` so it also gets `Patient.phone`'s uniqueness for free). Booking's
+  email branch and the new contact endpoint both use this instead of each
+  doing their own inline version.
+- `apps/api/widget/router.py`:
+  - `_resolve_guest_session(clinic, session_token, visitor=None)` — new
+    `visitor` param. Session-token hit + no visitor on the row → **adopts**
+    the visitor (legacy pre-Step-1 sessions get pulled into the visitor
+    concept the first time their own browser sends another message).
+    Session-token hit + row already has a *different* visitor → never
+    reassigned. No usable token, but visitor known → resumes that
+    visitor's existing active session instead of forking a new one.
+    Neither found → mints a new session with `visitor` attached from the
+    start.
+  - `guest_chat_message` — now resolves/mints the visitor via the same
+    `_find_or_create_visitor` Step 2 already built, before calling
+    `_resolve_guest_session`; `visitor_id` added to the response `meta`
+    dict alongside the existing `session_token`, so a browser that never
+    calls `/chat/resume` first still learns its own visitor id.
+  - `POST /chat/contact` — new endpoint. Body `{clinic_slug, email?,
+    phone?}`, visitor from the header (422 if missing). Never sets `Patient.
+    is_verified`; if the visitor is already linked, the existing link wins
+    and no new `Patient` lookup happens at all (a casual, unverified
+    submission never reassigns an established identity). Uses `link_
+    visitor_to_patient` for the backfill, so behaves identically to the
+    OTP/booking paths. Rate-limited (`_CONTACT_MAX_PER_IP=10/600s`).
+- `apps/api/widget/tests.py` — 18 new tests: `GuestChatVisitorWiringTests`
+  (5: creates+attaches on first message, repeat reuses, returning-visitor-
+  no-token resumes instead of forking, legacy adoption, never reassigns an
+  owned session), `GuestVisitorConcurrencyTests` (1, `TransactionTestCase`
+  + `ThreadPoolExecutor`, mirrors Step 1's pattern), `ChatContactTests`
+  (10: email/phone create, dedup-reuse by email/phone, does-not-authenticate,
+  backfills prior sessions, skip-creates-nothing, missing-header/missing-
+  contact 422s, already-linked-not-reassigned), `CrossVisitorPrivacyTests`
+  (1), plus one new rate-limit test.
+- `apps/chatbot/tests/test_visitor_patient_linking.py` — **new file**, 11
+  tests: `visitor_service` unit tests (links, doesn't reassign, `None`-safe,
+  no-visitor-session-safe), OTP-verification linking (links visitor,
+  backfills *every* prior session for that visitor while leaving `id`/
+  `session_token`/`ChatMessage` rows and the non-verified session's own
+  `is_authenticated` untouched, legacy no-visitor sessions unaffected),
+  booking-confirm linking + the dedup regression itself (existing patient
+  reused by phone, by email; legacy no-visitor session still books).
+- `apps/patients/tests.py` — was empty boilerplate; added 3 tests for
+  `get_or_create_by_email` (create, case-insensitive reuse, doesn't
+  overwrite an existing patient's verification status).
+
+**Privacy boundary — verified, not just asserted:** `CrossVisitorPrivacyTests`
+creates two `ChatVisitor`s in different "browsers" both pointing at the
+same `Patient`, seeds messages on browser A's session, then confirms
+browser B's own header gets `has_history=false` from `/chat/resume` and a
+plain 404 from `/chat/sessions/{browser-A-token}/messages` — even knowing
+the exact token. This works structurally, not by convention: every query
+in this phase (`link_visitor_to_patient`'s backfill, the ownership check
+in `chat_messages_page`) filters by the *specific* `ChatVisitor` row, never
+by `patient` across visitors — there is still no "all conversations for
+this patient" query anywhere in the codebase for a future feature to
+accidentally reuse unsafely.
+
+**Verified:** new tests — 18 (`apps/api/widget/tests.py`) + 11
+(`test_visitor_patient_linking.py`) + 3 (`apps/patients/tests.py`) = **32,
+all passing**. Full regression — `apps.chatbot.tests apps.knowledge.tests
+apps.patients apps.billing apps.api.widget.tests` — **637/637** (605 + 32
+new). Eval **674/682 (98.8%)**, unchanged (this step touches no NLU/
+routing code). `makemigrations --check` clean — no schema change this step.
+
+**Known limitations / found-but-not-fixed:**
+- **Two truly-simultaneous cold-start requests (no visitor key at all yet)
+  mint two different visitors.** `_find_or_create_visitor` never trusts a
+  client-*supplied* key value, only echoes back a previously-issued one
+  (a deliberate Step 2 decision — kept unchanged here) — so if a browser's
+  very first two requests both omit the header, there's genuinely no
+  server-side way to recognize them as the same browser without some
+  client-side coordination. `GuestVisitorConcurrencyTests` tests the
+  realistic, meaningful race instead (concurrent calls with an *already-
+  known* key resolve to the one existing row) — this is a frontend-
+  sequencing concern for Step 4 (establish identity via `/chat/resume`
+  before the first `/chat/guest` send fires), not a server bug.
+- **A parallel, narrower session-level race**: a known visitor with *no*
+  active session yet, sending two truly-concurrent first messages, could
+  create two `ChatSession` rows (no DB-level uniqueness on `(visitor,
+  status=active)`). Not defended against — adding one would mean a new
+  partial/conditional `UniqueConstraint` migration, which felt like more
+  schema surface than this step's explicit scope asked for. Flagging
+  instead of silently fixing or silently ignoring; worth a conscious call
+  before Step 4 if the frontend can't rule out double-submit.
+- `ChatVisitor.last_seen_at` (added in Step 1) is `auto_now_add=True`, not
+  `auto_now=True` — it freezes at creation and never actually updates on
+  return visits, which is very likely a Step 1 typo/bug (the field is
+  presumably meant to track *last* seen, not just first). Left alone this
+  step since nothing built in Steps 2-3 reads or depends on it and fixing
+  it would mean an unrequested migration; flagging for a small, isolated
+  fix whenever the field is actually first consumed by something.
+- General guest-endpoint rate limiting beyond the three endpoints this
+  phase has touched (`/chat/guest` itself, `/otp/send`, `/otp/verify`) —
+  pre-existing gap, unchanged, already flagged in the plan's §12.
+
+**Recommended next phase:** Step 4 (frontend: localStorage + resume-on-
+mount) — per the user's explicit instruction, **do not start without
+review of this report first.**
+
+## ✅ Phase 29 Step 3.1 — Correction: resume must be a pure read
+
+Step 3 landed `/chat/resume` reusing Step 2's `_find_or_create_visitor` —
+so a bare widget open with **no** visitor header still minted a fresh
+`ChatVisitor` (this was Step 2's own deliberate, tested, and at-the-time-
+approved design: "opening the widget may create a lightweight `ChatVisitor`
+identity, which has no conversation-creation side effect of its own").
+Before starting Step 4, the user tightened this: opening the widget must
+create **nothing** — not a `ChatVisitor`, not a `ChatSession` — for a
+first-time browser. Only sending an actual message does. This is a
+deliberate correction to already-shipped Step 2/3 behavior, not a bug fix.
+
+**What changed:**
+- `resume_chat` (`apps/api/widget/router.py`) no longer calls `_find_or_
+  create_visitor`. It now does a plain `ChatVisitor.objects.filter(clinic=
+  clinic, visitor_key=visitor_key).first()` — a pure read. No header, or a
+  header that doesn't resolve (garbage value, or another clinic's key —
+  same fail-closed behavior as before, just via "resolve nothing" instead
+  of "mint a fresh one") all produce the identical response: `visitor_id:
+  null, session_token: null, has_history: false`, and **zero rows
+  written**.
+- `ChatResumeOut.visitor_id` changed from `str` to `str | None` — the
+  contract now has a real way to say "there is no identity yet," which it
+  didn't before (Step 2/3 always returned *some* key, even a freshly-
+  minted throwaway one).
+- `_find_or_create_visitor` itself is unchanged and still used exactly
+  where it should be: `guest_chat_message` (first real message → creates
+  visitor + session together) and `chat_contact` (an explicit POST is a
+  deliberate action, not a passive widget-open, so it may still create a
+  visitor to link to).
+- No schema change, no migration.
+
+**Tests updated (behavior intentionally changed, not loosened — old
+assertions directly contradicted the new requirement):**
+- `ResumeFirstTimeVisitorTests` — rewritten: asserts `visitor_id is None`
+  and zero `ChatVisitor`/`ChatSession` rows exist after a bare open,
+  including 3 repeated opens in a row. The garbage-header test now asserts
+  nothing is created either (previously asserted a fresh identity was
+  minted).
+- `ResumeTenantIsolationTests` — clinic B resuming with clinic A's key now
+  asserts clinic B gets zero visitors created (previously asserted a
+  fresh one was minted for B, just not A's).
+- New `ResumePaginationChainTests` (4 tests): resume's own page is bounded
+  to 50 even at 120 messages; a 500-message conversation never comes back
+  whole from resume; the cursor resume returns chains correctly into
+  `/chat/sessions/{token}/messages?before=`; and a full stitch-the-whole-
+  conversation-together test at 517 messages (deliberately not a multiple
+  of the page size) proving no duplicate and no gap across resume + every
+  subsequent page down to message 1.
+- New test on `GuestChatVisitorWiringTests`: explicit before/after row-count
+  assertion that the first real message — not the widget opening — is what
+  creates exactly one `ChatVisitor` and one `ChatSession`.
+- All Step 2/3 tests that already covered "known visitor with pre-existing
+  rows resumes without sending a message" (`ResumeExistingVisitorTests`)
+  needed no changes — they never depended on resume *creating* the
+  visitor, only *finding* it, so they were already correct under the new
+  contract.
+
+**Verified:** widget suite **49/49** (was 43; +6). Full regression —
+`apps.chatbot.tests apps.knowledge.tests apps.patients apps.billing
+apps.api.widget.tests` — **643/643**. Eval **674/682 (98.8%)**, unchanged.
+`makemigrations --check` clean (no model changes).
+
+**Recommended next phase:** Step 4 (frontend) — per the user's explicit
+instruction, do not start without review of this report first.
+
 ## 💤 Deferred — Conversation state / coreference
 
 Real, confirmed from transcript ("which one treats cancer?" → "Dr. Chloe
