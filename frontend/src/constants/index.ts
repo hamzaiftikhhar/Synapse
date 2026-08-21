@@ -5,6 +5,10 @@ export const STORAGE_KEYS = {
   activeTenant: "synapse_active_tenant",
   patientAccessToken: "synapse_patient_access",
   chatSession: "synapse_chat_session",
+  // Per-clinic, like chatSession — localStorage (not sessionStorage) since
+  // this is the one identifier meant to survive a browser restart. Never
+  // invented client-side: only ever set from a value the backend returned.
+  chatVisitor: "synapse_visitor_id",
 } as const;
 
 export const APP_NAME = "Synapse";

@@ -644,8 +644,11 @@ export function usePatientChat() {
 
 export function useGuestChat() {
   return useMutation({
-    mutationFn: (input: WidgetGuestChatInput) =>
-      widgetService.sendGuestMessage(input),
+    mutationFn: ({
+      visitor_id,
+      ...input
+    }: WidgetGuestChatInput & { visitor_id?: string | null }) =>
+      widgetService.sendGuestMessage(input, visitor_id),
   });
 }
 

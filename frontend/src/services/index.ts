@@ -8,6 +8,8 @@ import type {
   BusinessHourInput,
   ChatMessageInput,
   ChatMessageResponse,
+  ChatMessagesPageOut,
+  ChatResumeOut,
   ClinicProfile,
   ClinicProfileUpdateInput,
   Doctor,
@@ -354,6 +356,20 @@ export const widgetAuthService = {
 
 /* ─── Widget (public) ──────────────────────────────────────── */
 
+/**
+ * Bearer identifier for the anonymous ChatVisitor — always a header, never
+ * a body/query param (matches the backend contract exactly: keeps it out
+ * of request-body logs, and it's an identifier, not an authorization
+ * token, so it doesn't belong in a URL either). Omitted entirely when
+ * there is no visitor yet — a first-time browser sends no header at all,
+ * not an empty string.
+ */
+const VISITOR_HEADER = "X-Synapse-Visitor-Id";
+
+function visitorHeaders(visitorId?: string | null) {
+  return visitorId ? { [VISITOR_HEADER]: visitorId } : undefined;
+}
+
 export const widgetService = {
   async getConfig(clinicSlug: string) {
     const { data } = await widgetApi.get<import("@/types/api").WidgetConfig>(
@@ -362,10 +378,44 @@ export const widgetService = {
     );
     return data;
   },
-  async sendGuestMessage(input: import("@/types/api").WidgetGuestChatInput) {
+  /**
+   * Pure read — never creates a ChatVisitor or ChatSession server-side.
+   * Callers must not invoke this at all when there is no stored visitor
+   * id (see chat-widget.tsx's mount effect) — that's what keeps a
+   * brand-new browser from hitting the backend just to be told "no history".
+   */
+  async resume(clinicSlug: string, visitorId?: string | null) {
+    const { data } = await widgetApi.get<ChatResumeOut>("/widget/chat/resume", {
+      params: { clinic_slug: clinicSlug },
+      headers: visitorHeaders(visitorId),
+    });
+    return data;
+  },
+  /** Cursor pagination for older messages — `before` is the oldest
+   * sequence_number already loaded; omit for the newest page. */
+  async getMessages(
+    sessionToken: string,
+    clinicSlug: string,
+    params: { before?: number; limit?: number } = {},
+    visitorId?: string | null
+  ) {
+    const { data } = await widgetApi.get<ChatMessagesPageOut>(
+      `/widget/chat/sessions/${encodeURIComponent(sessionToken)}/messages`,
+      {
+        params: { clinic_slug: clinicSlug, ...params },
+        headers: visitorHeaders(visitorId),
+      }
+    );
+    return data;
+  },
+  async sendGuestMessage(
+    input: import("@/types/api").WidgetGuestChatInput,
+    visitorId?: string | null
+  ) {
     const { data } = await widgetApi.post<ChatMessageResponse>(
       "/widget/chat/guest",
-      input
+      input,
+      { headers: visitorHeaders(visitorId) }
     );
     return data;
   },
