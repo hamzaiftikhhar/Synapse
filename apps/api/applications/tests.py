@@ -93,6 +93,26 @@ class ApplicationSubmissionTests(TestCase):
         app = ClinicApplication.objects.get(id=resp.json()["id"])
         self.assertEqual(app.source, ClinicApplicationSource.GET_STARTED)
 
+    def test_get_started_sends_application_confirmation_email(self):
+        """Pricing → Get Started (plan selected) emails the applicant that
+        we received the application and will reach out shortly — not the
+        demo-request copy, which is a different source."""
+        with patch(
+            "apps.notifications.service.NotificationService.send_email"
+        ) as mock_send:
+            resp = self.client.post(URL, data=self._payload(), content_type="application/json")
+        self.assertEqual(resp.status_code, 200)
+        applicant = [
+            c for c in mock_send.call_args_list
+            if c.kwargs["to"] == self._payload()["work_email"]
+        ]
+        self.assertEqual(len(applicant), 1)
+        subject = applicant[0].kwargs["subject"].lower()
+        body = applicant[0].kwargs["body"].lower()
+        self.assertIn("application", subject)
+        self.assertNotIn("demo request", subject)
+        self.assertIn("reach out shortly", body)
+
 
 class DemoRequestSubmissionTests(TestCase):
     """The marketing site's "Book a Demo" form — same model, same review
@@ -135,6 +155,9 @@ class DemoRequestSubmissionTests(TestCase):
         applicant_calls = [c for c in mock_send.call_args_list if c.kwargs["to"] == self._payload()["work_email"]]
         self.assertEqual(len(applicant_calls), 1)
         self.assertIn("demo request", applicant_calls[0].kwargs["subject"].lower())
+        body = applicant_calls[0].kwargs["body"].lower()
+        self.assertIn("reach out shortly", body)
+        self.assertIn("schedule your demo", body)
 
     @override_settings(PLATFORM_NOTIFICATION_EMAIL="team@synapse.example.com")
     def test_internal_notification_sent_when_recipient_configured(self):
@@ -149,7 +172,11 @@ class DemoRequestSubmissionTests(TestCase):
         body = internal_calls[0].kwargs["body"]
         self.assertIn("Riverside Dental", body)
         self.assertIn("sam@riverside.example.com", body)
-        self.assertIn("/dashboard/platform/applications", body)
+        # The link only survives into html_body — this email is HTML-
+        # templated now, and a CTA button's href is stripped along with the
+        # <a> tag when the plain-text fallback is derived, so only its
+        # visible label ("Open in Super Admin") remains in `body`.
+        self.assertIn("/dashboard/platform/applications", internal_calls[0].kwargs["html_body"])
 
     def test_no_internal_notification_sent_when_recipient_unconfigured(self):
         """PLATFORM_NOTIFICATION_EMAIL unset in settings/base.py by default
