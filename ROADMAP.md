@@ -1198,6 +1198,253 @@ session on this side — same standing caveat as the rest of this UI/UX
 line of fixes; mechanically identical to the already-confirmed-working
 `TimeSlotsMessage` fix from Phase 22, but worth a real visual check.
 
+## ✅ Phase 27 — Complete the email architecture (Resend + remaining templates)
+
+**Requested:** user added a real Resend API key and wanted "the complete
+architecture of the emails" — every event that should send an email wired
+up: OTP-by-email, password reset, account creation, clinic/demo
+confirmations, clinic→us and demo→us internal notifications.
+
+**Audit finding, confirmed by grepping every call site directly (not
+assumed):** SaaS-Phase 4 had already built a `NotificationService` method
+for every one of these events, and **every one already had a real, wired
+caller** — patient OTP by email (`otp_service.py:223`), staff verify,
+password reset (2 call sites), clinic invite (2 call sites), application
+received, demo request received, the internal demo→us notification, and
+all 6 billing lifecycle emails. The "explore which events need emails"
+part of the request was already done; nothing was missing on coverage.
+
+What was actually missing: (1) no real email provider — only
+`ConsoleEmailProvider`/`SMTPEmailProvider` existed; (2) 7 of 13 email types
+were still plain-text f-strings, not using the HTML template system
+SaaS-Phase 4 built for billing; (3) no `RESEND_API_KEY` setting. Full plan
+in `/Users/apple/.claude/plans/peppy-stirring-grove.md` — asked the user
+directly about sender-domain verification status before implementing
+(none yet; using Resend's shared `onboarding@resend.dev` test sender,
+swappable later via `DEFAULT_FROM_EMAIL` alone, no code change).
+
+**Fix:**
+- `ResendEmailProvider` in `apps/notifications/providers.py` — raw HTTP via
+  `urllib.request` (no new pip dependency, mirrors `GeminiNLUProvider`'s
+  existing "no heavy SDK" precedent in this repo). `get_email_provider()`
+  now selects it whenever `RESEND_API_KEY` is set, before the DEBUG/console
+  fallback (mirrors `get_sms_provider()`'s existing Twilio-first pattern).
+- 7 new HTML templates (`templates/emails/{patient_otp,staff_verify,
+  password_reset,clinic_invite,application_received,demo_request_received,
+  demo_request_notification}.html`), each extending the existing
+  `emails/base.html` + `_cta_button.html` layout billing already used. The
+  7 corresponding `NotificationService` methods now call
+  `send_templated_email(...)` instead of `send_email(body=f"...")` —
+  method signatures and every caller unchanged.
+- `RESEND_API_KEY` added to `config/settings/base.py`, `.env`, `.env.example`.
+  Also fixed the key's casing in `.env` (`Resend_API_Key` → `RESEND_API_KEY`
+  — `env()` lookups are exact-name, so the mismatched case would have
+  silently never been read at all) and switched `DEFAULT_FROM_EMAIL` to the
+  Resend test sender.
+
+**Real regression found and fixed before it shipped:** this repo has no
+separate test-settings module — `manage.py test` loads the same `.env` as
+the dev server, so `RESEND_API_KEY` is present during automated test runs
+too. The first version of `get_email_provider()`'s "Resend wins when
+configured" change made 12 pre-existing tests across
+`apps.api.applications`, `apps.api.platform`, `apps.accounts`, and
+`apps.billing` start making **real HTTP calls to Resend's API during
+`manage.py test`** — those tests exercise real invite/notification code
+paths without mocking `NotificationService.send_email`, relying on the old
+always-safe console default. Caught by running the full suite before
+declaring done, not by assumption. Fixed with the same `argv[1] == "test"`
+check `apps.knowledge.apps.should_warm_up_embeddings` already uses in this
+exact codebase for the identical reason (don't do real external work under
+non-serving management commands) — `get_email_provider()` now never
+selects Resend under `manage.py test`, regardless of the key being set.
+Added `GetEmailProviderTests.test_resend_is_never_selected_under_the_real_
+test_runner` — unpatched, exercising the actual guard every other test in
+the suite really depends on, not just the patched-around unit-test version
+of the selection logic.
+
+**Also found and fixed in the same pass:** `apps/api/applications/
+tests.py::test_internal_notification_sent_when_recipient_configured`
+checked the plain-text `body` for a link URL — correct before this phase
+(the email was plain text, so the raw URL string lived directly in body),
+now wrong, because `strip_tags()` drops an `<a>` tag's `href` along with
+the tag itself when deriving the text fallback, so a link's URL only ever
+survives into `html_body` now. Fixed the assertion to check the right
+field rather than loosening it — same standard as any other test fix in
+this repo.
+
+**Files:** `apps/notifications/providers.py`, `apps/notifications/
+service.py`, `apps/notifications/tests.py`, `apps/api/applications/
+tests.py`, `config/settings/base.py`, `.env`, `.env.example`, 7 new
+`templates/emails/*.html` files.
+
+**Verified:** `apps.notifications` 24/24 (new). Full suite —
+`apps.notifications apps.billing apps.accounts apps.api
+apps.chatbot.tests` — **596/596**. `apps.chatbot.tests apps.knowledge.tests`
+**499/499**. Eval **674/682 (98.8%)** unchanged. No live email was sent
+during implementation or any test run — every provider-level test mocks
+the HTTP call; nothing hit the real Resend API.
+
+**Known limitation, not chased further:** `onboarding@resend.dev` is
+Resend's shared test sender — fine for verifying the pipeline works, but
+production sending needs the user to verify a real domain in Resend's
+dashboard and update `DEFAULT_FROM_EMAIL` (a `.env` change only, already
+designed for this).
+
+## ✅ Phase 28 — Bare time-of-day / weekend temporal gaps
+
+**Reported, pulled straight from `logs/chat/`:** "is there any doc
+available tonight" / "...in the morning" / "...in the afternoon" all
+returned the generic "I couldn't confidently work out which date... refers
+to" reply — asking for a full date on a message that plainly names today.
+Scanned every saved log for the exact failure string first, not just the
+three pasted examples: confirmed these three are live (2026-08-21), and
+that older log hits for "yesterday"/"earliest" are stale entries already
+fixed by earlier phases (Phase 12-14) — not still-open.
+
+**Two distinct root causes, both in `apps/chatbot/temporal.py`'s
+resolution chain, confirmed by tracing `resolve_temporal_query` directly
+against the real logged NLU output rather than guessing:**
+
+1. **"tonight" was detected but never resolved.** `_RELATIVE_WORDS`
+   (used only to decide "they said *something* temporal" for
+   `looks_temporal()`) has always included "tonight" — but nothing in the
+   actual parsing chain (`scan_temporal_expressions`, `_parse_entity`,
+   `_TODAY_WORDS`) recognized it, so `constraint_detected=True` with zero
+   usable candidates always fell through to `TemporalStatus.UNRESOLVED`.
+   Exact same shape of bug Phase 14 already fixed once for "yesterday" —
+   the code comment for that fix says it explicitly: "a well-extracted
+   NLU entity still died as UNRESOLVED."
+2. **"morning"/"afternoon" arrived as contaminated NLU date entities.**
+   Confirmed directly from the production logs: the live NLU sometimes
+   files a bare time-of-day word under `entities.date`
+   (`date="morning"`, `date="afternoon"`) instead of only `entities.time`.
+   `_parse_entity` had no branch for these words, so they became
+   unparseable `raw_entities` — non-empty, so `constraint_detected=True`,
+   but nothing resolvable, landing on the same UNRESOLVED reply.
+
+**Fix:** widened `_TODAY_WORDS` in `temporal.py` to include "tonight",
+"morning", "afternoon", "evening", "night", "noon" — a bare time-of-day
+word with nothing more specific in the same message now means today,
+mirroring exactly how "today"/"now"/"same day" already worked. Added
+`\btonight\b` to `entity_extract.py`'s `_DATE_PATTERNS` so the
+message-level extractor (Source 2 of the resolver) independently produces
+"tonight" as a candidate too, not just the entity-contamination path —
+matching how `\btoday\b` was already there. Verified the "more explicit
+date always wins" invariant this file is built around
+(`TemporalPrecision.RELATIVE` sorts after `WEEKDAY`/`MONTH`/
+`EXPLICIT_DATE`) protects this correctly: "next tuesday morning" still
+resolves to Tuesday, not today.
+
+**Found proactively, not yet reported — same bug class, audited for
+directly:** "weekend" was the other `_RELATIVE_WORDS` entry with no
+resolution path anywhere, identical shape to the "tonight" gap. Not in any
+saved log — found by checking every other word in that list for the same
+detected-but-never-resolved pattern, per the explicit ask to find gaps
+before they're hit, not just patch what's already been reported. Fixed
+with a new `_weekend_bounds(today)` helper (Saturday-Sunday of the coming
+weekend, or today's own weekend if today already is Sat/Sun) wired into
+both `scan_temporal_expressions` (message-level, mirrors the existing
+"yesterday" block exactly) and `_parse_entity` (entity-level — the
+scanned/`explicit` fallback there only accepts `EXPLICIT_DATE`/`MONTH`
+precision, so a `RELATIVE`-precision weekend range needed its own branch,
+not just reuse of the scanner). Handles the Sunday edge case correctly: a
+naive "next Saturday" formula would jump a full week ahead when asked on a
+Sunday — pinned with a dedicated regression test that it collapses to just
+today instead, via the resolver's existing `max(start, today)` clamp.
+
+**Files:** `apps/chatbot/temporal.py`, `apps/chatbot/nlu/entity_extract.py`,
+`apps/chatbot/tests/test_temporal_scope.py` (2 new test classes, 10 tests:
+`BareTimeOfDayMeansTodayTests`, `WeekendMeansTheUpcomingSaturdaySundayTests`
+— covering tonight/morning/afternoon/evening/noon/night, both the
+message-only and NLU-entity-contamination paths, the weekday-still-wins
+regression guard, the Phase 12/13 misspelled-month guard, and all three
+weekend edge cases).
+
+**Verified:** direct reproduction of the exact three logged failures
+against `resolve_temporal_query` before and after (before: all three
+UNRESOLVED; after: all three RESOLVED to today). `test_temporal_scope
+test_temporal_authority test_temporal_lane_binding` **102/102**. Full
+suite **509/509** (499 + 10 new). Eval **674/682 (98.8%)** unchanged.
+Live end-to-end retest against the running dev server: "tonight" /
+"morning" / "afternoon" / "this weekend" all now search correctly instead
+of asking for a full date (one transient NLU-provider timeout hit on the
+first live "tonight" call — confirmed by its distinct error text and
+immediate clean retry that this was ordinary LLM latency variance already
+covered by Phase 23/25's timeout-budget fix, not a regression from this
+phase).
+
+**Also swept, confirmed clean:** every other `_RELATIVE_WORDS` entry
+("week", "month", "same day", "asap"/"soonest"/"earliest"/"next
+available") either already resolves correctly or is a bare-unqualified
+form unlikely enough in real chat that it wasn't worth adding speculative
+handling without evidence. Scanned the *entire* `logs/chat/` directory,
+not just this bug's own pattern, for other recurring clarify/fallback
+buckets (63 "NLU timeout" hits, 15 "low-confidence clarify" hits, 4
+`BEYOND_HORIZON`, 2 `PAST`) — spot-checked the most recent of each and
+confirmed they're either already-addressed by Phase 23/25, artifacts of
+this session's own live-server testing, or genuinely correct clarify
+behavior for actually-ambiguous input, not a hidden gap.
+
+## ✅ Phase 29 — Resend User-Agent (Cloudflare 1010)
+
+**Bug, reproduced live 2026-08-21 before any code change:** `RESEND_API_KEY`
+was set, `get_email_provider()` correctly selected `ResendEmailProvider`,
+and all 21 `apps.notifications` unit tests passed — but a real send
+through that provider returned HTTP 403 with Cloudflare `error code: 1010`.
+The API key was valid: GET `/domains` with a custom `User-Agent` returned
+200 (no verified domain on the account, as expected), and the same POST
+to `https://api.resend.com/emails` returned 200 (`id=ffff5e2b-…`) once a
+non-default UA was set. urllib's default `Python-urllib/3.x` is the
+signature Cloudflare was banning.
+
+**Fix:** `ResendEmailProvider.send` now sends `User-Agent: Synapse/1.0`
+(`_RESEND_USER_AGENT` in `apps/notifications/providers.py`). No other
+header or provider-selection change.
+
+**Tests:** `test_send_posts_expected_request_shape` now asserts the UA
+header. New `test_send_does_not_use_python_urllib_user_agent` reproduces
+the actual failure mode — header must be present (otherwise urllib injects
+`Python-urllib/3.x`) and must not start with `Python-urllib`.
+
+**Verified:** `python manage.py test apps.notifications.tests --keepdb`
+**22/22**. Live send through the unpatched provider to Resend's
+`delivered@resend.dev` sink (the same call that 403'd before this change)
+now returns without error, including `NotificationService.send_staff_verify_email`.
+Eval not re-run: this is outbound HTTP headers on the email provider, not
+routing.
+
+**Not fixed here (same as Phase 27):** `onboarding@resend.dev` is still the
+shared test sender; production needs a verified domain + `DEFAULT_FROM_EMAIL`
+change. `PLATFORM_NOTIFICATION_EMAIL` still optional/no-op when unset.
+
+## ✅ Phase 30 — Console visibility for email + chat traces
+
+**Bug:** after Resend became the live provider, successful sends no longer
+appeared in the runserver terminal — only `ConsoleEmailProvider` printed
+`=== EMAIL ===` dumps. Separately, chat pipeline traces (`NEW CHAT REQUEST`)
+were off because `DEBUG_CHAT_PIPELINE` defaults False in `base.py` and was
+unset in `.env`; Django's default logging also never surfaces `apps.*`
+`logger.info` (only `django` / `django.server`).
+
+**Fix:**
+- All email providers (`console` / `smtp` / `resend`) call `_log_email_sent`
+  after a successful send — From/To/Subject/plain body printed to stdout.
+  Failures still only log the error, no fake success dump.
+- `config/settings/development.py` defaults `DEBUG_CHAT_PIPELINE=True` and
+  adds an `apps` INFO console logger on top of Django's `DEFAULT_LOGGING`.
+- `pipeline_debug_enabled()` forces the chat dump off under `manage.py test`
+  and `run_chat_eval` so those don't print a trace per case.
+
+**Tests:** `test_successful_send_prints_to_console` /
+`test_failed_send_does_not_print_success_dump` on Resend;
+`apps.chatbot.tests.test_pipeline_debug` for runserver-on / test-off /
+eval-off / explicit-false.
+
+**Verified:** `python manage.py test apps.notifications.tests apps.chatbot.tests.test_pipeline_debug --keepdb` **28/28**. Eval not re-run (logging only).
+
+**Restart `runserver`** after this change — Django settings load at process
+start.
+
 ## 💤 Deferred — Conversation state / coreference
 
 Real, confirmed from transcript ("which one treats cancer?" → "Dr. Chloe
