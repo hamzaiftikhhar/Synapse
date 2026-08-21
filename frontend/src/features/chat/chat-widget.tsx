@@ -12,6 +12,8 @@ import { ChatComposer } from "@/features/chat/components/chat-composer";
 import {
   BotMetaRow,
   ChatHeader,
+  DateSeparator,
+  clinicDayLabel,
 } from "@/features/chat/components/chat-chrome";
 import {
   RobotAvatar,
@@ -23,6 +25,7 @@ import {
   CLINIC_CONTEXT_ERROR,
   CONNECTION_ERROR,
   bookingWizardMessage,
+  hydrateHistoryMessages,
   insuranceSelectedMessage,
   parseChatResponse,
   systemErrorMessage,
@@ -39,7 +42,7 @@ import {
 } from "@/hooks/api";
 import { readSelectedInsurance } from "@/hooks/use-selected-insurance";
 import { getActiveTenant, getApiErrorMessage } from "@/lib/api/client";
-import { widgetAppointmentsService } from "@/services";
+import { widgetAppointmentsService, widgetService } from "@/services";
 import { useAuth } from "@/providers/auth-provider";
 import { useWidget, type AssistantMode } from "@/providers/widget-provider";
 import type { AppointmentCardData, ChatMessage, TimeSlotData } from "@/types/chat";
@@ -49,6 +52,8 @@ import {
   appearanceFromConfig,
   widgetThemeStyle,
 } from "@/features/chat/widget-theme";
+
+const HISTORY_PAGE_SIZE = 50;
 
 export type ChatWidgetProps = {
   mode?: "widget" | "embedded";
@@ -219,18 +224,32 @@ export function ChatWidget({
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [typing, setTyping] = useState(false);
   const [showJumpDown, setShowJumpDown] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [resuming, setResuming] = useState(false);
+  const [hasMoreOlder, setHasMoreOlder] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const [dismissedWizards, setDismissedWizards] = useState<Set<string>>(
     () => new Set()
   );
   const scrollRef = useRef<HTMLDivElement>(null);
+  const topSentinelRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
   const lastUserMessageRef = useRef("");
   const lastBookingMetaRef = useRef<Record<string, unknown> | null>(null);
   const requestIdRef = useRef(0);
+  // Oldest sequence_number loaded so far — the cursor for the next older
+  // page. Not component state: it never needs to trigger a render on its
+  // own, only to be read at fetch time.
+  const oldestCursorRef = useRef<number | null>(null);
+  const resumeAttemptedRef = useRef(false);
+  const prependAdjustRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(
+    null
+  );
   const staffChat = useStaffChat();
   const patientChat = usePatientChat();
   const guestChat = useGuestChat();
   const marketingChat = useMarketingChat();
+  const clinicTimezone = widgetConfig?.timezone || "UTC";
   const staffMode =
     resolvedMode === "staff" || (useStaffApi && isAuthenticated);
   const canBook =
@@ -270,6 +289,10 @@ export function ChatWidget({
     setTyping(false);
     setMessages([]);
     setDismissedWizards(new Set());
+    setUnreadCount(0);
+    setHasMoreOlder(false);
+    oldestCursorRef.current = null;
+    prevMessageCountRef.current = 0;
     stickToBottom.current = true;
   }, []);
 
@@ -283,23 +306,155 @@ export function ChatWidget({
       });
       stickToBottom.current = true;
       setShowJumpDown(false);
+      setUnreadCount(0);
     },
     [expanded]
   );
 
+  // Set right before a prepend's setMessages call so the effects below
+  // skip both auto-scroll-to-bottom and the unread counter for it — an
+  // older page loading in is never "new", and its scroll handling is a
+  // position *restore*, not a jump.
+  const isPrependingRef = useRef(false);
+  const prevMessageCountRef = useRef(0);
+
   useEffect(() => {
-    if (stickToBottom.current) scrollToBottom(messages.length > 0);
+    const grew = messages.length > prevMessageCountRef.current;
+    prevMessageCountRef.current = messages.length;
+    if (isPrependingRef.current) {
+      isPrependingRef.current = false;
+      return;
+    }
+    if (stickToBottom.current) {
+      scrollToBottom(messages.length > 0);
+    } else if (grew) {
+      // No live push channel exists in this app today (request/response
+      // only), so in practice this only ever fires for the rare case of
+      // the user scrolling away mid-flight — kept correct regardless.
+      setUnreadCount((n) => n + 1);
+    }
   }, [messages, typing, scrollToBottom]);
+
+  // Restores the reader's exact visual position after an older page is
+  // prepended — prepending pushes everything down by the new content's
+  // height, so without this the browser's constant scrollTop produces a
+  // visible jump.
+  useEffect(() => {
+    const pending = prependAdjustRef.current;
+    if (!pending) return;
+    prependAdjustRef.current = null;
+    const el = scrollRef.current;
+    if (!el) return;
+    const delta = el.scrollHeight - pending.scrollHeight;
+    el.scrollTop = pending.scrollTop + delta;
+  }, [messages]);
 
   function onScroll() {
     const el = scrollRef.current;
     if (!el) return;
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const wasStuck = stickToBottom.current;
     stickToBottom.current = distance < 64;
+    if (stickToBottom.current && !wasStuck) setUnreadCount(0);
     setShowJumpDown(
       !stickToBottom.current && el.scrollHeight > el.clientHeight + 80
     );
   }
+
+  const loadOlderMessages = useCallback(async () => {
+    const sessionToken = patientSessionToken();
+    const cursor = oldestCursorRef.current;
+    if (!sessionToken || !clinicSlug || cursor == null) return;
+    if (loadingOlder || !hasMoreOlder) return;
+    setLoadingOlder(true);
+    const el = scrollRef.current;
+    if (el) {
+      prependAdjustRef.current = { scrollHeight: el.scrollHeight, scrollTop: el.scrollTop };
+    }
+    try {
+      const page = await widgetService.getMessages(
+        sessionToken,
+        clinicSlug,
+        { before: cursor, limit: HISTORY_PAGE_SIZE },
+        widgetCtx.visitorId
+      );
+      if (page.messages.length) {
+        oldestCursorRef.current = page.messages[0].sequence_number;
+        const older = hydrateHistoryMessages(page.messages);
+        isPrependingRef.current = true;
+        setMessages((prev) => [...older, ...prev]);
+      } else {
+        prependAdjustRef.current = null;
+      }
+      setHasMoreOlder(page.has_more);
+    } catch {
+      prependAdjustRef.current = null;
+      // Leave hasMoreOlder as-is — scrolling up again retries naturally.
+    } finally {
+      setLoadingOlder(false);
+    }
+  }, [clinicSlug, hasMoreOlder, loadingOlder, patientSessionToken, widgetCtx.visitorId]);
+
+  useEffect(() => {
+    if (!open || !hasMoreOlder) return;
+    const sentinel = topSentinelRef.current;
+    const root = scrollRef.current;
+    if (!sentinel || !root) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) void loadOlderMessages();
+      },
+      { root, rootMargin: "200px 0px 0px 0px" }
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [open, hasMoreOlder, loadOlderMessages]);
+
+  // Case A/B from the approved plan: opening the widget resumes a known
+  // visitor's most recent conversation; a first-time browser (no stored
+  // visitor id) never calls the backend at all — resume is a pure read
+  // whose only reason to exist is finding *something already there*.
+  useEffect(() => {
+    if (!open) return;
+    if (resolvedMode !== "clinic" || !clinicSlug) return;
+    if (resumeAttemptedRef.current) return;
+    if (!widgetCtx.visitorId) return;
+    resumeAttemptedRef.current = true;
+
+    let cancelled = false;
+    setResuming(true);
+    void (async () => {
+      try {
+        const res = await widgetService.resume(clinicSlug, widgetCtx.visitorId);
+        if (cancelled) return;
+        if (res.visitor_id) widgetCtx.setVisitorId(res.visitor_id);
+        if (res.session_token) rememberSessionToken(res.session_token);
+        if (res.messages.length) {
+          oldestCursorRef.current = res.messages[0].sequence_number;
+          setHasMoreOlder(res.has_more);
+          stickToBottom.current = true;
+          setMessages(hydrateHistoryMessages(res.messages));
+          requestAnimationFrame(() => scrollToBottom(false));
+        }
+      } catch {
+        // A failed resume must never block the widget — it just falls
+        // back to the same empty/greeting state a first-time visitor sees.
+      } finally {
+        if (!cancelled) setResuming(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    open,
+    resolvedMode,
+    clinicSlug,
+    widgetCtx.visitorId,
+    widgetCtx,
+    rememberSessionToken,
+    scrollToBottom,
+  ]);
 
   const stopGenerating = useCallback(() => {
     requestIdRef.current += 1;
@@ -343,9 +498,17 @@ export function ChatWidget({
             clinic_slug: clinicSlug,
             message: trimmed,
             session_token: patientSessionToken() || null,
+            visitor_id: widgetCtx.visitorId,
           });
           const token = res.meta?.session_token;
           if (typeof token === "string") rememberSessionToken(token);
+          // First real message is what creates the ChatVisitor server-side
+          // (opening the widget never does) — this is where the frontend
+          // first learns its own id and persists it going forward.
+          const visitorId = res.meta?.visitor_id;
+          if (typeof visitorId === "string" && visitorId !== widgetCtx.visitorId) {
+            widgetCtx.setVisitorId(visitorId);
+          }
         } else {
           res = await patientChat.mutateAsync({
             message: trimmed,
@@ -451,6 +614,7 @@ export function ChatWidget({
       dismissedWizards,
       patientSessionToken,
       rememberSessionToken,
+      widgetCtx,
     ]
   );
 
@@ -799,6 +963,37 @@ export function ChatWidget({
     void sendText(msg);
   }
 
+  const renderItems = useMemo(() => {
+    const items: (
+      | { kind: "separator"; key: string; label: string }
+      | { kind: "message"; message: ChatMessage }
+    )[] = [];
+    let lastDay: string | null = null;
+    for (const m of messages) {
+      const day = clinicDayLabel(m.createdAt, clinicTimezone);
+      if (day !== lastDay) {
+        items.push({ kind: "separator", key: `sep_${m.id}`, label: day });
+        lastDay = day;
+      }
+      items.push({ kind: "message", message: m });
+    }
+    return items;
+  }, [messages, clinicTimezone]);
+
+  const resumingSkeleton = (
+    <div className="synapse-chat-msg flex gap-2.5" aria-hidden>
+      <RobotAvatar size="sm" className="mt-5 shrink-0 rounded-full bg-primary" />
+      <div className="min-w-0 max-w-[85%] flex-1">
+        <BotMetaRow name={`${displayName} Assistant`} />
+        <div className="synapse-chat-bubble synapse-chat-bubble--bot space-y-2 border border-border/80 bg-card px-3.5 py-3 shadow-sm">
+          <div className="synapse-chat-skeleton h-2.5 w-[88%] rounded-full" />
+          <div className="synapse-chat-skeleton h-2.5 w-[64%] rounded-full" />
+          <div className="synapse-chat-skeleton h-2.5 w-[76%] rounded-full" />
+        </div>
+      </div>
+    </div>
+  );
+
   const emptyState = (
     <div className="flex flex-col gap-1">
       <SamplePromptChips
@@ -838,30 +1033,42 @@ export function ChatWidget({
               expanded ? "max-w-3xl" : "max-w-xl"
             )}
           >
-            {messages.length === 0 && !typing ? emptyState : null}
-            {messages.map((m) => (
-              <MessageRenderer
-                key={m.id}
-                message={m}
-                onAction={handleAction}
-                onBackendAction={handleBackendAction}
-                showContextActions={m.id === lastActionMessageId && !typing}
-                assistantName={`${displayName} Assistant`}
-                clinicSlug={canBook ? bookingClinicSlug : undefined}
-                sessionToken={patientSessionToken() || widgetCtx.sessionToken}
-                bookingWizardActive={
-                  m.type === "booking_wizard" &&
-                  m.id === activeWizardId &&
-                  !dismissedWizards.has(m.id) &&
-                  !m.payload?.completed
-                }
-                onBookingConfirmed={handleBookingConfirmed}
-                onBookingDismiss={handleBookingDismiss}
-                onBookingStarted={handleBookingStarted}
-                onIdentityVerified={handleIdentityVerified}
-                onSessionToken={rememberSessionToken}
-              />
-            ))}
+            {messages.length === 0 && resuming ? resumingSkeleton : null}
+            {messages.length === 0 && !typing && !resuming ? emptyState : null}
+            {hasMoreOlder ? (
+              <div ref={topSentinelRef} className="flex justify-center py-1" aria-hidden>
+                {loadingOlder ? (
+                  <div className="synapse-chat-skeleton h-2 w-24 rounded-full" />
+                ) : null}
+              </div>
+            ) : null}
+            {renderItems.map((item) =>
+              item.kind === "separator" ? (
+                <DateSeparator key={item.key} label={item.label} />
+              ) : (
+                <MessageRenderer
+                  key={item.message.id}
+                  message={item.message}
+                  onAction={handleAction}
+                  onBackendAction={handleBackendAction}
+                  showContextActions={item.message.id === lastActionMessageId && !typing}
+                  assistantName={`${displayName} Assistant`}
+                  clinicSlug={canBook ? bookingClinicSlug : undefined}
+                  sessionToken={patientSessionToken() || widgetCtx.sessionToken}
+                  bookingWizardActive={
+                    item.message.type === "booking_wizard" &&
+                    item.message.id === activeWizardId &&
+                    !dismissedWizards.has(item.message.id) &&
+                    !item.message.payload?.completed
+                  }
+                  onBookingConfirmed={handleBookingConfirmed}
+                  onBookingDismiss={handleBookingDismiss}
+                  onBookingStarted={handleBookingStarted}
+                  onIdentityVerified={handleIdentityVerified}
+                  onSessionToken={rememberSessionToken}
+                />
+              )
+            )}
             {typing ? (
               <MessageRenderer
                 message={{
@@ -881,10 +1088,18 @@ export function ChatWidget({
           <button
             type="button"
             onClick={() => scrollToBottom(true)}
-            className="absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-full border border-border bg-card px-3 py-1.5 text-[11px] font-medium text-foreground shadow-sm hover:bg-accent"
+            aria-label={
+              unreadCount > 0 ? `${unreadCount} new message${unreadCount === 1 ? "" : "s"} — jump to latest` : "Jump to latest"
+            }
+            className="absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-border/80 bg-card py-1.5 pl-3 pr-3 text-[11px] font-medium text-foreground shadow-md transition-shadow hover:shadow-lg hover:bg-accent"
           >
             <ArrowDown className="size-3" />
             Latest
+            {unreadCount > 0 ? (
+              <span className="ml-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold leading-none text-primary-foreground">
+                {unreadCount > 9 ? "9+" : unreadCount}
+              </span>
+            ) : null}
           </button>
         ) : null}
       </div>
