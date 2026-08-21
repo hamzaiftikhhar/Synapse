@@ -108,29 +108,22 @@ class NotificationService:
     def send_staff_verify_email(cls, *, to: str, token: str, first_name: str = "") -> None:
         base = getattr(settings, "FRONTEND_URL", "http://localhost:3000").rstrip("/")
         link = f"{base}/verify-email?token={token}"
-        name = first_name or "there"
-        cls.send_email(
+        cls.send_templated_email(
             to=to,
             subject="Verify your Synapse email",
-            body=(
-                f"Hi {name},\n\n"
-                f"Verify your email to continue setting up Synapse:\n\n{link}\n\n"
-                f"This link expires in 24 hours.\n"
-            ),
+            template="staff_verify",
+            context={"name": first_name or "there", "link": link},
         )
 
     @classmethod
     def send_password_reset_email(cls, *, to: str, token: str) -> None:
         base = getattr(settings, "FRONTEND_URL", "http://localhost:3000").rstrip("/")
         link = f"{base}/reset-password?token={token}"
-        cls.send_email(
+        cls.send_templated_email(
             to=to,
             subject="Reset your Synapse password",
-            body=(
-                f"Reset your password using this link:\n\n{link}\n\n"
-                f"If you did not request this, you can ignore this email.\n"
-                f"This link expires in 2 hours.\n"
-            ),
+            template="password_reset",
+            context={"link": link},
         )
 
     @classmethod
@@ -139,28 +132,20 @@ class NotificationService:
     ) -> None:
         base = getattr(settings, "FRONTEND_URL", "http://localhost:3000").rstrip("/")
         link = f"{base}/accept-invite?token={token}"
-        name = first_name or "there"
-        cls.send_email(
+        cls.send_templated_email(
             to=to,
             subject=f"Your Synapse workspace for {clinic_name} is ready",
-            body=(
-                f"Hi {name},\n\n"
-                f"Your Synapse clinic workspace for {clinic_name} is ready. "
-                f"Set up your account to get started:\n\n{link}\n\n"
-                f"This link expires in 7 days and can only be used once.\n"
-            ),
+            template="clinic_invite",
+            context={"name": first_name or "there", "clinic_name": clinic_name, "link": link},
         )
 
     @classmethod
     def send_application_received_email(cls, *, to: str, clinic_name: str) -> None:
-        cls.send_email(
+        cls.send_templated_email(
             to=to,
             subject="We received your Synapse application",
-            body=(
-                f"Thanks for applying for Synapse on behalf of {clinic_name}.\n\n"
-                f"Our team will review your details and reach out shortly to "
-                f"prepare your workspace.\n"
-            ),
+            template="application_received",
+            context={"clinic_name": clinic_name},
         )
 
     @classmethod
@@ -168,13 +153,11 @@ class NotificationService:
         """Lighter-weight confirmation for the marketing site's "Book a
         Demo" form — the visitor hasn't chosen a plan or applied for
         anything yet, so this doesn't use "application" language."""
-        cls.send_email(
+        cls.send_templated_email(
             to=to,
             subject="We received your demo request",
-            body=(
-                f"Thanks for your interest in Synapse for {clinic_name}.\n\n"
-                f"Our team will reach out shortly to schedule your demo.\n"
-            ),
+            template="demo_request_received",
+            context={"clinic_name": clinic_name},
         )
 
     @classmethod
@@ -203,25 +186,27 @@ class NotificationService:
         base = getattr(settings, "FRONTEND_URL", "http://localhost:3000").rstrip("/")
         link = f"{base}/dashboard/platform/applications"
         label = "Demo request" if source == "demo_request" else "New application"
-        cls.send_email(
+        cls.send_templated_email(
             to=recipient,
             subject=f"{label}: {clinic_name}",
-            body=(
-                f"{label}\n\n"
-                f"Company: {clinic_name}\n"
-                f"Name: {requester_name}\n"
-                f"Email: {work_email}\n"
-                f"Phone: {phone or '—'}\n\n"
-                f"Open in Super Admin: {link}\n"
-            ),
+            template="demo_request_notification",
+            context={
+                "label": label,
+                "clinic_name": clinic_name,
+                "requester_name": requester_name,
+                "work_email": work_email,
+                "phone": phone,
+                "link": link,
+            },
         )
 
     @classmethod
     def send_patient_otp_email(cls, *, to: str, code: str, clinic_name: str = "the clinic") -> None:
-        cls.send_email(
+        cls.send_templated_email(
             to=to,
             subject=f"Your verification code for {clinic_name}",
-            body=f"Your Synapse verification code is {code}\n\nIt expires shortly.\n",
+            template="patient_otp",
+            context={"code": code, "clinic_name": clinic_name},
         )
 
     @classmethod
