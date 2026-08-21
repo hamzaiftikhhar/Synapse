@@ -9,6 +9,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { STORAGE_KEYS } from "@/constants";
 import { widgetService } from "@/services";
 import type { WidgetConfig } from "@/types/api";
 
@@ -20,6 +21,16 @@ type WidgetContextValue = {
   config: WidgetConfig | null;
   sessionToken: string | null;
   setSessionToken: (token: string | null) => void;
+  /**
+   * The anonymous ChatVisitor's stable id — localStorage (not
+   * sessionStorage, unlike sessionToken above), so it survives a browser
+   * restart. Never invented client-side: only ever set from a value the
+   * backend returned (either /chat/resume or a guest message's
+   * meta.visitor_id), so its mere presence is exactly the signal used to
+   * decide whether opening the widget should call /chat/resume at all.
+   */
+  visitorId: string | null;
+  setVisitorId: (id: string | null) => void;
   isLoading: boolean;
 };
 
@@ -38,9 +49,13 @@ export function WidgetProvider({
 }) {
   const [config, setConfig] = useState<WidgetConfig | null>(null);
   const [sessionToken, setSessionTokenState] = useState<string | null>(null);
+  const [visitorId, setVisitorIdState] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(mode === "clinic" && Boolean(clinicSlug));
 
   const storageKey = clinicSlug ? `${SESSION_KEY}_${clinicSlug}` : SESSION_KEY;
+  const visitorStorageKey = clinicSlug
+    ? `${STORAGE_KEYS.chatVisitor}_${clinicSlug}`
+    : STORAGE_KEYS.chatVisitor;
 
   const setSessionToken = useCallback(
     (token: string | null) => {
@@ -52,11 +67,27 @@ export function WidgetProvider({
     [storageKey]
   );
 
+  const setVisitorId = useCallback(
+    (id: string | null) => {
+      setVisitorIdState(id);
+      if (typeof window === "undefined") return;
+      if (id) localStorage.setItem(visitorStorageKey, id);
+      else localStorage.removeItem(visitorStorageKey);
+    },
+    [visitorStorageKey]
+  );
+
   useEffect(() => {
     if (typeof window === "undefined") return;
     const saved = sessionStorage.getItem(storageKey);
     if (saved) setSessionTokenState(saved);
   }, [storageKey]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const saved = localStorage.getItem(visitorStorageKey);
+    setVisitorIdState(saved || null);
+  }, [visitorStorageKey]);
 
   useEffect(() => {
     if (mode !== "clinic" || !clinicSlug) {
@@ -91,9 +122,11 @@ export function WidgetProvider({
       config,
       sessionToken,
       setSessionToken,
+      visitorId,
+      setVisitorId,
       isLoading,
     }),
-    [mode, clinicSlug, config, sessionToken, setSessionToken, isLoading]
+    [mode, clinicSlug, config, sessionToken, setSessionToken, visitorId, setVisitorId, isLoading]
   );
 
   return (
@@ -110,6 +143,8 @@ export function useWidget() {
       config: null,
       sessionToken: null,
       setSessionToken: () => {},
+      visitorId: null,
+      setVisitorId: () => {},
       isLoading: false,
     };
   }
