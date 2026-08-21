@@ -216,7 +216,11 @@ BILLING_GRACE_PERIOD_DAYS = env.int("BILLING_GRACE_PERIOD_DAYS", default=7)
 
 # Frontend / email
 FRONTEND_URL = env("FRONTEND_URL", default="http://localhost:3000")
-DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="Synapse <noreply@synapse.local>")
+# onboarding@resend.dev is Resend's shared test sender — works with no
+# domain verification. Swap to a verified domain address once one exists;
+# this is the only place that needs to change.
+DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="Synapse <onboarding@resend.dev>")
+RESEND_API_KEY = env("RESEND_API_KEY", default="")
 EMAIL_HOST = env("EMAIL_HOST", default="")
 EMAIL_PORT = env.int("EMAIL_PORT", default=587)
 EMAIL_HOST_USER = env("EMAIL_HOST_USER", default="")
@@ -306,8 +310,9 @@ LLM_CIRCUIT_COOLDOWN_SECONDS = env.float("LLM_CIRCUIT_COOLDOWN_SECONDS", default
 CLINIC_FACT_CACHE_TTL_SECONDS = env.int("CLINIC_FACT_CACHE_TTL_SECONDS", default=600)
 
 # Structured AI pipeline debugger (terminal + optional logs/chat/*.json)
-# Use this — not Swagger — to inspect Small LLM prompts, planner scores,
-# SQL rows, vector chunks, Large LLM prompts, and final replies.
+# Development settings default this True; production stays False. Use this
+# — not Swagger — to inspect Small LLM prompts, planner scores, SQL rows,
+# vector chunks, Large LLM prompts, and final replies.
 DEBUG_CHAT_PIPELINE = env.bool("DEBUG_CHAT_PIPELINE", default=False)
 DEBUG_CHAT_PIPELINE_SAVE_JSON = env.bool("DEBUG_CHAT_PIPELINE_SAVE_JSON", default=True)
 # Token streaming for RAG replies (designed; off until budgets are proven)
