@@ -11,7 +11,45 @@ class ChatSessionStatus(models.TextChoices):
     ESCALATED = "escalated", "Escalated"
 
 
+class ChatVisitor(TenantModel):
+    """A stable anonymous browser identity, independent of any one
+    conversation. One visitor can have many `ChatSession`s (e.g. a closed
+    conversation followed by a new one) — linking `patient` here, once,
+    is what makes every one of that visitor's sessions resolve to the same
+    identity without ever copying or recreating conversation rows. See
+    ROADMAP.md's persistent-chat-history phase for the full design and the
+    explicit privacy boundary: resolving to the same patient as another
+    visitor never grants access to that other visitor's conversations."""
+
+    visitor_key = models.CharField(max_length=64, unique=True)
+    patient = models.ForeignKey(
+        "patients.Patient",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="chat_visitors",
+    )
+    first_seen_at = models.DateTimeField(auto_now_add=True)
+    last_seen_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "chat_visitors"
+        indexes = [
+            models.Index(fields=["clinic", "patient"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"Visitor {self.visitor_key[:8]}…"
+
+
 class ChatSession(TenantModel):
+    visitor = models.ForeignKey(
+        ChatVisitor,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="chat_sessions",
+    )
     patient = models.ForeignKey(
         "patients.Patient",
         on_delete=models.SET_NULL,
@@ -40,6 +78,11 @@ class ChatSession(TenantModel):
             models.Index(fields=["clinic", "status"]),
             models.Index(fields=["clinic", "last_active_at"]),
             models.Index(fields=["clinic", "patient"]),
+            # The resume-flow's core query: "this visitor's most recent
+            # session," regardless of status (see ROADMAP.md — v1
+            # deliberately has no auto-close, so status isn't part of this
+            # lookup).
+            models.Index(fields=["visitor", "last_active_at"]),
         ]
 
     def __str__(self) -> str:
