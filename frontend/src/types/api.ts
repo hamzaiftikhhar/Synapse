@@ -583,6 +583,8 @@ export type WidgetConfig = {
   clinic_slug: string;
   clinic_name: string;
   phone: string;
+  /** IANA name (e.g. "America/New_York") — used for history date separators. */
+  timezone: string;
   configuration: {
     widget?: {
       primary_color?: string;
@@ -613,6 +615,31 @@ export type WidgetGuestChatInput = {
 
 export type MarketingChatInput = {
   message: string;
+};
+
+/* ─── Persistent chat history (resume + cursor pagination) ────── */
+
+export type ChatMessageHistoryOut = {
+  id: string;
+  role: "user" | "assistant" | "system" | "tool";
+  message_type: string;
+  content: string;
+  metadata: Record<string, unknown>;
+  sequence_number: number;
+  created_at: string;
+};
+
+export type ChatResumeOut = {
+  session_token: string | null;
+  visitor_id: string | null;
+  has_history: boolean;
+  messages: ChatMessageHistoryOut[];
+  has_more: boolean;
+};
+
+export type ChatMessagesPageOut = {
+  messages: ChatMessageHistoryOut[];
+  has_more: boolean;
 };
 
 export type BookingSpecialty = {
