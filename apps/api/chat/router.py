@@ -11,11 +11,19 @@ from __future__ import annotations
 
 import logging
 
-from ninja import Router
+from ninja import Query, Router
 from ninja.errors import HttpError
 
 from apps.api.auth.deps import PatientJWTAuth, StaffJWTAuth, clinic_from
-from apps.api.chat.schemas import ChatMessageIn, ChatMessageOut, ChatTimingsOut
+from apps.api.chat.schemas import (
+    ChatMessageIn,
+    ChatMessageOut,
+    ChatTimingsOut,
+    ConversationMessageOut,
+    ConversationMessagesOut,
+    ConversationSummaryOut,
+)
+from apps.api.common.schemas import PaginatedOut
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +107,127 @@ def staff_chat_message(request, payload: ChatMessageIn) -> ChatMessageOut:
     out = _to_out(result)
     out.meta = {**out.meta, "session_token": session.session_token}
     return out
+
+
+# ── Staff-facing conversations inbox ──────────────────────────────────────────
+# A clinic's own staff and a super admin who has entered this clinic
+# (/auth/enter-clinic) both land here through the exact same code path —
+# clinic_from(request) resolves the tenant from the staff JWT's tenant
+# claim either way, so no separate "can this admin see this clinic's
+# chats" check is needed beyond the tenant scoping every other staff
+# dashboard endpoint already relies on.
+
+_CONVERSATIONS_DEFAULT_LIMIT = 50
+_CONVERSATIONS_MAX_LIMIT = 100
+_MESSAGES_DEFAULT_LIMIT = 50
+_MESSAGES_MAX_LIMIT = 100
+
+
+@router.get(
+    "/conversations", response=PaginatedOut[ConversationSummaryOut], auth=_staff_auth
+)
+def list_conversations(
+    request,
+    search: str | None = Query(None),
+    limit: int = Query(_CONVERSATIONS_DEFAULT_LIMIT, ge=1, le=_CONVERSATIONS_MAX_LIMIT),
+    offset: int = Query(0, ge=0),
+):
+    from django.db.models import Q
+
+    from apps.chatbot.models import ChatSession
+
+    clinic = clinic_from(request)
+    qs = (
+        ChatSession.objects.filter(clinic=clinic)
+        .select_related("patient", "visitor")
+        .order_by("-last_active_at")
+    )
+    if search:
+        qs = qs.filter(
+            Q(patient__first_name__icontains=search)
+            | Q(patient__last_name__icontains=search)
+            | Q(patient__phone__icontains=search)
+        )
+    count = qs.count()
+    sessions = list(qs[offset : offset + limit])
+    return PaginatedOut(
+        count=count, results=[_serialize_conversation(s) for s in sessions]
+    )
+
+
+@router.get(
+    "/conversations/{session_id}/messages",
+    response=ConversationMessagesOut,
+    auth=_staff_auth,
+)
+def conversation_messages(
+    request,
+    session_id: str,
+    before: int | None = None,
+    limit: int = _MESSAGES_DEFAULT_LIMIT,
+):
+    """Cursor-paginated transcript for one conversation. Ownership here is
+    staff-JWT-plus-clinic-scope, not the visitor bearer header the public
+    widget endpoint requires — staff already proved tenant membership."""
+    from apps.chatbot.models import ChatSession
+    from apps.chatbot.services.message_history import paginate_messages
+
+    from django.core.exceptions import ValidationError
+
+    clinic = clinic_from(request)
+    try:
+        session = ChatSession.objects.get(clinic=clinic, id=session_id)
+    except (ChatSession.DoesNotExist, ValueError, ValidationError):
+        raise HttpError(404, "Conversation not found") from None
+
+    if before is not None and before < 1:
+        raise HttpError(422, "Invalid cursor")
+    limit = max(1, min(int(limit or _MESSAGES_DEFAULT_LIMIT), _MESSAGES_MAX_LIMIT))
+
+    rows, has_more = paginate_messages(session, before=before, limit=limit)
+    return ConversationMessagesOut(
+        messages=[
+            ConversationMessageOut(
+                id=str(m.id),
+                role=m.role,
+                message_type=m.message_type,
+                content=m.content,
+                metadata=m.metadata or {},
+                sequence_number=m.sequence_number,
+                created_at=m.created_at.isoformat(),
+            )
+            for m in rows
+        ],
+        has_more=has_more,
+    )
+
+
+def _serialize_conversation(session: object) -> ConversationSummaryOut:
+    patient = session.patient  # type: ignore[attr-defined]
+    visitor = session.visitor  # type: ignore[attr-defined]
+    if patient is not None:
+        display_name = patient.full_name or "Unnamed patient"
+        phone = patient.phone
+    elif visitor is not None:
+        display_name = "Anonymous visitor"
+        phone = None
+    else:
+        display_name = "Anonymous"
+        phone = None
+    messages = session.messages  # type: ignore[attr-defined]
+    last_message = messages.order_by("-sequence_number").first()
+    return ConversationSummaryOut(
+        id=str(session.id),  # type: ignore[attr-defined]
+        session_token=session.session_token,  # type: ignore[attr-defined]
+        display_name=display_name,
+        phone=phone,
+        is_authenticated=session.is_authenticated,  # type: ignore[attr-defined]
+        status=session.status,  # type: ignore[attr-defined]
+        message_count=messages.count(),
+        last_message_preview=(last_message.content[:140] if last_message else None),
+        last_active_at=session.last_active_at.isoformat(),  # type: ignore[attr-defined]
+        created_at=session.created_at.isoformat(),  # type: ignore[attr-defined]
+    )
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
