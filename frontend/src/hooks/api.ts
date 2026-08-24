@@ -1,6 +1,6 @@
 "use client";
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   analyticsService,
   appointmentsService,
@@ -63,6 +63,10 @@ function documentIsActive(doc: KnowledgeDocument) {
 
 export const queryKeys = {
   me: ["me"] as const,
+  conversations: (p?: import("@/types/api").ConversationListParams) =>
+    ["conversations", p] as const,
+  conversationMessages: (sessionId: string, before?: number) =>
+    ["conversations", sessionId, "messages", before] as const,
   patients: (p?: ListParams) => ["patients", p] as const,
   patient: (id: string) => ["patients", id] as const,
   doctors: (p?: ListParams) => ["doctors", p] as const,
@@ -656,6 +660,36 @@ export function useMarketingChat() {
   return useMutation({
     mutationFn: (input: MarketingChatInput) =>
       widgetService.sendMarketingMessage(input),
+  });
+}
+
+/* ─── Staff conversations inbox ────────────────────────────────── */
+
+export function useConversations(
+  params?: import("@/types/api").ConversationListParams
+) {
+  return useQuery({
+    queryKey: queryKeys.conversations(params),
+    queryFn: () => chatService.listConversations(params),
+  });
+}
+
+export function useConversationMessages(sessionId: string | null) {
+  return useInfiniteQuery({
+    queryKey: ["conversations", sessionId, "messages"] as const,
+    queryFn: ({ pageParam }: { pageParam?: number }) =>
+      chatService.getConversationMessages(sessionId as string, {
+        before: pageParam,
+      }),
+    initialPageParam: undefined as number | undefined,
+    // The cursor for the *next* (older) page is the oldest message's own
+    // sequence_number in the page just loaded — same cursor semantics as
+    // the patient-facing widget's own pagination.
+    getNextPageParam: (lastPage) =>
+      lastPage.has_more && lastPage.messages.length
+        ? lastPage.messages[0].sequence_number
+        : undefined,
+    enabled: Boolean(sessionId),
   });
 }
 
