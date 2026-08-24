@@ -512,24 +512,9 @@ def _find_or_create_visitor(clinic: Clinic, visitor_key: str | None):
 
 
 def _message_page(session, *, before: int | None, limit: int):
-    """One page of a session's messages, oldest-first, plus whether there
-    are more beyond it. `before=None` means "the newest page" (used by
-    both /chat/resume's initial load and a bare call to the pagination
-    endpoint); otherwise strictly older than that sequence_number cursor.
-    """
-    from apps.chatbot.models import ChatMessage
+    from apps.chatbot.services.message_history import paginate_messages
 
-    qs = ChatMessage.objects.filter(session=session)
-    if before is not None:
-        qs = qs.filter(sequence_number__lt=before)
-    # Over-fetch by one to learn has_more without a second COUNT query —
-    # newest-of-the-range first so LIMIT bounds "the N most recent older
-    # messages" rather than the N oldest ones.
-    rows = list(qs.order_by("-sequence_number")[: limit + 1])
-    has_more = len(rows) > limit
-    rows = rows[:limit]
-    rows.reverse()
-    return rows, has_more
+    return paginate_messages(session, before=before, limit=limit)
 
 
 def _serialize_messages(rows) -> list[ChatMessageHistoryOut]:
