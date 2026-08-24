@@ -642,6 +642,42 @@ export type ChatMessagesPageOut = {
   has_more: boolean;
 };
 
+/* ─── Staff conversations inbox ─────────────────────────────────── */
+
+export type ConversationSummary = {
+  id: string;
+  session_token: string;
+  display_name: string;
+  phone: string | null;
+  is_authenticated: boolean;
+  status: string;
+  message_count: number;
+  last_message_preview: string | null;
+  last_active_at: string;
+  created_at: string;
+};
+
+export type ConversationListParams = {
+  search?: string;
+  limit?: number;
+  offset?: number;
+};
+
+export type ConversationMessage = {
+  id: string;
+  role: "user" | "assistant" | "system" | "tool";
+  message_type: string;
+  content: string;
+  metadata: Record<string, unknown>;
+  sequence_number: number;
+  created_at: string;
+};
+
+export type ConversationMessagesOut = {
+  messages: ConversationMessage[];
+  has_more: boolean;
+};
+
 export type BookingSpecialty = {
   id: string;
   name: string;
