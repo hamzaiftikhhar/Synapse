@@ -527,6 +527,26 @@ export const chatService = {
     );
     return data;
   },
+  /** Staff-authenticated — a clinic's own staff and a super admin who has
+   * entered the clinic both resolve to the same tenant via the JWT, so
+   * this is exactly the same `api` client every other dashboard list
+   * uses, not the widget's visitor-header-based client. */
+  async listConversations(params?: import("@/types/api").ConversationListParams) {
+    const { data } = await api.get<
+      import("@/types/api").Paginated<import("@/types/api").ConversationSummary>
+    >("/chat/conversations", { params });
+    return data;
+  },
+  async getConversationMessages(
+    sessionId: string,
+    params: { before?: number; limit?: number } = {}
+  ) {
+    const { data } = await api.get<import("@/types/api").ConversationMessagesOut>(
+      `/chat/conversations/${encodeURIComponent(sessionId)}/messages`,
+      { params }
+    );
+    return data;
+  },
 };
 
 /* ─── Patients ─────────────────────────────────────────────── */
