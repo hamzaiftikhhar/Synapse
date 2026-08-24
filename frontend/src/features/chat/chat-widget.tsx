@@ -160,6 +160,26 @@ function runBackendAction(
   if (action.message) sendText(action.message);
 }
 
+/**
+ * Collapse-on-supersede (ROADMAP.md "Chat card collapse-on-supersede",
+ * Phase 22) extended past booking_wizard: whenever a card's own action
+ * has been used and a newer UI takes its place, the old card should stop
+ * being a live, re-clickable prompt — same `payload.completed` convention
+ * `sendText`'s own launchedWizard logic and handleBookingConfirmed
+ * already use for booking_wizard messages.
+ */
+function markMessageCompleted(
+  messages: ChatMessage[],
+  messageId: string | undefined
+): ChatMessage[] {
+  if (!messageId) return messages;
+  return messages.map((m) =>
+    m.id === messageId
+      ? { ...m, payload: { ...(m.payload ?? {}), completed: true } }
+      : m
+  );
+}
+
 export function ChatWidget({
   mode = "widget",
   clinicName,
@@ -400,14 +420,37 @@ export function ChatWidget({
     const sentinel = topSentinelRef.current;
     const root = scrollRef.current;
     if (!sentinel || !root) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0]?.isIntersecting) void loadOlderMessages();
-      },
-      { root, rootMargin: "200px 0px 0px 0px" }
-    );
-    observer.observe(sentinel);
-    return () => observer.disconnect();
+
+    // Resume's initial jump-to-bottom (`el.scrollTo({behavior:"auto"})`)
+    // does not update scrollTop synchronously — the browser can defer the
+    // actual scroll commit by an unpredictable number of frames (worse
+    // under load), and during that unsettled window either a raw
+    // scrollTop snapshot or a same-tick 'scroll' event can transiently
+    // read as "not at the bottom". Either one alone can wrongly treat the
+    // sentinel as "the user scrolled up" and fire an unwanted extra
+    // older-page fetch on every resume with more than one page of
+    // history, even though nothing was scrolled. Two independent guards:
+    // a fixed delay before the observer is even attached (gives scroll
+    // commit + any transient scroll events time to fully settle first),
+    // plus stickToBottom.current (only ever flips to false from *this*
+    // container's own onScroll handler once things have settled, so it
+    // reflects the real, current state rather than a stale snapshot).
+    let observer: IntersectionObserver | null = null;
+    const timeoutId = setTimeout(() => {
+      observer = new IntersectionObserver(
+        (entries) => {
+          if (entries[0]?.isIntersecting && !stickToBottom.current) {
+            void loadOlderMessages();
+          }
+        },
+        { root, rootMargin: "200px 0px 0px 0px" }
+      );
+      observer.observe(sentinel);
+    }, 500);
+    return () => {
+      clearTimeout(timeoutId);
+      observer?.disconnect();
+    };
   }, [open, hasMoreOlder, loadOlderMessages]);
 
   // Case A/B from the approved plan: opening the widget resumes a known
@@ -419,14 +462,24 @@ export function ChatWidget({
     if (resolvedMode !== "clinic" || !clinicSlug) return;
     if (resumeAttemptedRef.current) return;
     if (!widgetCtx.visitorId) return;
+    // Deliberately no per-invocation `cancelled` cleanup flag here (unlike
+    // most data-fetching effects) — resumeAttemptedRef above already
+    // guarantees this async work starts at most once for the widget's
+    // whole lifetime, which is exactly what broke when this used to also
+    // track `cancelled`: React's dev-mode Strict Mode double-invoke
+    // (mount -> cleanup -> remount) set `cancelled = true` from the first
+    // invocation's cleanup *before* its own `await` resolved, while the
+    // ref had already blocked the second invocation from retrying — the
+    // one fetch that actually completed then discarded its own result and
+    // never cleared `resuming`, leaving the loading skeleton stuck
+    // forever. Caught only by real browser testing in dev mode; tsc/build
+    // never exercise this lifecycle at all.
     resumeAttemptedRef.current = true;
 
-    let cancelled = false;
     setResuming(true);
     void (async () => {
       try {
         const res = await widgetService.resume(clinicSlug, widgetCtx.visitorId);
-        if (cancelled) return;
         if (res.visitor_id) widgetCtx.setVisitorId(res.visitor_id);
         if (res.session_token) rememberSessionToken(res.session_token);
         if (res.messages.length) {
@@ -440,12 +493,9 @@ export function ChatWidget({
         // A failed resume must never block the widget — it just falls
         // back to the same empty/greeting state a first-time visitor sees.
       } finally {
-        if (!cancelled) setResuming(false);
+        setResuming(false);
       }
     })();
-    return () => {
-      cancelled = true;
-    };
   }, [
     open,
     resolvedMode,
@@ -531,14 +581,33 @@ export function ChatWidget({
         const bookingUpdate = parsed.bookingUpdate;
         const launchedWizard = parsed.messages.some((m) => m.type === "booking_wizard");
         setMessages((prev) => {
+          // A launching wizard supersedes not just an older wizard, but
+          // any other still-open "what do you want to do" card too — a
+          // reply can bundle an empty appointments/verify_identity card
+          // *with* a wizard launch in the very same turn (e.g. "no
+          // appointments — want to book one?"), which used to leave the
+          // older/bundled card fully interactive underneath the wizard.
           const base = launchedWizard
             ? prev.map((m) =>
-                m.type === "booking_wizard" && !m.payload?.completed
+                (m.type === "booking_wizard" ||
+                  m.type === "appointments" ||
+                  m.type === "verify_identity") &&
+                !m.payload?.completed
                   ? { ...m, payload: { ...(m.payload ?? {}), completed: true } }
                   : m
               )
             : prev;
-          const next = [...base, ...parsed.messages];
+          // Same-turn bundling: an appointments/verify_identity card that
+          // arrives *alongside* the wizard in this exact reply must start
+          // out already collapsed, never render live even for a frame.
+          const incoming = launchedWizard
+            ? parsed.messages.map((m) =>
+                m.type === "appointments" || m.type === "verify_identity"
+                  ? { ...m, payload: { ...(m.payload ?? {}), completed: true } }
+                  : m
+              )
+            : parsed.messages;
+          const next = [...base, ...incoming];
           if (!bookingUpdate) return next;
           const visible = next.find(
             (m) =>
@@ -637,7 +706,7 @@ export function ChatWidget({
     runBackendAction(action, (msg) => void sendText(msg));
   }
 
-  function handleIdentityVerified(sessionToken: string) {
+  function handleIdentityVerified(messageId: string, sessionToken: string) {
     // OTP verification is a state transition, not a new chat turn — fetch
     // the now-authenticated patient's appointments directly instead of
     // re-sending the triggering message (which would duplicate the user's
@@ -653,7 +722,7 @@ export function ChatWidget({
           session_token: token,
         });
         setMessages((prev) => [
-          ...prev,
+          ...markMessageCompleted(prev, messageId),
           {
             id: uid("appt"),
             role: "assistant",
@@ -663,8 +732,10 @@ export function ChatWidget({
           },
         ]);
       } catch (err) {
+        // Verification itself still succeeded even though this fetch
+        // failed — the verify card must still collapse either way.
         setMessages((prev) => [
-          ...prev,
+          ...markMessageCompleted(prev, messageId),
           systemErrorMessage(
             getApiErrorMessage(err, "Couldn't load your appointments — please try again.")
           ),
@@ -766,9 +837,10 @@ export function ChatWidget({
         name?: string;
         select_message?: string;
         message?: string;
+        messageId?: string;
       };
       setMessages((prev) => [
-        ...prev,
+        ...markMessageCompleted(prev, doctor.messageId),
         bookingWizardMessage({
           reason: doctor.name
             ? `I would like to book an appointment with ${doctor.name}`
@@ -781,10 +853,10 @@ export function ChatWidget({
     }
 
     if (action === "select_slot") {
-      const slot = data as TimeSlotData;
+      const slot = data as TimeSlotData & { messageId?: string };
       if (!slot.start || !slot.doctor_id) {
         setMessages((prev) => [
-          ...prev,
+          ...markMessageCompleted(prev, slot.messageId),
           bookingWizardMessage({
             reason: slot.doctor
               ? `I would like to book an appointment with ${slot.doctor}`
@@ -804,7 +876,7 @@ export function ChatWidget({
         }
       }
       setMessages((prev) => [
-        ...prev,
+        ...markMessageCompleted(prev, slot.messageId),
         bookingWizardMessage({
           reason: `Book ${slot.label || slot.time || "this time"}`,
           doctor_id: slot.doctor_id,
@@ -821,7 +893,21 @@ export function ChatWidget({
         service?: string;
         service_id?: string;
         insurance?: string;
+        messageId?: string;
       };
+      // The empty-appointments-card "Book a New Appointment" button (the
+      // only caller that ever sets messageId) carries no doctor/slot/
+      // service pick of its own — nothing precise to lose by routing it
+      // through a real message, matching every other bare "Book
+      // Appointment" entry point in this app (runBackendAction's
+      // launch_booking, below). Also collapses the card that triggered
+      // it. Other callers (e.g. insurance-card.tsx, after picking a
+      // plan) still carry structured data worth keeping local — untouched.
+      if (payload?.messageId) {
+        setMessages((prev) => markMessageCompleted(prev, payload.messageId));
+        void sendText("I would like to book an appointment");
+        return;
+      }
       const stored = readSelectedInsurance(bookingClinicSlug);
       const usableStored = stored && stored.is_accepted !== false ? stored : null;
       const insurance =
@@ -845,9 +931,10 @@ export function ChatWidget({
         id?: string;
         name?: string;
         select_message?: string;
+        messageId?: string;
       };
       setMessages((prev) => [
-        ...prev,
+        ...markMessageCompleted(prev, service.messageId),
         bookingWizardMessage({
           reason: service.name
             ? `I would like to book ${service.name}`
