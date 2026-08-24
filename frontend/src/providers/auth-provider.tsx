@@ -186,7 +186,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setTenants,
       setCanExitClinic,
     });
-  }, []);
+    // Every tenant-scoped query (doctors, appointments, services, widget
+    // settings, ...) is keyed without a clinic/tenant dimension — it relies
+    // entirely on the X-Tenant-ID header sent per-request. Switching tenant
+    // changes that header but leaves any already-cached response in place,
+    // so without this the dashboard keeps showing the *previous* tenant's
+    // data until something else happens to trigger a refetch.
+    void qc.invalidateQueries();
+  }, [qc]);
 
   const enterClinic = useCallback(async (slug: string) => {
     const data = await authService.enterClinic(slug);
@@ -204,6 +211,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       tenants: data.tenants ?? [],
       can_exit_clinic: true,
     });
+    void qc.invalidateQueries();
     return data;
   }, [qc]);
 
@@ -223,6 +231,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       tenants: data.tenants ?? [],
       can_exit_clinic: false,
     });
+    void qc.invalidateQueries();
   }, [qc]);
 
   const logout = useCallback(() => {
