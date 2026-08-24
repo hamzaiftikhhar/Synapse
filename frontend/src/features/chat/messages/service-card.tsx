@@ -40,9 +40,11 @@ export function ServiceCard({
 export function ServiceCards({
   services,
   onAction,
+  messageId,
 }: {
   services: ServiceCardData[];
   onAction?: ChatActionHandler;
+  messageId?: string;
 }) {
   // Same fix as DoctorCards/TimeSlotsMessage — picking a service launches
   // the booking wizard, which becomes the one live card; this list must
@@ -58,7 +60,11 @@ export function ServiceCards({
           key={s.id || i}
           service={s}
           onAction={(action, data) => {
-            if (action === "select_service") setPicked(true);
+            if (action === "select_service") {
+              setPicked(true);
+              onAction?.(action, { ...(data as object), messageId });
+              return;
+            }
             onAction?.(action, data);
           }}
         />

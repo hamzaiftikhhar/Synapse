@@ -149,11 +149,28 @@ function AppointmentCard({
 export function AppointmentCards({
   appointments,
   onAction,
+  completed = false,
+  messageId,
 }: {
   appointments: AppointmentCardData[];
   onAction?: ChatActionHandler;
+  /** Set once "Book a New Appointment" has already been used from this
+   * exact message — same collapse-on-supersede idea as booking_wizard
+   * (Phase 22): once that click has launched a wizard, this card
+   * shouldn't keep sitting there as a live, re-clickable prompt. */
+  completed?: boolean;
+  messageId?: string;
 }) {
   if (appointments.length === 0) {
+    if (completed) {
+      return (
+        <ChatInlineCard className="flex items-center gap-2 py-2.5 text-center">
+          <p className="text-sm text-muted-foreground">
+            You started booking a new appointment ↓
+          </p>
+        </ChatInlineCard>
+      );
+    }
     return (
       <ChatInlineCard className="space-y-1 text-center">
         <p className="text-sm font-medium text-foreground">No upcoming appointments</p>
@@ -164,7 +181,7 @@ export function AppointmentCards({
           type="button"
           size="xs"
           className="mt-1.5"
-          onClick={() => onAction?.("book_appointment", {})}
+          onClick={() => onAction?.("book_appointment", { messageId })}
         >
           Book a New Appointment
         </Button>

@@ -28,6 +28,7 @@ export function VerifyIdentity({
   sessionToken,
   onSessionToken,
   onVerified,
+  completed = false,
 }: {
   clinicSlug: string;
   sessionToken: string | null;
@@ -35,6 +36,11 @@ export function VerifyIdentity({
    * appointment CRUD hit the same ChatSession. */
   onSessionToken?: (token: string) => void;
   onVerified: (sessionToken: string) => void;
+  /** Set once the widget has recorded this exact message as verified —
+   * mirrors BookingWizard's own inert-summary treatment (Phase 22) so an
+   * old verify card doesn't stay a live, re-submittable form once
+   * whatever it unlocked (e.g. an appointments list) has already shown. */
+  completed?: boolean;
 }) {
   const [method, setMethod] = useState<"phone" | "email">("phone");
   const [contact, setContact] = useState("");
@@ -67,6 +73,17 @@ export function VerifyIdentity({
     const t = setTimeout(() => setCooldown((c) => c - 1), 1000);
     return () => clearTimeout(t);
   }, [cooldown]);
+
+  if (completed) {
+    return (
+      <ChatInlineCard className="flex items-center gap-2 rounded-[18px] border border-border/80 bg-card px-3.5 py-2.5 shadow-[0_2px_12px_rgb(11_14_46/0.06)]">
+        <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-emerald-700 text-xs">
+          ✓
+        </span>
+        <p className="text-sm font-medium text-foreground">Identity verified</p>
+      </ChatInlineCard>
+    );
+  }
 
   function contactIsValid(): boolean {
     return method === "phone" ? isValidPhoneDigits(contact) : isValidEmail(contact);

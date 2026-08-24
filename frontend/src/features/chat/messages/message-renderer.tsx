@@ -52,7 +52,7 @@ export function MessageRenderer({
   onBookingConfirmed?: (payload: BookingStepPayload) => void;
   onBookingDismiss?: (messageId: string) => void;
   onBookingStarted?: (messageId: string, bookingId: string) => void;
-  onIdentityVerified?: (sessionToken: string) => void;
+  onIdentityVerified?: (messageId: string, sessionToken: string) => void;
   onSessionToken?: (token: string) => void;
   /** Last user message — used for calm typing status copy. */
   typingHint?: string;
@@ -89,6 +89,7 @@ export function MessageRenderer({
         <DoctorCards
           doctors={(message.payload?.doctors as never[]) || []}
           onAction={onAction}
+          messageId={message.id}
         />
       );
       break;
@@ -106,6 +107,7 @@ export function MessageRenderer({
         <ServiceCards
           services={(message.payload?.services as never[]) || []}
           onAction={onAction}
+          messageId={message.id}
         />
       );
       break;
@@ -129,6 +131,8 @@ export function MessageRenderer({
         <AppointmentCards
           appointments={(message.payload?.appointments as never[]) || []}
           onAction={onAction}
+          completed={Boolean(message.payload?.completed)}
+          messageId={message.id}
         />
       );
       break;
@@ -138,7 +142,8 @@ export function MessageRenderer({
           clinicSlug={clinicSlug}
           sessionToken={sessionToken ?? null}
           onSessionToken={onSessionToken}
-          onVerified={(token) => onIdentityVerified?.(token)}
+          onVerified={(token) => onIdentityVerified?.(message.id, token)}
+          completed={Boolean(message.payload?.completed)}
         />
       ) : null;
       break;

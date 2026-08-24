@@ -58,9 +58,11 @@ export function DoctorCard({
 export function DoctorCards({
   doctors,
   onAction,
+  messageId,
 }: {
   doctors: DoctorCardData[];
   onAction?: ChatActionHandler;
+  messageId?: string;
 }) {
   // Same fix as TimeSlotsMessage (Phase 22): once a doctor is picked, the
   // booking wizard it launches becomes the one live card in the transcript
@@ -78,7 +80,11 @@ export function DoctorCards({
           key={d.id || i}
           doctor={d}
           onAction={(action, data) => {
-            if (action === "select_doctor") setPicked(true);
+            if (action === "select_doctor") {
+              setPicked(true);
+              onAction?.(action, { ...(data as object), messageId });
+              return;
+            }
             onAction?.(action, data);
           }}
         />
