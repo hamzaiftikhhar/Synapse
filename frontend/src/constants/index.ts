@@ -34,6 +34,7 @@ export const DASHBOARD_NAV = [
   { href: "/dashboard/patients", label: "Patients", icon: "Users" },
   { href: "/dashboard/knowledge", label: "Knowledge Base", icon: "BookOpen" },
   { href: "/dashboard/chatbot", label: "Chatbot", icon: "Bot" },
+  { href: "/dashboard/conversations", label: "Conversations", icon: "MessageSquare" },
   { href: "/dashboard/analytics", label: "Analytics", icon: "BarChart3" },
   { href: "/dashboard/billing", label: "Billing", icon: "CreditCard" },
   { href: "/dashboard/settings", label: "Settings", icon: "Settings" },
