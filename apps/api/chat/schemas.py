@@ -33,3 +33,31 @@ class ChatMessageOut(Schema):
     safety_message: str | None = None
     timings: ChatTimingsOut
     meta: dict[str, Any] = {}
+
+
+class ConversationSummaryOut(Schema):
+    id: str
+    session_token: str
+    display_name: str
+    phone: str | None = None
+    is_authenticated: bool
+    status: str
+    message_count: int
+    last_message_preview: str | None = None
+    last_active_at: str
+    created_at: str
+
+
+class ConversationMessageOut(Schema):
+    id: str
+    role: str
+    message_type: str
+    content: str
+    metadata: dict[str, Any]
+    sequence_number: int
+    created_at: str
+
+
+class ConversationMessagesOut(Schema):
+    messages: list[ConversationMessageOut]
+    has_more: bool
