@@ -1890,6 +1890,428 @@ apps.api.widget.tests` — **643/643**. Eval **674/682 (98.8%)**, unchanged.
 **Recommended next phase:** Step 4 (frontend) — per the user's explicit
 instruction, do not start without review of this report first.
 
+## ✅ Phase 29 Step 4 — Frontend: resume, WhatsApp-style pagination, date separators
+
+**Two small backend companions landed first, both explicitly anticipated
+by the original plan's §4/§8 rather than scope creep discovered mid-step:**
+- `ChatMessage.metadata` for assistant turns was always `{}` — the actual
+  structured payload (`ui_meta`: doctor/service/insurance cards, booking
+  wizard launch params, time slots, ...) was computed and discarded every
+  turn, never persisted. Without this, "preserve structured messages on
+  reload" was structurally impossible — resumed history could only ever
+  render as plain text. `ChatEngine._save_messages` now takes an optional
+  `ui_meta` param and stores it as the assistant row's `metadata`; the one
+  real call site (`engine.py:574`) passes the same `ui_meta` dict already
+  computed for the live response. Existing callers that omit it (this
+  file's own concurrency tests) keep working — it defaults to `{}`.
+- `/widget/config` never exposed the clinic's IANA timezone at all — date
+  separators need it (clinic-local "day", not browser-local) and there was
+  nothing to read. Added `timezone: str` to `WidgetConfigOut`, sourced
+  from `clinic.timezone` (always populated, has a model default).
+
+**Frontend — the actual Step 4 work, inspected before extending (per the
+request's own instruction) rather than building parallel mechanisms:**
+- `widget-provider.tsx`: added `visitorId`/`setVisitorId`, localStorage-
+  backed per-clinic (`synapse_visitor_id_<slug>`, mirroring the existing
+  `sessionToken`/`sessionStorage` pattern exactly but with `localStorage`
+  since this is the one identifier meant to survive a browser restart).
+  `sessionToken`'s own existing mechanism is untouched — resume re-derives
+  it fresh from the visitor id every time rather than needing its own
+  cross-restart persistence, so there was nothing to change there.
+- `services/index.ts` (`widgetService`): new `resume(clinicSlug,
+  visitorId)` and `getMessages(sessionToken, clinicSlug, {before, limit},
+  visitorId)`; `sendGuestMessage` now takes a `visitorId` param. All three
+  send `X-Synapse-Visitor-Id` as a real header only when a value exists —
+  never an empty-string header, matching the backend's own "no header at
+  all" vs. "no visitor" equivalence.
+- `message-parser.ts`: new `hydrateHistoryMessages(rows)` — deliberately
+  **reuses `parseChatResponse`** (wraps each persisted assistant row into
+  the same shape a live `ChatMessageResponse` has, `meta` = the row's now-
+  persisted `ui_meta`) rather than writing a second parallel mapper, so a
+  historical doctor-cards/booking-wizard/time-slots turn renders through
+  the exact same `MessageRenderer` path a live one does. User rows reuse
+  the existing `userTextMessage`. Only `createdAt` gets overridden with
+  the row's real timestamp afterward.
+- `chat-chrome.tsx`: new `clinicDayLabel(iso, timeZone)` + `DateSeparator`
+  — deliberately distinct from the existing `formatMessageTime` (browser-
+  local, meant for one message's own timestamp), grouped by the *clinic's*
+  timezone via `lib/timezone.ts`'s existing `isoToClinicParts`. Calendar-
+  day arithmetic ("yesterday") is done on already-extracted "YYYY-MM-DD"
+  strings via `Date.UTC`, never on a real instant — sidesteps DST entirely
+  rather than being subtly wrong twice a year.
+- `chat-widget.tsx` — the integration:
+  - **Resume fires on widget *open*, not mount, and only when a visitor id
+    already exists in localStorage** — a brand-new browser never calls
+    `/chat/resume` at all, matching the explicit requirement ("don't hit
+    the backend just to be told no"). Guarded by a ref so it fires at most
+    once per page load; the effect's dependency on `widgetCtx.visitorId`
+    correctly re-fires once `WidgetProvider`'s own mount-time localStorage
+    read populates it (avoids a real first-render race where `visitorId`
+    is still `null` on the very first paint).
+  - Hydrated history replaces `messages` in one shot, `stickToBottom`
+    forced true, jumps to bottom without animation (`scrollToBottom(false)`)
+    — no visible scroll animation on initial load.
+  - Upward pagination: an `IntersectionObserver` on a sentinel div above
+    the oldest rendered message (only rendered at all when `has_more` is
+    true), `rootMargin: "200px"` so it triggers before the literal top
+    edge. `loadOlderMessages` calls the existing cursor-pagination
+    endpoint, prepends via `hydrateHistoryMessages`, and updates the
+    oldest-cursor ref for the next page.
+  - **Scroll-position preservation**: captures `scrollHeight`/`scrollTop`
+    right before the prepending `setMessages` call; a `useEffect` after
+    the DOM updates adds the height delta back onto `scrollTop`. A
+    `isPrependingRef` flag tells the *existing* auto-scroll effect to skip
+    entirely for this update (in practice `stickToBottom.current` is
+    already `false` whenever a prepend can even fire, since reaching the
+    sentinel requires having scrolled away from the bottom — the flag is
+    the explicit, testable guarantee rather than an implicit one).
+  - **Unread badge on the existing "Latest" button** (`showJumpDown` was
+    already there from before this phase) — increments only when a
+    message is *appended* (not prepended) while not stuck to bottom;
+    resets on `scrollToBottom` (button click) and on the reader manually
+    scrolling back down. Noted honestly: this app has no live-push
+    channel (request/response only), so in today's architecture this path
+    is rarely exercised — implemented correctly for when it is, not
+    theater.
+  - Date separators inserted via a `renderItems` memo that walks
+    `messages` once and interleaves `DateSeparator` entries wherever the
+    clinic-local calendar day changes — presentation-only, never touches
+    `messages` state or the backend.
+  - Booking-wizard replay: **no special-casing needed.** Inspected
+    `BookingInlineCard`/`BookingWizard` first — `active` (already existing,
+    already used for the live multi-wizard-per-session case) gates the
+    component's own `.start()` call, so a hydrated wizard-launch message
+    only becomes interactive if it's the single most-recent, non-
+    dismissed, non-completed one across the *entire* message array
+    (hydrated + live combined) — exactly the same rule live chat already
+    used for multiple wizards in one long conversation. Reusing it for
+    history replay was a discovery from reading the component, not a new
+    mechanism.
+  - `sendGuestMessage` now sends `visitorId`; a first-time message's
+    response `meta.visitor_id` is what the frontend learns and persists —
+    opening the widget itself never invents one.
+
+**Verification — and an explicit limitation, stated per the repo's own
+"say so if you can't test the UI" rule:**
+- `tsc --noEmit`: clean, zero errors.
+- `next build` (this machine's default Node, v16.17.0, is too old for
+  Next.js 15 — re-ran under `nvm use 20.20.2`): **succeeds.** Only pre-
+  existing warnings in files this phase never touched, plus one pre-
+  existing warning already present on a line inside `chat-widget.tsx`
+  this phase didn't modify (`patientSessionToken`'s own dependency array
+  — confirmed via `git diff` that the flagged line isn't part of this
+  diff).
+- Dev server smoke test (Node 20): `/embed/[clinicSlug]` renders 200,
+  contains the expected chat panel markup, zero server-side render errors
+  in the log.
+- **Backend verified live, end-to-end, against the real dev database**
+  (not just unit tests): `/widget/config` now returns `timezone`; a first
+  guest message creates exactly one `ChatVisitor` + one `ChatSession`; a
+  second message with the returned token/visitor header reuses both (DB
+  query confirmed: 1 visitor, 1 session, 4 messages after 2 turns); the
+  assistant row's persisted `metadata` now contains the full `ui_meta`
+  dict (`lane`, `actions`, `planner`, `routing`, ...) instead of `{}`;
+  `/chat/resume` returns that exact history back correctly hydrated.
+- **What was not possible to verify: real interactive browser testing.**
+  No browser-automation tool is available in this environment — clicking
+  through open→scroll-up→older-page-loads→Latest-button→date-separators-
+  visually-correct was not directly exercised, only traced through the
+  code and confirmed structurally via the backend round-trip above and a
+  clean SSR render. This is a real gap, not a formality — flagging it
+  plainly rather than claiming a manual walkthrough that didn't happen.
+- Backend regression unaffected by the frontend work (no backend files in
+  this phase have logic changes beyond the two additions above): full
+  suite **646/646** (643 + the 2 new `_save_messages` metadata tests + 1
+  new `WidgetConfigOut.timezone` test). Eval **674/682 (98.8%)**,
+  unchanged. `makemigrations --check` clean.
+
+**Also worth flagging plainly:** this session observed the repository
+auto-committing after tool-driven edits (17 local commits ahead of
+`origin/main` by the end of this step, none created via an explicit `git
+commit` call in this conversation) — almost certainly a configured hook in
+this environment, not an action taken deliberately here. Nothing was
+pushed. Noted for the user's awareness since it materially changes local
+repo state.
+
+**Known limitations / found-but-not-fixed:**
+- No live interactive browser verification (see above) — recommend a real
+  manual pass before treating this as fully done, per this repo's own "UI
+  changes need browser verification" rule.
+- The two genuine, previously-flagged races from Step 3 (two truly-
+  simultaneous cold-start requests minting two visitors; a known visitor
+  with no active session yet receiving two truly-concurrent first
+  messages) are unchanged by this step — still frontend-sequencing
+  concerns, not something this step's scope covered.
+- Contact-capture UI (the optional email/phone card) was not part of this
+  step's explicit requirements list and was not built.
+- Analytics hooks (plan §9) remain deliberately deferred, as explicitly
+  requested.
+
+**Recommended next phase:** a real manual browser walkthrough of the
+acceptance flow (new browser → open → no network call → send message →
+visitor/session created → close/reopen → history resumes → scroll up →
+older history loads → Latest button + unread badge → date separators) —
+this step's own explicit next ask — before any further chat-history work.
+
+## ✅ Phase 31 — Chat card collapse-on-supersede, extended (verify_identity, appointments, picker cards)
+
+**Reported (with screenshot):** a fully-interactive "Verify your
+identity" OTP form and a fully-interactive "No upcoming appointments /
+Book a New Appointment" card both stayed on screen, live and re-clickable,
+underneath the booking wizard that had already superseded them — even
+though the OTP had already succeeded and booking had already moved on.
+
+Same bug class as Phase 22 ("Chat card collapse-on-supersede"), which
+fixed `booking_wizard`/`time_slots` and explicitly logged
+`doctor-card.tsx`/`service-card.tsx` as having "the identical no-lock-
+after-select gap, not touched to keep the change scoped." This phase
+closes the gap everywhere it still existed, reusing the exact
+`payload.completed` convention Phase 22 established (6 prior usages, all
+scoped to `booking_wizard`) rather than inventing a new mechanism.
+
+**Root cause, confirmed by direct reads before writing anything:**
+`doctor-card.tsx`/`service-card.tsx`/`time-slots-message.tsx` already
+self-collapse via a local `useState("picked")` → `return null`, but only
+when *their own* button was clicked — an old card superseded by an
+*unrelated* later message never learns about it. `verify-identity.tsx`
+and `appointment-card.tsx`'s empty state had no collapse concept at all.
+`message-renderer.tsx` never threaded `message.id`/`message.payload`
+into either of those two components (`booking_wizard`'s case was the only
+one that already did, via `onDismiss={() => onBookingDismiss?.(message.id)}`
+— the precedent this phase copies). `chat-widget.tsx`'s `handleAction`
+cases for `select_doctor`/`select_slot`/`select_service`/`book_appointment`/
+`start_reschedule` all did a bare `setMessages([...prev, bookingWizardMessage(...)])`
+with no completed-marking at all, unlike `sendText`'s own response
+handler, which already marks prior `booking_wizard` messages completed
+when a new one launches.
+
+**Second issue found while investigating, confirmed with the user before
+building:** `book_appointment` (from the empty-appointments card)
+synthesized the wizard purely client-side, with no backend round-trip at
+all, while every *other* "Book Appointment" entry point in this app
+already goes through a real message (`runBackendAction`'s
+`launch_booking` behavior, `chat-widget.tsx`). Asked the user directly
+(two clarifying questions) rather than guessing on an architectural
+trade-off: whether *all* booking-launch clicks — including ones carrying
+precise structured data (doctor_id, exact slot ISO timestamp, service_id)
+— should be re-sent as free text for the backend NLU to re-parse.
+Confirmed answer: no — only `book_appointment` (no structured data to
+lose) becomes a real message; `select_doctor`/`select_slot`/
+`select_service`/`start_reschedule` (exact IDs/timestamps already
+resolved) stay local, since converting those would force the NLU to
+re-guess values the client already had verbatim — a reliability
+regression, not an improvement, and exactly the kind of "downstream
+handler re-interpreting the user's already-resolved intent" this
+codebase's own architecture rule (CLAUDE.md) warns against.
+
+**Fix:**
+- `message-renderer.tsx` now threads `message.id`/`message.payload?.completed`
+  into `doctor_cards`, `service_cards`, `appointments`, and `verify_identity`
+  (mirroring `booking_wizard`'s existing pattern exactly).
+- `verify-identity.tsx` gained a `completed` prop — a compact "✓ Identity
+  verified" row replaces the live form once true. (Fixed a real hooks-
+  rule violation caught by `next build`'s own lint step during this
+  change: the early return for `completed` was first placed *before* the
+  component's `useState`/`useEffect` calls, which is a conditional-hooks
+  violation — moved below all hook calls, verified clean.)
+- `appointment-card.tsx`'s `AppointmentCards` gained `completed`/`messageId`
+  props — the empty-state branch renders a compact "You started booking a
+  new appointment ↓" line instead of the card+button once true, and now
+  passes `messageId` into its `book_appointment` action payload.
+- `doctor-card.tsx`, `service-card.tsx`, `time-slots-message.tsx` — each
+  now forwards `messageId` into its own `onAction` payload alongside the
+  doctor/service/slot data it already sent (their existing local
+  self-collapse behavior is unchanged).
+- `chat-widget.tsx`: new `markMessageCompleted(messages, messageId)`
+  helper (module-level, same style as the existing `runBackendAction`).
+  `handleIdentityVerified` gained a `messageId` first parameter and now
+  marks that message completed in the same `setMessages` call that
+  appends the appointments card — in *both* the success and failure
+  branches, since OTP verification itself had already succeeded either
+  way. `handleAction`'s `select_doctor`/`select_slot`/`select_service`
+  cases now mark the triggering picker message completed alongside
+  launching the wizard (still fully local, per the confirmed decision).
+  `book_appointment` now branches: if `messageId` is present (the empty-
+  card path), it marks that message completed and calls
+  `sendText("I would like to book an appointment")` — a real `/chat/guest`
+  round-trip, no different from typing it; if not (e.g. `insurance-
+  card.tsx`'s post-selection prompt, which carries a real `insurance`
+  plan name), the original local-synthesis path is untouched, preserving
+  that structured data.
+
+**Files:** `frontend/src/features/chat/messages/verify-identity.tsx`,
+`appointment-card.tsx`, `doctor-card.tsx`, `service-card.tsx`,
+`time-slots-message.tsx`, `message-renderer.tsx`;
+`frontend/src/features/chat/chat-widget.tsx`. No backend changes.
+
+**Verified:** `tsc --noEmit` clean. `next build` under `nvm use 20.20.2`
+(this machine's default Node is too old for Next.js, established in
+Phase 29 Step 4) — succeeds, zero new warnings (same pre-existing,
+unrelated warnings as before this change; confirmed via `git diff` that
+none of the flagged lines are part of this diff). The hooks-rule error
+above was caught by this same build step and fixed before the build was
+considered passing, not after.
+
+**Known limitation, stated plainly:** no browser-automation tool is
+available in this environment — the actual click-through (verify → OTP
+success → compact confirmation appears while the appointments card shows;
+click Book a New Appointment → compact line appears and a real assistant
+turn follows) was traced through the code, not clicked through in a real
+browser. Flagging this the same way Phase 29 Step 4 did, not silently.
+
+**Recommended next phase:** a real manual browser walkthrough of this
+exact flow (OTP verify → appointments empty state → Book a New
+Appointment → picker cards → wizard) before treating this as fully done.
+
+**Follow-up, same day, live screenshot:** the first fix only handled
+supersession triggered by a *click* (`handleAction`'s cases). Reported
+with a screenshot: typing "I want to cancel my appointment" (a normal
+message, no click at all) got back a reply whose `meta` bundled an empty
+`appointments` card *and* a `booking_wizard` launch in the very same
+turn — the wizard rendered correctly, but the appointments card next to
+it stayed in its full "No upcoming appointments / Book a New Appointment"
+form instead of collapsing, because nothing marks a card completed when
+the supersession comes from a normal `sendText` turn rather than a click.
+User also confirmed the click path itself was working correctly, isolating
+the gap precisely to this one path.
+
+Root cause: `sendText`'s own `launchedWizard` block only ever marked
+*prior* `booking_wizard` messages completed — never `appointments`/
+`verify_identity`, and never anything arriving in the *same* turn as the
+wizard (only `prev`, never `parsed.messages`, was touched).
+
+Fix, `chat-widget.tsx`'s `sendText` response handler: when `launchedWizard`
+is true, (1) the `base` map (over `prev`) now also completes any open
+`appointments`/`verify_identity` message, not just `booking_wizard`; (2)
+a new `incoming` map (over `parsed.messages` itself, added — this list
+was previously spread in unmodified) completes any `appointments`/
+`verify_identity` message arriving *alongside* the wizard in this exact
+reply, so a same-turn-bundled card never renders live even for a single
+frame. The wizard message itself is explicitly excluded from both passes
+so it's never accidentally marked completed the instant it's created.
+
+**Verified:** `tsc --noEmit` clean, `next build` succeeds, no new
+warnings. Same browser-testing limitation as above — traced through the
+code (confirmed the wizard's own `booking_wizard` entry is untouched by
+either new pass; confirmed `bookingUpdate`'s downstream lookup, which
+reads from the same `next` array, is unaffected since it only ever
+matches on `booking_wizard` type), not clicked through live.
+
+## ✅ Phase 32 — Staff conversations inbox + real browser verification of persistent chat
+
+**Two things requested together:** (1) a staff-facing "Conversations" page
+so a clinic owner, or a super admin who has entered that clinic, can read
+patient chat transcripts — a feature that didn't exist at all; (2) actual
+browser verification of Phase 29 Steps 4/5 (frontend resume/pagination),
+since everything up to this point had only ever been checked via
+`tsc`/`next build`/direct backend curl calls — the user's own words: "the
+most important test is the real browser flow, not just backend tests."
+Researched industry conversation-inbox patterns first (Intercom/Zendesk/
+Front-style two-pane list+transcript layout) rather than inventing a
+layout from scratch.
+
+**New backend endpoints**, `apps/api/chat/router.py`: `GET /chat/
+conversations` (`PaginatedOut[ConversationSummaryOut]`, same `search`/
+`limit`/`offset` idiom as `list_patients`) and `GET /chat/conversations/
+{session_id}/messages` (cursor-paginated, same shape as the widget's own
+history endpoint). Both reuse `clinic_from(request)` — the same tenant
+resolution every other staff dashboard endpoint already uses, so a clinic
+owner and a super admin who has entered that clinic hit the exact same
+code path with no separate permission model needed. Extracted the
+cursor-pagination query (`apps/api/widget/router.py`'s old `_message_page`)
+into a shared `apps/chatbot/services/message_history.py::paginate_messages`
+so the widget and staff endpoints share one implementation instead of two.
+New tests: `apps/api/chat/tests_conversations.py`, 16 tests (tenant
+isolation, super-admin-before/after-entering, search, pagination
+boundaries, ownership 404s, structured-metadata round-trip).
+
+**New frontend page**, `frontend/src/app/dashboard/conversations/page.tsx`
+— two-pane inbox (list + transcript), a "Conversations" nav entry added.
+Deliberately **reuses `MessageRenderer` in read-only mode** for the
+transcript (confirmed safe to call with only `message` — every
+interactive callback is optional-chained or gated behind a prop that's
+simply not passed) rather than building a second rendering path — a
+doctor/service/booking card in a patient's history renders identically to
+how the live widget shows it. Per the user's confirmed choice, older
+messages load via a plain "Load older messages" button, not the patient
+widget's infinite-scroll polish.
+
+**Real browser verification, `frontend/e2e/`** — the first frontend test
+infrastructure in this repo (Playwright, committed, `npm run test:e2e`).
+This environment's Node (16.17) and Playwright's newest browser builds
+don't support this machine's macOS 12 — pinned `@playwright/test@1.48.0`,
+the last release train still shipping mac12-compatible Chromium, run
+under `nvm use 20.20.2`. Two spec files, 8 tests total, seeding fixtures
+directly via `python manage.py shell` rather than mocking anything.
+
+**Three real bugs found and fixed by this browser testing — none of them
+were visible to `tsc`, `next build`, or any backend curl call, which is
+exactly the gap real browser testing exists to close:**
+
+1. **CORS silently blocked every resume/pagination request.** The
+   backend's `CORS_ALLOW_HEADERS` (`config/settings/base.py`) allow-listed
+   `x-tenant-id` but never `x-synapse-visitor-id` — added in Step 2 of the
+   chat-history work and never revisited. Any cross-origin request
+   carrying the visitor header (i.e. every resume call, every pagination
+   call, and every guest message after the first) was rejected by the
+   browser's own CORS preflight before it ever reached the network tab in
+   a meaningful way — invisible to `curl`, which doesn't enforce CORS at
+   all. This means **returning-visitor history restore has been
+   completely non-functional in this environment this entire time**,
+   despite passing 646/646 backend tests. Fixed: added
+   `x-synapse-visitor-id` to the allow-list.
+2. **The "resuming" skeleton got stuck forever in dev mode.** The resume
+   `useEffect` combined a permanent `resumeAttemptedRef` guard ("only ever
+   run once") with a per-invocation `cancelled` cleanup flag (the usual
+   "don't set state after unmount" hygiene). React's dev-only Strict Mode
+   double-invoke (mount → cleanup → remount) set `cancelled = true` from
+   the *first* invocation's cleanup before its own `await` resolved, while
+   the ref had already blocked the *second* invocation from retrying — the
+   one fetch that actually completed then discarded its own result and
+   never called `setResuming(false)`. Fixed by removing the `cancelled`
+   flag entirely — `resumeAttemptedRef` already guarantees this effect's
+   async work starts at most once for the widget's whole lifetime, so
+   nothing else was relying on it.
+3. **Upward pagination could eagerly fetch every older page on resume,
+   without the user ever scrolling** — violating the plan's own explicit
+   requirement ("never return the entire conversation on open"). Root
+   cause: `el.scrollTo({behavior:"auto"})`'s "instant" jump-to-bottom does
+   not update `scrollTop` synchronously — the actual scroll commit can be
+   deferred by an unpredictable number of frames, worse under load — so
+   the upward-pagination `IntersectionObserver`'s first notification could
+   fire while the container was still at its pre-scroll (top) position,
+   misreading the sentinel as "the user scrolled up." Fixed with two
+   independent guards in the observer callback: a fixed 500ms delay
+   before the observer even attaches (lets the scroll commit settle
+   first), plus checking `stickToBottom.current` (only ever flips false
+   from a real scroll event) instead of trusting the observer's own
+   intersection snapshot alone.
+
+**Also found: one test-only bug, not a product bug** — the Latest-button
+test used a case-sensitive `/Latest/` regex against the button's own
+`aria-label="Jump to latest"` (lowercase), which never matched. The
+product code was correct throughout; only the test assertion was wrong.
+
+**Verified:** Playwright suite **8/8, twice consecutively** (confirmed not
+a lucky single run). Backend: `apps.chatbot.tests apps.knowledge.tests
+apps.patients apps.billing apps.api.widget.tests apps.api.chat.
+tests_conversations` — **662/662**. Eval **674/682 (98.8%)**, unchanged.
+`tsc --noEmit` and `next build` clean, no new warnings. `makemigrations
+--check` clean (no schema changes this phase).
+
+**Found, not fixed:** two isolated test flakes seen once each during
+iteration (a composer `.fill()` not registering, a resume assertion
+timing out) that did not reproduce on retry or in isolation — logged as
+test-infrastructure flakiness, not chased further given they never
+reproduced against a fixed input.
+
+**Recommended next phase:** Step 6 (analytics hooks) remains explicitly
+deferred per the user's own instruction — chat UX and identity linking
+were the priority, analytics comes after. The Conversations page has no
+polish pass yet (relative timestamps, empty states) beyond functional
+correctness; a design pass would be a reasonable next step if the feature
+gets real usage.
+
 ## 💤 Deferred — Conversation state / coreference
 
 Real, confirmed from transcript ("which one treats cancer?" → "Dr. Chloe
