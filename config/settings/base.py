@@ -159,7 +159,7 @@ from corsheaders.defaults import default_headers
 
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[])
-CORS_ALLOW_HEADERS = list(default_headers) + ["x-tenant-id"]
+CORS_ALLOW_HEADERS = list(default_headers) + ["x-tenant-id", "x-synapse-visitor-id"]
 
 # ─── JWT — dual auth (staff portal vs patient widget) ─────────────────────────
 
