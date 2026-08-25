@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { Plus, Pencil, Trash2 } from "lucide-react";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { DataTableShell, EmptyState } from "@/components/dashboard/shell";
+import { BreakdownBarCard } from "@/components/dashboard/charts";
 import { ImportTriggerButton } from "@/features/importer/import-trigger-button";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -117,6 +118,15 @@ export default function SpecialtiesPage() {
           </div>
         }
       />
+      <div className="mb-4">
+        <BreakdownBarCard
+          dimension="specialty"
+          title="Appointments by specialty"
+          description="Top specialties in the last 30 days"
+          emptyTitle="No specialty mix yet"
+          emptyDescription="Visits linked to a provider specialty will show here."
+        />
+      </div>
       <DataTableShell
         toolbar={
           <Input

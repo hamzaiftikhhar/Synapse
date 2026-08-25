@@ -12,9 +12,18 @@ import { PageHeader } from "@/components/dashboard/page-header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useAuth } from "@/providers/auth-provider";
+import { useAnalyticsOverview } from "@/hooks/api";
+import {
+  AnalyticsAreaChart,
+  ChartPanel,
+  MetricStat,
+  seriesHasValues,
+} from "@/components/dashboard/charts";
 
 export default function ChatbotQaPage() {
   const { clinic } = useAuth();
+  const overview = useAnalyticsOverview("30d");
+  const trend = overview.data?.conversation_appointment_trend ?? [];
 
   return (
     <div className="mx-auto max-w-3xl pb-24">
@@ -23,6 +32,37 @@ export default function ChatbotQaPage() {
         description="Test and configure your clinic assistant. Use the floating widget in the bottom-right corner — the same experience patients see on your website."
       />
 
+      <div className="mb-6 grid gap-3 sm:grid-cols-3">
+        <MetricStat
+          label="Total conversations"
+          value={overview.data?.summary.conversations ?? "—"}
+        />
+        <MetricStat label="Active" value={overview.data?.ops.inbox.active ?? "—"} />
+        <MetricStat
+          label="Escalated"
+          value={overview.data?.ops.inbox.escalated ?? "—"}
+          accent="amber"
+        />
+      </div>
+      <div className="mb-6">
+        <ChartPanel
+          title="Chat activity"
+          description="Conversations started in the last 30 days"
+          isLoading={overview.isLoading}
+          isError={overview.isError}
+          onRetry={() => void overview.refetch()}
+          hasData={seriesHasValues(trend, ["conversations"])}
+          emptyTitle="No chat activity yet"
+          emptyDescription="Widget conversations will draw a small trend here."
+        >
+          <AnalyticsAreaChart
+            data={trend.map((row) => ({ date: row.date, count: row.conversations }))}
+            dataKey="count"
+            label="Conversations"
+            height={180}
+          />
+        </ChartPanel>
+      </div>
       <div className="mb-6 overflow-hidden rounded-2xl border border-border bg-card p-6 text-foreground">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-start gap-3">

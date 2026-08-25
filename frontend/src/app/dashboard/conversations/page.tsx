@@ -11,7 +11,8 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { hydrateHistoryMessages } from "@/features/chat/message-parser";
 import { MessageRenderer } from "@/features/chat/messages";
-import { useConversationMessages, useConversations } from "@/hooks/api";
+import { useConversationMessages, useConversations, useAnalyticsOverview } from "@/hooks/api";
+import { MetricStat } from "@/components/dashboard/charts";
 import type { ConversationSummary } from "@/types/api";
 
 const PAGE_SIZE = 30;
@@ -70,6 +71,8 @@ export default function ConversationsPage() {
     search: search || undefined,
     limit,
   });
+  const overview = useAnalyticsOverview("30d");
+  const inbox = overview.data?.ops.inbox;
   const rows = data?.results ?? [];
 
   const messagesQuery = useConversationMessages(selected?.id ?? null);
@@ -88,7 +91,17 @@ export default function ConversationsPage() {
         title="Conversations"
         description="Patient conversations from your chat widget — read-only."
       />
-      <div className="flex h-[calc(100vh-220px)] min-h-[480px] gap-4">
+      <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <MetricStat label="Total" value={inbox?.total ?? data?.count ?? "—"} />
+        <MetricStat label="Active" value={inbox?.active ?? "—"} />
+        <MetricStat label="Closed" value={inbox?.closed ?? "—"} />
+        <MetricStat
+          label="Needs attention"
+          value={inbox?.escalated ?? "—"}
+          accent="amber"
+        />
+      </div>
+      <div className="flex h-[calc(100vh-280px)] min-h-[480px] gap-4">
         <div className="flex w-80 shrink-0 flex-col overflow-hidden rounded-2xl border border-border bg-card">
           <div className="border-b border-border p-3">
             <Input

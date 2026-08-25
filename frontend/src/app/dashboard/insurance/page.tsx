@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { Plus, Pencil, Trash2 } from "lucide-react";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { DataTableShell, EmptyState } from "@/components/dashboard/shell";
+import { BreakdownBarCard } from "@/components/dashboard/charts";
 import { ImportTriggerButton } from "@/features/importer/import-trigger-button";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -127,6 +128,15 @@ export default function InsurancePage() {
           </div>
         }
       />
+      <div className="mb-4">
+        <BreakdownBarCard
+          dimension="insurance"
+          title="Appointments by insurance"
+          description="Top payers on booked visits in the last 30 days"
+          emptyTitle="No insurance mix yet"
+          emptyDescription="Appointments with an insurance plan attached will rank payers here."
+        />
+      </div>
       <DataTableShell
         toolbar={
           <Input

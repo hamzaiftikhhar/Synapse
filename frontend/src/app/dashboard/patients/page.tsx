@@ -32,7 +32,15 @@ import {
   useDeletePatient,
   usePatients,
   useUpdatePatient,
+  useAnalyticsOverview,
+  useAnalyticsBreakdown,
 } from "@/hooks/api";
+import {
+  AnalyticsAreaChart,
+  ChartPanel,
+  MetricStat,
+  seriesHasValues,
+} from "@/components/dashboard/charts";
 import { getApiErrorMessage } from "@/lib/api/client";
 import type { Patient } from "@/types/api";
 
@@ -50,6 +58,8 @@ export default function PatientsPage() {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Patient | null>(null);
   const { data, isLoading } = usePatients({ search: search || undefined, limit: 100 });
+  const overview = useAnalyticsOverview("30d");
+  const newPatients = useAnalyticsBreakdown("new_patients", "30d");
   const create = useCreatePatient();
   const update = useUpdatePatient();
   const remove = useDeletePatient();
@@ -119,6 +129,43 @@ export default function PatientsPage() {
           </Button>
         }
       />
+      <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <MetricStat label="Total patients" value={data?.count ?? "—"} />
+        <MetricStat
+          label="New this month"
+          value={overview.data?.summary.patients_new ?? "—"}
+        />
+        <MetricStat
+          label="Returning patients"
+          value={overview.data?.summary.patients_returning ?? "—"}
+        />
+        <MetricStat
+          label="Upcoming appointments"
+          value={overview.data?.ops.patients_upcoming ?? "—"}
+        />
+      </div>
+      <div className="mb-4">
+        <ChartPanel
+          title="New patients over time"
+          description="Registrations in the last 30 days"
+          isLoading={newPatients.isLoading}
+          isError={newPatients.isError}
+          onRetry={() => void newPatients.refetch()}
+          hasData={seriesHasValues(newPatients.data?.items ?? [], ["count"])}
+          emptyTitle="No new patients yet"
+          emptyDescription="New patient records in this window will appear here."
+        >
+          <AnalyticsAreaChart
+            data={(newPatients.data?.items ?? []).map((row) => ({
+              date: row.label,
+              count: row.count,
+            }))}
+            dataKey="count"
+            label="New patients"
+            height={180}
+          />
+        </ChartPanel>
+      </div>
       <DataTableShell
         toolbar={
           <Input

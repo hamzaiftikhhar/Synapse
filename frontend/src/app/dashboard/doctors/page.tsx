@@ -45,7 +45,9 @@ import {
   useSpecialties,
   useUpdateDoctor,
   useUpdateDoctorSchedule,
+  useAnalyticsOverview,
 } from "@/hooks/api";
+import { BreakdownBarCard, MetricStat } from "@/components/dashboard/charts";
 import { getApiErrorMessage } from "@/lib/api/client";
 import type { Doctor } from "@/types/api";
 
@@ -72,6 +74,7 @@ export default function DoctorsPage() {
   const { data, isLoading } = useDoctors({ search: search || undefined, limit: 100 });
   const { data: specialtiesData } = useSpecialties({ limit: 100 });
   const { data: servicesData } = useServices({ limit: 100 });
+  const overview = useAnalyticsOverview("30d");
   const create = useCreateDoctor();
   const update = useUpdateDoctor();
   const remove = useDeleteDoctor();
@@ -239,6 +242,29 @@ export default function DoctorsPage() {
           </TabsTrigger>
         </TabsList>
       </Tabs>
+
+      {view === "providers" ? (
+        <div className="mb-4 space-y-4">
+          <div className="grid gap-3 sm:grid-cols-3">
+            <MetricStat label="Total doctors" value={data?.count ?? "—"} />
+            <MetricStat
+              label="Active doctors"
+              value={rows.filter((d) => d.is_active).length}
+            />
+            <MetricStat
+              label="With upcoming appointments"
+              value={overview.data?.ops.doctors_with_upcoming ?? "—"}
+            />
+          </div>
+          <BreakdownBarCard
+            dimension="doctor"
+            title="Appointments by doctor"
+            description="Top providers in the last 30 days"
+            emptyTitle="No appointments yet"
+            emptyDescription="Booked visits will rank providers here."
+          />
+        </div>
+      ) : null}
 
       {view === "hours" ? (
         <DoctorHoursEditor

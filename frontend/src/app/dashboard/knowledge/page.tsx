@@ -27,6 +27,8 @@ import {
 import { getApiErrorMessage } from "@/lib/api/client";
 import { documentsService } from "@/services";
 import type { KnowledgeDocument } from "@/types/api";
+import { MetricStat } from "@/components/dashboard/charts";
+import { format, parseISO } from "date-fns";
 
 export default function KnowledgePage() {
   const { data, isLoading } = useDocuments();
@@ -43,6 +45,11 @@ export default function KnowledgePage() {
   const [editOpen, setEditOpen] = useState(false);
 
   const rows = data ?? [];
+  const chunkTotal = rows.reduce((sum, doc) => sum + (doc.chunk_count || 0), 0);
+  const lastUpdated = rows.reduce<string | null>((latest, doc) => {
+    if (!latest || doc.updated_at > latest) return doc.updated_at;
+    return latest;
+  }, null);
 
   const syncSelected = useCallback(
     (doc: KnowledgeDocument | null) => {
@@ -174,6 +181,15 @@ export default function KnowledgePage() {
         title="Knowledge Base"
         description="Upload clinic documents for RAG answers in the patient chatbot."
       />
+
+      <div className="mb-6 grid gap-3 sm:grid-cols-3">
+        <MetricStat label="Documents" value={rows.length} />
+        <MetricStat label="Knowledge chunks" value={chunkTotal.toLocaleString()} />
+        <MetricStat
+          label="Last updated"
+          value={lastUpdated ? format(parseISO(lastUpdated), "MMM d, yyyy") : "—"}
+        />
+      </div>
 
       <div className="mb-6">
         <UploadDropzone

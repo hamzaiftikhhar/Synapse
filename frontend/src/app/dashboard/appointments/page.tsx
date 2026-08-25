@@ -5,6 +5,12 @@ import { Ban, Calendar, Pencil, Plus, Search } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { DataTableShell, EmptyState } from "@/components/dashboard/shell";
+import {
+  AnalyticsAreaChart,
+  ChartPanel,
+  MetricStat,
+  seriesHasValues,
+} from "@/components/dashboard/charts";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -44,6 +50,7 @@ import {
   useAppointments,
   useCancelAppointment,
   useDoctors,
+  useAnalyticsOverview,
 } from "@/hooks/api";
 import { getApiErrorMessage } from "@/lib/api/client";
 import {
@@ -97,6 +104,7 @@ export default function AppointmentsPage() {
 
   const { data, isLoading } = useAppointments(listParams);
   const { data: doctorsData } = useDoctors({ limit: 100 });
+  const weekly = useAnalyticsOverview("7d");
   const cancel = useCancelAppointment();
 
   const doctors = doctorsData?.results ?? [];
@@ -173,6 +181,44 @@ export default function AppointmentsPage() {
           </Button>
         }
       />
+      <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <MetricStat label="Today" value={weekly.data?.ops.appointments_today ?? "—"} />
+        <MetricStat label="Upcoming" value={weekly.data?.ops.appointments_upcoming ?? "—"} />
+        <MetricStat
+          label="Completed"
+          value={weekly.data?.ops.appointments_completed ?? "—"}
+          accent="green"
+        />
+        <MetricStat
+          label="Cancelled"
+          value={weekly.data?.ops.appointments_cancelled ?? "—"}
+        />
+      </div>
+      <div className="mb-4">
+        <ChartPanel
+          title="Weekly appointment volume"
+          description="Appointments created in the last 7 days"
+          isLoading={weekly.isLoading}
+          isError={weekly.isError}
+          onRetry={() => void weekly.refetch()}
+          hasData={seriesHasValues(
+            weekly.data?.conversation_appointment_trend ?? [],
+            ["appointments"]
+          )}
+          emptyTitle="No appointments this week"
+          emptyDescription="New bookings this week will draw a small trend here."
+        >
+          <AnalyticsAreaChart
+            data={(weekly.data?.conversation_appointment_trend ?? []).map((row) => ({
+              date: row.date,
+              count: row.appointments,
+            }))}
+            dataKey="count"
+            label="Appointments"
+            height={180}
+          />
+        </ChartPanel>
+      </div>
       <DataTableShell
         toolbar={
           <div className="flex w-full flex-col gap-3 lg:flex-row lg:items-center">
