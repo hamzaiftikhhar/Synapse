@@ -3222,7 +3222,7 @@ chart-free.
 | --- | --- | --- | --- |
 | Conversation volume | `ChatSession` | `created_at` | COUNT by clinic-local day |
 | Appointments created | `Appointment` | `created_at` | COUNT by clinic-local day |
-| Appointment status | `Appointment` | `start_time` in window | COUNT by `status` (pending/confirmed/completed/cancelled/no_show/rescheduled only) |
+| Appointment status | `Appointment` | `created_at` in window | COUNT by `status` (all six statuses, including zeros). Total matches appointments booked in the same window. |
 | Specialty / provider / service / insurance bars | `Appointment` → doctor specialties / doctor / service / insurance_plan | `start_time` | COUNT, top 5, distinct for specialties |
 | New patients | `Patient` | `created_at` | COUNT |
 | Returning patients | `Appointment` whose `patient.created_at` is before the window | appointment `created_at` | COUNT DISTINCT patient |
@@ -3251,6 +3251,18 @@ chart-free.
 
 ---
 
+## Frontend — Glass month booking calendar ✅
+
+**Objective.** Replace the dashboard’s leftover “Upcoming appointments” list (and the unused GitHub-heatmap `ActivityCalendar`) with a month-only frosted-glass calendar: clinic-local day marks for how many visits are booked, a professional today highlight, and the next upcoming visits with initial avatars. No week/day/range chrome.
+
+**What changed.** `GET /api/v1/analytics/calendar?year=&month=` returns clinic-local day counts (pending/confirmed/completed/rescheduled only — cancelled and no-show do not mark the day) plus the next 3 upcoming visits (`start_time >= now`, pending/confirmed/rescheduled) with patient and doctor names. The dashboard right column is now `BookingCalendarCard`: photo wash + iOS-style `backdrop-blur` overlay, Sunday-start month grid, coral pips (1–3) for booking density, white filled today circle, glass upcoming rows with overlapping initials. Month chevrons only.
+
+**Files.** `apps/api/analytics/ranges.py` (`parse_year_month`), `apps/api/analytics/service.py` (`calendar_month`), `apps/api/analytics/router.py`, `apps/api/analytics/tests.py`; `frontend/src/components/dashboard/charts/booking-calendar-card.tsx`, `frontend/public/dashboard/calendar-wash.png`, types/hooks/service, `frontend/src/app/dashboard/page.tsx`, e2e heading updated to “Bookings”.
+
+**Found but not fixed.** `ActivityCalendar` is unused on any page (still exported). Background PNG is ~1.6MB (local asset, no Unsplash runtime). Playwright Chromium still cannot install on this macOS 12 host.
+
+---
+
 ## Working agreement (why phases stay this small)
 
 - One phase, one focus. Report before starting the next.
@@ -3261,3 +3273,40 @@ chart-free.
   the smallest change, then adds a regression test that would have caught
   it.
 - Full command reference: see `CLAUDE.md`.
+
+---
+
+## Knowledge — OpenAI embeddings (replace local BGE) ✅
+
+**Objective.** Stop loading `BAAI/bge-base-en-v1.5` on `runserver`; use the
+OpenAI embeddings API (`text-embedding-3-small`, 1536-d) that was already
+implemented behind `EMBEDDING_PROVIDER`.
+
+**What changed.** Defaults and `.env` now select `openai` /
+`text-embedding-3-small` / `1536`. pgvector column migrated 768 → 1536
+(old BGE vectors cannot be cast — they were nulled). Indexed documents
+were set back to `chunked` so they must be reindexed. Warm-up is a no-op
+for OpenAI, so runserver no longer prints `Loading local embedding model`.
+
+**Files.** `config/settings/base.py`, `.env.example`,
+`apps/knowledge/models.py`, `apps/knowledge/migrations/0010_embedding_dimensions_1536.py`,
+knowledge embedding tests, `ARCHITECTURE.md` §9,
+`docs/rag/EMBEDDING-PROVIDER-SWITCH.md`.
+
+**Found but not fixed.** Existing clinic documents need a reindex
+(`POST /api/v1/documents/{id}/reindex`) before RAG search works again —
+vectors were intentionally cleared. Chat completions were already OpenAI;
+only the embedding backend changed.
+
+**Follow-up (Apex load).** The clinic still failed in the browser after
+the backfill. Two Apex-specific problems, both now cleared:
+
+1. Widget `avatar_url` was a ~126KB data-URI (gold seal). Every dashboard
+   and embed load fetched it with `/widget/config`. Cleared; user will
+   upload a new knowledge doc themselves.
+2. Apex knowledge rows (live SOP + deleted seed txt, 8 chunks) were
+   deleted so a fresh upload can re-embed cleanly.
+
+Also: a stale staff JWT on `/embed/...` used to 401 `/auth/me` and bounce
+the public embed to `/login`. Redirect now only happens on portal routes
+(`/dashboard`, `/onboarding`, `/select-tenant`).
