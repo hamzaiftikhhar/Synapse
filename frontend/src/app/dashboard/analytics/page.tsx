@@ -5,11 +5,12 @@ import { format, parseISO } from "date-fns";
 import { PageHeader } from "@/components/dashboard/page-header";
 import {
   AnalyticsAreaChart,
-  AnalyticsDonutChart,
   AnalyticsHorizontalBarChart,
   AnalyticsLegend,
   AnalyticsLineChart,
   AnalyticsStackedBarChart,
+  AppointmentStatusCard,
+  SpecialtyMixCard,
   ChartPanel,
   DateRangeSelector,
   MetricStat,
@@ -17,9 +18,8 @@ import {
   seriesHasValues,
   type AnalyticsRange,
 } from "@/components/dashboard/charts";
-import { CHART, STATUS_COLOR } from "@/components/dashboard/charts/colors";
+import { CHART } from "@/components/dashboard/charts/colors";
 import { ModelMix } from "@/features/analytics/model-mix";
-import { STATUS_LABEL } from "@/features/appointments/constants";
 import { useAnalyticsInsights } from "@/hooks/api";
 import { formatTokens, formatUsd } from "@/lib/analytics-format";
 
@@ -52,12 +52,6 @@ export default function AnalyticsPage() {
   const volume = data?.conversations_detail.volume ?? [];
   const outcomes = data?.conversations_detail.outcomes ?? [];
   const apptTrend = data?.appointment_trend ?? [];
-  const statuses = (data?.appointment_status ?? []).map((row) => ({
-    status: row.status,
-    count: row.count,
-    label: STATUS_LABEL[row.status] ?? row.status,
-    color: STATUS_COLOR[row.status] ?? CHART.gray,
-  }));
   const specialties = data?.appointments_by_specialty ?? [];
   const patientTrend = data?.patients_detail.trend ?? [];
   const frequency = data?.patients_detail.frequency ?? [];
@@ -167,35 +161,19 @@ export default function AnalyticsPage() {
           <AnalyticsAreaChart data={apptTrend} dataKey="count" label="Appointments" />
         </ChartPanel>
         <div className="grid gap-4 lg:grid-cols-2">
-          <ChartPanel
-            title="Appointment status"
+          <AppointmentStatusCard
+            data={data?.appointment_status}
             isLoading={query.isLoading}
             isError={query.isError}
             onRetry={retry}
-            hasData={statuses.some((row) => row.count > 0)}
-            emptyTitle="No appointment data yet"
-            emptyDescription="Status mix appears after visits are on the books."
-          >
-            <AnalyticsDonutChart data={statuses} />
-          </ChartPanel>
-          <ChartPanel
-            title="Appointments by specialty"
-            action={
-              (data?.appointments_by_specialty_more ?? 0) > 0 ? (
-                <span className="text-[12px] text-muted-foreground">
-                  +{data?.appointments_by_specialty_more} more
-                </span>
-              ) : null
-            }
+          />
+          <SpecialtyMixCard
+            data={specialties}
+            more={data?.appointments_by_specialty_more ?? 0}
             isLoading={query.isLoading}
             isError={query.isError}
             onRetry={retry}
-            hasData={specialties.some((row) => row.count > 0)}
-            emptyTitle="No specialty mix yet"
-            emptyDescription="Visits linked to a provider specialty will show here."
-          >
-            <AnalyticsHorizontalBarChart data={specialties} />
-          </ChartPanel>
+          />
         </div>
       </Section>
 

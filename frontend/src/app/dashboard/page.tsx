@@ -2,32 +2,27 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { Calendar, MessageSquare } from "lucide-react";
+import { MessageSquare } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { EmptyState } from "@/components/dashboard/shell";
 import { SetupChecklistCard } from "@/components/dashboard/setup-checklist";
 import {
-  AnalyticsDonutChart,
-  AnalyticsHorizontalBarChart,
   AnalyticsLegend,
   AnalyticsLineChart,
+  AppointmentSourceRadarCard,
+  AppointmentStatusCard,
+  BookingCalendarCard,
+  SpecialtyMixCard,
   ChartPanel,
   DateRangeSelector,
   greetingForHour,
   seriesHasValues,
   type AnalyticsRange,
 } from "@/components/dashboard/charts";
-import { CHART, STATUS_COLOR } from "@/components/dashboard/charts/colors";
-import { InsightCard, GlyphStat, ActivityCalendar, KpiSparkCard } from "@/components/dashboard/insights";
-import { Badge } from "@/components/ui/badge";
-import { STATUS_BADGE_VARIANT, STATUS_LABEL } from "@/features/appointments/constants";
-import {
-  useAnalyticsOverview,
-  useAppointments,
-  useConversations,
-} from "@/hooks/api";
-import { formatClinicWhen } from "@/lib/timezone";
+import { CHART } from "@/components/dashboard/charts/colors";
+import { InsightCard, GlyphStat, KpiSparkCard } from "@/components/dashboard/insights";
+import { useAnalyticsOverview, useConversations } from "@/hooks/api";
 import { useAuth } from "@/providers/auth-provider";
 
 function hourInZone(timeZone: string): number {
@@ -45,10 +40,6 @@ export default function DashboardHomePage() {
   const [range, setRange] = useState<AnalyticsRange>("30d");
   const overview = useAnalyticsOverview(range);
   const conversations = useConversations({ limit: 8 });
-  const upcoming = useAppointments({
-    from_date: new Date().toISOString(),
-    limit: 8,
-  });
 
   const timeZone = clinic?.timezone || "UTC";
   const name =
@@ -56,15 +47,8 @@ export default function DashboardHomePage() {
   const data = overview.data;
   const summary = data?.summary;
   const trend = data?.conversation_appointment_trend ?? [];
-  const statuses = (data?.appointment_status ?? []).map((row) => ({
-    status: row.status,
-    count: row.count,
-    label: STATUS_LABEL[row.status] ?? row.status,
-    color: STATUS_COLOR[row.status] ?? CHART.gray,
-  }));
   const specialties = data?.appointments_by_specialty ?? [];
   const recentChats = conversations.data?.results ?? [];
-  const upcomingRows = upcoming.data?.results ?? [];
 
   return (
     <div>
@@ -156,27 +140,13 @@ export default function DashboardHomePage() {
             height={280}
           />
         </ChartPanel>
-        <ChartPanel
-          title="Activity calendar"
-          description="Combined volume by day"
+        <AppointmentSourceRadarCard
+          data={data?.appointment_source_radar ?? []}
           isLoading={overview.isLoading}
           isError={overview.isError}
           onRetry={() => void overview.refetch()}
-          hasData={seriesHasValues(trend, ["conversations", "appointments"])}
-          emptyTitle="No activity yet"
-          emptyDescription="Days with conversations or bookings will light up here."
           className="lg:w-[38%]"
-        >
-          <div style={{ height: 280 }}>
-            <ActivityCalendar
-              days={trend.map((row) => ({
-                date: row.date,
-                count: row.conversations + row.appointments,
-              }))}
-              color="var(--insight-royal)"
-            />
-          </div>
-        </ChartPanel>
+        />
       </div>
 
       <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -203,41 +173,23 @@ export default function DashboardHomePage() {
       </div>
 
       <div className="mt-4 grid gap-4 lg:grid-cols-2">
-        <ChartPanel
-          title="Appointment status"
-          description="Visits scheduled in this window"
+        <AppointmentStatusCard
+          data={data?.appointment_status}
           isLoading={overview.isLoading}
           isError={overview.isError}
           onRetry={() => void overview.refetch()}
-          hasData={statuses.some((row) => row.count > 0)}
-          emptyTitle="No appointment data yet"
-          emptyDescription="Once patients book appointments, status mix will appear here."
-        >
-          <AnalyticsDonutChart data={statuses} />
-        </ChartPanel>
-        <ChartPanel
-          title="Appointments by specialty"
-          description="Top specialties from booked visits"
-          action={
-            (data?.appointments_by_specialty_more ?? 0) > 0 ? (
-              <span className="text-[12px] text-muted-foreground">
-                +{data?.appointments_by_specialty_more} more
-              </span>
-            ) : null
-          }
+        />
+        <SpecialtyMixCard
+          data={specialties}
+          more={data?.appointments_by_specialty_more ?? 0}
           isLoading={overview.isLoading}
           isError={overview.isError}
           onRetry={() => void overview.refetch()}
-          hasData={specialties.some((row) => row.count > 0)}
-          emptyTitle="No specialty mix yet"
-          emptyDescription="Appointments linked to providers with specialties will show here."
-        >
-          <AnalyticsHorizontalBarChart data={specialties} />
-        </ChartPanel>
+        />
       </div>
 
-      <div className="mt-4 grid gap-4 lg:grid-cols-2">
-        <InsightCard overflow="hidden">
+      <div className="mt-4 flex flex-col gap-4 lg:flex-row">
+        <InsightCard overflow="hidden" className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-3 border-b border-border px-5 py-3">
             <p className="text-sm font-medium text-navy">Recent conversations</p>
             <Link
@@ -274,42 +226,7 @@ export default function DashboardHomePage() {
           )}
         </InsightCard>
 
-        <InsightCard overflow="hidden">
-          <div className="flex items-center justify-between gap-3 border-b border-border px-5 py-3">
-            <p className="text-sm font-medium text-navy">Upcoming appointments</p>
-            <Link
-              href="/dashboard/appointments"
-              className="inline-flex h-7 items-center rounded-[8px] border border-border px-2.5 text-[0.8rem] hover:bg-muted"
-            >
-              Board
-            </Link>
-          </div>
-          {upcoming.isLoading ? (
-            <div className="h-48 animate-pulse bg-muted/50" />
-          ) : !upcomingRows.length ? (
-            <EmptyState
-              icon={Calendar}
-              title="No upcoming visits"
-              description="Booked appointments from now onward will appear here."
-            />
-          ) : (
-            <ul>
-              {upcomingRows.map((a) => (
-                <li key={a.id} className="flex items-center justify-between gap-3 border-b border-border/70 px-5 py-3 last:border-0">
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-medium text-navy">{a.patient_name}</p>
-                    <p className="truncate text-[12px] text-muted-foreground">
-                      {a.doctor_name} · {formatClinicWhen(a.start_time, timeZone)}
-                    </p>
-                  </div>
-                  <Badge variant={STATUS_BADGE_VARIANT[a.status] ?? "secondary"} className="capitalize">
-                    {STATUS_LABEL[a.status] ?? a.status}
-                  </Badge>
-                </li>
-              ))}
-            </ul>
-          )}
-        </InsightCard>
+        <BookingCalendarCard timeZone={timeZone} className="w-full lg:w-[33%] lg:shrink-0" />
       </div>
     </div>
   );
