@@ -3,12 +3,17 @@
 import { OPERATION_HINT, OPERATION_LABEL, formatTokens, formatUsd } from "@/lib/analytics-format";
 import type { AnalyticsModelRow, AnalyticsOperationRow } from "@/types/api";
 
-function ShareBar({ share }: { share: number }) {
+const MIX_TONES = ["#6b3cf0", "#9b7dff", "#c4b5fd", "#e45a9a"];
+
+function ShareBar({ share, index }: { share: number; index: number }) {
   return (
-    <div className="h-1.5 overflow-hidden rounded-full bg-primary/10">
+    <div className="h-2.5 overflow-hidden rounded-[5px] bg-[var(--insight-wash)]">
       <div
-        className="h-full rounded-full bg-primary"
-        style={{ width: `${Math.max(share, share > 0 ? 2 : 0)}%` }}
+        className="h-full rounded-[5px]"
+        style={{
+          width: `${Math.max(share, share > 0 ? 2 : 0)}%`,
+          background: MIX_TONES[index % MIX_TONES.length],
+        }}
       />
     </div>
   );
@@ -29,7 +34,7 @@ export function ModelMix({
 
   return (
     <ul className="space-y-4">
-      {rows.map((row) => {
+      {rows.map((row, i) => {
         const share = (row.total_tokens / total) * 100;
         return (
           <li key={row.model}>
@@ -42,7 +47,7 @@ export function ModelMix({
                 ) : null}
               </span>
             </div>
-            <ShareBar share={share} />
+            <ShareBar share={share} index={i} />
             <p className="mt-1.5 text-[11px] tabular-nums text-muted-foreground">
               {row.prompt_tokens.toLocaleString()} in · {row.completion_tokens.toLocaleString()} out
               · {row.calls.toLocaleString()} calls
@@ -74,7 +79,7 @@ export function OperationMix({ rows }: { rows: AnalyticsOperationRow[] }) {
 
   return (
     <ul className="space-y-4">
-      {display.map((row) => {
+      {display.map((row, i) => {
         const share = (row.total_tokens / total) * 100;
         const label = OPERATION_LABEL[row.operation] ?? row.operation;
         return (
@@ -88,7 +93,7 @@ export function OperationMix({ rows }: { rows: AnalyticsOperationRow[] }) {
                 </span>
               </span>
             </div>
-            <ShareBar share={share} />
+            <ShareBar share={share} index={i} />
             <p className="mt-1.5 text-[11px] text-muted-foreground">
               {OPERATION_HINT[row.operation] ?? row.operation}
             </p>

@@ -254,6 +254,36 @@
     0 8px 24px rgb(28 31 38 / 4%);
 }
 
+/* Clinic Dashboard + Analytics insight wall — royal purple, rectangular cards.
+   Scoped so billing/settings/tables keep the existing instrument chrome. */
+.theme-instrument {
+  --insight-ink: #3a246e;
+  --insight-ink-deep: #1c1338;
+  --insight-royal: #6b3cf0;
+  --insight-orchid: #9b7dff;
+  --insight-wash: #ece6ff;
+  --insight-lilac: #cfc3ff;
+  --insight-magenta: #e45a9a;
+  --insight-radius: 10px;
+}
+
+.theme-instrument.theme-light {
+  --insight-ink: #2a1848;
+  --insight-ink-deep: #1a1033;
+  --insight-wash: #ebe4ff;
+}
+
+.insight-card {
+  border-radius: var(--insight-radius);
+  box-shadow:
+    0 1px 1px rgb(36 22 72 / 4%),
+    0 10px 28px rgb(36 22 72 / 5%);
+}
+
+.theme-instrument:not(.theme-light) .insight-card {
+  box-shadow: 0 1px 0 rgb(255 255 255 / 4%);
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;
