@@ -10,7 +10,7 @@ from django.utils import timezone
 
 from apps.api.platform.tests import make_super_admin
 from apps.api.test_helpers import make_clinic_admin
-from apps.appointments.models import Appointment, AppointmentStatus
+from apps.appointments.models import Appointment, AppointmentSource, AppointmentStatus
 from apps.appointments.tests.factories import AppointmentWorld, unique_code
 from apps.chatbot.models import ChatSession, ChatSessionStatus
 from apps.doctors.models import DoctorSpecialty
@@ -20,6 +20,7 @@ from apps.specialties.models import Specialty
 OVERVIEW = "/api/v1/analytics/overview"
 INSIGHTS = "/api/v1/analytics/insights"
 BREAKDOWN = "/api/v1/analytics/breakdown"
+CALENDAR = "/api/v1/analytics/calendar"
 LA = ZoneInfo("America/Los_Angeles")
 
 
@@ -36,7 +37,17 @@ class AnalyticsOverviewTests(TestCase):
         body = resp.json()
         self.assertEqual(body["summary"]["conversations"], 0)
         self.assertEqual(body["summary"]["appointments"], 0)
-        self.assertEqual(body["appointment_status"], [])
+        self.assertEqual(
+            {row["status"]: row["count"] for row in body["appointment_status"]},
+            {
+                "confirmed": 0,
+                "pending": 0,
+                "completed": 0,
+                "cancelled": 0,
+                "no_show": 0,
+                "rescheduled": 0,
+            },
+        )
         self.assertTrue(len(body["conversation_appointment_trend"]) >= 7)
 
     def test_invalid_range_rejected(self):
@@ -74,6 +85,7 @@ class AnalyticsOverviewTests(TestCase):
         by_status = {row["status"]: row["count"] for row in body["appointment_status"]}
         self.assertEqual(by_status.get("confirmed"), 1)
         self.assertEqual(by_status.get("pending"), 1)
+        self.assertEqual(sum(by_status.values()), body["summary"]["appointments"])
 
     def test_clinic_timezone_daily_bucket(self):
         # 21 Aug 2026 01:00 UTC = 20 Aug 2026 18:00 America/Los_Angeles
@@ -112,6 +124,39 @@ class AnalyticsOverviewTests(TestCase):
         body = self.client.get(OVERVIEW, headers=self.world.headers).json()
         labels = [row["label"] for row in body["appointments_by_specialty"]]
         self.assertIn("Dermatology", labels)
+
+    def test_source_radar_compares_phone_walk_in_chatbot(self):
+        now = timezone.now()
+        self.world.create_row(
+            source=AppointmentSource.PHONE,
+            status=AppointmentStatus.CONFIRMED,
+            start_time=now - timedelta(hours=2),
+            end_time=now - timedelta(hours=1, minutes=30),
+        )
+        self.world.create_row(
+            source=AppointmentSource.WALK_IN,
+            status=AppointmentStatus.PENDING,
+            start_time=now - timedelta(hours=1),
+            end_time=now - timedelta(minutes=30),
+            confirmation_code=unique_code(),
+            patient=self.world.patient_b,
+        )
+        self.world.create_row(
+            source=AppointmentSource.CHATBOT,
+            status=AppointmentStatus.COMPLETED,
+            start_time=now - timedelta(hours=2),
+            end_time=now - timedelta(hours=1, minutes=30),
+            confirmation_code=unique_code(),
+            doctor=self.world.doctor_b,
+        )
+        body = self.client.get(OVERVIEW, headers=self.world.headers).json()
+        by_axis = {row["axis"]: row for row in body["appointment_source_radar"]}
+        self.assertGreaterEqual(by_axis["Volume"]["phone"], 1)
+        self.assertGreaterEqual(by_axis["Volume"]["walk_in"], 1)
+        self.assertGreaterEqual(by_axis["Volume"]["chatbot"], 1)
+        self.assertGreaterEqual(by_axis["Confirmed"]["phone"], 1)
+        self.assertGreaterEqual(by_axis["Pending"]["walk_in"], 1)
+        self.assertGreaterEqual(by_axis["Completed"]["chatbot"], 1)
 
 
     def test_accepted_ranges(self):
@@ -207,3 +252,76 @@ class AnalyticsInsightsTests(TestCase):
         ).json()
         self.assertIn("Consult", [row["label"] for row in service["items"]])
         self.assertIn("Aetna", [row["label"] for row in insurance["items"]])
+
+
+class AnalyticsCalendarTests(TestCase):
+    def setUp(self):
+        self.world = AppointmentWorld(slug="cal-a", email="cal-a@test.com")
+        self.other_user, self.other_clinic, self.other_headers = make_clinic_admin(
+            email="cal-b@test.com", clinic_slug="cal-b"
+        )
+
+    def test_empty_clinic_returns_empty_days(self):
+        resp = self.client.get(CALENDAR + "?year=2026&month=8", headers=self.world.headers)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        body = resp.json()
+        self.assertEqual(body["year"], 2026)
+        self.assertEqual(body["month"], 8)
+        self.assertEqual(body["days"], [])
+        self.assertEqual(body["upcoming"], [])
+        self.assertEqual(body["timezone"], "America/Los_Angeles")
+        self.assertTrue(body["today"])
+
+    def test_invalid_month_rejected(self):
+        resp = self.client.get(CALENDAR + "?year=2026&month=13", headers=self.world.headers)
+        self.assertEqual(resp.status_code, 400)
+
+    def test_tenant_isolation(self):
+        when = datetime(2026, 8, 20, 15, 0, tzinfo=LA)
+        self.world.create_row(start_time=when, end_time=when + timedelta(minutes=30))
+        mine = self.client.get(CALENDAR + "?year=2026&month=8", headers=self.world.headers).json()
+        other = self.client.get(CALENDAR + "?year=2026&month=8", headers=self.other_headers).json()
+        self.assertEqual(sum(row["count"] for row in mine["days"]), 1)
+        self.assertEqual(other["days"], [])
+
+    def test_clinic_timezone_day_bucket(self):
+        # 21 Aug 2026 01:00 UTC = 20 Aug 2026 18:00 America/Los_Angeles
+        when = datetime(2026, 8, 21, 1, 0, tzinfo=ZoneInfo("UTC"))
+        self.world.create_row(start_time=when, end_time=when + timedelta(minutes=30))
+        body = self.client.get(CALENDAR + "?year=2026&month=8", headers=self.world.headers).json()
+        by_day = {row["date"]: row["count"] for row in body["days"]}
+        self.assertEqual(by_day.get("2026-08-20"), 1)
+        self.assertNotIn("2026-08-21", by_day)
+
+    def test_day_count_and_cancelled_excluded(self):
+        day = datetime(2026, 8, 12, 10, 0, tzinfo=LA)
+        self.world.create_row(start_time=day, end_time=day + timedelta(minutes=30))
+        self.world.create_row(
+            start_time=day + timedelta(hours=1),
+            end_time=day + timedelta(hours=1, minutes=30),
+            confirmation_code=unique_code(),
+            patient=self.world.patient_b,
+        )
+        self.world.create_row(
+            start_time=day + timedelta(hours=2),
+            end_time=day + timedelta(hours=2, minutes=30),
+            status=AppointmentStatus.CANCELLED,
+            confirmation_code=unique_code(),
+            doctor=self.world.doctor_b,
+        )
+        body = self.client.get(CALENDAR + "?year=2026&month=8", headers=self.world.headers).json()
+        by_day = {row["date"]: row["count"] for row in body["days"]}
+        self.assertEqual(by_day.get("2026-08-12"), 2)
+
+    def test_upcoming_includes_patient_name(self):
+        now = timezone.now()
+        future = now + timedelta(days=2)
+        self.world.create_row(start_time=future, end_time=future + timedelta(minutes=30))
+        body = self.client.get(CALENDAR, headers=self.world.headers).json()
+        self.assertGreaterEqual(len(body["upcoming"]), 1)
+        self.assertEqual(body["upcoming"][0]["patient_name"], "Pat Alpha")
+        self.assertEqual(body["upcoming"][0]["doctor_name"], "Dr. Alpha")
+        self.assertEqual(body["upcoming"][0]["service_name"], "Consult")
+
+    def test_unauthenticated_rejected(self):
+        self.assertEqual(self.client.get(CALENDAR).status_code, 401)

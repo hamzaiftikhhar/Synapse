@@ -29,6 +29,24 @@ def parse_range(raw: str | None) -> tuple[str, int]:
     return key, days
 
 
+def parse_year_month(
+    clinic: Clinic, year: int | None, month: int | None
+) -> tuple[int, int, datetime, datetime, datetime, ZoneInfo]:
+    """Clinic-local month window: [month_start, next_month_start)."""
+    tz = clinic_zone(clinic)
+    now = timezone.now().astimezone(tz)
+    try:
+        y = int(year) if year is not None else now.year
+        m = int(month) if month is not None else now.month
+    except (TypeError, ValueError):
+        raise HttpError(400, "Invalid year or month.")
+    if y < 2000 or y > 2100 or m < 1 or m > 12:
+        raise HttpError(400, "Invalid year or month.")
+    start = datetime(y, m, 1, tzinfo=tz)
+    end = datetime(y + 1, 1, 1, tzinfo=tz) if m == 12 else datetime(y, m + 1, 1, tzinfo=tz)
+    return y, m, start, end, now, tz
+
+
 def clinic_zone(clinic: Clinic) -> ZoneInfo:
     try:
         return ZoneInfo(clinic.timezone or "UTC")

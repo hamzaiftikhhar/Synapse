@@ -96,6 +96,16 @@ def clinic_breakdown(
     return insights.breakdown(clinic, days=days, dimension=dimension)
 
 
+@router.get("/calendar", auth=jwt_auth)
+def clinic_calendar(
+    request,
+    year: int | None = Query(None),
+    month: int | None = Query(None),
+):
+    clinic = clinic_from(request)
+    return insights.calendar_month(clinic, year=year, month=month)
+
+
 @router.get("", response=ClinicAnalyticsOut, auth=jwt_auth)
 def clinic_analytics(request, days: int = Query(30, ge=1, le=90)):
     clinic = clinic_from(request)

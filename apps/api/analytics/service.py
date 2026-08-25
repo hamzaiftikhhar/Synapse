@@ -14,8 +14,10 @@ from zoneinfo import ZoneInfo
 from django.db.models import Avg, Count, DurationField, ExpressionWrapper, F
 from django.db.models.functions import Coalesce, TruncDate
 
-from apps.api.analytics.ranges import change_pct, fill_daily, window_for
-from apps.appointments.models import Appointment, AppointmentStatus
+from django.utils import timezone as dj_timezone
+
+from apps.api.analytics.ranges import change_pct, fill_daily, parse_year_month, window_for
+from apps.appointments.models import Appointment, AppointmentSource, AppointmentStatus
 from apps.chatbot.models import ChatMessage, ChatSession, ChatSessionStatus
 from apps.clinics.models import Clinic
 from apps.knowledge.models import Document, KnowledgeChunk
@@ -45,13 +47,50 @@ def _status_counts(qs) -> list[dict]:
         AppointmentStatus.RESCHEDULED,
     ]
     raw = {row["status"]: int(row["n"]) for row in qs.values("status").annotate(n=Count("id"))}
-    return [{"status": status, "count": raw.get(status, 0)} for status in order if raw.get(status, 0)]
+    return [{"status": status, "count": raw.get(status, 0)} for status in order]
 
 
 def _top_named(rows: list[dict], *, limit: int = 5) -> tuple[list[dict], int]:
     ranked = [r for r in rows if r.get("label")]
     extra = max(len(ranked) - limit, 0)
     return ranked[:limit], extra
+
+
+_RADAR_SOURCES = (
+    AppointmentSource.PHONE,
+    AppointmentSource.WALK_IN,
+    AppointmentSource.CHATBOT,
+)
+_RADAR_AXES = (
+    ("volume", "Volume"),
+    (AppointmentStatus.CONFIRMED, "Confirmed"),
+    (AppointmentStatus.COMPLETED, "Completed"),
+    (AppointmentStatus.PENDING, "Pending"),
+    (AppointmentStatus.CANCELLED, "Cancelled"),
+)
+
+
+def _source_radar(qs) -> list[dict]:
+    """Compare phone / walk-in / chatbot bookings across status axes.
+
+    Recharts radar wants one row per axis: {axis, phone, walk_in, chatbot}.
+    """
+    raw = list(
+        qs.filter(source__in=_RADAR_SOURCES)
+        .values("source", "status")
+        .annotate(n=Count("id"))
+    )
+    by = {(row["source"], row["status"]): int(row["n"]) for row in raw}
+    totals = {src: 0 for src in _RADAR_SOURCES}
+    for (src, _status), n in by.items():
+        totals[src] += n
+    points: list[dict] = []
+    for key, label in _RADAR_AXES:
+        item = {"axis": label}
+        for src in _RADAR_SOURCES:
+            item[src] = totals[src] if key == "volume" else by.get((src, key), 0)
+        points.append(item)
+    return points
 
 
 def overview(clinic: Clinic, *, days: int) -> dict:
@@ -125,7 +164,8 @@ def overview(clinic: Clinic, *, days: int) -> dict:
     ]
 
     in_window = appt_qs.filter(start_time__gte=start, start_time__lte=now)
-    status = _status_counts(in_window)
+    booked = appt_qs.filter(created_at__gte=start, created_at__lte=now)
+    status = _status_counts(booked)
 
     specialty_rows = list(
         in_window.filter(doctor__doctor_specialties__specialty__is_deleted=False)
@@ -191,6 +231,7 @@ def overview(clinic: Clinic, *, days: int) -> dict:
         "appointment_status": status,
         "appointments_by_specialty": specialties,
         "appointments_by_specialty_more": specialties_more,
+        "appointment_source_radar": _source_radar(in_window),
     }
 
 
@@ -466,3 +507,84 @@ def breakdown(clinic: Clinic, *, days: int, dimension: str) -> dict:
     from ninja.errors import HttpError
 
     raise HttpError(400, "Invalid dimension")
+
+
+_BOOKED_STATUSES = (
+    AppointmentStatus.PENDING,
+    AppointmentStatus.CONFIRMED,
+    AppointmentStatus.COMPLETED,
+    AppointmentStatus.RESCHEDULED,
+)
+_UPCOMING_STATUSES = (
+    AppointmentStatus.PENDING,
+    AppointmentStatus.CONFIRMED,
+    AppointmentStatus.RESCHEDULED,
+)
+
+
+def _person_name(obj) -> str:
+    if obj is None:
+        return ""
+    return str(getattr(obj, "full_name", "") or "").strip()
+
+
+def calendar_month(clinic: Clinic, *, year: int | None, month: int | None) -> dict:
+    """Month grid counts (clinic-local days) plus the next upcoming visits."""
+    y, m, start, end, now_local, tz = parse_year_month(clinic, year, month)
+    cid = clinic.id
+    month_qs = Appointment.objects.filter(
+        clinic_id=cid,
+        start_time__gte=start,
+        start_time__lt=end,
+        status__in=_BOOKED_STATUSES,
+    )
+    days = []
+    for row in (
+        _day(month_qs, "start_time", tz)
+        .values("day")
+        .annotate(n=Count("id"))
+        .order_by("day")
+    ):
+        day = row.get("day")
+        if day is None:
+            continue
+        iso = day.isoformat() if hasattr(day, "isoformat") else str(day)[:10]
+        if not iso:
+            continue
+        days.append({"date": iso, "count": int(row.get("n") or 0)})
+
+    upcoming = []
+    for appt in (
+        Appointment.objects.filter(
+            clinic_id=cid,
+            start_time__gte=dj_timezone.now(),
+            status__in=_UPCOMING_STATUSES,
+        )
+        .select_related("patient", "doctor", "service")
+        .order_by("start_time")[:3]
+    ):
+        start_iso = appt.start_time.isoformat() if appt.start_time else ""
+        end_iso = appt.end_time.isoformat() if appt.end_time else ""
+        if not start_iso:
+            continue
+        service = getattr(appt, "service", None)
+        upcoming.append(
+            {
+                "id": str(appt.id),
+                "start_time": start_iso,
+                "end_time": end_iso,
+                "patient_name": _person_name(getattr(appt, "patient", None)),
+                "doctor_name": _person_name(getattr(appt, "doctor", None)),
+                "service_name": str(getattr(service, "name", "") or "").strip(),
+                "status": appt.status or "",
+            }
+        )
+
+    return {
+        "year": y,
+        "month": m,
+        "timezone": getattr(tz, "key", None) or str(tz),
+        "today": now_local.date().isoformat(),
+        "days": days,
+        "upcoming": upcoming,
+    }
