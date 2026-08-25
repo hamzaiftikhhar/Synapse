@@ -11,13 +11,14 @@ export const CHART = {
   track: "rgba(15, 23, 42, 0.06)",
 } as const;
 
+/** Appointment status — high-chroma clinical dots, not muddy ochre/slate. */
 export const STATUS_COLOR: Record<string, string> = {
-  confirmed: CHART.purple,
-  pending: CHART.amber,
-  completed: CHART.green,
-  cancelled: CHART.red,
-  no_show: CHART.gray,
-  rescheduled: CHART.blue,
+  confirmed: "#3D7EFF",
+  pending: "#FF9F1C",
+  completed: "#22C55E",
+  cancelled: "#FF5A5F",
+  no_show: "#8B95A7",
+  rescheduled: "#7B6CFF",
 };
 
 export const RANGE_OPTIONS = [
