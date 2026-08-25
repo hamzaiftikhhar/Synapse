@@ -63,6 +63,17 @@ export function setActiveTenant(tenant: string | null) {
   }
 }
 
+/** Staff 401 after a failed refresh should only bounce portal routes.
+ * Public embed / marketing / auth pages must keep working if a stale
+ * dashboard token is still sitting in localStorage. */
+function shouldRedirectExpiredSession(pathname: string): boolean {
+  return (
+    pathname.startsWith("/dashboard") ||
+    pathname.startsWith("/onboarding") ||
+    pathname.startsWith("/select-tenant")
+  );
+}
+
 api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   const token = getAccessToken();
   if (token) {
@@ -125,7 +136,10 @@ api.interceptors.response.use(
         }
         return api(original);
       }
-      if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
+      if (
+        typeof window !== "undefined" &&
+        shouldRedirectExpiredSession(window.location.pathname)
+      ) {
         window.location.href = `/login?next=${encodeURIComponent(window.location.pathname)}`;
       }
     }
