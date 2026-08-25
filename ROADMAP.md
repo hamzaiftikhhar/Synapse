@@ -2312,6 +2312,225 @@ polish pass yet (relative timestamps, empty states) beyond functional
 correctness; a design pass would be a reasonable next step if the feature
 gets real usage.
 
+## ✅ Phase 33 — Booking confirmation persistence + inert historical UI cards
+
+Triggered by the user's own real-world manual test as a logged-in clinic
+admin (found via the widget in **staff mode**, not the anonymous public
+embed): booked an appointment, got a live confirmation card ("Ali, we've
+got you confirmed... Code 2I4YAP"), then reported three things — (1)
+resume didn't restore their prior chat despite the conversation correctly
+appearing in the new Phase-32 staff Conversations tab, (2) the booking
+confirmation left no trace in chat history, and (3) historical chat
+messages have live, clickable UI that could misfire. Per the user's
+explicit delegation ("you know better decisions so make the best
+decisions") on (2) and (3), designed and implemented both; (1) was
+diagnosed and is a scope finding, not a bug in what shipped.
+
+**(1) Resume-not-firing — root cause, not fixed this phase.** Phase 29's
+visitor/resume system was wired only into the anonymous public embed path
+(`/chat/guest` → `_resolve_guest_session`, `apps/api/widget/router.py`).
+Confirmed by direct code reading that neither `_resolve_staff_test_session`
+nor `_resolve_session` (`apps/api/chat/router.py`, the staff-dashboard-
+widget and patient-JWT paths respectively) ever sets `ChatSession.visitor`.
+`GlobalChatWidget` (`frontend/src/components/chat/global-chat-widget.tsx`)
+switches to `assistantMode: "staff"` — routing through `/chat/message/
+staff` — the instant a logged-in staff/admin user is anywhere in
+`/dashboard/*`, which is what the user's own test hit. Verified against
+their actual session (`ChatSession` for clinic `apex-dental`: `visitor_id:
+None, patient_id: 019fefbc-..., is_authenticated: True`) — consistent with
+this code path. Extending resume to the patient-JWT-authenticated flow is
+real, separate scope (a patient's *own* identity already exists via the
+JWT, so "resume" there might key off `patient_id` directly rather than the
+anonymous-visitor mechanism) — not started, needs its own phase.
+
+**(2) Confirmation persistence.** `BookingService.confirm()`
+(`apps/chatbot/booking/service.py`) is a separate API call entirely,
+outside `ChatEngine.process()`/`_save_messages()` — a confirmed booking
+left zero trace in `ChatMessage`. Added `persist_confirmation_message()`
+(`apps/chatbot/services/message_history.py`), called from `confirm()`
+right after the existing `link_session_visitor_to_patient()` call, reusing
+the `confirmation` dict `serialize_step`/`_slot_summary` already compute
+(no new data shape invented) and the same `select_for_update()` sequence-
+number locking `ChatEngine._save_messages` uses. Frontend: wired the
+already-built-but-never-used `ConfirmationCard`/`case "confirmation"`
+(`message-renderer.tsx`) up in `message-parser.ts::appendMetaComponents`,
+and suppressed the duplicate plain-text bubble when a confirmation card is
+also rendering.
+
+**(3) Inert historical UI — risk-scoped, not blanket-disabled.** Reasoned
+through which historical cards are genuinely dangerous if clicked from a
+stale view versus merely redundant: `booking_wizard` (mounting it live
+would call `BookingWizard.start()` against a stale/expired hold, no click
+even required — just scrolling it into view) and `appointments` Cancel/
+Reschedule (a real, deliberate action against a live appointment,
+one-click-away) are real risks; doctor/service/time_slots picker cards and
+quick_replies/buttons are not (clicking just starts a new chat turn, no
+mutation) and were **deliberately left untouched this pass** — stated
+explicitly rather than silently incomplete. Fixed at the single choke
+point where persisted history becomes live `ChatMessage[]`
+(`hydrateHistoryRow`, `message-parser.ts`): historical `booking_wizard`
+messages get `payload.completed = true` (the existing Phase-22 "inert,
+already-superseded" convention — full collapse); historical `appointments`
+messages get a new `payload.readOnly = true` (distinct from `completed` —
+keeps the informational content visible, just strips the Cancel/
+Reschedule buttons and the empty-state "Book a New Appointment" button).
+`AppointmentCard`/`AppointmentCards` (`appointment-card.tsx`) and
+`message-renderer.tsx`'s `case "appointments"` thread the new prop through.
+
+**Files changed:** `apps/chatbot/services/message_history.py` (new
+`persist_confirmation_message`), `apps/chatbot/booking/service.py`
+(`confirm()` call site), `frontend/src/features/chat/message-parser.ts`
+(confirmation rendering, dedup, historical inert-forcing),
+`frontend/src/features/chat/messages/message-renderer.tsx` (`readOnly`
+threading), `frontend/src/features/chat/messages/appointment-card.tsx`
+(`readOnly` prop on both components), `apps/chatbot/tests/
+test_booking_auth_skip.py` (new regression test).
+
+**Tests:** new `test_confirm_review_persists_a_confirmation_chat_message`
+(`NoVerificationModeReviewTests`) — books, confirms, asserts exactly one
+`ChatMessage` carries `metadata["confirmation"]` matching the API response
+(confirmation code, doctor name) and that the doctor's name appears in
+`content`. Full suite: `apps.chatbot.tests apps.knowledge.tests
+apps.patients apps.billing apps.api.widget.tests apps.api.chat.
+tests_conversations` — **663/663** (662 baseline + 1 new). `tsc --noEmit`
+and `next build` clean. Playwright **8/8** (re-run against a fresh dev
+server after clearing a stale/corrupted Turbopack cache from a long-
+running session — see below).
+
+**Found, not part of this phase's fix:** the dev server process that had
+been running for the entire session (~2h45m) had accumulated a corrupted
+Turbopack chunk cache, serving 500s ("Failed to load chunk...") on the
+embed route — killed the process and cleared `frontend/.next` to get a
+clean Playwright run. Environmental, not a product bug; noted in case it
+recurs on other very-long dev sessions.
+
+**Known limitations / found but not fixed:**
+- Resume does not cover the staff-widget or patient-JWT chat paths — see
+  (1) above. Needs a scoping conversation before implementation: is
+  persisting/resuming the staff-QA-widget case even desirable, versus
+  patient-JWT resume which clearly is.
+- Doctor/service/time_slots picker cards and quick_replies/buttons remain
+  live-clickable in historical views — deliberately deferred, see (3).
+- Paddle sandbox billing issue reported in the same message ("can't reach
+  Paddle... when change or remove the plan") — not yet investigated, no
+  reproduction detail gathered yet.
+
+**Recommended next phase:** scope and implement patient-JWT-path resume if
+the user wants it; separately, investigate the Paddle sandbox billing
+report.
+
+## ✅ Phase 34 — Dev DB cleanup + analytics dashboard donut-chart bug
+
+Triggered by the user's own manual testing of a new (uncommitted,
+in-progress) analytics dashboard feature: 92 clinics had accumulated in
+the dev DB (mostly orphaned Playwright fixtures — E2E specs seeded unique
+timestamped clinics on every run but never tore them down), the
+"Appointment status" donut chart wasn't rendering on `/dashboard`, and a
+gold badge appeared to be floating over the charts.
+
+**DB cleanup.** Confirmed with the user which 6 clinics were real
+(apex-dental, lumina-skin, horizon-family-care, beula-medical-family-
+clinic, stackup-technologies, comsats-university-islamabadlahore) before
+touching anything, since deletion is irreversible. Deleting `Clinic` rows
+directly hit `ProtectedError` — `Appointment.doctor`/`Appointment.patient`
+are `on_delete=PROTECT`, which blocks the `Doctor`/`Patient` CASCADE from
+completing even though `Doctor.clinic`/`Patient.clinic` are themselves
+CASCADE — so `Appointment` rows for the target clinics have to be deleted
+first. Deleted 86 clinics (3,305 cascaded rows) and 719 anonymous
+(`patient_id IS NULL`) `ChatSession` rows within the 6 kept clinics.
+Delegated a background agent to top up each kept clinic to 5-6 doctors,
+8-10 patients, 5-6 services plus realistic appointments spanning
+7/30/90/180/365-day windows (final counts and the full DoctorSchedule/
+Appointment seeding script are in that agent's report, not reproduced
+here) — verified counts directly afterward. Also had it add `afterAll`
+teardown (reusing each spec's existing `djangoShell`/`execSync` seeding
+pattern) to all three Playwright specs so this doesn't reaccumulate; ran
+the full E2E suite 3× to confirm teardown holds even on mid-run failure,
+and the clinic count returns to exactly 6 every time.
+
+**Donut chart — real bug, root-caused via direct DOM inspection, not
+guessed.** `AnalyticsDonutChart` (`bars-donut.tsx`) rendered its legend
+text correctly but zero `<path>` elements inside the Recharts `<Pie>` on
+`/dashboard`, while the identical component with identical data rendered
+correctly on `/dashboard/analytics`. Confirmed via `page.evaluate()`
+against the live DOM (not a screenshot) that the SVG had a
+`recharts-pie-sector` group with an empty `recharts-shape` child — no
+path was ever drawn, and nothing recovers it since there's no further
+re-render to force reconciliation once React settles. Root cause:
+`/dashboard` fires three independent React Query hooks
+(`useAnalyticsOverview`, `useConversations`, `useAppointments`) that
+resolve at different times, each triggering a full re-render of
+`DashboardHomePage`, each passing a freshly-computed (new-reference)
+`statuses` array to `AnalyticsDonutChart` — `/dashboard/analytics` only
+has the one overview query, so it doesn't re-render mid-flight the same
+way. Recharts' Pie enter-animation apparently gets interrupted by one of
+these re-renders and never recovers. Fixed by adding
+`isAnimationActive={false}` to every animated Recharts element in the
+shared chart library (`bars-donut.tsx`'s Pie and both Bar charts,
+`line-area.tsx`'s Line and Area) — verified via the same direct-DOM method
+that sectors went from 0 paths to 2 correctly-colored paths. This also
+addresses the user's separate "charts render too slowly" complaint, since
+charts now paint immediately instead of animating in.
+
+**Corrected an initial misdiagnosis.** The "Conversations & Appointments"
+combo line chart on `/dashboard` first appeared blank via a `fullPage:
+true` Playwright screenshot. A proper in-viewport screenshot after
+scrolling the chart into view showed it had been rendering correctly the
+whole time (real multi-series line with real peaks) — the blank appearance
+was an artifact of capturing a very long page with `fullPage: true`, not a
+product bug. Corrected this explicitly rather than letting a false "fixed
+a bug" claim stand; the `isAnimationActive={false}` change to Line/Area
+was kept anyway since it's harmless and consistent with the Pie fix, but
+no bug was confirmed for it specifically.
+
+**The gold "Fourth Wing" badge — solved, not a bug.** Traced via
+`document.elementFromPoint()` + ancestor walk to `GlobalChatWidget`'s
+floating launcher button (`fixed ... bottom-5 right-5 z-[60]`, present on
+every dashboard page by design) — apex-dental's widget has a custom
+avatar image configured that happens to be a gold wax-seal graphic. Not a
+rendering defect; the launcher always floats over page content by design,
+same as any chat-bubble widget.
+
+**Test-bug fix, not a product bug.** The reseed/teardown background
+agent's suite run surfaced a new, consistent (3/3) failure:
+`dashboard-analytics.spec.ts`'s date-range-tab assertion expected
+`data-state="active"`, which is Radix's convention — this repo uses
+`@base-ui/react/tabs` (`src/components/ui/tabs.tsx`), whose `Tab`
+component sets a boolean `data-active` attribute instead (confirmed by
+reading `node_modules/@base-ui/react/tabs/tab/TabsTabDataAttributes.js`).
+Confirmed live via DOM dump that clicking the tab correctly sets
+`aria-selected="true"`, `data-active`, and fires the real `?range=7d` API
+call — the filter itself was never broken. Fixed the assertion to check
+`aria-selected="true"` instead (more implementation-agnostic than pinning
+to a specific UI-library data attribute).
+
+**Files changed:** `frontend/src/components/dashboard/charts/bars-donut.tsx`,
+`frontend/src/components/dashboard/charts/line-area.tsx`,
+`frontend/e2e/dashboard-analytics.spec.ts` (assertion fix),
+`frontend/e2e/chat-persistence.spec.ts`, `frontend/e2e/staff-conversations.spec.ts`
+(afterAll teardown), `frontend/package.json` (`@playwright/test` re-pinned
+to exactly `1.48.0` — a `npm install` between sessions had silently drifted
+it past the mac12-compatible pin from Phase 32 via the `^1.48.0` caret
+range; re-pinned without the caret so this can't recur).
+
+**Verified:** Playwright **11/11** (all three specs, run 3× for the
+teardown check plus once more after the test-assertion fix — consistent).
+Backend: `apps.chatbot.tests apps.knowledge.tests apps.patients
+apps.billing apps.api.widget.tests apps.api.chat.tests_conversations
+apps.api.analytics` — **682/682**. `tsc --noEmit` clean. Clinic count
+verified back to exactly 6 after a full E2E run.
+
+**Known limitations / found but not fixed:** the analytics dashboard's
+top KPI cards, chart color palette (currently unmodified Tailwind stock
+colors — `#7C3AED`/`#16A34A`/`#EF4444`/`#F59E0B`/`#3B82F6` — confirmed via
+`colors.ts`), missing axis-unit labels, and missing per-chart filters are
+all still open per the user's explicit request for a proper design pass
+rather than a quick patch — deliberately not started in this phase.
+
+**Recommended next phase:** the visual redesign (KPI cards matching a
+user-supplied reference layout, considered color palette, axis labels,
+filters) as its own focused design phase.
+
 ## 💤 Deferred — Conversation state / coreference
 
 Real, confirmed from transcript ("which one treats cancer?" → "Dr. Chloe
@@ -2946,6 +3165,89 @@ originally scoped in the plan approved at the start.** Further work
 (the dormant knowledge-base multi-format edge cases, a scheduled-job layer
 for proactive suspension emails, real Twilio Verify sandbox testing) is
 each its own future phase, not started here.
+
+---
+
+## Frontend — Clinic Dashboard + Analytics insight wall ✅
+
+**What changed.** Clinic Dashboard (`/dashboard`) and Analytics
+(`/dashboard/analytics`) were rebuilt off the generic white square KPI
+cards and thin CSS bars. They now share an insight card language:
+rectangular 10px-radius cards, royal-purple ink/wash contrast (first of
+four is ink; middle of three is ink), a Notion-style clinician
+illustration on the welcome banner, custom SVG area-line / rounded-bar /
+concentric-ring charts, and illustrated metric glyphs. Data shown is
+still the real appointment + analytics payloads — no invented series.
+
+**Files.** `frontend/src/components/dashboard/insights/*` (new primitives),
+`frontend/src/app/dashboard/page.tsx`,
+`frontend/src/app/dashboard/analytics/page.tsx`,
+`frontend/src/features/analytics/model-mix.tsx` (thicker purple mix bars),
+`frontend/src/app/globals.css` (`--insight-*` tokens under
+`.theme-instrument`). Platform overview still uses the older StatCard.
+
+**Found but not fixed.** Change/cancel-plan still needs a clinic whose
+subscription was created by real Paddle.js Checkout (placeholder IDs were
+cleared from local rows earlier). Platform AI usage page was not restyled
+in this pass.
+
+**Recommended next.** Walk one clinic through sandbox Checkout if
+change/cancel needs to be demoed; optionally restyle platform overview
+with the same insight primitives.
+
+---
+
+## Frontend — Clinic dashboard analytics system (recharts + backend aggregation) ✅
+
+**Objective.** Replace the homemade SVG insight-wall charts with a
+tenant-scoped, backend-aggregated analytics system: reusable recharts
+components, a lightweight `/dashboard` overview, a detailed
+`/dashboard/analytics` page, and at most one supporting chart on
+operational CRUD pages.
+
+**What changed.** Dashboard overview now answers “how is my clinic
+doing?” with four KPIs (conversations, appointments, patients, completed
+appointments — not a fabricated conversion rate), a dual-series
+conversations/appointments line, an appointment-status donut, specialty
+bars, then the existing recent-conversations / upcoming-appointments
+lists. `/dashboard/analytics` is the detailed page (conversations,
+chatbot performance KPIs, appointments, patients, providers, AI usage,
+knowledge growth). Operational pages gained 0–1 supporting charts plus
+small KPI strips. Clinic / business-hours / settings / profile were left
+chart-free.
+
+**Data definitions (implemented).** All queries are `clinic_id = clinic_from(request)`. Daily buckets use `TruncDate(..., tzinfo=clinic.timezone)`.
+
+| Metric | Source | Date field | Aggregation |
+| --- | --- | --- | --- |
+| Conversation volume | `ChatSession` | `created_at` | COUNT by clinic-local day |
+| Appointments created | `Appointment` | `created_at` | COUNT by clinic-local day |
+| Appointment status | `Appointment` | `start_time` in window | COUNT by `status` (pending/confirmed/completed/cancelled/no_show/rescheduled only) |
+| Specialty / provider / service / insurance bars | `Appointment` → doctor specialties / doctor / service / insurance_plan | `start_time` | COUNT, top 5, distinct for specialties |
+| New patients | `Patient` | `created_at` | COUNT |
+| Returning patients | `Appointment` whose `patient.created_at` is before the window | appointment `created_at` | COUNT DISTINCT patient |
+| Patient frequency | `Appointment` lifetime | n/a | patients with 1 / 2 / 3 / 4+ visits |
+| Avg messages / duration | `ChatMessage` / `ChatSession.closed_at or last_active_at` | session `created_at` in window | COUNT / AVG |
+| Outcomes | `ChatSession.status` | `created_at` | closed / escalated / active — **not** “resolved” |
+| AI usage | `AIUsageLog` via existing `summarize_usage` | `created_at` | SUM tokens, COUNT calls; cost only for super-admin |
+| Knowledge growth | `Document` (not soft-deleted) | `created_at` | COUNT by day |
+
+**Intentionally not implemented.** Booking conversion and booking funnel (only the final `Appointment` row exists — no intent/slot/started events). “Resolved” vs closed. AI vs human involvement. Provider utilization (schedules/leaves exist but the available-time denominator is not accurate enough). SaaS revenue-over-time (`BillingEvent` payload is JSON, no first-class amount). Charts on clinic / business-hours / settings / profile.
+
+**Database.** No new models, migrations, or indexes. Existing `(clinic, created_at)` / `(clinic, status, start_time)` indexes cover the aggregations.
+
+**API.** `GET /api/v1/analytics/overview?range=`, `GET /api/v1/analytics/insights?range=`, `GET /api/v1/analytics/breakdown?dimension=&range=`. Existing `GET /api/v1/analytics?days=` (AI usage) unchanged. Ranges: `7d|30d|90d|6m|12m`, default `30d`. Super admin entering a clinic via `X-Tenant-ID` sees that clinic only.
+
+**Frontend.** `frontend/src/components/dashboard/charts/*` (recharts wrappers, ChartCard, DateRangeSelector, MetricStat, empty/skeleton/error). Pages: dashboard, analytics, doctors, appointments, patients, services, specialties, insurance, conversations (KPI strip only), chatbot, knowledge (KPIs from the document list). `frontend/next.config.ts` sets `turbopack.root` so `next build` does not pick the parent-repo lockfile as the app root.
+
+**Tests actually run.**
+- `python manage.py test apps.api.analytics.tests apps.ai.tests --keepdb` → **28/28 OK** (tenant isolation, empty clinic, ranges 7d/30d/90d/6m/12m, timezone bucket, super-admin X-Tenant-ID, unauthenticated 401, owner-without-clinic 400, status counts, specialty/service/insurance breakdown, AI cost stripped for clinic owner).
+- `frontend/node_modules/.bin/tsc --noEmit` → pass.
+- `npm run build` (Next 15.5.22 turbopack) → pass after `turbopack.root` (48 static pages).
+- Playwright spec added at `frontend/e2e/dashboard-analytics.spec.ts`. Chromium could not be launched here: Playwright 1.62 does not support Chromium on macOS 12 (`npx playwright install chromium` → “does not support chromium on mac12”). Spec is in place for a machine that can install the browser.
+- Live API smoke (Apex Dental staff JWT): `GET /analytics/overview?range=30d` returned 295 conversations / 30 appointments / 13 patients / 31 daily points; unauthenticated request → 401.
+
+**Found but not fixed.** Platform `/dashboard/platform` overview still uses the older StatCard language. Appointment-by-specialty counts an appointment once per linked specialty (distinct per specialty name, not per visit globally). Patient frequency is lifetime, not windowed. Playwright Chromium is not installable on this macOS 12 host with the current `@playwright/test` 1.62.
 
 ---
 
