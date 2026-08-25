@@ -48,10 +48,18 @@ export function PhoneInput({
           emit(next.dialCode, national);
         }}
       >
-        <SelectTrigger className="w-[80px] shrink-0" aria-label="Country code" disabled={disabled}>
+        <SelectTrigger
+          className="h-9 w-auto min-w-[4.75rem] shrink-0 gap-1 px-2"
+          aria-label="Country code"
+          disabled={disabled}
+        >
           <SelectValue>{country.dialCode}</SelectValue>
         </SelectTrigger>
-        <SelectContent>
+        <SelectContent
+          className="z-[80] w-max min-w-[16rem] max-w-[min(22rem,calc(100vw-2rem))]"
+          alignItemWithTrigger={false}
+          align="start"
+        >
           {COUNTRIES.map((c) => (
             <SelectItem key={c.code} value={c.code}>
               {c.name} ({c.dialCode})

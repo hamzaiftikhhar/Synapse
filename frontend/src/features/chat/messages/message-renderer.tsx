@@ -133,6 +133,7 @@ export function MessageRenderer({
           onAction={onAction}
           completed={Boolean(message.payload?.completed)}
           messageId={message.id}
+          readOnly={Boolean(message.payload?.readOnly)}
         />
       );
       break;

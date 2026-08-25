@@ -82,6 +82,24 @@ function appendMetaComponents(
     });
   }
 
+  // Persisted by BookingService.confirm() (apps/chatbot/services/
+  // message_history.py::persist_confirmation_message) as its own
+  // ChatMessage — the one durable trace of a completed booking, since
+  // confirm() is a separate API call from the normal chat pipeline and
+  // nothing else would ever save this. Renders via the existing (until
+  // now unused) ConfirmationCard.
+  if (meta.confirmation && typeof meta.confirmation === "object") {
+    const confirmation = meta.confirmation as Record<string, unknown>;
+    messages.push({
+      id: uid("confirmation"),
+      role,
+      type: "confirmation",
+      content: typeof confirmation.content === "string" ? confirmation.content : undefined,
+      createdAt: now,
+      payload: confirmation,
+    });
+  }
+
   // Homey-style: embed wizard when backend sets booking.launch. When a
   // booking is already in progress (launch:false + booking_id), don't mint a
   // second wizard card — merge into the existing one instead (fixes the
@@ -292,7 +310,12 @@ export function parseChatResponse(
 
   const messages: ChatMessage[] = [];
 
-  if (res.response) {
+  // Skip the plain-text bubble when a confirmation card is also about to
+  // render (below) — it says the same thing in a clearer format; res.response
+  // still stays meaningful on the raw ChatMessage.content field itself
+  // (e.g. for the staff conversations list preview), just not duplicated
+  // as a second bubble here.
+  if (res.response && !meta.confirmation) {
     messages.push({
       id: uid("text"),
       role,
@@ -421,7 +444,27 @@ function hydrateHistoryRow(row: ChatMessageHistoryOut): ChatMessage[] {
       meta: row.metadata || {},
     };
     const { messages } = parseChatResponse(fakeResponse);
-    return messages.map((m) => ({ ...m, createdAt: row.created_at }));
+    return messages.map((m) => {
+      const base = { ...m, createdAt: row.created_at };
+      // A historical booking_wizard must never mount live and interactive
+      // — BookingWizard.start() would fire again on a stale, possibly
+      // long-expired hold/booking draft the moment it's scrolled into
+      // view, with no click needed at all. Its own confirmation (if the
+      // booking was actually completed) shows separately as its own
+      // persisted `confirmation` message instead — see
+      // persist_confirmation_message on the backend.
+      if (base.type === "booking_wizard") {
+        return { ...base, payload: { ...(base.payload ?? {}), completed: true } };
+      }
+      // Same reasoning for a past appointments list: Cancel/Reschedule
+      // acting on a real appointment must be a deliberate action taken
+      // from the *current* state of that appointment, never a stray
+      // click replaying an old turn's snapshot of it.
+      if (base.type === "appointments") {
+        return { ...base, payload: { ...(base.payload ?? {}), readOnly: true } };
+      }
+      return base;
+    });
   }
 
   // system/tool rows — no live path ever produces these today, but handle

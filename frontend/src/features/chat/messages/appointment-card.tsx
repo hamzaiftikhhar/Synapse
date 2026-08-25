@@ -19,11 +19,28 @@ type Stage = null | "cancel-confirm" | "reschedule-confirm" | "reschedule-option
 function AppointmentCard({
   appt,
   onAction,
+  readOnly = false,
 }: {
   appt: AppointmentCardData;
   onAction?: ChatActionHandler;
+  /** Set for a historical (resumed) appointments list — Cancel/Reschedule
+   * must be a deliberate action taken from the *current* state of a real
+   * appointment, never a stray click replaying an old turn's snapshot. */
+  readOnly?: boolean;
 }) {
   const [stage, setStage] = useState<Stage>(null);
+
+  if (readOnly) {
+    return (
+      <div className="rounded-lg border border-border bg-card p-3">
+        <p className="text-sm font-semibold text-foreground">{appt.doctor}</p>
+        {appt.service ? (
+          <p className="text-xs text-muted-foreground">{appt.service}</p>
+        ) : null}
+        <p className="mt-1 text-xs text-foreground">{formatWhen(appt)}</p>
+      </div>
+    );
+  }
 
   if (stage === "cancel-confirm") {
     return (
@@ -151,6 +168,7 @@ export function AppointmentCards({
   onAction,
   completed = false,
   messageId,
+  readOnly = false,
 }: {
   appointments: AppointmentCardData[];
   onAction?: ChatActionHandler;
@@ -160,6 +178,8 @@ export function AppointmentCards({
    * shouldn't keep sitting there as a live, re-clickable prompt. */
   completed?: boolean;
   messageId?: string;
+  /** Set for a historical (resumed) appointments list — see AppointmentCard. */
+  readOnly?: boolean;
 }) {
   if (appointments.length === 0) {
     if (completed) {
@@ -177,14 +197,16 @@ export function AppointmentCards({
         <p className="text-xs text-muted-foreground">
           We couldn&apos;t find any upcoming appointments for your account.
         </p>
-        <Button
-          type="button"
-          size="xs"
-          className="mt-1.5"
-          onClick={() => onAction?.("book_appointment", { messageId })}
-        >
-          Book a New Appointment
-        </Button>
+        {readOnly ? null : (
+          <Button
+            type="button"
+            size="xs"
+            className="mt-1.5"
+            onClick={() => onAction?.("book_appointment", { messageId })}
+          >
+            Book a New Appointment
+          </Button>
+        )}
       </ChatInlineCard>
     );
   }
@@ -192,7 +214,7 @@ export function AppointmentCards({
   return (
     <ChatInlineCard className="space-y-2">
       {appointments.map((a) => (
-        <AppointmentCard key={a.id} appt={a} onAction={onAction} />
+        <AppointmentCard key={a.id} appt={a} onAction={onAction} readOnly={readOnly} />
       ))}
     </ChatInlineCard>
   );
