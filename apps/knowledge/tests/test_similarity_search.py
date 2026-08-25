@@ -9,16 +9,19 @@ from apps.knowledge.models import Document, DocumentStatus, KnowledgeChunk
 from apps.knowledge.services.similarity_search import SimilaritySearchService
 
 
+_DIM = 1536
+
+
 class _FakeProvider:
     model_name = "test-model"
-    dimensions = 768
+    dimensions = _DIM
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        return [[0.0] * 768 for _ in texts]
+        return [[0.0] * _DIM for _ in texts]
 
     def embed_query(self, text: str) -> list[float]:
         query = text.lower()
-        vector = [0.0] * 768
+        vector = [0.0] * _DIM
         if "diabetes" in query:
             vector[0] = 1.0
         elif "blood pressure" in query or "hypertension" in query:
@@ -31,15 +34,15 @@ class _FakeProvider:
 
 
 def _unit_vector(index: int) -> list[float]:
-    vector = [0.0] * 768
+    vector = [0.0] * _DIM
     vector[index] = 1.0
     return vector
 
 
 @override_settings(
-    EMBEDDING_PROVIDER="local",
+    EMBEDDING_PROVIDER="openai",
     EMBEDDING_MODEL="test-model",
-    EMBEDDING_DIMENSIONS=768,
+    EMBEDDING_DIMENSIONS=_DIM,
 )
 class SimilaritySearchTests(TestCase):
     def setUp(self):

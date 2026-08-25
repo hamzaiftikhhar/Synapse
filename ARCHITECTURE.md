@@ -305,27 +305,19 @@ scheduled. The caller-side ceiling still holds either way, but the budget
 buys fewer real attempts than it looks like under saturation. Deferred —
 see ROADMAP.md.
 
-## 9. Embedding / vector search (Phase 9B, done)
+## 9. Embedding / vector search
 
-`EMBEDDING_PROVIDER=local`, model `BAAI/bge-base-en-v1.5`
-(`apps/knowledge/embeddings/local.py`). Reproduced and measured on this
-machine: **20.26s cold start** (9.77s `import sentence_transformers` +
-7.28s model construction + 3.22s first encode) vs. **0.042s** once warm —
-matches a real transcript's 24.9s `vector_ms` on the session's first vector
-search. pgvector already has an HNSW index
-(`idx_kc_embedding_hnsw`, `apps/knowledge/migrations/0001_initial.py` /
-`0007_embedding_dimensions_768.py`) — the DB query was never the bottleneck.
+`EMBEDDING_PROVIDER=openai`, model `text-embedding-3-small` (1536-d)
+(`apps/knowledge/embeddings/openai_provider.py`). Local BGE
+(`BAAI/bge-base-en-v1.5`, 768-d) remains implemented in
+`apps/knowledge/embeddings/local.py` but is not the default. pgvector
+HNSW is `idx_kc_embedding_hnsw` (`0001_initial.py` → `0007` 768-d →
+`0010` 1536-d). Query and stored vectors must share that dimension.
 
-**Fix:** `KnowledgeConfig.ready()` (`apps/knowledge/apps.py`) synchronously
-calls `warm_up_embedding_service()` (`embeddings/factory.py`) at process
-startup, guarded by `should_warm_up_embeddings(argv)` which skips
-non-serving management commands (`test`, `migrate`, `shell`,
-`run_chat_eval`, `benchmark_nlu_models`, etc. — full list in `apps.py`).
-Verified end-to-end with real (non-mocked) `django.setup()`: a simulated
-`runserver` process has the model in `_model_cache` before any request
-exists; a simulated `test` process does not load it at all. No-op for
-`EMBEDDING_PROVIDER=openai`. Failure is caught and logged — the existing
-lazy-load path is still the fallback if warm-up itself fails.
+`KnowledgeConfig.ready()` still calls `warm_up_embedding_service()`. That
+is a **no-op for OpenAI** (no local model to load). For `EMBEDDING_PROVIDER=local`
+it still preloads SentenceTransformer, guarded by
+`should_warm_up_embeddings(argv)`.
 
 ## 10. Conversation state — `apps/chatbot/conversation_state.py`
 

@@ -105,7 +105,7 @@ class KnowledgeChunk(TenantModel):
     )
     content = models.TextField()
     token_count = models.PositiveIntegerField(null=True, blank=True)
-    embedding = VectorField(dimensions=768, null=True, blank=True)
+    embedding = VectorField(dimensions=1536, null=True, blank=True)
     embedding_model = models.CharField(
         max_length=100,
         blank=True,

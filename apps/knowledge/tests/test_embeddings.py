@@ -59,3 +59,21 @@ class EmbeddingServiceTests(SimpleTestCase):
     def test_factory_rejects_unknown_provider(self):
         with self.assertRaises(EmbeddingError):
             get_embedding_service()
+
+    @override_settings(
+        EMBEDDING_PROVIDER="openai",
+        EMBEDDING_MODEL="text-embedding-3-small",
+        EMBEDDING_DIMENSIONS=1536,
+        OPENAI_API_KEY="sk-test",
+    )
+    @patch(
+        "apps.knowledge.embeddings.factory.OpenAIEmbeddingProvider",
+        return_value=_FakeProvider(),
+    )
+    def test_factory_selects_openai_provider(self, mock_openai):
+        get_embedding_service()
+        mock_openai.assert_called_once()
+        kwargs = mock_openai.call_args.kwargs
+        self.assertEqual(kwargs["model_name"], "text-embedding-3-small")
+        self.assertEqual(kwargs["dimensions"], 1536)
+        self.assertEqual(kwargs["api_key"], "sk-test")

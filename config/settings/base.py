@@ -249,10 +249,11 @@ KNOWLEDGE_CHUNK_MIN_CHARS = env.int("KNOWLEDGE_CHUNK_MIN_CHARS", default=40)
 KNOWLEDGE_RUN_EMBEDDINGS = env.bool("KNOWLEDGE_RUN_EMBEDDINGS", default=True)
 
 # Embedding provider — see docs/rag/EMBEDDING-PROVIDER-SWITCH.md
-# Switch provider by changing only these three settings (+ OPENAI_API_KEY for openai):
-EMBEDDING_PROVIDER = env("EMBEDDING_PROVIDER", default="local")
-EMBEDDING_MODEL = env("EMBEDDING_MODEL", default="BAAI/bge-base-en-v1.5")
-EMBEDDING_DIMENSIONS = env.int("EMBEDDING_DIMENSIONS", default=768)
+# OpenAI text-embedding-3-small (1536-d). Local BGE remains available via
+# EMBEDDING_PROVIDER=local (requires a matching vector(768) column).
+EMBEDDING_PROVIDER = env("EMBEDDING_PROVIDER", default="openai")
+EMBEDDING_MODEL = env("EMBEDDING_MODEL", default="text-embedding-3-small")
+EMBEDDING_DIMENSIONS = env.int("EMBEDDING_DIMENSIONS", default=1536)
 
 # ─── Intent & Entity NLU (chatbot routing) ────────────────────────────────────
 # OpenAI primary (nano) for reliability; Gemini secondary when key is valid AIza…
