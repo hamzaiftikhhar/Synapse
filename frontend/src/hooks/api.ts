@@ -96,6 +96,8 @@ export const queryKeys = {
   analyticsInsights: (range: string) => ["analytics", "insights", range] as const,
   analyticsBreakdown: (dimension: string, range: string) =>
     ["analytics", "breakdown", dimension, range] as const,
+  analyticsCalendar: (year: number, month: number) =>
+    ["analytics", "calendar", year, month] as const,
   platformAiUsage: (days: number) => ["analytics", "platform", days] as const,
   platformOverview: ["platform", "overview"] as const,
   platformUsers: (p?: { search?: string; role?: string }) => ["platform", "users", p] as const,
@@ -441,6 +443,21 @@ export function useAnalyticsBreakdown(
   return useQuery({
     queryKey: queryKeys.analyticsBreakdown(dimension, range),
     queryFn: () => analyticsService.breakdown(dimension, range),
+  });
+}
+
+export function useAnalyticsCalendar(year: number, month: number) {
+  const valid =
+    Number.isFinite(year) &&
+    Number.isFinite(month) &&
+    year >= 2000 &&
+    year <= 2100 &&
+    month >= 1 &&
+    month <= 12;
+  return useQuery({
+    queryKey: queryKeys.analyticsCalendar(year, month),
+    queryFn: () => analyticsService.calendar(year, month),
+    enabled: valid,
   });
 }
 

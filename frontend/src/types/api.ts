@@ -1064,6 +1064,38 @@ export type AnalyticsOverview = {
   appointment_status: AnalyticsStatusCount[];
   appointments_by_specialty: AnalyticsNamedCount[];
   appointments_by_specialty_more: number;
+  appointment_source_radar: AppointmentSourceRadarPoint[];
+};
+
+export type AppointmentSourceRadarPoint = {
+  axis: string;
+  phone: number;
+  walk_in: number;
+  chatbot: number;
+};
+
+export type AnalyticsCalendarDay = {
+  date: string;
+  count: number;
+};
+
+export type AnalyticsCalendarUpcoming = {
+  id: string;
+  start_time: string;
+  end_time: string;
+  patient_name: string;
+  doctor_name: string;
+  service_name: string;
+  status: string;
+};
+
+export type AnalyticsCalendar = {
+  year: number;
+  month: number;
+  timezone: string;
+  today: string;
+  days: AnalyticsCalendarDay[];
+  upcoming: AnalyticsCalendarUpcoming[];
 };
 
 export type DailyCountPoint = {

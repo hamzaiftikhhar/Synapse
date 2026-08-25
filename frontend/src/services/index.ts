@@ -721,6 +721,13 @@ export const analyticsService = {
     );
     return data;
   },
+  async calendar(year: number, month: number) {
+    const { data } = await api.get<import("@/types/api").AnalyticsCalendar>(
+      "/analytics/calendar",
+      { params: { year, month } }
+    );
+    return data;
+  },
 };
 
 export const billingService = {
