@@ -476,3 +476,45 @@ class NoVerificationModeReviewTests(TestCase):
                 clinic=self.clinic, status=AppointmentStatus.CONFIRMED
             ).exists()
         )
+
+    def test_confirm_review_persists_a_confirmation_chat_message(self):
+        """BookingService.confirm() is its own API call, separate from the
+        normal chat pipeline — without persist_confirmation_message, a
+        confirmed booking left zero trace in the transcript, so a later
+        /chat/resume could only ever replay the original wizard-launch
+        card, which has no memory of ever completing."""
+        from apps.chatbot.models import ChatMessage
+
+        started = BookingService.start(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            doctor_id=str(self.doctor.id),
+            doctor_name=self.doctor.full_name,
+            slot_start=self.slot_start,
+            slot_end=self.slot_end,
+        )
+        BookingService.apply_step(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            booking_id=started["booking_id"],
+            action="submit_details",
+            value={"first_name": "Sam", "phone": "+15559990000"},
+        )
+        result = BookingService.apply_step(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            booking_id=started["booking_id"],
+            action="confirm_review",
+            value={},
+        )
+        confirmation_code = result["confirmation"]["confirmation_code"]
+
+        messages = ChatMessage.objects.filter(session=self.chat_session)
+        confirmation_messages = [
+            m for m in messages if "confirmation" in (m.metadata or {})
+        ]
+        self.assertEqual(len(confirmation_messages), 1)
+        saved = confirmation_messages[0].metadata["confirmation"]
+        self.assertEqual(saved["confirmation_code"], confirmation_code)
+        self.assertEqual(saved["doctor_name"], self.doctor.full_name)
+        self.assertIn(self.doctor.full_name, confirmation_messages[0].content)

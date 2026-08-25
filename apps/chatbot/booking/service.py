@@ -933,7 +933,13 @@ class BookingService:
 
         link_session_visitor_to_patient(chat_session, patient)
 
-        return serialize_step(clinic, session)
+        result = serialize_step(clinic, session)
+        confirmation = result.get("confirmation")
+        if confirmation:
+            from apps.chatbot.services.message_history import persist_confirmation_message
+
+            persist_confirmation_message(chat_session, confirmation)
+        return result
 
     # ── Persistence ───────────────────────────────────────────────────────────
 
