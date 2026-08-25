@@ -1008,6 +1008,146 @@ export type ClinicAnalytics = {
   rates: AnalyticsRateCard[];
 };
 
+export type AnalyticsNamedCount = {
+  label: string;
+  count: number;
+};
+
+export type AnalyticsStatusCount = {
+  status: string;
+  count: number;
+};
+
+export type AnalyticsOverviewSummary = {
+  conversations: number;
+  conversations_change_pct: number | null;
+  appointments: number;
+  appointments_change_pct: number | null;
+  patients_total: number;
+  patients_new: number;
+  patients_returning: number;
+  completed_appointments: number;
+  completed_change_pct: number | null;
+};
+
+export type AnalyticsOpsSnapshot = {
+  appointments_today: number;
+  appointments_upcoming: number;
+  appointments_completed: number;
+  appointments_cancelled: number;
+  patients_upcoming: number;
+  doctors_with_upcoming: number;
+  inbox: {
+    total: number;
+    active: number;
+    closed: number;
+    escalated: number;
+  };
+};
+
+export type ConversationAppointmentPoint = {
+  date: string;
+  conversations: number;
+  appointments: number;
+};
+
+export type AnalyticsOverview = {
+  range_days: number;
+  timezone: string;
+  summary: AnalyticsOverviewSummary;
+  ops: AnalyticsOpsSnapshot;
+  conversation_appointment_trend: ConversationAppointmentPoint[];
+  conversations_daily: number[];
+  appointments_daily: number[];
+  patients_daily: number[];
+  completed_daily: number[];
+  appointment_status: AnalyticsStatusCount[];
+  appointments_by_specialty: AnalyticsNamedCount[];
+  appointments_by_specialty_more: number;
+};
+
+export type DailyCountPoint = {
+  date: string;
+  count: number;
+};
+
+export type ConversationOutcomesPoint = {
+  date: string;
+  closed: number;
+  escalated: number;
+  active: number;
+};
+
+export type PatientTrendPoint = {
+  date: string;
+  new: number;
+  returning: number;
+};
+
+export type ProviderStatusRow = {
+  label: string;
+  completed: number;
+  cancelled: number;
+  no_show: number;
+};
+
+export type AnalyticsAiUsage = {
+  days: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  calls: number;
+  cached_calls: number;
+  avg_latency_ms: number;
+  estimated_usd: number | null;
+  models: AnalyticsModelRow[];
+  operations: AnalyticsOperationRow[];
+  daily: AnalyticsDailyRow[];
+  rates: AnalyticsRateCard[];
+};
+
+export type AnalyticsInsights = AnalyticsOverview & {
+  show_cost: boolean;
+  conversations_detail: {
+    active: number;
+    closed: number;
+    escalated: number;
+    avg_messages: number;
+    avg_duration_seconds: number;
+    volume: DailyCountPoint[];
+    outcomes: ConversationOutcomesPoint[];
+  };
+  appointment_trend: DailyCountPoint[];
+  appointments_by_provider: AnalyticsNamedCount[];
+  appointments_by_provider_more: number;
+  provider_status: ProviderStatusRow[];
+  patients_detail: {
+    returning: number;
+    trend: PatientTrendPoint[];
+    frequency: AnalyticsNamedCount[];
+  };
+  knowledge: {
+    documents: number;
+    chunks: number;
+    last_updated: string | null;
+    growth: DailyCountPoint[];
+  };
+  ai: AnalyticsAiUsage;
+};
+
+export type AnalyticsBreakdownDimension =
+  | "doctor"
+  | "service"
+  | "specialty"
+  | "insurance"
+  | "new_patients";
+
+export type AnalyticsBreakdown = {
+  dimension: AnalyticsBreakdownDimension;
+  items: AnalyticsNamedCount[];
+  more: number;
+};
+
 export type PlatformClinicUsage = {
   clinic_id: string;
   name: string;

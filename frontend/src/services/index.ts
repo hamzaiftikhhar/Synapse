@@ -697,6 +697,30 @@ export const analyticsService = {
     );
     return data;
   },
+  async overview(range = "30d") {
+    const { data } = await api.get<import("@/types/api").AnalyticsOverview>(
+      "/analytics/overview",
+      { params: { range } }
+    );
+    return data;
+  },
+  async insights(range = "30d") {
+    const { data } = await api.get<import("@/types/api").AnalyticsInsights>(
+      "/analytics/insights",
+      { params: { range } }
+    );
+    return data;
+  },
+  async breakdown(
+    dimension: import("@/types/api").AnalyticsBreakdownDimension,
+    range = "30d"
+  ) {
+    const { data } = await api.get<import("@/types/api").AnalyticsBreakdown>(
+      "/analytics/breakdown",
+      { params: { dimension, range } }
+    );
+    return data;
+  },
 };
 
 export const billingService = {

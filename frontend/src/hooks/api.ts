@@ -92,6 +92,10 @@ export const queryKeys = {
   importJobRecords: (id: string, status?: string) =>
     ["import-jobs", id, "records", status] as const,
   clinicAnalytics: (days: number) => ["analytics", "clinic", days] as const,
+  analyticsOverview: (range: string) => ["analytics", "overview", range] as const,
+  analyticsInsights: (range: string) => ["analytics", "insights", range] as const,
+  analyticsBreakdown: (dimension: string, range: string) =>
+    ["analytics", "breakdown", dimension, range] as const,
   platformAiUsage: (days: number) => ["analytics", "platform", days] as const,
   platformOverview: ["platform", "overview"] as const,
   platformUsers: (p?: { search?: string; role?: string }) => ["platform", "users", p] as const,
@@ -413,6 +417,30 @@ export function useClinicAnalytics(days: number) {
   return useQuery({
     queryKey: queryKeys.clinicAnalytics(days),
     queryFn: () => analyticsService.clinic(days),
+  });
+}
+
+export function useAnalyticsOverview(range: string) {
+  return useQuery({
+    queryKey: queryKeys.analyticsOverview(range),
+    queryFn: () => analyticsService.overview(range),
+  });
+}
+
+export function useAnalyticsInsights(range: string) {
+  return useQuery({
+    queryKey: queryKeys.analyticsInsights(range),
+    queryFn: () => analyticsService.insights(range),
+  });
+}
+
+export function useAnalyticsBreakdown(
+  dimension: import("@/types/api").AnalyticsBreakdownDimension,
+  range: string
+) {
+  return useQuery({
+    queryKey: queryKeys.analyticsBreakdown(dimension, range),
+    queryFn: () => analyticsService.breakdown(dimension, range),
   });
 }
 
