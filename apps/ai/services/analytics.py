@@ -14,7 +14,7 @@ from apps.ai.pricing import estimate_usd, known_rate_cards
 
 
 def _since(days: int):
-    return timezone.now() - timedelta(days=max(1, min(days, 90)))
+    return timezone.now() - timedelta(days=max(1, min(days, 365)))
 
 
 def _day_iso(day) -> str:
