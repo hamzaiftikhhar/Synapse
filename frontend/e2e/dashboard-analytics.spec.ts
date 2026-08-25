@@ -78,7 +78,9 @@ print("ok")
     await expect(page.getByRole("tab", { name: "30 days" })).toBeVisible();
     await expect(page.getByText("No activity yet")).toBeVisible();
     await expect(page.getByText("Recent conversations")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Bookings" })).toBeVisible();
     await expect(page.getByText("Upcoming appointments")).toBeVisible();
+    await expect(page.getByText("No upcoming visits")).toBeVisible();
 
     await page.getByRole("tab", { name: "7 days" }).click();
     // Base UI's Tab marks the active tab via `aria-selected` / a boolean
