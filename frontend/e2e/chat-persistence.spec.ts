@@ -28,7 +28,13 @@ function uniqueSlug(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
 }
 
+// Every test below seeds its own clinic (see the file docstring for why).
+// Tracked here so a single afterAll can tear them all down without
+// reintroducing an order dependency between the tests themselves.
+const createdClinicSlugs: string[] = [];
+
 function seedClinic(slug: string): void {
+  createdClinicSlugs.push(slug);
   djangoShell(`
 from apps.clinics.models import Clinic
 Clinic.objects.get_or_create(
@@ -215,4 +221,17 @@ test("the Latest button appears when scrolled away from the bottom and returns t
     (el) => el.scrollHeight - el.scrollTop - el.clientHeight < 80
   );
   expect(atBottom).toBeTruthy();
+});
+
+test.afterAll(() => {
+  // None of the tests above create Doctor/Patient/Appointment rows (only
+  // Clinic + chat models, which cascade-delete via clinic FK), so a plain
+  // queryset delete is safe here.
+  if (createdClinicSlugs.length === 0) return;
+  const slugList = createdClinicSlugs.map((slug) => `"${slug}"`).join(", ");
+  djangoShell(`
+from apps.clinics.models import Clinic
+Clinic.objects.filter(slug__in=[${slugList}]).delete()
+print("ok")
+`);
 });

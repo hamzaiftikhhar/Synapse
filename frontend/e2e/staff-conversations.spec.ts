@@ -82,6 +82,19 @@ test.describe("Staff conversations inbox — real browser flow", () => {
     seedConversationWithStructuredCard(clinicSlug);
   });
 
+  test.afterAll(() => {
+    // This spec never creates an Appointment (only Clinic/User/ClinicStaff/
+    // Patient/chat rows, all of which cascade-delete via the clinic FK), so
+    // no need to clear Appointment.doctor/patient PROTECT rows first.
+    djangoShell(`
+from apps.clinics.models import Clinic
+c = Clinic.objects.filter(slug="${clinicSlug}").first()
+if c:
+    c.delete()
+print("ok")
+`);
+  });
+
   test("clinic owner sees the conversation in the list, with the right preview", async ({
     page,
   }) => {
