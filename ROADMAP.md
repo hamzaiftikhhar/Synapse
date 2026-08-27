@@ -2531,6 +2531,263 @@ rather than a quick patch — deliberately not started in this phase.
 user-supplied reference layout, considered color palette, axis labels,
 filters) as its own focused design phase.
 
+## ✅ Phase 35 — Staff-widget session leakage, tenant-switch isolation, conversations-list N+1
+
+Triggered by two things in one message: a bug report ("new chat attaches
+to an old chat in the Conversations tab, but the widget shows a blank/new
+conversation") and a request for a "world class" DB architecture review of
+chat history ahead of an AWS deployment — indexing, pagination, leakage,
+scalability.
+
+**Bug — root-caused precisely, not guessed.** `WidgetProvider`
+(`frontend/src/providers/widget-provider.tsx`) persists `sessionToken` to
+`sessionStorage` under a single clinic-scoped key
+(`synapse_widget_session_<slug>`) shared by **both** the real patient-
+facing embed widget and the dashboard's own staff/QA widget — because
+`DashboardWidgetProvider` mounts it with `mode="clinic"` regardless of
+which assistant mode the chat itself ends up running in.
+`ChatWidget.sendText`'s staff branch called the same `patientSessionToken()`
+/`rememberSessionToken()` used by the real patient flow, so it
+transparently reused whatever token a *previous* QA sitting — hours or
+days earlier, same browser tab — had left in `sessionStorage`:
+`_resolve_staff_test_session` (`apps/api/chat/router.py`) does
+`ChatSession.objects.get(clinic=clinic, session_token=session_token)` and
+happily reuses whatever it finds. Every new test message kept appending
+onto that same, ever-growing `ChatSession` (correctly visible in the
+staff Conversations tab), while the widget's own `messages` state is
+plain React state that resets to `[]` on every fresh mount — and staff
+mode was never wired into the resume/hydrate effect (that's gated to
+`resolvedMode === "clinic"` only) — so the UI always looked blank. Two
+completely true, individually-correct-looking facts, with no bug in
+either one alone; the mismatch was the bug.
+
+**Fix.** Staff-mode's session token now lives in a dedicated in-memory
+ref (`staffSessionTokenRef`, `chat-widget.tsx`), never routed through
+`widgetCtx.setSessionToken`/`sessionStorage`. `patientSessionToken()`/
+`rememberSessionToken()` both branch on `staffMode` so every existing call
+site (send, pagination, verify-identity, booking actions) picks up the
+right token automatically — no per-call-site changes needed. A fresh page
+load now always starts a genuinely fresh QA session, matching what the UI
+already showed. Verified directly against the DB, not just the UI: seeded
+a stale session token into `sessionStorage` exactly as a leftover QA
+sitting would, sent a message through a live browser, and confirmed a
+**new** `ChatSession` was created (28→29) while the stale one gained zero
+messages.
+
+**Follow-up case the user flagged directly: a super admin who enters a
+different clinic mid-session.** Since `ChatWidget` doesn't remount on a
+tenant switch, the in-memory ref above would otherwise keep belonging to
+whichever clinic was active when it was last set. Added an effect that
+tracks the resolved active tenant (`getActiveTenant() || clinic?.slug ||
+clinicSlug`, the same resolution `sendText` already used) and calls
+`resetChat()` — which now also clears `staffSessionTokenRef` — the moment
+it changes. Note for the record: `_resolve_staff_test_session`'s query is
+already clinic-scoped, so a stale cross-clinic token could never actually
+leak another clinic's messages even before this — this fix removes the
+wasted lookup and the UI inconsistency (old clinic's transcript still on
+screen against a new clinic's tenant), not a real data leak that existed.
+
+**DB architecture review — what's already solid, verified by reading the
+actual schema, not assumed:** `TenantModel`'s UUIDv7 primary keys
+(time-ordered, avoids the random-UUID index-bloat problem at scale, with
+both a Python default and a `db_default=UuidV7()` for raw SQL paths);
+`ChatMessage`'s composite indexes (`session+created_at`,
+`clinic+created_at`, `session+message_type`) plus the
+`UniqueConstraint(session, sequence_number)`, which doubles as the exact
+covering index `paginate_messages`'s `ORDER BY -sequence_number` needs;
+`ChatSession`'s indexes matching its real query shapes
+(`clinic+status`, `clinic+last_active_at`, `clinic+patient`,
+`visitor+last_active_at` for resume); cursor-based (not offset) message
+pagination, over-fetching by one row to learn `has_more` without a second
+`COUNT` query; correct `CASCADE`/`SET_NULL` choices (messages cascade with
+their session; patient/visitor links `SET_NULL` so deleting a patient
+record never destroys conversation history, only anonymizes the
+linkage); tenant isolation already covered by existing tests
+(`test_other_clinics_staff_cannot_read_this_conversation`, etc.) —
+re-ran them, still green. `ip_hash` is stored hashed, never a raw IP.
+
+**Found and fixed — real N+1 in `GET /chat/conversations`.**
+`_serialize_conversation` ran `messages.order_by("-sequence_number")
+.first()` **and** `messages.count()` — two extra queries **per row on the
+page**, up to 200 for a 100-row page, neither covered by the endpoint's
+existing `select_related("patient", "visitor")`. Replaced both with
+correlated subqueries (`Subquery`+`OuterRef`, one for the count, one for
+the latest message's content) folded into the single list query. Added
+`test_list_does_not_n_plus_one_on_message_count_or_preview`
+(`apps/api/chat/tests_conversations.py`), asserting the request costs a
+flat 6 queries (4 of them per-request staff-JWT/tenant-resolution
+overhead, unrelated to row count) with 8 seeded conversations — proven
+via `assertNumQueries`, not inferred.
+
+**Small AWS-readiness addition.** `config/settings/base.py`:
+`CONN_HEALTH_CHECKS: True` alongside the existing `CONN_MAX_AGE=60` —
+verifies a pooled connection before reuse instead of handing a worker a
+dead one, which matters once this runs as multiple long-lived workers
+behind RDS (a failover or idle-connection reap becomes a transparent
+reconnect instead of a random request failure).
+
+**Files changed:** `frontend/src/features/chat/chat-widget.tsx`
+(staff session isolation + tenant-switch reset), `apps/api/chat/router.py`
+(N+1 fix), `apps/api/chat/tests_conversations.py` (new regression test),
+`config/settings/base.py` (`CONN_HEALTH_CHECKS`).
+
+**Verified:** `apps.api.chat.tests_conversations` — **17/17** (16 baseline
++ 1 new). Combined suite (`apps.chatbot.tests apps.knowledge.tests
+apps.patients apps.billing apps.api.widget.tests apps.api.chat.
+tests_conversations apps.api.analytics`) — **692/692**. `tsc --noEmit`
+clean. Live-browser DB verification of the session fix as described
+above.
+
+**Known limitations / found but not fixed — real recommendations for an
+actual AWS deployment, not started here:**
+- No retention/archival policy for `chat_messages` — an unbounded table
+  is fine at today's volume but is the kind of thing worth a TTL/cold-
+  storage plan before multi-year production volume, not before then.
+- The conversations list itself (`GET /chat/conversations`) still uses
+  offset pagination — fine at realistic per-clinic scale (thousands, not
+  millions, of conversations per tenant) but would degrade at very high
+  offsets; cursor-based would be the "no asterisks" answer if a single
+  clinic's conversation count ever gets large enough to matter.
+- Connection pooling here is Django-level (`CONN_MAX_AGE`/
+  `CONN_HEALTH_CHECKS`) only — an actual AWS deployment with many
+  concurrent workers (ECS/Lambda) should sit behind RDS Proxy or PgBouncer
+  at the infrastructure layer; that's an AWS setup decision, not a code
+  change, and wasn't started here.
+- Message `content` is plaintext in the DB (expected — needed for the
+  product to function); at-rest encryption is an RDS/AWS-level control.
+  Whether field-level encryption is warranted depends on the specific
+  compliance posture being targeted — flagging for a decision, not
+  assuming an answer.
+
+**Recommended next phase:** none of the above four are urgent; revisit if
+volume, compliance requirements, or a specific clinic's conversation count
+make one of them load-bearing.
+
+## ✅ Phase 36 — Staff/super-admin chat resume, per-clinic isolation
+
+Triggered by a report that looked at first like the opposite of what it
+turned out to be. The user described "refreshing the page loses my
+conversation, but the widget still somehow attaches the new one to the
+old thread in the Conversations tab." Direct DB verification (three
+sessions inspected across a 17-minute window) showed that was **not**
+actually happening — Phase 35's fix was working exactly as designed,
+creating a genuinely fresh session on every reload. The real, verified
+problem was the opposite of the report's framing: nothing ever got
+**resumed**. Every fresh widget open threw away a perfectly good,
+already-persisted conversation and started over — for staff testing the
+bot from the dashboard, and for a super admin doing the same across
+whichever clinics they'd entered.
+
+**The design, stated plainly and confirmed with the user before
+building:** every person who chats — anonymous visitor, verified patient,
+staff/clinic-admin, or super admin — should get *their own* most recent
+conversation restored automatically when they open the widget. Anonymous
+visitors and verified patients already had this (Phase 29, keyed by a
+browser-stored visitor id) — confirmed still working, not touched. Staff
+and super-admin had nothing — that's the gap this phase closes, keyed by
+the staff JWT's own identity (user + clinic) instead of anything
+browser-stored, which sidesteps the whole class of `sessionStorage`
+staleness/cross-contamination bug Phase 35 was defensively patching
+around.
+
+**Schema change.** `ChatSession` gained `created_by_user` (nullable FK to
+`accounts.User`, `SET_NULL`, migration `chatbot.0005`) — set only when
+`_resolve_staff_test_session` (`apps/api/chat/router.py`) *creates* a new
+QA session, never on reuse. Without this there was no way to answer "whose
+QA session is this" at all — a `ChatSession` only ever recorded which
+*clinic*, never which *staff member*. New composite index
+`(clinic, created_by_user, last_active_at)` backs the resume query
+directly, same pattern as the existing `(visitor, last_active_at)` index
+for anonymous resume.
+
+**New endpoint**, `GET /chat/message/staff/resume` — pure read (mirrors
+the public widget's `/chat/resume` contract exactly: never creates a
+`ChatSession`, only sending a real message does). Finds *this* staff
+user's most recent QA session in *this* clinic
+(`created_by_user=request.auth.user, clinic=clinic_from(request)`),
+returns its latest page via the same `paginate_messages` helper
+everything else already shares.
+
+**Frontend**, `chat-widget.tsx`: a new resume effect, gated on `staffMode`
+and keyed by the resolved active tenant (`getActiveTenant() || clinic?.slug
+|| clinicSlug`) — fires once per distinct tenant this component instance
+sees (not once ever), so a super admin switching clinics mid-session gets
+a fresh resume attempt for the *new* clinic rather than silently skipping
+it because some other clinic was already resumed earlier in the tab. Also
+fixed a smaller latent bug found while in this code: `VerifyIdentity`'s
+`sessionToken` prop had a redundant `|| widgetCtx.sessionToken` fallback
+that could leak the real patient-facing token into staff mode's identity
+cards — `patientSessionToken()` already handles that fallback correctly
+internally, so the extra one was removed.
+
+**Verified, not assumed, at every layer:**
+- Direct DB inspection before writing anything, to confirm what was
+  actually true (see above — the report's own framing was partly wrong).
+- 4 new backend tests (`apps/api/chat/tests_conversations.py`,
+  `StaffChatResumeTests`): no prior session → no history, created
+  nothing; resumes own session with correct messages; two staff members
+  at the same clinic never see each other's session; a super admin
+  resumes a *different* session per clinic and switching back finds the
+  right one again — all passing.
+- Live browser verification via Playwright, not just unit tests: seeded a
+  stale scenario, sent a real message, reloaded the actual page, reopened
+  the actual widget, confirmed a uniquely-timestamped marker message was
+  genuinely visible in the rendered DOM. Same for the super-admin
+  cross-clinic case — confirmed clinic B never sees clinic A's marker,
+  and switching back to clinic A finds clinic A's own marker, not
+  clinic B's. Both promoted from throwaway scripts into a permanent,
+  self-seeding, self-tearing-down spec (`frontend/e2e/
+  staff-chat-resume.spec.ts`) rather than deleted after use.
+- One debugging false alarm worth recording: an early live-verification
+  attempt appeared to fail (`toBeVisible` timeout) because the test
+  reused the same literal marker text across repeated runs against a
+  session that correctly kept accumulating history — Playwright's
+  strict-mode locator threw on multiple matches, which a `.catch(() =>
+  false)` in the test script silently swallowed as "not found." Diagnosed
+  by screenshotting the actual page (the marker was right there) before
+  concluding anything was broken, then fixed by using a timestamped
+  marker per run — a test-script bug, never a product one.
+- Also found and fixed, while re-running the full E2E suite: a
+  pre-existing, unrelated test-only bug in `dashboard-analytics.spec.ts`
+  (a `getByRole("heading", { name: "Appointments" })` locator became
+  ambiguous after the earlier analytics-redesign phase added an
+  "Appointments by specialty" panel — fixed with `exact: true`, same for
+  "Patients" vs. "Patients by appointment count"). And a smaller version
+  of Phase 34's own "E2E fixtures never clean up" leak, self-inflicted by
+  this phase's own new spec: `seedSuperAdminTokens` created a super-admin
+  `User` row not tied to any single clinic (a super admin isn't a
+  `ClinicStaff` row), so deleting the two test clinics in `afterAll`
+  didn't cascade it away — added a matching `deleteSuperAdmin` teardown
+  call and cleaned up the two that had already leaked into the dev DB.
+
+**Files changed:** `apps/chatbot/models.py` + migration
+`0005_chatsession_created_by_user_and_more`, `apps/api/chat/router.py`
+(new endpoint, `_resolve_staff_test_session` signature),
+`apps/api/chat/schemas.py` (`StaffChatResumeOut`), `apps/api/chat/
+tests_conversations.py` (4 new tests), `frontend/src/features/chat/
+chat-widget.tsx`, `frontend/src/services/index.ts`, `frontend/src/types/
+api.ts`, new `frontend/e2e/staff-chat-resume.spec.ts`, `frontend/e2e/
+dashboard-analytics.spec.ts` (unrelated locator fix).
+
+**Verified:** Backend combined suite (`apps.chatbot.tests apps.knowledge.
+tests apps.patients apps.billing apps.api.widget.tests apps.api.chat.
+tests_conversations apps.api.analytics`) — **696/696**. Playwright, full
+suite — **13/13**. `tsc --noEmit` clean. `makemigrations --check` clean.
+Dev DB confirmed back to exactly 6 clinics and zero leaked test users
+after a full E2E run.
+
+**Known limitations / found but not fixed:** none identified as
+out-of-scope this phase — the anonymous-visitor and verified-patient
+resume paths were re-confirmed working, not modified.
+
+**Recommended next phase:** none pending from this report. The Paddle
+sandbox billing question from earlier in this session (change/remove
+plan failing because the seeded test clinics' `paddle_subscription_id`
+values were never created via a real Paddle Checkout) is still the one
+open item waiting on the user's choice between fixing the seed data or
+tightening the error message — see the Paddle investigation earlier in
+this session's history.
+
 ## 💤 Deferred — Conversation state / coreference
 
 Real, confirmed from transcript ("which one treats cancer?" → "Dr. Chloe
