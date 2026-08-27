@@ -527,6 +527,16 @@ export const chatService = {
     );
     return data;
   },
+  /** Pure read — mirrors widgetService.resume, but for the dashboard's
+   * own staff/QA chat widget: finds *this staff user's* most recent QA
+   * session in the *current* clinic (both resolved from the staff JWT,
+   * same `api` client as sendStaffMessage), never creates one. */
+  async resumeStaffChat() {
+    const { data } = await api.get<import("@/types/api").StaffChatResumeOut>(
+      "/chat/message/staff/resume"
+    );
+    return data;
+  },
   /** Staff-authenticated — a clinic's own staff and a super admin who has
    * entered the clinic both resolve to the same tenant via the JWT, so
    * this is exactly the same `api` client every other dashboard list

@@ -42,7 +42,7 @@ import {
 } from "@/hooks/api";
 import { readSelectedInsurance } from "@/hooks/use-selected-insurance";
 import { getActiveTenant, getApiErrorMessage } from "@/lib/api/client";
-import { widgetAppointmentsService, widgetService } from "@/services";
+import { chatService, widgetAppointmentsService, widgetService } from "@/services";
 import { useAuth } from "@/providers/auth-provider";
 import { useWidget, type AssistantMode } from "@/providers/widget-provider";
 import type { AppointmentCardData, ChatMessage, TimeSlotData } from "@/types/chat";
@@ -194,6 +194,8 @@ export function ChatWidget({
   const resolvedMode = assistantMode ?? widgetCtx.mode;
   const clinicSlug = clinicSlugProp ?? widgetCtx.clinicSlug;
   const widgetConfig = widgetCtx.config;
+  const staffMode =
+    resolvedMode === "staff" || (useStaffApi && isAuthenticated);
   // Own copy of the patient chat session token. GlobalChatWidget used to sit
   // outside WidgetProvider, so setSessionToken was a no-op and cancel/reschedule
   // posted session_token:"" even after a successful verify+list. Keep a local
@@ -202,19 +204,39 @@ export function ChatWidget({
   useEffect(() => {
     if (widgetCtx.sessionToken) sessionTokenRef.current = widgetCtx.sessionToken;
   }, [widgetCtx.sessionToken]);
+  // Staff/QA chat (dashboard's own "test the bot" widget) gets its own
+  // session token, held only in memory — never routed through
+  // widgetCtx.setSessionToken, which persists to sessionStorage under the
+  // same clinic-scoped key the real patient-facing embed widget uses.
+  // Without this separation, opening the dashboard's QA widget on a fresh
+  // page load silently reused whatever session token a *previous* QA
+  // sitting (hours or days earlier, in the same browser tab) had left in
+  // sessionStorage — every new test message kept appending onto that old,
+  // ever-growing ChatSession (visible in the staff Conversations tab),
+  // while the widget's own message list, being fresh React state, always
+  // rendered empty. A fresh page load now always starts a genuinely fresh
+  // QA session, matching what the UI already showed; multi-turn continuity
+  // (verify identity -> book) within one open widget/page sitting is
+  // unaffected since this ref persists for the component's lifetime.
+  const staffSessionTokenRef = useRef<string | null>(null);
 
   const rememberSessionToken = useCallback(
     (token: string | null | undefined) => {
       if (!token) return;
+      if (staffMode) {
+        staffSessionTokenRef.current = token;
+        return;
+      }
       sessionTokenRef.current = token;
       widgetCtx.setSessionToken(token);
     },
-    [widgetCtx.setSessionToken]
+    [staffMode, widgetCtx.setSessionToken]
   );
 
   const patientSessionToken = useCallback((): string => {
+    if (staffMode) return staffSessionTokenRef.current || "";
     return sessionTokenRef.current || widgetCtx.sessionToken || "";
-  }, [widgetCtx.sessionToken]);
+  }, [staffMode, widgetCtx.sessionToken]);
 
   const displayName =
     clinicName ||
@@ -270,8 +292,6 @@ export function ChatWidget({
   const guestChat = useGuestChat();
   const marketingChat = useMarketingChat();
   const clinicTimezone = widgetConfig?.timezone || "UTC";
-  const staffMode =
-    resolvedMode === "staff" || (useStaffApi && isAuthenticated);
   const canBook =
     resolvedMode !== "marketing" && Boolean(clinicSlug || clinic?.slug);
   const bookingClinicSlug = clinicSlug || clinic?.slug || "";
@@ -314,7 +334,35 @@ export function ChatWidget({
     oldestCursorRef.current = null;
     prevMessageCountRef.current = 0;
     stickToBottom.current = true;
+    // Abandon the in-memory staff/QA session too — without this, "Restart"
+    // only looked fresh (cleared messages client-side) while still posting
+    // the old session_token, silently continuing the same server-side
+    // ChatSession. See staffSessionTokenRef above.
+    staffSessionTokenRef.current = null;
   }, []);
+
+  // A super admin can enter a *different* clinic at any point without a full
+  // page reload (same tab, no remount) — the effective tenant flips under
+  // this same component instance. Without an explicit reset here, the
+  // in-memory staff session token (and whatever messages are on screen)
+  // would keep belonging to the clinic that was active when they were set,
+  // even though every new message now targets a different clinic's tenant.
+  // The backend's own `ChatSession.objects.get(clinic=clinic,
+  // session_token=...)` lookup is already clinic-scoped so a stale token can
+  // never leak another clinic's session, but leaving it unreset would still
+  // mean a wasted lookup and a UI showing one clinic's transcript while
+  // about to post into a different clinic's — reset proactively instead of
+  // relying solely on that backend-side guard.
+  const activeStaffTenant = staffMode
+    ? getActiveTenant() || clinic?.slug || clinicSlug || null
+    : null;
+  const staffTenantRef = useRef(activeStaffTenant);
+  useEffect(() => {
+    if (!staffMode) return;
+    if (staffTenantRef.current === activeStaffTenant) return;
+    staffTenantRef.current = activeStaffTenant;
+    resetChat();
+  }, [staffMode, activeStaffTenant, resetChat]);
 
   const scrollToBottom = useCallback(
     (smooth = true) => {
@@ -330,6 +378,42 @@ export function ChatWidget({
     },
     [expanded]
   );
+
+  // Staff/QA resume — the equivalent of the anonymous-visitor resume
+  // effect below, but keyed by the staff JWT's own identity (this user +
+  // this clinic) instead of a browser-stored visitor id, since staff
+  // sessions were never wired into that mechanism at all: opening the
+  // dashboard's chat widget used to always start blank, even though the
+  // conversation was sitting right there in the Conversations tab. Runs
+  // once per distinct tenant this component instance sees, not once ever
+  // — a super admin entering a different clinic mid-session must get that
+  // clinic's own resume attempt, not silently skip it because *some*
+  // clinic was already resumed earlier in this tab.
+  const staffResumedTenantRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!open || !staffMode || !activeStaffTenant) return;
+    if (staffResumedTenantRef.current === activeStaffTenant) return;
+    staffResumedTenantRef.current = activeStaffTenant;
+
+    setResuming(true);
+    void (async () => {
+      try {
+        const res = await chatService.resumeStaffChat();
+        if (res.session_token) rememberSessionToken(res.session_token);
+        if (res.messages.length) {
+          oldestCursorRef.current = res.messages[0].sequence_number;
+          setHasMoreOlder(res.has_more);
+          stickToBottom.current = true;
+          setMessages(hydrateHistoryMessages(res.messages));
+          requestAnimationFrame(() => scrollToBottom(false));
+        }
+      } catch {
+        // A failed resume must never block the widget.
+      } finally {
+        setResuming(false);
+      }
+    })();
+  }, [open, staffMode, activeStaffTenant, rememberSessionToken, scrollToBottom]);
 
   // Set right before a prepend's setMessages call so the effects below
   // skip both auto-scroll-to-bottom and the unread counter for it — an
@@ -1141,7 +1225,12 @@ export function ChatWidget({
                   showContextActions={item.message.id === lastActionMessageId && !typing}
                   assistantName={`${displayName} Assistant`}
                   clinicSlug={canBook ? bookingClinicSlug : undefined}
-                  sessionToken={patientSessionToken() || widgetCtx.sessionToken}
+                  // patientSessionToken() already falls back to
+                  // widgetCtx.sessionToken internally for non-staff modes —
+                  // an extra `|| widgetCtx.sessionToken` here would leak the
+                  // real patient-facing token into staff mode's identity
+                  // cards whenever staffSessionTokenRef was still empty.
+                  sessionToken={patientSessionToken()}
                   bookingWizardActive={
                     item.message.type === "booking_wizard" &&
                     item.message.id === activeWizardId &&

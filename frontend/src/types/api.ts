@@ -678,6 +678,13 @@ export type ConversationMessagesOut = {
   has_more: boolean;
 };
 
+export type StaffChatResumeOut = {
+  session_token: string | null;
+  has_history: boolean;
+  messages: ConversationMessage[];
+  has_more: boolean;
+};
+
 export type BookingSpecialty = {
   id: string;
   name: string;
