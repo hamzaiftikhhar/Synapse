@@ -203,6 +203,18 @@ _OFFTOPIC_ENTERTAINMENT_KEYWORDS = (
 )
 
 
+def _contains_word(msg: str, keywords: tuple[str, ...]) -> bool:
+    """Word-boundary keyword check.
+
+    The off-topic subtype lists below use short, single-word keywords
+    ("trip", "eat", "game") where plain substring containment collides with
+    unrelated words — e.g. "trip" inside "strip down" mis-routed a real
+    (angry, off-topic) message about medical exam consent to the
+    OFF_TOPIC_TRAVEL template (real patient-question data, Phase 40).
+    """
+    return any(re.search(rf"\b{re.escape(kw.strip())}\b", msg) for kw in keywords)
+
+
 def resolve_direct_template(intent_value: str, message: str) -> str:
     """
     Map an intent + raw message to the best template ID.
@@ -232,15 +244,15 @@ def resolve_direct_template(intent_value: str, message: str) -> str:
         return "THANKS"
 
     if intent_value == "off_topic":
-        if any(p in msg for p in _OFFTOPIC_PHONE_KEYWORDS):
+        if _contains_word(msg, _OFFTOPIC_PHONE_KEYWORDS):
             return "OFF_TOPIC_PHONE"
-        if any(p in msg for p in _OFFTOPIC_SPORTS_KEYWORDS):
+        if _contains_word(msg, _OFFTOPIC_SPORTS_KEYWORDS):
             return "OFF_TOPIC_SPORTS"
-        if any(p in msg for p in _OFFTOPIC_FOOD_KEYWORDS):
+        if _contains_word(msg, _OFFTOPIC_FOOD_KEYWORDS):
             return "OFF_TOPIC_FOOD"
-        if any(p in msg for p in _OFFTOPIC_TRAVEL_KEYWORDS):
+        if _contains_word(msg, _OFFTOPIC_TRAVEL_KEYWORDS):
             return "OFF_TOPIC_TRAVEL"
-        if any(p in msg for p in _OFFTOPIC_ENTERTAINMENT_KEYWORDS):
+        if _contains_word(msg, _OFFTOPIC_ENTERTAINMENT_KEYWORDS):
             return "OFF_TOPIC_ENTERTAINMENT"
         return "OFF_TOPIC"
 
