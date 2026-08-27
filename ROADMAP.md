@@ -2943,6 +2943,208 @@ into `nlu_ctx`), `apps/chatbot/tests/test_prompts.py` (5 new tests).
 2–4.5s is this environment's normal or a fixable anomaly; Phase 9C; the
 embedding-quality gap, if it recurs.
 
+## ✅ Phase 38 — Booking-confirmation context resolver + doctor-name-match safety
+
+Triggered by an external architectural review (against a real transcript)
+identifying that short confirmations and doctor-name references were
+falling into RAG despite the system having already resolved what they
+meant. Reviewed, reproduced each claim directly, and fixed the two P0
+items; two P1 routing gaps the same review flagged turned out to already
+self-resolve once the P0 fixes landed. This deliberately does **not**
+resolve the "Deferred — Conversation state / coreference" item just above
+in git history (kept, now placed after this entry) — that one is *implicit*
+pronoun reference to a doctor mentioned earlier in an ordinary answer
+("book with him" after "Dr. Chloe Bennett specializes in..."), a genuinely
+different problem from this phase's *explicit offer confirmation*
+("yes i want her" after the assistant itself offered a specific slot).
+Still open, not touched here.
+
+### Root cause
+
+**P0 — booking-slot confirmation.** This codebase already had the right
+architecture for this — `conversation_state.py`'s `pending_clarification`/
+`classify_uptake`/`apply_pending_uptake`, which binds a short reply to
+whatever the *previous* turn actually offered, is exactly the "Context
+Resolver before the Planner" the review asked for, just under different
+names. The gap was narrower than "missing architecture": `pending_offer_
+from_turn` (the function that decides "what did this turn just offer")
+only recognized the *empty-day* availability case ("no slots that day,
+want me to check another day?"). A **found**, specific slot — "Earliest
+opening: Dr Priya Chandrasekaran at 12 PM," the single most common
+confirmation moment in the whole system — was never recorded as a pending
+offer at all. So a following "yes i want her" had nothing to attach to,
+fell through to being independently classified by the NLU from zero
+context (reproduced directly: real model output was `intent=faq,
+confidence=0.95`), and reached vector search, which correctly found
+nothing for a message with no real semantic content — the "I couldn't
+find clinic-specific information" reply was accurate to what RAG was
+asked, the bug was being asked at all.
+
+A second, independent gap sat one layer down even after fixing the first:
+`apply_pending_uptake` correctly rewrites `nlu.intent` to `BOOK_APPOINTMENT`,
+but `planner.py`'s `is_booking_intent` **re-derives its own answer from the
+raw message text** (`is_transactional_booking`/`is_booking_commit`),
+ignoring that the intent was already resolved. "book it" happened to work
+even before this second fix purely because it contains the literal word
+"book"; "yes i want her" and "yes sure" contain no transactional-booking
+language at all and fell through to `clarify` despite carrying the
+correctly-resolved intent — direct, reproducible proof the gap was in the
+text-based re-derivation, not in the context resolver itself.
+
+**P0 — doctor-name-match safety.** `_fuzzy_score`'s substring branch
+(`nlu/resolvers.py`) scored *any* prefix/substring relationship at a flat
+0.92 — including "priya" being a strict prefix of the longer, different,
+equally real name "priyanka." 0.92 clears `resolve_doctor_candidates`'s
+`HIGH_CONFIDENCE=0.85` band, so `engine.py`'s existing, already-correct
+`doctor_resolution`/`did_you_mean_doctor_reply` mechanism (used
+unconditionally, for any message that plausibly names a doctor —
+independent of final intent) silently treated it as a certain match
+instead of a "did you mean" case it was already built to handle.
+
+**P1 items that turned out to already be effects of the P0 fixes, not
+separate bugs:** "what about dr priyanka" and "what is the full name of Dr
+Priyanka?" both started correctly surfacing "Did you mean Dr. Priya
+Chandrasekaran?" the moment the `_fuzzy_score` fix landed, via the *same*
+pre-existing `doctor_resolution` mechanism above — no separate change
+needed. "Can you find me a doctor for my fever" and "what is the full
+name of Dr X" needed one more thing: an explicit NLU prompt rule (symptom-
+driven doctor search and structured doctor-fact questions were
+classifying as `medical_question`/`faq` instead of `doctor_search`,
+sending both to a dead-end vector search over clinic documents that don't
+describe doctors).
+
+### Architectural changes
+
+Deliberately **not** a new "Context Resolver" layer — the review's own
+explicit instruction was "make the smallest clean architectural change,"
+and a second, parallel resolver would have duplicated a system that was
+already right, just incomplete. Extended what exists instead:
+
+1. `pending_offer_from_turn` (`conversation_state.py`) gained a third
+   offer type, `slot_confirmation`, for a *found* availability slot —
+   parallel in shape to the two existing types (`availability_alternative`,
+   `service_followup`), added to the same short-lived-expiry set in
+   `engine.py` so an unrelated intervening turn correctly clears it (the
+   review's own explicit "context contamination" requirement).
+2. `apply_pending_uptake` gained the matching `slot_confirmation` case —
+   rewrites intent to `BOOK_APPOINTMENT` with the offered doctor resolved,
+   tags `raw["_pending_type"]` for the planner to trust downstream.
+3. `classify_uptake`'s affirm matcher gained a second, narrow regex
+   (`_AFFIRM_REFERENCE_RE`) for a *fixed, small* vocabulary of confirmation-
+   plus-pronoun/generic-reference phrasing ("yes i want her/him/it/them",
+   "yes sure/please/okay", "book it/her/him/them", "that/this one/doctor")
+   — deliberately not "yes + anything," preserving the pre-existing "yes,
+   Thursday morning is new information, not uptake" boundary exactly (a
+   named *different* doctor or a specific day still fails to match, by
+   design, verified by test).
+4. `planner.py`'s `is_booking_intent` now also accepts
+   `nlu.raw.get("_pending_type") == "slot_confirmation"` as an alternative
+   to the text-based `is_transactional_booking`/`is_booking_commit`
+   checks — trusting a resolution the context layer already made instead
+   of re-deriving it from text that a confirmation reply was never going
+   to look like in the first place.
+5. `_fuzzy_score`'s substring branch (`nlu/resolvers.py`) now scales by
+   how much of the longer string the match actually accounts for
+   (`0.55 + 0.35 * shorter_len/longer_len`) instead of a flat 0.92 —
+   "priya"/"priyanka" (5/8 chars) now lands at 0.77, `resolve_doctor_
+   candidates`'s "medium"/clarify band, not "high"/silent-resolve.
+   Verified this doesn't touch the common "just say the first name" case
+   (that's exact-token equality, a separate branch, unaffected) or the
+   documented typo-tolerance case ("rjet"→"rajat", 0.6, a different —
+   Levenshtein — branch, also unaffected).
+6. One new NLU prompt rule (`nlu/prompts.py`): symptom-driven doctor
+   search and structured "about a named doctor" questions → `doctor_search`,
+   not `medical_question`/`faq` — the doctor catalog answers these, not
+   clinic documents.
+7. `STOPWORDS` (`routing/signals.py`, shared more broadly than just this
+   fix) gained "the"/"is"/"of"/"are"/"was"/"were" — found while verifying
+   the doctor-safety fix: `_name_evidence_tokens` wasn't filtering these,
+   so "what is the full name of dr priyanka" fed "the" and "name" in as
+   spurious name-evidence tokens alongside "priyanka," surfacing an
+   unrelated doctor as a weak "other close match."
+
+**Considered and explicitly rejected**: raising `_match_doctor`'s (a
+*different*, cruder resolver feeding `resolved_ids.doctor_id` for
+structured SQL filtering) accept threshold to require high confidence,
+plus adding a duplicate "did you mean" fallback inside `search_doctors`
+directly. Implemented first, then reverted after reproducing the result —
+it worked, but produced a confusing *second*, redundant "did you mean" /
+"no doctors found" message stacked on top of the response the
+pre-existing `engine.py` mechanism (item 5 above) already produces
+correctly on its own. Smallest-change discipline meant keeping the one
+fix that actually was the root cause and discarding the second, unneeded
+one — left here as an explicit note since the temptation to keep "extra
+safety" code that isn't actually load-bearing is exactly the kind of
+unnecessary-rewrite the review asked to avoid.
+
+### Files changed
+
+`apps/chatbot/conversation_state.py` (slot_confirmation offer type +
+uptake case, `_AFFIRM_REFERENCE_RE`), `apps/chatbot/engine.py`
+(slot_confirmation added to the short-lived-expiry set), `apps/chatbot/
+planner.py` (`is_booking_intent` trusts a resolved pending uptake),
+`apps/chatbot/nlu/resolvers.py` (`_fuzzy_score` substring scaling),
+`apps/chatbot/nlu/prompts.py` (doctor_search routing rule),
+`apps/chatbot/routing/signals.py` (`STOPWORDS` additions), `apps/chatbot/
+tests/test_conversation_state.py` (6 new tests), `apps/chatbot/tests/
+test_pending_uptake.py` (4 new tests).
+
+### Tests / results
+
+All 8 of the review's own requested test phrases, reproduced directly
+against the live engine end-to-end, not just unit-tested in isolation:
+"yes i want her" / "yes sure" / "book it" → correctly launch booking with
+Dr. Priya resolved; "that doctor" → reasonable doctor_search repeat (no
+pending offer existed to confirm, since a plain search-results list isn't
+an offer); "Can you find me a doctor for my fever" → `doctor_search` with
+a real doctor list, no RAG; "what about dr priyanka" → "Did you mean Dr.
+Priya Chandrasekaran?", never a silent substitution; "what is the full
+name of Dr Priyanka?" → `doctor_search`, same honest clarify; a genuinely
+unrelated message ("what are your clinic hours") after a real booking
+offer → answered normally, offer correctly expired, no contamination.
+
+10 new backend tests (6 in `test_conversation_state.py` covering
+`pending_offer_from_turn`'s new branch, `classify_uptake`'s new pattern
+*and* its preserved "new information" boundary, `apply_pending_uptake`'s
+new case, and the planner fix directly via `compute_message_sensors`; 4
+in `test_pending_uptake.py`, engine-level with NLU mocked to the exact
+live failure mode, matching that file's existing methodology). Full
+suite: `apps.chatbot.tests apps.knowledge.tests` — **550/550** (540
+baseline + 10 new). Eval: **674/682 (98.8%)** — identical to the last
+recorded baseline, same two pre-existing adversarial gaps, zero new
+failures, run twice (once after the doctor-safety fix alone, once after
+the complete change set) to isolate which change any regression would
+have belonged to had one appeared.
+
+### Remaining edge cases (stated plainly, not fixed here)
+
+- **"that doctor" without a specific slot offered** doesn't resolve to a
+  specific doctor from the prior search-results list — it's treated as a
+  fresh doctor_search (reasonable, not broken, but not "resolves the
+  reference" either). Plain search results were deliberately not treated
+  as an "offer" (they're information, not a question awaiting a yes/no) —
+  resolving *this* case is the general coreference problem the pre-
+  existing "Deferred — Conversation state / coreference" entry above is
+  about, not something folded into this phase.
+- **Booking a confirmed slot still asks for the time again** — `yes i
+  want her` correctly launches the booking flow with the right doctor
+  pre-filled, but the *specific* offered slot (date/time) isn't
+  carried into it — `ui_meta.py`'s booking-prefill dict has no slot/time
+  field yet, only doctor/specialty/service/insurance. A real, scoped
+  follow-up, not attempted here to keep this phase to the confirmation-
+  routing bug specifically.
+- **`did_you_mean_doctor_reply`'s "other close matches"** can still
+  surface a weak, borderline-relevant second candidate (observed:
+  "James Whitaker" alongside "Priya" for a "priyanka" query, before the
+  STOPWORDS fix reduced but did not entirely eliminate this) — cosmetic,
+  not a safety issue (the *primary* suggestion is correct and it's still
+  phrased as a question), not chased further.
+- The doctor-safety fix (`_fuzzy_score`) was verified against the specific
+  cases surfaced this phase (priya/priyanka, sara/sarah, rjet/rajat, jo/
+  joanna, mike/michael) plus the full eval battery — not exhaustively
+  fuzzed against every possible name pair a real clinic roster could
+  contain.
+
 ## 💤 Deferred — Conversation state / coreference
 
 Real, confirmed from transcript ("which one treats cancer?" → "Dr. Chloe
