@@ -105,6 +105,12 @@ DATABASES = {
         "HOST": env("POSTGRES_HOST", default="localhost"),
         "PORT": env("POSTGRES_PORT", default="5432"),
         "CONN_MAX_AGE": env.int("CONN_MAX_AGE", default=60),
+        # Verifies a pooled connection is still alive before reuse instead
+        # of handing a worker a dead one — matters once this runs as
+        # multiple long-lived AWS workers behind RDS, where a failover or
+        # idle-connection reap would otherwise surface as a random request
+        # failure instead of a transparent reconnect.
+        "CONN_HEALTH_CHECKS": True,
         "OPTIONS": {
             "connect_timeout": 10,
         },
