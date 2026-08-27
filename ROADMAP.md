@@ -3145,6 +3145,149 @@ have belonged to had one appeared.
   fuzzed against every possible name pair a real clinic roster could
   contain.
 
+## ✅ Phase 39 — Server-side working context (conversation memory)
+
+Triggered by a second real transcript, worse in kind than Phase 38's:
+"Based on what we already discussed, who did you recommend?" got a
+confident, specific, **invented** answer ("I recommended Dr. Omar
+Haddad... Monday, August 28, at 8:00 AM") — a recommendation that never
+happened; the real prior turn for that fever question had actually
+returned an unrelated doctor-name-verification refusal. Reproduced
+directly against real `logs/chat/*.json` trace files (not guessed): the
+Large LLM's own `### Recent conversation` context for that call showed
+exactly this fabricated exchange, meaning the hallucination was already
+baked into what it was given to work with, from a `_load_history(limit=2)`
+window too thin to ground an honest answer. Scoped and implemented from
+an external architectural review's plan (validated independently against
+the same trace files before writing any code — its diagnosis of
+`ConversationTimeline`'s unused fields matched exactly).
+
+**Root cause, precisely, not just "no memory":** `ConversationTimeline`
+(`conversation_state.py`) already had `insurance`/`doctor`/
+`availability_target` slots — they were mostly *never written*.
+`engine.py` never called `merge_turn_context(..., insurance=...)`;
+`build_planner_facts` carried zero timeline fields at all, so the planner
+had no way to consult session memory even where it existed. The one thing
+that *was* available to compensate — Phase 37's `recent_turns` — is
+deliberately bounded and forbidden from supplying entities the current
+message doesn't state (correct, load-bearing, and exactly why it can't
+also serve as a memory mechanism: a recall question is *itself* the
+current message, so that rule doesn't block the LLM from "helpfully"
+inventing content to answer it with).
+
+**Architectural decision — validated, not just followed:** do not put a
+fuller transcript into the Small LLM (Phase 37 already measured that
+tradeoff); do not store working context client-side (this clinic's own
+`ChatSession.conversation_context` is already server-side, tenant-scoped,
+and resume-safe — a client-owned store would fork staff/patient/embed and
+fight Phase 35's session isolation); do expand the one existing
+`ConversationTimeline` and have Python write to it and read from it,
+never a second LLM call. This was checked against a real competitor
+example (a property-leasing chatbot's own browser localStorage dump) the
+user asked about directly: useful as a *product* clue (it persists a
+structured booking draft and last-FAQ-subject slots, the same shape of
+idea), not as an architecture to copy — it stores full transcript *and*
+PII (name/email/phone) in client-side localStorage, which this system
+deliberately does not do.
+
+**What was added, all in `conversation_state.py` unless noted:**
+
+- `ConversationTimeline` gained five fields: `shown_doctors` (ordered,
+  capped at 6, **overwritten** each turn a doctor list is actually shown
+  — never an accumulating log), `last_recommendation` (`{id, name,
+  reason}`; `reason="listed"` when SQL returned a list vs. an actual
+  single-doctor recommendation — the composed reply says "I listed" or "I
+  recommended" accordingly, never blurs the two), `last_slots` (capped at
+  8, from real `doctor_availability` SQL rows), `problem` (this-turn
+  `entities.symptom`), `preview_only` (per-turn, not sticky).
+- `classify_session_recall(message)` → `insurance`/`recommendation`/
+  `topic`/`time`/`None`, a `direct_mode="session_recall"` short-circuit in
+  `build_execution_plan` (same pattern as the existing emergency/
+  medical-advice-refusal overrides) that stops before vector/SQL/the
+  Large LLM run at all. `compose_session_recall` answers from the
+  timeline via a plain template — an unset pin says so honestly ("You
+  haven't told me your insurance yet") instead of guessing. A genuine new
+  clinic question ("What insurance do you accept?") doesn't match and
+  reaches SQL exactly as before — verified by test, not assumed.
+- `classify_pin_amendment(message, timeline)` → true only when a bare
+  date/time retarget ("Actually Tuesday", "No, Monday was better", "make
+  it tomorrow") coincides with an open doctor/availability thread *and*
+  no confirmed booking — that guard is load-bearing: it's what keeps this
+  from ever hijacking a real reschedule of an existing appointment, which
+  correctly still requires identity verification via its own, separate,
+  untouched path. `engine.py` overrides `nlu.intent` to
+  `DOCTOR_AVAILABILITY` on a match and keeps the resolved doctor pin,
+  trusting the NLU's own date/time extraction as-is.
+- `resolve_ordinal_doctor_ref(message, timeline)` → "the second doctor
+  you mentioned" resolved by list index against `shown_doctors`. **Does
+  not** close the "Deferred — Conversation state / coreference" gap
+  below — ordinal list-index reference is a narrower, safer problem than
+  general unbound pronoun resolution ("him", "that one" with nothing to
+  index into); "book with him" after a prose bio (no list shown) still
+  correctly fails to resolve, verified by test.
+- `classify_preview_only(message)` → "don't book anything until you show
+  me...", persisted as a per-turn (non-sticky) timeline flag; suppresses
+  `exec_plan.booking` in `planner.py` while leaving availability SQL
+  untouched.
+- `PlannerFacts`/`build_planner_facts` (`planner.py`) gained the four
+  corresponding fields — computed in `engine.py` (where timeline is
+  available) exactly like the pre-existing `doctor_followup`/
+  `unknown_doctor_requested` pattern, since `compute_message_sensors`
+  itself stays pure/I/O-free by design.
+- `engine.py`: pins `insurance`/`problem` right after entity resolution
+  (from *this turn's* `nlu.entities` only — never from `recent_turns` or
+  prior state, mirroring the NLU prompt's own "current message only"
+  entity rule); overwrites `shown_doctors`/`last_recommendation`/
+  `last_slots` right after SQL execution, from the raw rows a turn
+  actually produced, not the composed prose.
+
+**Explicitly not this phase** (per the plan's own scope, respected):
+compound multi-constraint booking ("fever + Aetna + cost + earliest +
+book" in one turn, "cheapest service that can treat my problem"); the
+unknown-doctor refusal firing on a message that never named a doctor;
+emergency-trigger sensitivity (104°F-but-stable under-escalated relative
+to "diagnose my appendicitis" over-conservatively refused); insurance
+handler contradictions (a structured card showing Aetna HMO Plus for a
+PPO question, while the LLM's own prose correctly distinguished HMO vs.
+PPO in the same conversation); empty RAG on genuinely out-of-scope
+clinical questions (kidney stone surgery); cloning the competitor's
+client-side localStorage architecture. All real, all found in the same
+transcript, all deliberately left for their own phases.
+
+**Files changed:** `apps/chatbot/conversation_state.py` (5 new timeline
+fields, 4 new classifiers, 1 compose function), `apps/chatbot/engine.py`
+(pin-writing after resolve, shown/slots-writing after SQL, the four
+sensors computed and threaded through, `session_recall` dispatch),
+`apps/chatbot/planner.py` (4 new `PlannerFacts` fields, `session_recall`
+override, `preview_only` suppressing `booking`), `apps/chatbot/tests/
+test_conversation_state.py` (17 new tests), `ARCHITECTURE.md` §10.
+
+**Verified:** every one of the plan's own 8 requested test phrases,
+reproduced end-to-end against the live engine (not just unit-tested):
+"What insurance did I tell you" → honest recall, no RAG. "Which doctor
+did you recommend?" (the exact hallucination transcript) → "I listed Dr.
+Priya Chandrasekaran" — no invented Omar Haddad. "What was the
+appointment time you found?" → the real prior slot, verbatim. "What were
+we just talking about?" → an honest recap from real pins. "Actually
+Tuesday" after a Monday offer → re-queries Tuesday, keeps Priya, no RAG.
+"The second doctor you mentioned" → correctly resolves James Whitaker,
+not "I did not mention a second doctor." Negative: "What insurance do you
+accept?" (no pin) still reaches SQL normally. Negative: "Actually
+Tuesday" with no open doctor/availability thread does not fire
+pin_amendment. 17 new backend tests. Full suite: `apps.chatbot.tests
+apps.knowledge.tests` — **567/567** (550 baseline + 17 new). Eval:
+**674/682 (98.8%)** — identical to the last recorded baseline, same two
+pre-existing adversarial gaps, zero new failures.
+
+**Known limitations / found but not fixed:**
+- `compose_session_recall`'s "insurance" answer can be less specific than
+  what the patient actually said (stores the raw extracted entity text,
+  e.g. "Aetna" when they said "Aetna PPO" — honest, just occasionally
+  less precise than the source utterance; not a hallucination, a fidelity
+  gap).
+- Everything in the "Explicitly not this phase" list above, restated
+  here per the working-agreement convention.
+
 ## 💤 Deferred — Conversation state / coreference
 
 Real, confirmed from transcript ("which one treats cancer?" → "Dr. Chloe
@@ -3153,6 +3296,12 @@ into Phase 11 (doctor resolution) — the two are different problems: Phase 11
 is about not over-trusting weak *explicit* evidence, this is about *implicit*
 reference resolution, which needs actual conversation-state design work.
 No phase number assigned yet; needs its own scoping pass before starting.
+**Update (Phase 39):** ordinal list-index references ("the second doctor
+you mentioned", against a still-on-screen list) are now handled —
+`resolve_ordinal_doctor_ref`. This entry now covers specifically what
+that doesn't: unbound pronoun resolution with no list to index into
+("book with him" after a prose bio, "that one" with nothing shown this
+turn). Still open.
 
 ## 💤 Deferred — `ThreadPoolExecutor` saturation
 
