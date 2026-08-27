@@ -3288,6 +3288,192 @@ pre-existing adversarial gaps, zero new failures.
 - Everything in the "Explicitly not this phase" list above, restated
   here per the working-agreement convention.
 
+## ✅ Phase 40 — Real patient-question audit (external datasets)
+
+Different trigger than every prior phase in this file: not a pasted
+transcript from this system, but a request to stop trusting only the
+682-case synthetic eval battery and check against how real patients
+actually phrase things. Downloaded five public real-question sources —
+[LasseRegin/medical-question-answer-data](https://github.com/LasseRegin/medical-question-answer-data)
+(WebMD, eHealthForum, iCliniq, "Question Doctor" — real forum-posted
+patient questions, ~23k WebMD rows alone) and
+[HealthSearchQA](https://huggingface.co/datasets/katielink/healthsearchqa)
+(3,173 real consumer search queries, questions-only) — both genuinely
+public and directly downloadable, unlike MedQuAD (real but professionally-
+authored NIH FAQ templates, not organic patient phrasing, so not used) or
+HealthAdvice/Apple's Health Query Profiles (paper-only, no downloadable
+question set). Per instruction, did **not** build a new formal eval suite
+from these — randomly sampled real questions across the five sources and
+ran each through the **live engine** end-to-end against
+`horizon-family-care` (fresh session per question, real NLU/planner/SQL/
+vector/Large LLM calls — not eval-harness NLU-only) via
+`ChatEngine().process(...)`, matching this session's standing discipline
+of reproducing against the real system rather than trusting a script. Two
+passes: an initial 25-question sample (seed 20260827), then — per explicit
+follow-up instruction to use at least 70 — a second, independent 75-
+question sample (seed 20260827001, no overlap with the first), for **100
+real patient questions checked live in total**.
+
+**Found five real, reproducible bugs — all present before this phase, all
+missed by all 682 synthetic eval cases** (the synthetic set is
+professionally-worded; real patients aren't). The first three surfaced in
+the initial 25; the larger 75-question follow-up immediately surfaced two
+more, including a second confirmed instance of bug 1's exact failure
+mode on a different term — direct evidence the underlying pattern (short-
+circuit safety/matching regexes with no length or framing guard) recurs
+rather than being a one-off:
+
+1. **Bare "stroke"/"heart attack" triggered the hard 911 override on purely
+   informational questions.** `EMERGENCY_RE` (`nlu/emergency_patterns.py`)
+   and `SYMPTOM_CUE_RE` both listed `heart\s+attack|stroke` as bare,
+   unanchored alternatives — every other entry in both patterns requires a
+   narrative symptom phrase ("chest pain", "can't breathe"). Real
+   HealthSearchQA sample "What are the 4 causes of a stroke?" (a factual,
+   third-person question) got: "If you are experiencing a medical
+   emergency, call emergency services..." Traced end-to-end: `rules.py`'s
+   `_match_safety` fires from `EMERGENCY_RE` first; even after narrowing
+   that, `nlu/classifier.py`'s separate `has_symptom_cues`/
+   `extract_emergency_symptoms` fallback (fed by the *same* bare term in
+   `SYMPTOM_CUE_RE`) independently re-triggered it — two redundant hard
+   layers, both needed the fix, not one.
+2. **Off-topic subtype keyword lists used naive substring containment.**
+   `response_templates.py`'s `resolve_direct_template` checked `p in msg`
+   for keywords including single short words ("trip", "eat", "app "). A
+   real eHealthForum message — an angry complaint about a spouse being
+   "asked to **strip** down" for an exam without consent — matched "trip"
+   inside "strip" and got: "Sounds like a great trip idea!" instead of the
+   generic off-topic redirect.
+3. **`_STRONG_CANCEL_RE` fired unconditionally on any occurrence, at any
+   position, in an arbitrarily long message.** A real eHealthForum question
+   about a foot bump — "...it use to hurt but **not anymore** it could be
+   from trauma..." (~70 words, `not anymore` modifying `used to hurt`, zero
+   cancel intent) — matched `detect_recovery`'s strong-cancel branch (the
+   *only* branch with no length gate — `_WEAK_CANCEL_RE`'s branch already
+   had one) and returned the generic "Sure — what would you like to do
+   instead?", discarding the patient's actual question.
+4. **Same failure mode as bug 1, on a different term.** The 75-question
+   follow-up hit it immediately: "What is shortness of breath symptom of?"
+   (real HealthSearchQA) — a purely informational question — also got the
+   911 override. "shortness of breath"/"difficulty breathing" were still
+   sitting in the "narrative, always trust" bucket after the first fix,
+   which only carved out "stroke"/"heart attack". Proves the earlier fix's
+   scoping to exactly two terms was reasonable given the evidence at the
+   time, but the underlying failure mode (a term commonly used in genuine
+   consumer health trivia, not anchored to a live-symptom phrase) is not
+   unique to those two.
+5. **Doctor-name fuzzy matching collided with a common English word inside
+   a long message.** A real eHealthForum patient narrative (~90 words,
+   several paragraphs about facial swelling, an ER visit, a CT scan) never
+   named any doctor, but got prefixed with: "Did you mean Dr. Omar Haddad?
+   Other close matches: Dr. Priya Chandrasekaran." Root cause: `_fuzzy_
+   score`'s substring-match branch (`nlu/resolvers.py`, recalibrated in
+   Phase 38) had no minimum length on the shorter string — "**had**" (from
+   "...i had explained to the dr...") is a literal 3-letter prefix of
+   "**Had**dad", scoring `0.55 + 0.35*(3/6) = 0.725`, past the medium-
+   confidence "did you mean" threshold (0.65). `resolve_doctor_candidates`
+   extracts *every* non-stopword word in the message as a name-evidence
+   token (93 of them for this one message) and fuzzy-scores each against
+   every clinic doctor — with a long enough message, a coincidental
+   collision like this becomes likely, not unlikely.
+
+**Fixes, each scoped to exactly the proven false-positive, verified not to
+weaken the genuine-emergency/genuine-cancel/genuine-travel/genuine-
+doctor-name cases:**
+
+- `emergency_patterns.py`: `EXCEPTION_TERMS_RE` (stroke, heart attack,
+  shortness of breath, difficulty breathing — the four terms proven prone
+  to WH-question phrasing, moved out of `EMERGENCY_NARRATIVE_RE`/
+  `SYMPTOM_NARRATIVE_RE`'s "always trust" bucket) plus one shared
+  `is_informational_emergency_mention(text, narrative_re)` — True only
+  when no narrative phrase matched, one of those four terms is present,
+  the message reads as a WH question about the condition ("what/how/why
+  causes/symptoms/signs/treatment/risk factors/prevention/diagnosis
+  of..."), and there's no experiential framing ("I'm having", "right
+  now", "currently"). Deliberately **not** generalized to every narrative
+  phrase — chest pain, arm numbness, choking, suicidal/kill myself, severe
+  bleeding, unconscious all stay unconditionally fail-closed; nothing in
+  either data pass proved those prone to informational phrasing, and the
+  cost of a missed genuine self-harm or cardiac disclosure is far worse
+  than one unnecessary 911 nudge on a trivia question. Used by `rules.py`'s
+  `_match_safety` and `entity_extract.py`'s `has_symptom_cues` (the
+  latter's only consumer is the classifier's emergency-override path,
+  confirmed by grep before changing it — the *separate*, lower-stakes
+  `has_symptom_cues` in `routing/signals.py`, used for business-hours-
+  answer gating, was deliberately left untouched). `EMERGENCY_RE`/
+  `SYMPTOM_CUE_RE` themselves are unmodified.
+- `response_templates.py`: new `_contains_word()` helper doing real
+  `\bword\b` regex matching, `.strip()`-ing the manual space-padding hacks
+  ("` eat`", "`app `") the old substring approach needed and no longer
+  does. Applied to the five off-topic subtype lists sharing this exact
+  mechanism (phone/sports/food/travel/entertainment); the greeting/
+  thanks/mental-health keyword lists elsewhere in the same file weren't
+  implicated by the reproduced bug and weren't touched.
+- `conversation_state.py`: added `_STRONG_CANCEL_MAX_WORDS = 15` gate on
+  `detect_recovery`'s strong-cancel branch, mirroring the existing
+  `len(text.split()) <= 6` precedent already used for
+  `_OFF_TOPIC_ABUSE_RE` in `rules.py` for the same class of problem
+  (short-phrase heuristic false-triggering inside a long, unrelated
+  message).
+- `nlu/resolvers.py`: `_fuzzy_score`'s substring-match branch now requires
+  `min(len(needle), len(candidate)) >= _MIN_SUBSTRING_MATCH_LEN` (4) before
+  granting the generous `0.55 + 0.35*coverage` score; below that floor it
+  falls through to plain Levenshtein scoring, which correctly scores
+  "had"/"haddad" at 0.5 (under both the 0.6 default and 0.65 medium
+  thresholds) instead of 0.725. Verified the Phase 38 golden cases this
+  branch was tuned around are unaffected: priya/priyanka (0.769), sara/
+  sarah (0.83), rjet/rajat (0.6, a different branch entirely) all
+  unchanged — the floor only excludes needles shorter than 4 characters,
+  which none of those are.
+
+**Files changed:** `apps/chatbot/nlu/emergency_patterns.py`,
+`apps/chatbot/nlu/rules.py`, `apps/chatbot/nlu/entity_extract.py`,
+`apps/chatbot/nlu/resolvers.py`, `apps/chatbot/response_templates.py`,
+`apps/chatbot/conversation_state.py`, `apps/chatbot/tests/test_nlu.py`
+(+2), `apps/chatbot/tests/test_recovery_override.py` (+2), new
+`apps/chatbot/tests/test_response_templates.py` (+5), `apps/chatbot/
+tests/test_resolvers.py` (+2).
+
+**Tests:** 11 new regression tests, each reproducing the exact real-data
+failure string. `apps.chatbot.tests apps.knowledge.tests` —
+**578/578** (567 baseline + 11 new). Eval: **674/682 (98.8%)** — identical
+to baseline, `emergency`/`horizon_emergency`/`off_topic` lanes still
+100%, same two pre-existing unrelated adversarial gaps, zero new
+failures, checked after each of the two fix rounds. All five fixes
+re-verified live (not just unit-tested): the full 100-question set (25 +
+75) was re-run through `ChatEngine().process` end-to-end after every
+fix, with zero engine errors and zero recurrences of any of the five
+failure patterns in the final pass.
+
+**Known limitations / found but not fixed:**
+- Standard FAST stroke-symptom language ("face drooping", "slurred
+  speech", "one-sided weakness") is not in `EMERGENCY_RE`/`SYMPTOM_CUE_RE`
+  at all — a gap noticed while reading these patterns closely, not proven
+  by either sampled batch, so not touched this phase; worth its own
+  investigation.
+- `SYMPTOM_CUE_RE` never included "difficulty breathing" in the first
+  place (only `EMERGENCY_RE` did) — a pre-existing asymmetry between the
+  two patterns, not caused by this phase and not user-visible (rules.py's
+  `EMERGENCY_RE`-driven path still catches genuine "difficulty breathing"
+  reports correctly), left alone rather than expanded speculatively.
+- Only 100 of the ~27,000+ downloaded real questions were run across both
+  passes — still a random spot check, not a systematic pass. The fact
+  that the second, independent 75-question sample immediately surfaced
+  two more real bugs (one a second instance of an already-"fixed" failure
+  mode) is itself evidence that further sampling would likely find more;
+  not pursued further this phase.
+- The other three requested sources (MedQuAD, HealthAdvice, Apple's Health
+  Query Profiles) were investigated but not usable as downloadable
+  question sets — noted for the record rather than silently substituted.
+
+**Recommended next phase:** the pattern is now confirmed recurring, not
+hypothetical — a dedicated audit of every regex-based rule and every
+fuzzy/substring-matching mechanism in `nlu/rules.py`, `nlu/resolvers.py`,
+`response_templates.py`, and `conversation_state.py`, either read closely
+for the same class of gap (unanchored keyword, no length floor, no
+framing guard) or checked against a much larger random sample from the
+same five real-question sources, would be the natural follow-up — not
+started here, this phase fixed exactly the five proven cases.
+
 ## 💤 Deferred — Conversation state / coreference
 
 Real, confirmed from transcript ("which one treats cancer?" → "Dr. Chloe
