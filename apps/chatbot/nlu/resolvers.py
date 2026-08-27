@@ -144,6 +144,9 @@ def _levenshtein(a: str, b: str) -> int:
     return prev[-1]
 
 
+_MIN_SUBSTRING_MATCH_LEN = 4
+
+
 def _fuzzy_score(needle: str, candidate: str) -> float:
     """0–1 similarity; 1 is exact."""
     n = _normalize(needle)
@@ -152,8 +155,34 @@ def _fuzzy_score(needle: str, candidate: str) -> float:
         return 0.0
     if n == c:
         return 1.0
-    if n in c or c in n:
-        return 0.92
+    if (n in c or c in n) and min(len(n), len(c)) >= _MIN_SUBSTRING_MATCH_LEN:
+        # A flat 0.92 here used to treat any prefix/suffix relationship as
+        # near-certain — including "priya" being a strict prefix of the
+        # unrelated, longer, equally real name "priyanka". That silently
+        # resolved "what about dr priyanka" to Dr. Priya Chandrasekaran
+        # with no signal to the user it was a guess (reproduced against a
+        # real transcript; see ROADMAP.md). Scale by how much of the longer
+        # string the match actually accounts for instead: a one-or-two-
+        # character difference (a plausible typo) still scores high; a
+        # shorter name that's merely a prefix of a longer, different one
+        # lands in the confidence_band "medium" range instead of "high" —
+        # `_match_doctor` below now only auto-resolves on "high", so a
+        # "priya"/"priyanka" match surfaces as a "did you mean" instead of
+        # a silent substitution, without turning off fuzzy matching itself
+        # (still finds the doctor — see search_doctors's clarify fallback).
+        #
+        # The length floor is Phase 40: a real, long eHealthForum patient
+        # narrative containing "...i had explained..." fuzzy-matched "had"
+        # against "Haddad" (a real clinic doctor) at 0.725 via this exact
+        # branch — a "did you mean Dr. Omar Haddad?" prompt on a message
+        # that named no doctor at all. Below the floor, a common 3-letter
+        # word being a literal prefix of a much longer surname is at least
+        # as likely to be coincidence as a genuine partial name, so it
+        # falls through to Levenshtein scoring instead (0.5 for had/
+        # Haddad — correctly under the "medium" clarify threshold).
+        shorter_len = min(len(n), len(c))
+        longer_len = max(len(n), len(c))
+        return 0.55 + 0.35 * (shorter_len / longer_len)
     # Token overlap (first name / last name)
     n_tokens = set(n.split())
     c_tokens = set(c.split())

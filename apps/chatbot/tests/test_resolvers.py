@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from django.test import TestCase
 
-from apps.chatbot.nlu.resolvers import resolve_doctor_from_text, resolve_specialty_for_service
+from apps.chatbot.nlu.resolvers import (
+    resolve_doctor_candidates,
+    resolve_doctor_from_text,
+    resolve_specialty_for_service,
+)
 from apps.clinics.models import Clinic
 from apps.doctors.models import Doctor, DoctorService, DoctorSpecialty
 from apps.services.models import Service
@@ -49,6 +53,51 @@ class ResolveDoctorFromTextTests(TestCase):
     def test_empty_text_returns_none(self):
         self.assertIsNone(resolve_doctor_from_text(self.clinic, ""))
         self.assertIsNone(resolve_doctor_from_text(self.clinic, None))
+
+
+class FuzzyMatchShortWordCollisionTests(TestCase):
+    """Phase 40: a real, long eHealthForum patient narrative ("...i had
+    explained to the dr...") fuzzy-matched the common word "had" against a
+    real clinic doctor's surname "Haddad" at 0.725 — a "did you mean Dr.
+    Omar Haddad?" prompt on a message that named no doctor at all. Root
+    cause: _fuzzy_score's substring-match branch had no minimum length on
+    the shorter string, so a 3-letter common word being a literal prefix of
+    a much longer surname scored almost as high as a genuine partial name.
+    """
+
+    def setUp(self):
+        self.clinic = Clinic.objects.create(
+            slug="haddad-collision-clinic",
+            name="Haddad Collision Clinic",
+            email="haddad@clinic.com",
+            phone="+12125550001",
+            timezone="America/New_York",
+        )
+        self.doctor = Doctor.objects.create(
+            clinic=self.clinic,
+            full_name="Dr. Omar Haddad",
+            title="MD",
+            is_active=True,
+        )
+
+    def test_long_narrative_with_had_does_not_suggest_haddad(self):
+        text = (
+            "i have a large hard knot beneath the skin of my left cheek. "
+            "the following day i went to an er due to more aggressive "
+            "facial swelling. the dr there gave me a cat scan. at this "
+            "point i had explained to the dr that none of my teeth were "
+            "bothering me in any way. what could be causing this knot"
+        )
+        resolution = resolve_doctor_candidates(self.clinic, text)
+        self.assertNotEqual(resolution.status, "clarify")
+        self.assertIsNone(resolve_doctor_from_text(self.clinic, text))
+
+    def test_short_partial_name_still_resolves(self):
+        # "Sharma"-style short-but-genuine last names must still work —
+        # the fix only excludes matches below the length floor.
+        result = resolve_doctor_from_text(self.clinic, "book with dr haddad please")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["id"], str(self.doctor.id))
 
 
 class ResolveSpecialtyForServiceTests(TestCase):
