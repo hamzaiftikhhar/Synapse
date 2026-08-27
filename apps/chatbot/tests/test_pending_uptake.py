@@ -183,3 +183,120 @@ class PendingUptakeEngineTests(TestCase):
         lowered = result.response.lower()
         self.assertNotIn("maya", lowered, msg=result.response)
         self.assertNotIn("available", lowered, msg=result.response)
+
+
+class SlotConfirmationUptakeTests(TestCase):
+    """"yes i want her" / "yes sure" / "book it" taking up a just-offered
+    specific slot ("Earliest opening: Dr Maya Lin at 12 PM"). Root cause,
+    reproduced against a real transcript (ROADMAP.md): pending_offer_from_turn
+    only ever recorded a pending offer for the *empty*-day "check another
+    day?" case — a genuinely *found* slot, the most common confirmation
+    moment in the whole system, was never tracked at all, so the next
+    short reply was classified from zero context and fell through to a
+    generic vector search that always came back empty. NLU is mocked
+    exactly as above: these tests prove the binder + planner recognize the
+    resolved booking intent, independent of what the live model happens to
+    guess for a short, ambiguous message."""
+
+    def setUp(self):
+        self.clinic = Clinic.objects.create(
+            slug="slot-confirm-clinic",
+            name="Slot Confirm Clinic",
+            email="sc@clinic.com",
+            phone="+12125550088",
+            timezone="America/Los_Angeles",
+        )
+        WidgetSettings.objects.create(
+            clinic=self.clinic,
+            configuration={"booking": {"date_horizon_days": 21}},
+        )
+        self.priya = Doctor.objects.create(
+            clinic=self.clinic,
+            full_name="Dr. Priya Chandrasekaran",
+            is_active=True,
+            is_accepting_patients=True,
+        )
+
+    def _session_with_slot_offer(self, token: str) -> ChatSession:
+        return ChatSession.objects.create(
+            clinic=self.clinic,
+            session_token=token,
+            status=ChatSessionStatus.ACTIVE,
+            conversation_context={
+                "last_doctor": {"id": str(self.priya.id), "name": self.priya.full_name},
+                "timeline": {
+                    "pending_clarification": {
+                        "type": "slot_confirmation",
+                        "action": "confirm_slot",
+                        "doctor_id": str(self.priya.id),
+                        "doctor_name": self.priya.full_name,
+                        "date": "2026-08-31",
+                        "time": "12:00 PM",
+                    },
+                    "doctor": {"id": str(self.priya.id), "name": self.priya.full_name},
+                },
+            },
+        )
+
+    def _nlu(self, intent, confidence=0.85):
+        return NLUResult(
+            intent=intent,
+            confidence=confidence,
+            entities=ExtractedEntities(),
+            resolved_ids=ResolvedIds(),
+            needs_sql=False,
+        )
+
+    @patch("apps.chatbot.nlu.intent_entity.IntentEntityService.analyze")
+    def test_yes_i_want_her_launches_booking_not_rag(self, mock_analyze):
+        # The real, observed live-model failure: a bare confirmation
+        # classified as faq with no grounding, which used to reach vector
+        # search and find nothing.
+        mock_analyze.return_value = self._nlu(Intent.FAQ, confidence=0.95)
+        result = ChatEngine().process(
+            clinic=self.clinic,
+            message="yes i want her",
+            session=self._session_with_slot_offer("tok-slot-1"),
+        )
+        self.assertIn("book", result.response.lower())
+        self.assertNotIn("couldn't find", result.response.lower())
+
+    @patch("apps.chatbot.nlu.intent_entity.IntentEntityService.analyze")
+    def test_yes_sure_launches_booking_not_rag(self, mock_analyze):
+        mock_analyze.return_value = self._nlu(Intent.FAQ, confidence=0.95)
+        result = ChatEngine().process(
+            clinic=self.clinic,
+            message="yes sure",
+            session=self._session_with_slot_offer("tok-slot-2"),
+        )
+        self.assertIn("book", result.response.lower())
+        self.assertNotIn("couldn't find", result.response.lower())
+
+    @patch("apps.chatbot.nlu.intent_entity.IntentEntityService.analyze")
+    def test_book_it_launches_booking(self, mock_analyze):
+        mock_analyze.return_value = self._nlu(Intent.BOOK_APPOINTMENT)
+        result = ChatEngine().process(
+            clinic=self.clinic,
+            message="book it",
+            session=self._session_with_slot_offer("tok-slot-3"),
+        )
+        self.assertIn("book", result.response.lower())
+
+    @patch("apps.chatbot.nlu.intent_entity.IntentEntityService.analyze")
+    def test_unrelated_message_expires_the_slot_offer(self, mock_analyze):
+        """Context inheritance must not contaminate an unrelated turn —
+        the exact "test 8" safety case from the architectural review this
+        phase responds to."""
+        session = self._session_with_slot_offer("tok-slot-5")
+
+        mock_analyze.return_value = self._nlu(Intent.CLINIC_HOURS, confidence=0.96)
+        ChatEngine().process(
+            clinic=self.clinic, message="what are your clinic hours", session=session
+        )
+        session.refresh_from_db()
+        pending = (session.conversation_context or {}).get("timeline", {}).get(
+            "pending_clarification"
+        )
+        self.assertIsNone(
+            pending, "an unrelated intervening turn should expire the slot offer"
+        )
