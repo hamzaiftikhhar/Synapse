@@ -6,6 +6,10 @@ import re
 from typing import Any
 
 from apps.chatbot.nlu.emergency_patterns import SYMPTOM_CUE_RE as _SYMPTOM_CUE_RE
+from apps.chatbot.nlu.emergency_patterns import (
+    SYMPTOM_NARRATIVE_RE as _SYMPTOM_NARRATIVE_RE,
+    is_informational_emergency_mention as _is_informational_emergency_mention,
+)
 
 _DATE_PATTERNS = [
     r"\bnext\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
@@ -205,8 +209,19 @@ def extract_entities(text: str) -> dict[str, Any]:
 
 
 def has_symptom_cues(text: str) -> bool:
-    """True when message contains emergency/soft-symptom language."""
-    return bool(_SYMPTOM_CUE_RE.search(text or ""))
+    """True when message contains emergency/soft-symptom language.
+
+    Only consumer is classifier.py's hard emergency-override path (not
+    routing/signals.py's own, separate has_symptom_cues), so the
+    informational-question exception belongs here: "what causes a stroke"
+    should not be treated as a live symptom cue (Phase 40).
+    """
+    text = text or ""
+    if not _SYMPTOM_CUE_RE.search(text):
+        return False
+    if _is_informational_emergency_mention(text, _SYMPTOM_NARRATIVE_RE):
+        return False
+    return True
 
 
 def extract_emergency_symptoms(text: str) -> list[str]:
