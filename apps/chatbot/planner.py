@@ -385,6 +385,14 @@ class PlannerFacts:
     doctor_availability_query: bool = False
     urgent_availability: bool = False
     topic: str | None = None
+    # Working context (Phase 39) — DB-independent text classification;
+    # the caller (engine.py) resolves the actual timeline-dependent parts
+    # (which field to recall, which shown doctor an ordinal refers to)
+    # since PlannerFacts/build_execution_plan stay pure, no I/O.
+    session_recall_field: str | None = None
+    pin_amendment: bool = False
+    ordinal_doctor_id: str | None = None
+    preview_only: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -406,6 +414,10 @@ class PlannerFacts:
             "doctor_availability_query": self.doctor_availability_query,
             "urgent_availability": self.urgent_availability,
             "topic": self.topic,
+            "session_recall_field": self.session_recall_field,
+            "pin_amendment": self.pin_amendment,
+            "ordinal_doctor_id": self.ordinal_doctor_id,
+            "preview_only": self.preview_only,
         }
 
 
@@ -494,10 +506,25 @@ def compute_message_sensors(
     booking_commit = is_booking_commit(
         message, doctor_name=getattr(nlu.entities, "doctor_name", None)
     )
+    # A pending-offer uptake (apply_pending_uptake, conversation_state.py)
+    # already resolved *what* this turn means from real conversation state
+    # before this function ever ran — it rewrote nlu.intent to
+    # BOOK_APPOINTMENT precisely because "yes i want her" is confirming a
+    # just-offered slot. But is_transactional_booking/is_booking_commit
+    # below only read the raw message text, which was never expected to
+    # look like a booking command in the first place ("book it" happens to
+    # contain "book" and passes; "yes i want her"/"yes sure" don't, and
+    # silently fell through to clarify despite the correctly-resolved
+    # intent — reproduced against a real transcript, see ROADMAP.md).
+    # Trust the resolution instead of re-deriving it from text that was
+    # never the point.
+    pending_uptake_booking = (
+        getattr(nlu, "raw", None) or {}
+    ).get("_pending_type") == "slot_confirmation"
     is_booking_intent = (
         (
             nlu.intent in {Intent.BOOK_APPOINTMENT, Intent.RESCHEDULE_APPOINTMENT}
-            and (is_transactional_booking(message) or booking_commit)
+            and (is_transactional_booking(message) or booking_commit or pending_uptake_booking)
             and not knowledge_q
         )
         or (
@@ -573,6 +600,10 @@ def build_planner_facts(
     doctor_followup: bool = False,
     doctor_availability_query: bool = False,
     urgent_availability: bool = False,
+    session_recall_field: str | None = None,
+    pin_amendment: bool = False,
+    ordinal_doctor_id: str | None = None,
+    preview_only: bool = False,
 ) -> PlannerFacts:
     """Assemble runtime facts for the planner. No I/O."""
     topic = _resolve_topic(nlu, message)
@@ -596,6 +627,10 @@ def build_planner_facts(
         doctor_availability_query=doctor_availability_query,
         urgent_availability=urgent_availability,
         topic=topic,
+        session_recall_field=session_recall_field,
+        pin_amendment=pin_amendment,
+        ordinal_doctor_id=ordinal_doctor_id,
+        preview_only=preview_only,
     )
 
 
@@ -623,6 +658,20 @@ def build_execution_plan(*, nlu: NLUResult, facts: PlannerFacts) -> ExecutionPla
             direct=True,
             direct_mode="emergency",
             reason="planner_emergency_override",
+            facts=fact_dict,
+        )
+
+    # Working context (Phase 39) — a question about what THIS session
+    # already discussed must never reach RAG/the Large LLM: with no real
+    # history to ground it beyond a thin recent-messages window, it
+    # reliably invents an answer instead of admitting it doesn't know
+    # (reproduced directly — see ROADMAP.md). Composed from
+    # ConversationTimeline facts in engine.py, not a second model pass.
+    if facts.session_recall_field:
+        return ExecutionPlan(
+            direct=True,
+            direct_mode="session_recall",
+            reason="planner_session_recall",
             facts=fact_dict,
         )
 
@@ -805,6 +854,14 @@ def build_execution_plan(*, nlu: NLUResult, facts: PlannerFacts) -> ExecutionPla
             ]
 
     booking = bool(facts.is_booking_intent) and not facts.unknown_doctor_requested
+
+    # Working context (Phase 39) — "don't book anything until you show me
+    # X" must not launch the booking wizard this turn even though the
+    # message is otherwise booking-shaped; availability/SQL tasks below
+    # are unaffected, so the patient still sees times, just not a booking
+    # commit action attached to them.
+    if facts.preview_only:
+        booking = False
 
     # Check / reschedule my appointment → booking/auth workflow (not clarify)
     if _CHECK_APPOINTMENT_RE.search(message) or nlu.intent in {
