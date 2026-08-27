@@ -103,8 +103,10 @@ print("ok")
     await expect(page.getByText("Understand how patients interact with Synapse.")).toBeVisible();
     await expect(page.getByText("Conversation volume")).toBeVisible();
     await expect(page.getByText("No conversations yet")).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Appointments" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Patients" })).toBeVisible();
+    // exact: true — "Appointments by specialty" is a second, later-added
+    // panel heading that also contains the word "Appointments".
+    await expect(page.getByRole("heading", { name: "Appointments", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Patients", exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Providers" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "AI usage" })).toBeVisible();
   });
