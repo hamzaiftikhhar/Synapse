@@ -58,6 +58,28 @@ class RecoveryDetectionTests(SimpleTestCase):
         self.assertEqual(action.kind, "reverse")
         self.assertTrue(action.strong_cancel)
 
+    def test_not_anymore_inside_long_symptom_narrative_is_not_a_cancel(self):
+        """Phase 40: a real eHealthForum question — "it use to hurt but not
+        anymore" is a ~70-word symptom description where "not anymore"
+        modifies "used to hurt", not a request to cancel anything. Fired
+        _STRONG_CANCEL_RE unconditionally (no thread, no length check) and
+        swallowed the patient's actual question behind a generic reverse
+        reply."""
+        text = (
+            "i have a hard bump on the up side of the left foot it use to "
+            "hurt but not anymore it could be from trauma but i am not "
+            "sure i am worried because i do not remember if i hit my foot "
+            "or not when i rub my feet i feel like a little mountain "
+            "really hard"
+        )
+        action = detect_recovery(text, ConversationTimeline())
+        self.assertEqual(action.kind, "none")
+
+    def test_short_not_anymore_cancel_still_recovers(self):
+        action = detect_recovery("not anymore, thanks", ConversationTimeline())
+        self.assertEqual(action.kind, "reverse")
+        self.assertTrue(action.strong_cancel)
+
 
 class RecoveryOverrideGuardTests(SimpleTestCase):
     def test_weak_cold_start_does_not_override_sql(self):
