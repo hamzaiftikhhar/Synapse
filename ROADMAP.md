@@ -2788,6 +2788,161 @@ open item waiting on the user's choice between fixing the seed data or
 tightening the error message — see the Paddle investigation earlier in
 this session's history.
 
+## ✅ Phase 37 — NLU context blindness + capability-question misroute (real transcript, real trace logs)
+
+Triggered by "the first message always gives a wrong answer or times out" plus
+a real, full pasted transcript from `horizon-family-care`. Investigated via
+the actual logs before touching anything — this repo already had everything
+needed: `logs/chat/*.json` structured pipeline traces (dev-only,
+`DEBUG_CHAT_PIPELINE`, safely `False` by default in `base.py`/`production.py`,
+confirmed) plus `chat_pipeline_trace`/`OpenAI NLU timing` log lines. Matched
+the pasted transcript's timestamps to 16 real trace files and read the exact
+internal `degraded_reason`, vector-hit counts, and per-stage timings for
+every turn — not reconstructed from the persisted `ChatMessage.metadata`
+alone (which doesn't carry `degraded_reason` or vector scores).
+
+**What the real data actually showed — three distinct findings, not one:**
+
+1. **NLU classification alone consistently takes 2.1–4.5 seconds** across
+   all 16 real calls (`api_call_ms` — the OpenAI round trip — is ~99% of
+   that; local processing is ~0ms). This is the honest answer to "why does
+   it feel slow": not a timeout (none of these 16 calls actually hit
+   `NLU_TOTAL_BUDGET_SECONDS=7.0`), but a genuinely slow classification step
+   eating most of the request budget on every turn, not just the first.
+   Correcting the user's own framing here explicitly: this transcript's data
+   does not show timeouts firing — it shows slow-but-completing calls,
+   which is a different problem with a different fix.
+2. **Most of the "I couldn't find clinic-specific information" replies were
+   genuine zero-hit vector searches** (`degraded_reason=empty_vector`,
+   `hits=0`), not the Phase-9C budget/timeout-masking gap this looked like
+   at first glance. Two sub-causes, both real: (a) content-free replies
+   ("sure"/"yes"/"no"/bare "Earliest") were independently classified by the
+   NLU with unfounded high confidence (0.85–0.95) into an arbitrary topic
+   (e.g. "membership") with zero connection to what was actually being
+   discussed, guaranteeing a meaningless vector search; (b) genuine
+   retrieval-quality sensitivity — "Whihc **doc** treats the fever" (0
+   hits) vs. "Whihc **doctor** treats the fever" (1 hit, correct answer),
+   same clinic, same knowledge base, one word apart. (b) is a real,
+   separate embedding-quality gap, not fixed here — noted below.
+3. **Capability/meta questions about the assistant itself** ("What are the
+   things you can help me with", "what are the things that you hvae")
+   classified as `faq` (0.95 confidence) → routed to vector search against
+   *clinic* documents → guaranteed zero hits, because no clinic writes a
+   document describing its own chatbot's capabilities. The *first* message
+   of the same real session asked essentially the same thing and got
+   classified `off_topic` instead, which already has the correct canned
+   "here's what I can help with" reply on the `direct`/template lane — the
+   right answer already existed, the classifier just didn't reach it
+   consistently.
+
+**Fixes, both in `apps/chatbot/nlu/prompts.py` (the single source-of-truth
+NLU prompt file per `ARCHITECTURE.md` §13), both extending the existing,
+deliberate "Small LLM produces semantics" design rather than bypassing it
+with a hardcoded rule:**
+
+1. **Bounded recent-turn context, added to the NLU call itself** — the
+   thing explicitly requested, and the thing the real evidence most directly
+   supports. `apps/chatbot/engine.py`'s `process()` now calls the
+   already-existing `self._load_history(session, limit=6)` (previously only
+   used for the *Large* LLM's synthesis step, `_generate_response`) and
+   threads it into the NLU's `conversation_context` as `recent_turns`.
+   `build_user_prompt` (`nlu/prompts.py`) renders it as a compact
+   `Recent:\nU: ...\nA: ...` plain-text block — deliberately never JSON
+   (cheaper in tokens, and nothing shaped like state to copy fields out of)
+   — each line truncated to 90 chars, and explicitly excluded from the
+   generic `Ctx:` JSON dump so it isn't double-encoded. The system prompt
+   gained one explicit, bounded instruction: use recent turns only to
+   resolve what a short/bare current message is responding to; never let
+   them supply or override an entity the current message doesn't itself
+   state; prefer low confidence over guessing when even the immediately
+   preceding turn doesn't make the target clear. This mirrors this file's
+   own prior lesson, left as a comment already in the code before this
+   phase: full booking-draft JSON was once added to this same context and
+   had to be removed because the classifier started copying stale dates out
+   of it — the fix here is scoped narrowly (plain conversational text,
+   explicit "don't override" instruction, 3-exchange cap) specifically to
+   avoid repeating that mistake. Deliberately does **not** touch or
+   duplicate `conversation_state.py`'s existing `pending_clarification`/
+   `classify_uptake` mechanism (ARCHITECTURE.md §10) — that remains the
+   precise, code-owned path for offers the engine explicitly recorded; this
+   is the fallback for everything else, letting the model itself reason
+   about context instead of adding more hardcoded state-tracking.
+2. **One explicit routing rule**: "what can you do/help with" style
+   questions about the assistant's own scope → `off_topic`, not `faq`.
+
+**Verified, not assumed — and reported honestly where evidence was mixed:**
+manual live re-testing of the exact failing turns showed real improvement in
+some cases but also one apparent regression on an unrelated query
+(`"where are you doctor placed"` dropped from 0.85→0.40 confidence in one
+run). Given LLM prompt changes are probabilistic, not deterministic, a
+handful of manual spot-checks against a `temperature=0.1` model is not
+sufficient evidence either way — this is exactly the situation
+`run_chat_eval`'s 682-case offline battery exists for. Ran it:
+**674/682 (98.8%) — identical to the last recorded baseline**, same two
+pre-existing adversarial failures (`adversarial_booking_slang_squeeze`,
+`adversarial_medical_slang_pediatric`, both already-known gaps, unrelated to
+this change), zero new failures. That single manual "regression" is far
+more likely ordinary sampling variance than something this change caused.
+Full suite: `apps.chatbot.tests apps.knowledge.tests` — **540/540** (535
+baseline + 5 new). New tests: `apps/chatbot/tests/test_prompts.py` — 5
+cases covering the plain-text (never JSON) rendering, truncation, malformed-
+entry handling, exclusion from the generic `Ctx:` dump, and that both new
+system-prompt rules are actually present in the shipped prompt text.
+
+**Research grounding, per explicit request** — read Anthropic's own current
+context-engineering guidance rather than relying on priors alone: the
+"right altitude" principle (concrete, bounded heuristics — not brittle
+keyword rules, not vague guidance) directly shaped the "resolve short
+replies against the immediately preceding turn, never override current-
+message entities" instruction; "curate the minimal set of information that
+fully outlines expected behavior" directly shaped the plain-text/truncated/
+6-message-cap rendering over a fuller transcript dump. General OpenAI-
+ecosystem guidance on structured-output latency (minimize schema/output
+size) is noted for the next phase below but not acted on here — this
+phase's own measurement shows the ~99% latency cost is the raw OpenAI API
+round trip itself, not prompt construction or local processing, so schema
+trimming is a real but smaller lever than it looked before measuring.
+
+**Found, not fixed — real, separate items for their own phase, not bundled
+in here:**
+- **Raw NLU API latency (2.1–4.5s per call)** is not something a prompt
+  change fixes — it's the OpenAI round trip itself. Worth its own
+  investigation: is this normal for `gpt-4.1-nano` at this prompt size in
+  this environment, or is something (network path, account tier, time of
+  day) making it slower than it should be? A real before/after would need
+  a controlled comparison this session didn't have time to run.
+  `Recent:` adds real tokens to every call (measured: ~780–900 input tokens
+  now vs. ~680–860 before across the reproductions above) — input-token
+  cost is usually cheap relative to output generation, but this wasn't
+  independently isolated from the raw-latency question above.
+- **Embedding-quality gap**: "doc" vs. "doctor" changing whether the same
+  relevant chunk clears the similarity threshold. Query normalization/
+  expansion or a lower `CHAT_VECTOR_MIN_SCORE` are both real options, each
+  with real tradeoffs (false positives vs. false negatives) — needs its own
+  investigation, not a reflexive threshold change.
+- **The capability-question rule is a prompt hint, not a guarantee** — it
+  measurably helped in the eval battery but did not reliably fire in every
+  manual retry of the exact phrasing from the real transcript. LLM prompt
+  rules are probabilistic; if this specific miss recurs, the next lever is
+  a `fast`-tier regex rule (the always-active tier per ARCHITECTURE.md §3,
+  the same mechanism already used for a near-identical past bug — "hope me
+  in"/"slip me in" reaching the LLM) rather than continuing to strengthen
+  prose instructions.
+- Phase 9C (Honest RAG degraded states, `⏳` in this file) remains a real,
+  separate, unfixed gap — this phase's real trace evidence just happened
+  not to catch it in the flesh for this specific transcript, since the
+  actual `degraded_reason`s here were genuine empty-vector, not budget/
+  timeout masking. Still open.
+
+**Files changed:** `apps/chatbot/nlu/prompts.py` (system prompt rules,
+`recent_turns` rendering), `apps/chatbot/engine.py` (`_load_history` wired
+into `nlu_ctx`), `apps/chatbot/tests/test_prompts.py` (5 new tests).
+
+**Recommended next phase:** measure raw NLU API latency in isolation
+(same prompt, repeated calls, no other variables) to determine whether
+2–4.5s is this environment's normal or a fixable anomaly; Phase 9C; the
+embedding-quality gap, if it recurs.
+
 ## 💤 Deferred — Conversation state / coreference
 
 Real, confirmed from transcript ("which one treats cancer?" → "Dr. Chloe
