@@ -119,6 +119,7 @@ STOPWORDS = frozenset(
     {
         "about", "after", "again", "also", "been", "before", "being", "between",
         "clinic", "could", "does", "doing", "from", "have", "here", "into",
+        "the", "is", "of", "are", "was", "were",
         "just", "like", "more", "most", "much", "only", "other", "please",
         "should", "some", "such", "than", "that", "their", "them", "then",
         "there", "these", "they", "this", "those", "through", "under", "very",
