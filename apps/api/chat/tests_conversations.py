@@ -168,6 +168,34 @@ class ConversationsListTests(TestCase):
         resp = self.client.get(CONVERSATIONS_URL)
         self.assertIn(resp.status_code, (401, 403))
 
+    def test_list_does_not_n_plus_one_on_message_count_or_preview(self):
+        """message_count/last_message_preview used to cost 2 extra queries
+        *per row* (a .count() and a .order_by().first()) — up to 200 extra
+        queries for a 100-row page. Both are now correlated subqueries on
+        the single list query, so the query count must stay flat regardless
+        of how many sessions or messages exist."""
+        for i in range(8):
+            session = ChatSession.objects.create(
+                clinic=self.clinic, session_token=f"n1-tok-{i}", status=ChatSessionStatus.ACTIVE
+            )
+            _seed_messages(session, 3)
+
+        with self.assertNumQueries(6):
+            # 4 queries are per-request staff-JWT/tenant-resolution
+            # overhead (user, clinic, subscription, clinic_staff membership
+            # — flat regardless of conversation count), then exactly 1 for
+            # qs.count() and 1 for the annotated page itself (select_related
+            # folds patient/visitor into that same query, and the two
+            # correlated subqueries fold message_count/last_message into it
+            # too) — 6 total no matter how many sessions or messages exist.
+            resp = self.client.get(CONVERSATIONS_URL, {"limit": 8}, headers=self.headers)
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["count"], 8)
+        for row in body["results"]:
+            self.assertEqual(row["message_count"], 3)
+            self.assertEqual(row["last_message_preview"], "message 3")
+
 
 class ConversationsSuperAdminTests(TestCase):
     def setUp(self):
@@ -267,3 +295,113 @@ class ConversationMessagesTests(TestCase):
         resp = self.client.get(_messages_url(str(self.session.id)), headers=self.headers)
         body = resp.json()
         self.assertEqual(body["messages"][0]["metadata"]["doctors"][0]["name"], "Dr. Test")
+
+
+STAFF_MESSAGE_URL = "/api/v1/chat/message/staff"
+STAFF_RESUME_URL = "/api/v1/chat/message/staff/resume"
+
+
+class StaffChatResumeTests(TestCase):
+    """GET /chat/message/staff/resume — a staff user's own most recent QA
+    session in the *current* clinic, scoped by created_by_user so two
+    different staff members (or a super admin across different clinics
+    they've entered) never resume each other's conversation."""
+
+    def setUp(self):
+        self.owner, self.clinic, self.headers = make_clinic_admin(
+            email="resume-owner@convo-test.com", clinic_slug="resume-clinic"
+        )
+
+    def test_no_prior_session_returns_no_history_and_creates_nothing(self):
+        before = ChatSession.objects.count()
+        resp = self.client.get(STAFF_RESUME_URL, headers=self.headers)
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertFalse(body["has_history"])
+        self.assertEqual(body["messages"], [])
+        self.assertIsNone(body["session_token"])
+        # Pure read — opening the widget must never itself create a session.
+        self.assertEqual(ChatSession.objects.count(), before)
+
+    def test_resumes_own_prior_session_with_its_messages(self):
+        send = self.client.post(
+            STAFF_MESSAGE_URL, {"message": "hello"}, content_type="application/json",
+            headers=self.headers,
+        )
+        self.assertEqual(send.status_code, 200)
+        first_token = send.json()["meta"]["session_token"]
+
+        resp = self.client.get(STAFF_RESUME_URL, headers=self.headers)
+        body = resp.json()
+        self.assertTrue(body["has_history"])
+        self.assertEqual(body["session_token"], first_token)
+        self.assertEqual(len(body["messages"]), 2)  # user turn + assistant reply
+        self.assertEqual(body["messages"][0]["role"], "user")
+        self.assertEqual(body["messages"][0]["content"], "hello")
+
+    def test_two_staff_members_at_the_same_clinic_never_resume_each_others_session(self):
+        other_user = User.objects.create_user(
+            username="resume-other", email="resume-other@convo-test.com",
+            password="Sup3rSecret!", role=UserRole.CLINIC_ADMIN, is_active=True,
+        )
+        from apps.accounts.models import ClinicStaff
+
+        ClinicStaff.objects.create(user=other_user, clinic=self.clinic, is_active=True)
+        other_token = create_staff_access_token(
+            user_id=other_user.id, role=other_user.role,
+            tenant=self.clinic.slug, clinic_id=self.clinic.id,
+        )
+        other_headers = {"Authorization": f"Bearer {other_token}"}
+
+        self.client.post(
+            STAFF_MESSAGE_URL, {"message": "from the owner"}, content_type="application/json",
+            headers=self.headers,
+        )
+
+        resp = self.client.get(STAFF_RESUME_URL, headers=other_headers)
+        body = resp.json()
+        self.assertFalse(body["has_history"])
+        self.assertEqual(body["messages"], [])
+
+    def test_super_admin_resumes_a_different_session_per_clinic(self):
+        other_clinic_owner, other_clinic, _ = make_clinic_admin(
+            email="resume-other-clinic@convo-test.com", clinic_slug="resume-clinic-2"
+        )
+        sa = User.objects.create_user(
+            username="resume-sa", email="resume-sa@convo-test.com",
+            password="Sup3rSecret!", role=UserRole.SUPER_ADMIN, is_active=True,
+        )
+        token_a = create_staff_access_token(
+            user_id=sa.id, role=sa.role, tenant=self.clinic.slug, clinic_id=self.clinic.id,
+        )
+        token_b = create_staff_access_token(
+            user_id=sa.id, role=sa.role, tenant=other_clinic.slug, clinic_id=other_clinic.id,
+        )
+        headers_a = {"Authorization": f"Bearer {token_a}"}
+        headers_b = {"Authorization": f"Bearer {token_b}"}
+
+        self.client.post(
+            STAFF_MESSAGE_URL, {"message": "hello from clinic A"},
+            content_type="application/json", headers=headers_a,
+        )
+
+        # Entered clinic A -> resumes clinic A's session.
+        resp_a = self.client.get(STAFF_RESUME_URL, headers=headers_a)
+        self.assertTrue(resp_a.json()["has_history"])
+
+        # Entered clinic B, same super admin -> no session there yet, and
+        # never sees clinic A's conversation.
+        resp_b = self.client.get(STAFF_RESUME_URL, headers=headers_b)
+        self.assertFalse(resp_b.json()["has_history"])
+
+        self.client.post(
+            STAFF_MESSAGE_URL, {"message": "hello from clinic B"},
+            content_type="application/json", headers=headers_b,
+        )
+        resp_b2 = self.client.get(STAFF_RESUME_URL, headers=headers_b)
+        self.assertTrue(resp_b2.json()["has_history"])
+        self.assertEqual(resp_b2.json()["messages"][0]["content"], "hello from clinic B")
+
+        # Switching back to clinic A still finds clinic A's own session.
+        resp_a2 = self.client.get(STAFF_RESUME_URL, headers=headers_a)
+        self.assertEqual(resp_a2.json()["messages"][0]["content"], "hello from clinic A")

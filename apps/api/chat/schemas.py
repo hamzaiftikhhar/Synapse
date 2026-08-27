@@ -61,3 +61,10 @@ class ConversationMessageOut(Schema):
 class ConversationMessagesOut(Schema):
     messages: list[ConversationMessageOut]
     has_more: bool
+
+
+class StaffChatResumeOut(Schema):
+    session_token: str | None
+    has_history: bool
+    messages: list[ConversationMessageOut]
+    has_more: bool

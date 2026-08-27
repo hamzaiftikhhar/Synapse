@@ -57,6 +57,21 @@ class ChatSession(TenantModel):
         blank=True,
         related_name="chat_sessions",
     )
+    # Set only for staff/QA sessions (apps.api.chat.router's
+    # /message/staff — clinic staff or a super admin testing the bot from
+    # the dashboard, never the patient-facing widget). Lets resume find
+    # "my own most recent QA session in this clinic" without mixing up
+    # different staff members testing the same clinic concurrently, and
+    # without mixing up a super admin's sessions across different clinics
+    # they've entered — SET_NULL rather than CASCADE so a deleted staff
+    # account doesn't destroy the conversation, only the attribution.
+    created_by_user = models.ForeignKey(
+        "accounts.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="chat_sessions_created",
+    )
     session_token = models.CharField(max_length=64, unique=True)
     ip_hash = models.CharField(max_length=64, blank=True, default="")
     user_agent = models.CharField(max_length=500, blank=True, default="")
@@ -83,6 +98,9 @@ class ChatSession(TenantModel):
             # deliberately has no auto-close, so status isn't part of this
             # lookup).
             models.Index(fields=["visitor", "last_active_at"]),
+            # Same idea, for staff/QA resume: "this staff user's most
+            # recent QA session in this clinic."
+            models.Index(fields=["clinic", "created_by_user", "last_active_at"]),
         ]
 
     def __str__(self) -> str:

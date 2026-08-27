@@ -22,6 +22,7 @@ from apps.api.chat.schemas import (
     ConversationMessageOut,
     ConversationMessagesOut,
     ConversationSummaryOut,
+    StaffChatResumeOut,
 )
 from apps.api.common.schemas import PaginatedOut
 
@@ -88,7 +89,7 @@ def staff_chat_message(request, payload: ChatMessageIn) -> ChatMessageOut:
     if len(message) > 2000:
         raise HttpError(422, "Message too long (max 2000 characters)")
 
-    session = _resolve_staff_test_session(clinic, payload.session_token)
+    session = _resolve_staff_test_session(clinic, payload.session_token, request.auth.user)
 
     from apps.chatbot.engine import ChatEngine
     try:
@@ -107,6 +108,57 @@ def staff_chat_message(request, payload: ChatMessageIn) -> ChatMessageOut:
     out = _to_out(result)
     out.meta = {**out.meta, "session_token": session.session_token}
     return out
+
+
+@router.get("/message/staff/resume", response=StaffChatResumeOut, auth=_staff_auth)
+def resume_staff_chat(request):
+    """Resolve *this staff user's* most recent QA session in *this* clinic.
+
+    Pure read, mirrors the public widget's /chat/resume (apps/api/widget/
+    router.py) — same reasoning applies: opening the dashboard's chat
+    widget must not itself create a ChatSession, only sending a real
+    message does (staff_chat_message, above). Scoped by both clinic (from
+    the staff JWT's tenant claim — the same clinic_from(request) every
+    staff endpoint uses) and created_by_user (from that same JWT's user)
+    so two staff members testing the same clinic never resume each
+    other's conversation, and a super admin who has entered several
+    clinics resumes a *different* conversation per clinic, never one
+    bleeding into another.
+    """
+    from apps.chatbot.models import ChatSession
+    from apps.chatbot.services.message_history import paginate_messages
+
+    clinic = clinic_from(request)
+    session = (
+        ChatSession.objects.filter(
+            clinic=clinic, created_by_user=request.auth.user, patient__isnull=True
+        )
+        .order_by("-last_active_at")
+        .first()
+    )
+    if session is None:
+        return StaffChatResumeOut(
+            session_token=None, has_history=False, messages=[], has_more=False
+        )
+
+    rows, has_more = paginate_messages(session, before=None, limit=_MESSAGES_DEFAULT_LIMIT)
+    return StaffChatResumeOut(
+        session_token=session.session_token,
+        has_history=bool(rows),
+        messages=[
+            ConversationMessageOut(
+                id=str(m.id),
+                role=m.role,
+                message_type=m.message_type,
+                content=m.content,
+                metadata=m.metadata or {},
+                sequence_number=m.sequence_number,
+                created_at=m.created_at.isoformat(),
+            )
+            for m in rows
+        ],
+        has_more=has_more,
+    )
 
 
 # ── Staff-facing conversations inbox ──────────────────────────────────────────
@@ -132,14 +184,33 @@ def list_conversations(
     limit: int = Query(_CONVERSATIONS_DEFAULT_LIMIT, ge=1, le=_CONVERSATIONS_MAX_LIMIT),
     offset: int = Query(0, ge=0),
 ):
-    from django.db.models import Q
+    from django.db.models import Count, IntegerField, OuterRef, Q, Subquery
+    from django.db.models.functions import Coalesce
 
-    from apps.chatbot.models import ChatSession
+    from apps.chatbot.models import ChatMessage, ChatSession
 
     clinic = clinic_from(request)
+    # message_count/last_message used to be one `.first()` and one
+    # `.count()` query *per row* in _serialize_conversation below — up to
+    # 200 extra queries for a 100-row page. Correlated subqueries fold both
+    # into the single list query instead; each is still indexed the same
+    # way paginate_messages already relies on (ChatMessage's unique
+    # (session, sequence_number) index serves the "latest by session"
+    # lookup, and (session, created_at) backs the per-session count).
+    message_qs = ChatMessage.objects.filter(session=OuterRef("pk"))
+    count_subquery = (
+        message_qs.order_by().values("session").annotate(c=Count("id")).values("c")
+    )
+    latest_message = message_qs.order_by("-sequence_number")
     qs = (
         ChatSession.objects.filter(clinic=clinic)
         .select_related("patient", "visitor")
+        .annotate(
+            message_count_annotated=Coalesce(
+                Subquery(count_subquery, output_field=IntegerField()), 0
+            ),
+            last_message_content=Subquery(latest_message.values("content")[:1]),
+        )
         .order_by("-last_active_at")
     )
     if search:
@@ -214,8 +285,7 @@ def _serialize_conversation(session: object) -> ConversationSummaryOut:
     else:
         display_name = "Anonymous"
         phone = None
-    messages = session.messages  # type: ignore[attr-defined]
-    last_message = messages.order_by("-sequence_number").first()
+    last_message_content = getattr(session, "last_message_content", None)
     return ConversationSummaryOut(
         id=str(session.id),  # type: ignore[attr-defined]
         session_token=session.session_token,  # type: ignore[attr-defined]
@@ -223,8 +293,8 @@ def _serialize_conversation(session: object) -> ConversationSummaryOut:
         phone=phone,
         is_authenticated=session.is_authenticated,  # type: ignore[attr-defined]
         status=session.status,  # type: ignore[attr-defined]
-        message_count=messages.count(),
-        last_message_preview=(last_message.content[:140] if last_message else None),
+        message_count=getattr(session, "message_count_annotated", 0),
+        last_message_preview=(last_message_content[:140] if last_message_content else None),
         last_active_at=session.last_active_at.isoformat(),  # type: ignore[attr-defined]
         created_at=session.created_at.isoformat(),  # type: ignore[attr-defined]
     )
@@ -232,8 +302,16 @@ def _serialize_conversation(session: object) -> ConversationSummaryOut:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _resolve_staff_test_session(clinic: object, session_token: str | None) -> object:
-    """Guest-style ChatSession for staff portal QA of patient flows."""
+def _resolve_staff_test_session(
+    clinic: object, session_token: str | None, user: object
+) -> object:
+    """Guest-style ChatSession for staff portal QA of patient flows.
+
+    `created_by_user` is only ever set on creation, here — it's what lets
+    /message/staff/resume find "this staff user's own most recent QA
+    session in this clinic" without depending on the frontend to have
+    remembered the right session_token itself.
+    """
     import secrets
 
     from apps.chatbot.models import ChatSession, ChatSessionStatus
@@ -250,6 +328,7 @@ def _resolve_staff_test_session(clinic: object, session_token: str | None) -> ob
         session_token=secrets.token_urlsafe(32),
         status=ChatSessionStatus.ACTIVE,
         last_active_at=timezone.now(),
+        created_by_user=user,
     )
 
 
