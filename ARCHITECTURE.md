@@ -321,10 +321,17 @@ it still preloads SentenceTransformer, guarded by
 
 ## 10. Conversation state — `apps/chatbot/conversation_state.py`
 
-Tracks exactly four named slots (`last_doctor`, `last_specialty`,
-`last_service`, `last_insurance`) plus one `pending_clarification`, via
-`ConversationTimeline` / `load_timeline` / `merge_turn_context` /
-`detect_recovery`.
+`ConversationTimeline` is the planner's **working context** — Python-owned
+session memory the planner reads, not something the Small LLM is ever
+asked to reconstruct from a message window. Nine slots as of Phase 39:
+the original four (`doctor`, `service`, `insurance`, `availability_target`)
+plus `pending_clarification`, and five added in Phase 39 —
+`shown_doctors` (ordered, capped at 6, overwritten not appended — "the
+list still on screen"), `last_recommendation` (`{id, name, reason}`,
+`reason="listed"` vs. an actual recommendation — never invented), `last_slots`
+(capped at 8, from the actual `doctor_availability` SQL rows a turn
+produced), `problem` (this-turn `entities.symptom`), `preview_only` (a
+per-turn flag, reset each turn unless re-asserted).
 
 `pending_clarification` is bound, not decorative (Phase 16). After entity
 resolution, `classify_uptake(message)` is a whole-message speech-act (max
@@ -334,19 +341,78 @@ rewrites NLU before the planner: `availability_alternative` →
 `DOCTOR_AVAILABILITY` with the offered `doctor_id` on `resolved_ids` (do
 **not** put `doctor_name` on entities — that would make
 `resolve_doctor_candidates(clinic, "Yep.")` run); `service_followup` →
-availability for that service, not a forced booking.
+availability for that service, not a forced booking; `slot_confirmation`
+(Phase 38) → `BOOK_APPOINTMENT` with the offered doctor resolved, for a
+*found* slot ("Earliest opening: Dr Priya at 12 PM") — the empty-day
+"check another day?" case and a genuinely-found, specific slot are
+different offer shapes, tracked separately.
 `mark_pending_decline` → `OFF_TOPIC` with a dedicated fast-path reply.
-`"yes, Thursday morning"` is a new request, not uptake.
+`"yes, Thursday morning"` is a new request, not uptake — `_AFFIRM_REFERENCE_RE`
+(Phase 38) extends the affirm vocabulary to short confirmation-plus-
+pronoun phrasing ("yes i want her", "book it", "that doctor") but stays a
+small, fixed pattern set for exactly this reason: a named *different*
+doctor or a specific day must still fail to match and fall through to
+ordinary NLU classification, never get silently absorbed as uptake.
 `pending_offer_from_turn` records the offer after compose (empty searchable
-availability, or a service-answer that matched a service). Do not add
-`if text.lower() in ["sure", "yes"]`.
+availability, a *found* slot, or a service-answer that matched a service).
+Do not add `if text.lower() in ["sure", "yes"]`.
 
-**No generic coreference** ("him", "that one", "the second doctor") —
-confirmed by reading the file; a real transcript showing "which one treats
-cancer?" → "Dr. Chloe Bennet" → "book with him" failing to resolve "him"
-is expected behavior today, not a bug in scope for any current phase.
-Deliberately deferred — do not patch ad hoc into doctor resolution or
-booking; it needs its own phase (see ROADMAP.md).
+**Session recall (Phase 39)** — `classify_session_recall(message)` detects
+whole-sentence *meta* questions about this conversation itself ("what
+insurance did I tell you", "which doctor did you recommend", "what were
+we just talking about", "what was the appointment time you found") and
+routes them to `direct_mode="session_recall"` in `build_execution_plan`
+— a hard stop before vector/SQL/the Large LLM ever run. `compose_session_recall`
+answers from `ConversationTimeline` slots via a plain template, never a
+second model pass. This exists because the alternative genuinely
+hallucinated: reproduced directly against real trace logs, "Based on what
+we already discussed, who did you recommend?" reached the Large LLM with
+only a thin `_load_history(limit=2)` window as grounding, and it invented
+"I recommended Dr. Omar Haddad" — a recommendation that was never
+actually made (the real prior turn for that fever question had returned
+an unrelated "I couldn't verify that doctor" refusal). An unset pin
+answers honestly ("You haven't told me your insurance yet") rather than
+guessing. A genuine new clinic question ("What insurance do you accept?")
+does **not** match `classify_session_recall` and reaches SQL normally —
+this is meta-conversation detection, not a general question-answering
+short-circuit.
+
+**Pin amendment (Phase 39)** — `classify_pin_amendment(message, timeline)`
+recognizes a bare date/time retarget on a search already in progress
+("Actually Tuesday", "No, Monday was better. Keep everything else the
+same", "make it tomorrow") *only* when `timeline.availability_target` or
+`timeline.doctor` is set and there is no confirmed booking
+(`timeline.booking_stage != "confirmed"`) — that last guard is load-
+bearing: it's what keeps this from ever stealing a real reschedule of an
+existing appointment, which correctly still requires identity
+verification via a completely separate path. When it fires, `engine.py`
+overrides `nlu.intent` to `DOCTOR_AVAILABILITY` and keeps the resolved
+doctor pin, trusting the NLU's own date/time entity extraction as-is —
+never inventing what the message didn't state, same discipline as
+`apply_pending_uptake`.
+
+**Ordinal doctor reference (Phase 39)** — `resolve_ordinal_doctor_ref`
+resolves "the second doctor you mentioned" / "the first one" against
+`timeline.shown_doctors` by list index. This is **list-index coreference
+only** — a narrower, different problem from general pronoun resolution.
+
+**No generic coreference** ("him", "that one" *without* an ordinal, "the
+provider we discussed") — confirmed by reading the file; a real
+transcript showing "which one treats cancer?" → "Dr. Chloe Bennet" →
+"book with him" failing to resolve "him" is expected behavior today, not
+a bug in scope for any current phase. Deliberately deferred — do not
+patch ad hoc into doctor resolution or booking; it needs its own phase
+(see ROADMAP.md). Phase 39's `resolve_ordinal_doctor_ref` does not close
+this gap — an ordinal index into a still-on-screen list is a much
+narrower, safer problem than resolving an unbound pronoun against
+whatever was said several turns ago.
+
+**Preview-only (Phase 39)** — `classify_preview_only` ("don't book
+anything until you show me...", "just show me the available times") sets
+a per-turn timeline flag that suppresses `exec_plan.booking` (no wizard
+launch) while leaving availability SQL untouched — the patient sees
+times, nothing gets committed. Not sticky: recomputed and re-persisted
+every turn, so it only applies to the turn that actually said it.
 
 ## 11. Multi-tenancy
 
