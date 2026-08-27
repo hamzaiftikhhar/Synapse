@@ -9,6 +9,7 @@ export const STORAGE_KEYS = {
   // this is the one identifier meant to survive a browser restart. Never
   // invented client-side: only ever set from a value the backend returned.
   chatVisitor: "synapse_visitor_id",
+  explicitLogout: "synapse_explicit_logout",
 } as const;
 
 export const APP_NAME = "Synapse";

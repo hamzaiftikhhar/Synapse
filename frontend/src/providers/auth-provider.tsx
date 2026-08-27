@@ -12,6 +12,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import axios from "axios";
 import { clearStaffTokens, getActiveTenant, setActiveTenant } from "@/lib/api/client";
+import { markExplicitLogout } from "@/lib/auth-redirect";
 import { STORAGE_KEYS } from "@/constants";
 import { authService } from "@/services";
 import { queryKeys } from "@/hooks/api";
@@ -40,7 +41,7 @@ type AuthState = {
    * state landed (e.g. right after an action that changed it server-side)
    * should check this rather than assume a resolved promise means success. */
   refreshMe: () => Promise<boolean>;
-  selectTenant: (slug: string) => Promise<void>;
+  selectTenant: (slug: string) => Promise<Awaited<ReturnType<typeof authService.selectTenant>>>;
   enterClinic: (
     slug: string
   ) => Promise<Awaited<ReturnType<typeof authService.enterClinic>>>;
@@ -193,6 +194,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // so without this the dashboard keeps showing the *previous* tenant's
     // data until something else happens to trigger a refetch.
     void qc.invalidateQueries();
+    return data;
   }, [qc]);
 
   const enterClinic = useCallback(async (slug: string) => {
@@ -235,6 +237,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [qc]);
 
   const logout = useCallback(() => {
+    markExplicitLogout();
     authService.logout();
     setUser(null);
     setClinic(null);

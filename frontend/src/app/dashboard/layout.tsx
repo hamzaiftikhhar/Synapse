@@ -27,6 +27,14 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
       return;
     }
 
+    // Clinic staff must pick a tenant before any /dashboard route — login
+    // without clinic_slug issues a JWT with no clinic, so landing here
+    // via ?next=/dashboard would 400 every tenant-scoped API.
+    if (!isSuper && !clinic && !onProfile) {
+      router.replace("/select-tenant");
+      return;
+    }
+
     // Unfinished clinic setup → resume onboarding. Super Admin impersonating
     // an onboarding clinic follows the same path so they can test setup
     // without the owner's credentials. Platform routes stay reachable so

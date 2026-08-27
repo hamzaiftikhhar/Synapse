@@ -3,6 +3,7 @@
 import { useEffect, type ReactNode } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "@/providers/auth-provider";
+import { isExplicitLogout } from "@/lib/auth-redirect";
 
 export function ProtectedRoute({ children }: { children: ReactNode }) {
   const { isAuthenticated, isLoading } = useAuth();
@@ -11,6 +12,10 @@ export function ProtectedRoute({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
+      if (isExplicitLogout()) {
+        router.replace("/login");
+        return;
+      }
       router.replace(`/login?next=${encodeURIComponent(pathname)}`);
     }
   }, [isAuthenticated, isLoading, pathname, router]);

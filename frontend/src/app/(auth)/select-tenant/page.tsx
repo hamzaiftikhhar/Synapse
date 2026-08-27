@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { ProtectedRoute } from "@/components/auth/protected-route";
 import { useAuth } from "@/providers/auth-provider";
 import { getApiErrorMessage } from "@/lib/api/client";
+import { pathAfterTenantSelect } from "@/lib/auth-redirect";
 import { APP_NAME } from "@/constants";
 
 function SelectTenantInner() {
@@ -14,6 +15,7 @@ function SelectTenantInner() {
   const router = useRouter();
   const search = useSearchParams();
   const auto = search.get("auto");
+  const next = search.get("next");
   const [busy, setBusy] = useState<string | null>(null);
 
   useEffect(() => {
@@ -21,20 +23,20 @@ function SelectTenantInner() {
     void (async () => {
       try {
         setBusy(auto);
-        await selectTenant(auto);
-        router.replace("/dashboard");
+        const data = await selectTenant(auto);
+        router.replace(pathAfterTenantSelect(data.clinic, next));
       } catch (err) {
         toast.error(getApiErrorMessage(err));
         setBusy(null);
       }
     })();
-  }, [auto, isLoading, selectTenant, router]);
+  }, [auto, next, isLoading, selectTenant, router]);
 
   async function choose(slug: string) {
     setBusy(slug);
     try {
-      await selectTenant(slug);
-      router.replace("/dashboard");
+      const data = await selectTenant(slug);
+      router.replace(pathAfterTenantSelect(data.clinic, next));
     } catch (err) {
       toast.error(getApiErrorMessage(err));
       setBusy(null);

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -13,6 +13,7 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useAuth } from "@/providers/auth-provider";
 import { getApiErrorMessage } from "@/lib/api/client";
+import { pathAfterLogin, consumeExplicitLogout } from "@/lib/auth-redirect";
 import { APP_NAME } from "@/constants";
 
 const schema = z.object({
@@ -29,6 +30,10 @@ export function LoginForm() {
   const router = useRouter();
   const search = useSearchParams();
   const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    consumeExplicitLogout();
+  }, []);
 
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
@@ -53,29 +58,7 @@ export function LoginForm() {
         values.remember
       );
       toast.success("Welcome back");
-      const next = search.get("next");
-      if (next) {
-        router.replace(next);
-        return;
-      }
-      if (data.user.role === "SUPER_ADMIN") {
-        router.replace("/dashboard/platform");
-        return;
-      }
-      if (data.clinic) {
-        router.replace(data.clinic.status === "active" ? "/dashboard" : "/onboarding");
-        return;
-      }
-      const tenants = data.tenants ?? [];
-      if (tenants.length === 0) {
-        router.replace("/onboarding/create-clinic");
-        return;
-      }
-      if (tenants.length === 1) {
-        router.replace(`/select-tenant?auto=${tenants[0].slug}`);
-        return;
-      }
-      router.replace("/select-tenant");
+      router.replace(pathAfterLogin(data, search.get("next")));
     } catch (err) {
       toast.error(getApiErrorMessage(err));
     } finally {

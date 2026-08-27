@@ -1,5 +1,6 @@
 import axios, { type AxiosError, type InternalAxiosRequestConfig } from "axios";
 import { STORAGE_KEYS } from "@/constants";
+import { isExplicitLogout } from "@/lib/auth-redirect";
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000/api/v1";
@@ -140,7 +141,9 @@ api.interceptors.response.use(
         typeof window !== "undefined" &&
         shouldRedirectExpiredSession(window.location.pathname)
       ) {
-        window.location.href = `/login?next=${encodeURIComponent(window.location.pathname)}`;
+        window.location.href = isExplicitLogout()
+          ? "/login"
+          : `/login?next=${encodeURIComponent(window.location.pathname)}`;
       }
     }
     return Promise.reject(error);
