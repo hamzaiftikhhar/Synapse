@@ -4,7 +4,11 @@ from django.test import SimpleTestCase, override_settings
 
 from apps.chatbot.nlu.base import NLUError
 from apps.chatbot.nlu.decision import EMERGENCY_SAFETY_MESSAGE, DecisionEngine
-from apps.chatbot.nlu.entity_extract import extract_emergency_symptoms, extract_entities
+from apps.chatbot.nlu.entity_extract import (
+    extract_emergency_symptoms,
+    extract_entities,
+    has_symptom_cues,
+)
 from apps.chatbot.nlu.intent_entity import IntentEntityService, _apply_confidence_threshold
 from apps.chatbot.nlu.json_utils import parse_json_response
 from apps.chatbot.nlu.rules import try_rule_classify
@@ -273,6 +277,55 @@ class RuleClassifierTests(SimpleTestCase):
         self.assertIsNotNone(hit)
         self.assertTrue(hit["is_emergency"])
         self.assertEqual(hit["intent"], "emergency")
+
+    def test_informational_stroke_question_is_not_emergency(self):
+        """Phase 40: real HealthSearchQA samples "What are the 4 causes of a
+        stroke?" and (a larger follow-up sample) "What is shortness of
+        breath symptom of?" were hard-triggering the 911 override — these
+        are EMERGENCY_RE/SYMPTOM_CUE_RE terms with no narrative-phrase
+        anchor, so any WH question about the condition matched them too."""
+        for text in (
+            "What are the 4 causes of a stroke?",
+            "What causes a heart attack?",
+            "What are the warning signs of a heart attack?",
+            "How is a stroke treated?",
+            "What is shortness of breath symptom of?",
+            "What causes difficulty breathing?",
+        ):
+            with self.subTest(text=text):
+                self.assertIsNone(try_rule_classify(text, tier="safety"))
+                self.assertFalse(has_symptom_cues(text))
+
+    def test_live_stroke_or_heart_attack_report_still_emergency(self):
+        """The informational-question exception must not swallow a real,
+        currently-happening report phrased the same way a WH question
+        would be ("is this a stroke")."""
+        for text in (
+            "I think I'm having a stroke right now",
+            "my dad is having a heart attack",
+            "is this a stroke",
+            "I have chest pain",
+            "I'm having shortness of breath",
+            "she has difficulty breathing right now",
+        ):
+            with self.subTest(text=text):
+                hit = try_rule_classify(text, tier="safety")
+                self.assertIsNotNone(hit, text)
+                self.assertTrue(hit["is_emergency"], text)
+
+        # has_symptom_cues (SYMPTOM_CUE_RE) never covered "difficulty
+        # breathing" in the first place (pre-existing, out of scope here) —
+        # checked separately against only the terms it does recognize.
+        for text in (
+            "I think I'm having a stroke right now",
+            "my dad is having a heart attack",
+            "is this a stroke",
+            "I have chest pain",
+            "I'm having shortness of breath",
+        ):
+            with self.subTest(text=text):
+                self.assertTrue(has_symptom_cues(text), text)
+                self.assertTrue(has_symptom_cues(text), text)
 
     def test_low_confidence_triggers_clarify(self):
         nlu = parse_nlu_payload({"intent": "unknown", "confidence": 0.5})
