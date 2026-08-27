@@ -10,6 +10,10 @@ import re
 from typing import Any
 
 from apps.chatbot.nlu.emergency_patterns import EMERGENCY_RE as _EMERGENCY_RE
+from apps.chatbot.nlu.emergency_patterns import (
+    EMERGENCY_NARRATIVE_RE as _EMERGENCY_NARRATIVE_RE,
+    is_informational_emergency_mention as _is_informational_emergency_mention,
+)
 from apps.chatbot.nlu.entity_extract import (
     extract_emergency_symptoms,
     extract_entities,
@@ -292,6 +296,17 @@ def _match_fast(text: str) -> dict[str, Any] | None:
 def _match_safety(original: str, text: str) -> dict[str, Any] | None:
     """Fail-closed emergency / self-harm — never wait for Small LLM."""
     if _EMERGENCY_RE.search(text):
+        if _is_informational_emergency_mention(text, _EMERGENCY_NARRATIVE_RE):
+            # One of EXCEPTION_TERMS_RE's terms (stroke/heart attack/
+            # shortness of breath/difficulty breathing) is the only
+            # EMERGENCY_RE hit, and it's phrased as a WH question about the
+            # condition in general ("what causes a stroke", "what is
+            # shortness of breath a symptom of") rather than a live symptom
+            # report — let this fall through to normal NLU/medical_question
+            # routing instead of the hard 911 override. Any narrative phrase
+            # (chest pain, can't breathe, ...) or experiential framing
+            # ("I'm having a stroke", "right now") still fires unconditionally.
+            return None
         symptoms = extract_emergency_symptoms(original)
         if not symptoms:
             # Narrative forms may not be in the short symptom list
