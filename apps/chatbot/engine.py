@@ -120,6 +120,20 @@ class ChatEngine:
             nlu_ctx["services"] = ", ".join(
                 s.get("name") or "" for s in service_catalog[:20]
             )[:600]
+        # Lets the classifier resolve a short/bare reply ("sure", "earliest")
+        # against what the assistant's immediately preceding turn actually
+        # offered, instead of guessing a topic from zero context — the gap
+        # `pending_clarification` (below) only closes for offers the code
+        # explicitly recorded. Prior turns only, never the current message;
+        # `_load_history` reads from already-saved ChatMessage rows, so this
+        # is naturally empty on a session's first turn. Kept short (last 6 =
+        # 3 exchanges, each line truncated in the prompt builder) — this is
+        # context for disambiguation, not a transcript to reason over at
+        # length; ballooning it would cost real NLU latency, already the
+        # dominant complaint here.
+        recent_turns = self._load_history(session, limit=6)
+        if recent_turns:
+            nlu_ctx["recent_turns"] = recent_turns
 
         # ── 1. NLU (semantics) ──────────────────────────────────────────────
         t0 = time.perf_counter()
@@ -150,6 +164,28 @@ class ChatEngine:
             resolved_ids=resolve_entities(clinic, nlu_result.entities),
         )
 
+        # Working context (Phase 39) — pin what this turn itself stated,
+        # independent of whether SQL/vector even ran, so a later "what
+        # insurance did I tell you" has a real fact to answer from instead
+        # of the Large LLM inventing one from a thin recent-messages
+        # window (reproduced as a real hallucination — see ROADMAP.md).
+        # Deliberately mirrors nlu/prompts.py's own "entities come from the
+        # current message only" rule: this reads nlu_result.entities (what
+        # THIS message stated), never recent_turns or prior timeline state.
+        _insurance_entity = nlu_result.entities.insurance_provider
+        if isinstance(_insurance_entity, list):
+            _insurance_entity = _insurance_entity[0] if _insurance_entity else None
+        if _insurance_entity:
+            timeline = merge_turn_context(
+                timeline, insurance={"name": str(_insurance_entity)}
+            )
+        _symptom_entity = nlu_result.entities.symptom
+        if isinstance(_symptom_entity, list):
+            _symptom_entity = _symptom_entity[0] if _symptom_entity else None
+        if _symptom_entity:
+            timeline = merge_turn_context(timeline, problem=str(_symptom_entity))
+        ctx = save_timeline(ctx, timeline)
+
         # Bind a short yes/no to the offer the previous turn actually made,
         # before the planner sees NLU's independent (often hallucinated) intent.
         uptake = classify_uptake(message)
@@ -173,6 +209,7 @@ class ChatEngine:
         elif pending and pending.get("type") in {
             "availability_alternative",
             "service_followup",
+            "slot_confirmation",
         }:
             # These are short-lived speech-act offers ("want me to check
             # another day?") — meaningful only as the very next reply, not
@@ -310,6 +347,58 @@ class ChatEngine:
             message, clinic, nlu_result, doctor_resolution=doctor_resolution
         )
 
+        # Working context (Phase 39) — timeline-dependent, so computed here
+        # (like doctor_followup/unknown_doctor_requested above) rather than
+        # in the pure, I/O-free compute_message_sensors. session_recall
+        # short-circuits the whole plan (see build_execution_plan); the
+        # other three thread through as facts for observability and get
+        # actually applied below.
+        from apps.chatbot.conversation_state import (
+            classify_pin_amendment,
+            classify_preview_only,
+            classify_session_recall,
+            resolve_ordinal_doctor_ref,
+        )
+        from apps.chatbot.nlu.schemas import Intent
+
+        session_recall_field = classify_session_recall(message)
+        pin_amendment = classify_pin_amendment(message, timeline)
+        ordinal_doctor = resolve_ordinal_doctor_ref(message, timeline)
+        if ordinal_doctor and ordinal_doctor.get("id"):
+            nlu_result = replace(
+                nlu_result,
+                resolved_ids=replace(
+                    nlu_result.resolved_ids, doctor_id=str(ordinal_doctor["id"])
+                ),
+            )
+        preview_only = classify_preview_only(message)
+        if pin_amendment:
+            # "Actually Tuesday" / "make it tomorrow" / "No, Monday was
+            # better" — a retarget of the search already in progress, not
+            # a new, unrelated question. Keep the resolved doctor pin;
+            # only override intent so the planner authorizes availability
+            # SQL instead of falling through to FAQ/vector. The NLU's own
+            # date/time entity extraction is trusted as-is here — this
+            # only overrides *intent*, matching apply_pending_uptake's
+            # same discipline of never inventing entities the message
+            # didn't itself state.
+            nlu_result = replace(
+                nlu_result,
+                intent=Intent.DOCTOR_AVAILABILITY,
+                confidence=max(float(nlu_result.confidence or 0), 0.85),
+                clarification_needed=False,
+                is_off_topic=False,
+                resolved_ids=replace(
+                    nlu_result.resolved_ids,
+                    doctor_id=(
+                        nlu_result.resolved_ids.doctor_id
+                        or (timeline.doctor or {}).get("id")
+                    ),
+                ),
+            )
+        timeline = merge_turn_context(timeline, preview_only=preview_only)
+        ctx = save_timeline(ctx, timeline)
+
         # ── 2. Planner (no I/O) → ExecutionPlan ─────────────────────────────
         t0 = time.perf_counter()
         facts = build_planner_facts(
@@ -332,6 +421,10 @@ class ChatEngine:
             doctor_followup=doctor_followup,
             doctor_availability_query=doctor_availability_query,
             urgent_availability=urgent_availability,
+            session_recall_field=session_recall_field,
+            pin_amendment=pin_amendment,
+            ordinal_doctor_id=(ordinal_doctor or {}).get("id"),
+            preview_only=preview_only,
         )
         exec_plan = build_execution_plan(nlu=nlu_result, facts=facts)
         nlu_result = apply_plan_to_nlu(nlu_result, exec_plan)
@@ -358,6 +451,12 @@ class ChatEngine:
                 response_text = self._unknown_doctor_reply()
             elif exec_plan.direct_mode == "medical_advice_refusal":
                 response_text = self._medical_advice_refusal_reply()
+            elif exec_plan.direct_mode == "session_recall":
+                from apps.chatbot.conversation_state import compose_session_recall
+
+                response_text = compose_session_recall(
+                    session_recall_field, timeline  # type: ignore[has-type]
+                )
             elif exec_plan.doctor_followup and last_doctor:
                 response_text = self._doctor_followup_reply(last_doctor)
             elif exec_plan.soft_medical or exec_plan.direct_mode == "soft_medical":
@@ -385,6 +484,46 @@ class ChatEngine:
                     resolved_service_ids=exec_plan.resolved_service_ids,
                 )
                 timings["sql_ms"] = (time.perf_counter() - t0) * 1000
+
+                # Working context (Phase 39) — record what this turn
+                # actually showed, from the raw SQL rows themselves (not
+                # the composed prose), so a later "the second doctor you
+                # mentioned" or "who did you recommend" is answered from a
+                # fact this turn genuinely produced. Overwrites, not
+                # appends: "shown" always means the list still on screen
+                # from the most recent turn that showed one.
+                for _block in sql_rows:
+                    if _block.get("handler") == "search_doctors" and _block.get("rows"):
+                        _doctors = [
+                            {"id": r.get("id"), "name": r.get("full_name")}
+                            for r in _block["rows"]
+                            if r.get("id")
+                        ]
+                        if _doctors:
+                            timeline = merge_turn_context(
+                                timeline,
+                                shown_doctors=_doctors,
+                                last_recommendation={
+                                    "id": _doctors[0]["id"],
+                                    "name": _doctors[0]["name"],
+                                    "reason": "listed",
+                                },
+                            )
+                    elif _block.get("handler") == "doctor_availability" and _block.get("rows"):
+                        _slots = [
+                            {
+                                "doctor_id": r.get("doctor_id"),
+                                "doctor_name": r.get("doctor"),
+                                "start": r.get("start"),
+                                "date": r.get("date"),
+                                "time": r.get("time"),
+                            }
+                            for r in _block["rows"]
+                            if r.get("doctor_id")
+                        ]
+                        if _slots:
+                            timeline = merge_turn_context(timeline, last_slots=_slots)
+                ctx = save_timeline(ctx, timeline)
 
             # Resolve the plan against real SQL evidence — the only point
             # where an ExecutionPlan is allowed to change after initial
