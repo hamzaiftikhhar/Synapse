@@ -64,6 +64,7 @@ def serialize_step(clinic: Any, session: BookingSession) -> dict[str, Any]:
             "last_name": session.patient_last_name,
             "phone": session.patient_phone,
             "email": session.patient_email,
+            "date_of_birth": session.pending_dob,
             "verification_mode": cfg.get("verification_mode") or "sms",
         }
     elif step == BookingStep.OTP.value:
@@ -79,6 +80,14 @@ def serialize_step(clinic: Any, session: BookingSession) -> dict[str, Any]:
         # Same shape as CONFIRMED below, minus the fields that don't exist
         # until confirm() actually runs — the frontend renders this as the
         # same card, with a Confirm button in place of the code line.
+        #
+        # Phase 42A — this is the actual "show everything before booking"
+        # screen now, for every path (not just the two that already
+        # reached REVIEW pre-Phase-42A) — patient contact, insurance, and
+        # a clinic disclaimer are real fields here for the first time,
+        # never reconstructed from conversation prose. `insurance_plan_name`
+        # is None (not omitted) when nothing was selected, so the frontend
+        # can render "No insurance selected" rather than a blank gap.
         payload["review"] = {
             "slot_summary": _slot_summary(session),
             "doctor_name": session.doctor_name,
@@ -88,6 +97,12 @@ def serialize_step(clinic: Any, session: BookingSession) -> dict[str, Any]:
             "end": session.slot_end,
             "first_name": session.patient_first_name,
             "last_name": session.patient_last_name,
+            "phone": session.patient_phone,
+            "email": session.patient_email,
+            "insurance_plan_name": session.insurance_plan_name,
+            "dob_verified": session.dob_verified,
+            "location": _clinic_location(clinic),
+            "disclaimer": cfg.get("review_disclaimer") or "",
         }
         if session.hold_expires_at:
             payload["hold"] = {"expires_at": session.hold_expires_at}
@@ -97,10 +112,13 @@ def serialize_step(clinic: Any, session: BookingSession) -> dict[str, Any]:
             "appointment_id": session.appointment_id,
             "slot_summary": _slot_summary(session),
             "doctor_name": session.doctor_name,
+            "service_name": session.service_name,
             "date": session.date,
             "start": session.slot_start,
             "first_name": session.patient_first_name,
             "last_name": session.patient_last_name,
+            "insurance_plan_name": session.insurance_plan_name,
+            "location": _clinic_location(clinic),
         }
 
     return payload
@@ -324,6 +342,21 @@ def _slot_time_of_day(slot: dict[str, Any]) -> time:
         return datetime.fromisoformat(str(slot.get("start") or "").replace("Z", "+00:00")).time()
     except ValueError:
         return time.min
+
+
+def _clinic_location(clinic: Any) -> str:
+    """One-line address for the Review/Confirmed cards — same fields
+    clinic_location's own SQL handler already formats
+    (apps/chatbot/sql_tool/handlers/clinic.py), just as a compact string
+    here rather than a structured row."""
+    address = clinic.address or {}
+    parts = [
+        address.get("street", ""),
+        address.get("city", ""),
+        address.get("state", ""),
+        address.get("zip", ""),
+    ]
+    return ", ".join(p for p in parts if p)
 
 
 def _slot_summary(session: BookingSession) -> str:
