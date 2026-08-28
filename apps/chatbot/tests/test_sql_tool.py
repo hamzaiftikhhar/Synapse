@@ -190,6 +190,75 @@ class InsuranceTests(SQLToolTestBase):
         self.assertEqual(result.rows[0]["provider_name"], "Blue Cross")
 
 
+class InsurancePlanTypeTests(SQLToolTestBase):
+    """Phase 41: "Aetna HMO" and "Aetna PPO" used to return the identical
+    row — provider matching ignored plan_type entirely, so whichever plan
+    existed for that provider silently "answered" a question about a
+    different type (reproduced live: both returned the HMO Plus row)."""
+
+    def setUp(self):
+        super().setUp()
+        self.aetna_hmo = InsurancePlan.objects.create(
+            clinic=self.clinic,
+            provider_name="Aetna",
+            plan_name="HMO Plus",
+            plan_type="HMO",
+            is_accepted=True,
+        )
+        self.aetna_ppo = InsurancePlan.objects.create(
+            clinic=self.clinic,
+            provider_name="Aetna",
+            plan_name="PPO",
+            plan_type="PPO",
+            is_accepted=True,
+        )
+
+    def test_hmo_question_returns_hmo_plan(self):
+        ctx = SQLContext(
+            clinic=self.clinic,
+            nlu=_nlu(
+                Intent.INSURANCE_ACCEPTED,
+                entities=ExtractedEntities(insurance_provider=["Aetna HMO", "Aetna"]),
+            ),
+            message="Do you accept Aetna HMO?",
+        )
+        result = insurance_accepted(ctx)
+        self.assertEqual(len(result.rows), 1)
+        self.assertEqual(result.rows[0]["plan_type"], "HMO")
+        self.assertIn("HMO Plus", result.summary)
+
+    def test_ppo_question_returns_ppo_plan_not_hmo(self):
+        ctx = SQLContext(
+            clinic=self.clinic,
+            nlu=_nlu(
+                Intent.INSURANCE_ACCEPTED,
+                entities=ExtractedEntities(insurance_provider=["Aetna PPO", "Aetna"]),
+            ),
+            message="Do you accept Aetna PPO?",
+        )
+        result = insurance_accepted(ctx)
+        self.assertEqual(len(result.rows), 1)
+        self.assertEqual(result.rows[0]["plan_type"], "PPO")
+        self.assertIn("PPO", result.summary)
+        self.assertNotIn("HMO Plus", result.summary)
+
+    def test_requested_type_not_on_file_is_honest_not_silent(self):
+        """A provider with only an HMO plan, asked about PPO, must say so
+        — never present the HMO plan as if it answered a PPO question."""
+        self.aetna_ppo.delete()
+        ctx = SQLContext(
+            clinic=self.clinic,
+            nlu=_nlu(
+                Intent.INSURANCE_ACCEPTED,
+                entities=ExtractedEntities(insurance_provider=["Aetna PPO", "Aetna"]),
+            ),
+            message="Do you accept Aetna PPO?",
+        )
+        result = insurance_accepted(ctx)
+        self.assertIn("don't see a Aetna PPO plan", result.summary)
+        self.assertIn("HMO Plus", result.summary)
+
+
 class ClinicHoursTests(SQLToolTestBase):
     def test_clinic_hours(self):
         ctx = SQLContext(clinic=self.clinic, nlu=_nlu(Intent.CLINIC_HOURS))

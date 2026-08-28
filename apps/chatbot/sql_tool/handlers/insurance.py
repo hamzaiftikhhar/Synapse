@@ -27,8 +27,37 @@ def insurance_accepted(ctx: SQLContext) -> SQLResult:
     if doctor_ids:
         base = base.filter(doctor_insurances__doctor_id__in=doctor_ids).distinct()
 
+    # Phase 41 — "Aetna HMO" and "Aetna PPO" used to return the identical
+    # row (reproduced live: both questions returned "Yes — we accept Aetna
+    # (HMO Plus)."). Two stacked causes, both needing a fix here: (1)
+    # provider-name matching alone ignores plan_type entirely, so any
+    # accepted plan for the provider "answers" a question about a
+    # different type; (2) resolve_entities's own plan_id resolution
+    # (_match_insurance) isn't plan-type aware either — with two same-
+    # provider plans it can silently resolve to the wrong one via tie-
+    # breaking, and that resolved plan_ids then bypassed type-checking
+    # entirely in an earlier version of this fix. So: whenever the message
+    # names a specific type, match by provider text (not the possibly-
+    # wrong resolved plan_ids) and let the type filter pick the right row.
+    requested_plan_type = _requested_plan_type(ctx.message)
+    plan_type_mismatch = False
+    if requested_plan_type and providers:
+        provider_q = Q()
+        for provider in providers:
+            provider_q |= Q(provider_name__icontains=provider) | Q(plan_name__icontains=provider)
+        candidates = list(base.filter(provider_q).order_by("-is_accepted", "provider_name")[:20])
+        exact = [
+            p for p in candidates if (p.plan_type or "").strip().upper() == requested_plan_type
+        ]
+        if exact:
+            plans = exact
+        elif candidates:
+            plans = candidates
+            plan_type_mismatch = True
+        else:
+            plans = []
     # Named provider/plan → include rejected rows so we can say "we do not accept X"
-    if plan_ids or providers:
+    elif plan_ids or providers:
         qs = base
         if plan_ids:
             qs = qs.filter(id__in=plan_ids)
@@ -64,7 +93,23 @@ def insurance_accepted(ctx: SQLContext) -> SQLResult:
             f" ({r['plan_name']})" if r.get("plan_name") else ""
         )
 
-    if providers and rejected and not accepted:
+    if plan_type_mismatch:
+        # rows[0]["provider_name"] is the real DB value, never the raw NLU
+        # entity text — which can itself be "Aetna PPO" (the whole phrase),
+        # producing an awkward "Aetna PPO PPO plan" if used directly here.
+        provider_label = rows[0]["provider_name"] if rows else "that provider"
+        if accepted:
+            names = ", ".join(_label(r) for r in accepted[:3])
+            summary = (
+                f"We don't see a {provider_label} {requested_plan_type} plan on file, "
+                f"but we do accept {names}."
+            )
+        else:
+            summary = (
+                f"We don't see a {provider_label} {requested_plan_type} plan on file. "
+                "Please call the clinic to verify coverage."
+            )
+    elif providers and rejected and not accepted:
         names = ", ".join(_label(r) for r in rejected[:5])
         notes = next((r["notes"] for r in rejected if r.get("notes")), "")
         summary = f"No — we currently don't accept {names}."
@@ -97,6 +142,17 @@ def insurance_accepted(ctx: SQLContext) -> SQLResult:
         rows=rows,
         summary=summary,
     )
+
+
+_PLAN_TYPE_RE = re.compile(r"\b(HMO|PPO|EPO|POS|HDHP)\b", re.I)
+
+
+def _requested_plan_type(message: str | None) -> str | None:
+    """A closed, enumerable set of US plan-type abbreviations — deterministic
+    Python extraction, not an NLU entity, since there's nothing semantic to
+    interpret here."""
+    match = _PLAN_TYPE_RE.search(message or "")
+    return match.group(1).upper() if match else None
 
 
 def _match_providers_from_message(clinic, message: str) -> list[str]:
