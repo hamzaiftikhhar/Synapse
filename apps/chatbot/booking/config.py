@@ -23,6 +23,14 @@ DEFAULT_BOOKING_CONFIG: dict[str, Any] = {
     # How many days ahead to scan for the PATH step's "Earliest Available" hero
     # slot — intentionally short, not the full booking horizon.
     "hero_horizon_days": 3,
+    # Phase 42A — shown on the Review & Confirm step. Deliberately generic
+    # and accurate rather than a specific medical/legal claim this system
+    # has no way to verify a given clinic actually meets — a clinic can
+    # override with its own wording via WidgetSettings.configuration.booking.
+    "review_disclaimer": (
+        "By confirming, you agree this appointment is subject to the "
+        "clinic's cancellation and scheduling policies."
+    ),
 }
 
 # Upper bound on how far ahead a clinic can be configured to take bookings —
