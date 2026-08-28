@@ -289,6 +289,7 @@ class AuthSkipConfirmTests(TestCase):
                 "first_name": "Sam",
                 "phone": "+15559990000",
                 "email": "sam@example.com",
+                "date_of_birth": "1990-01-01",
             },
         )
         self.assertEqual(submitted["step"], BookingStep.OTP.value)
@@ -410,7 +411,11 @@ class NoVerificationModeReviewTests(TestCase):
             chat_session=self.chat_session,
             booking_id=started["booking_id"],
             action="submit_details",
-            value={"first_name": "Sam", "phone": "+15559990000"},
+            value={
+                "first_name": "Sam",
+                "phone": "+15559990000",
+                "date_of_birth": "1990-01-01",
+            },
         )
         self.assertEqual(result["step"], BookingStep.REVIEW.value)
         self.assertFalse(Appointment.objects.filter(clinic=self.clinic).exists())
@@ -433,7 +438,11 @@ class NoVerificationModeReviewTests(TestCase):
             chat_session=self.chat_session,
             booking_id=started["booking_id"],
             action="submit_details",
-            value={"first_name": "Sam", "phone": "+15559990000"},
+            value={
+                "first_name": "Sam",
+                "phone": "+15559990000",
+                "date_of_birth": "1990-01-01",
+            },
         )
         self.assertEqual(submitted["step"], BookingStep.REVIEW.value)
 
@@ -461,7 +470,11 @@ class NoVerificationModeReviewTests(TestCase):
             chat_session=self.chat_session,
             booking_id=started["booking_id"],
             action="submit_details",
-            value={"first_name": "Sam", "phone": "+15559990000"},
+            value={
+                "first_name": "Sam",
+                "phone": "+15559990000",
+                "date_of_birth": "1990-01-01",
+            },
         )
         result = BookingService.apply_step(
             clinic=self.clinic,
@@ -498,7 +511,11 @@ class NoVerificationModeReviewTests(TestCase):
             chat_session=self.chat_session,
             booking_id=started["booking_id"],
             action="submit_details",
-            value={"first_name": "Sam", "phone": "+15559990000"},
+            value={
+                "first_name": "Sam",
+                "phone": "+15559990000",
+                "date_of_birth": "1990-01-01",
+            },
         )
         result = BookingService.apply_step(
             clinic=self.clinic,
