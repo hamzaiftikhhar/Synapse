@@ -30,6 +30,55 @@ def effective_schedule_window(start: time, end: time) -> tuple[time, time]:
     return start, end
 
 
+def _expand_day_slots(
+    target_date: date,
+    tz: Any,
+    *,
+    schedule_rows: Iterable[tuple[time, time, int]],
+    doctor_id: str,
+    doctor_name: str,
+    booked: set[datetime],
+    held: set[str],
+    now: datetime,
+    max_slots: int,
+) -> list[dict[str, Any]]:
+    """Pure, in-memory: turn one doctor's one day of already-fetched
+    schedule rows (start_time, end_time, slot_duration_min) into bookable
+    slot dicts. No queries here — callers fetch schedule/booked/held once
+    (per-day for compute_slots_for_day, or batched across doctors/days for
+    compute_next_available_slots) and pass the results in."""
+    slots: list[dict[str, Any]] = []
+    for start_time, end_time, slot_duration_min in schedule_rows:
+        open_at, close_at = effective_schedule_window(start_time, end_time)
+        slot_start = timezone.make_aware(datetime.combine(target_date, open_at), tz)
+        slot_end = timezone.make_aware(datetime.combine(target_date, close_at), tz)
+        duration = timedelta(minutes=slot_duration_min)
+        current = slot_start
+        while current + duration <= slot_end:
+            normalized = current.replace(second=0, microsecond=0)
+            if normalized < now:
+                current += duration
+                continue
+            key = f"{doctor_id}|{normalized.isoformat()}"
+            if normalized in booked or key in held:
+                current += duration
+                continue
+            end = current + duration
+            slots.append(
+                {
+                    **slot_to_dict(
+                        current, end, doctor_name=doctor_name, doctor_id=doctor_id
+                    ),
+                    "id": f"{doctor_id}_{normalized.isoformat()}",
+                    "label": current.strftime("%I:%M %p"),
+                }
+            )
+            current += duration
+            if len(slots) >= max_slots:
+                break
+    return slots
+
+
 def compute_slots_for_day(
     clinic: Any,
     *,
@@ -81,51 +130,132 @@ def compute_slots_for_day(
             ).values_list("start_time", flat=True)
         }
 
-        for sched in DoctorSchedule.objects.filter(
-            clinic=clinic,
-            doctor=doctor,
-            day_of_week=day_of_week,
-            is_active=True,
-        ):
-            open_at, close_at = effective_schedule_window(
-                sched.start_time, sched.end_time
+        schedule_rows = [
+            (sched.start_time, sched.end_time, sched.slot_duration_min)
+            for sched in DoctorSchedule.objects.filter(
+                clinic=clinic,
+                doctor=doctor,
+                day_of_week=day_of_week,
+                is_active=True,
             )
-            slot_start = timezone.make_aware(
-                datetime.combine(target_date, open_at), tz
+        ]
+        slots.extend(
+            _expand_day_slots(
+                target_date,
+                tz,
+                schedule_rows=schedule_rows,
+                doctor_id=str(doctor.id),
+                doctor_name=doctor.full_name,
+                booked=booked,
+                held=excluded,
+                now=now,
+                max_slots=max_slots,
             )
-            slot_end = timezone.make_aware(
-                datetime.combine(target_date, close_at), tz
-            )
-            duration = timedelta(minutes=sched.slot_duration_min)
-            current = slot_start
-            while current + duration <= slot_end:
-                normalized = current.replace(second=0, microsecond=0)
-                if normalized < now:
-                    current += duration
-                    continue
-                key = f"{doctor.id}|{normalized.isoformat()}"
-                if normalized in booked or key in excluded:
-                    current += duration
-                    continue
-                end = current + duration
-                slots.append(
-                    {
-                        **slot_to_dict(
-                            current,
-                            end,
-                            doctor_name=doctor.full_name,
-                            doctor_id=str(doctor.id),
-                        ),
-                        "id": f"{doctor.id}_{normalized.isoformat()}",
-                        "label": current.strftime("%I:%M %p"),
-                    }
-                )
-                current += duration
-                if len(slots) >= max_slots:
-                    break
+        )
 
     slots.sort(key=lambda s: s.get("start") or "")
     return slots
+
+
+def compute_next_available_slots(
+    clinic: Any,
+    *,
+    doctors: Iterable[Any],
+    horizon_days: int = 14,
+) -> dict[str, dict[str, Any] | None]:
+    """Next bookable slot per doctor within the horizon, batched into a
+    small constant number of queries across ALL doctors and days.
+
+    Previously this was one _next_available_slot() call per doctor, each
+    looping up to `horizon_days` days and, per day, re-querying schedule /
+    leave / appointments / holds for that one doctor — for a 20-doctor
+    "Choose a doctor" card render, up to ~1,400 DB round trips to answer
+    "what's the next open slot" for each card. Confirmed live before this
+    fix. This does the same 4 lookups once, for every doctor and the whole
+    horizon at once, then walks the horizon in pure Python per doctor."""
+    from apps.appointments.models import Appointment, AppointmentStatus
+    from apps.doctors.models import DoctorLeave, DoctorSchedule
+
+    doctor_list = list(doctors)
+    if not doctor_list:
+        return {}
+    doctor_ids = [d.id for d in doctor_list]
+    tz = clinic_timezone(clinic)
+    today = timezone.now().astimezone(tz).date()
+    end_date = today + timedelta(days=horizon_days - 1)
+    range_start = timezone.make_aware(datetime.combine(today, time.min), tz)
+    range_end = timezone.make_aware(datetime.combine(end_date, time.max), tz)
+    now = timezone.now().astimezone(tz)
+
+    schedule_by_doctor_weekday: dict[tuple[Any, int], list[tuple[time, time, int]]] = {}
+    for row in DoctorSchedule.objects.filter(
+        clinic=clinic, doctor_id__in=doctor_ids, is_active=True
+    ).values("doctor_id", "day_of_week", "start_time", "end_time", "slot_duration_min"):
+        key = (row["doctor_id"], row["day_of_week"])
+        schedule_by_doctor_weekday.setdefault(key, []).append(
+            (row["start_time"], row["end_time"], row["slot_duration_min"])
+        )
+
+    leave_by_doctor: dict[Any, list[tuple[Any, Any]]] = {}
+    for doctor_id, start_at, end_at in DoctorLeave.objects.filter(
+        clinic=clinic,
+        doctor_id__in=doctor_ids,
+        is_active=True,
+        start_at__lt=range_end,
+        end_at__gt=range_start,
+    ).values_list("doctor_id", "start_at", "end_at"):
+        leave_by_doctor.setdefault(doctor_id, []).append((start_at, end_at))
+
+    booked_by_doctor: dict[Any, set[datetime]] = {}
+    for doctor_id, start_time_val in Appointment.objects.filter(
+        clinic=clinic,
+        doctor_id__in=doctor_ids,
+        start_time__gte=range_start,
+        start_time__lte=range_end,
+        status__in=[
+            AppointmentStatus.PENDING,
+            AppointmentStatus.CONFIRMED,
+            AppointmentStatus.COMPLETED,
+            AppointmentStatus.NO_SHOW,
+        ],
+    ).values_list("doctor_id", "start_time"):
+        booked_by_doctor.setdefault(doctor_id, set()).add(
+            start_time_val.astimezone(tz).replace(second=0, microsecond=0)
+        )
+
+    held_by_date = active_holds_for_range(clinic, today, end_date)
+
+    results: dict[str, dict[str, Any] | None] = {}
+    for doctor in doctor_list:
+        doctor_id = doctor.id
+        doctor_id_str = str(doctor_id)
+        doctor_leaves = leave_by_doctor.get(doctor_id, [])
+        found: dict[str, Any] | None = None
+        for i in range(horizon_days):
+            d = today + timedelta(days=i)
+            schedule_rows = schedule_by_doctor_weekday.get((doctor_id, d.weekday()))
+            if not schedule_rows:
+                continue
+            d_start = timezone.make_aware(datetime.combine(d, time.min), tz)
+            d_end = timezone.make_aware(datetime.combine(d, time.max), tz)
+            if any(s < d_end and e > d_start for s, e in doctor_leaves):
+                continue
+            day_slots = _expand_day_slots(
+                d,
+                tz,
+                schedule_rows=schedule_rows,
+                doctor_id=doctor_id_str,
+                doctor_name=doctor.full_name,
+                booked=booked_by_doctor.get(doctor_id, set()),
+                held=held_by_date.get(d, set()),
+                now=now,
+                max_slots=1,
+            )
+            if day_slots:
+                found = day_slots[0]
+                break
+        results[doctor_id_str] = found
+    return results
 
 
 _DEFAULT_DENSITY_THRESHOLDS = {"few": 0.5, "almost_full": 0.15}
@@ -269,11 +399,24 @@ def active_holds_for_date(clinic: Any, target_date: date) -> set[str]:
     `f"{doctor_id}|{slot_start_isoformat}"` — moved verbatim from
     booking/serializers.py._active_holds so both slot-generation call sites
     can be hold-aware."""
+    return active_holds_for_range(clinic, target_date, target_date).get(
+        target_date, set()
+    )
+
+
+def active_holds_for_range(
+    clinic: Any, start_date: date, end_date: date
+) -> dict[date, set[str]]:
+    """Same data as active_holds_for_date, for every date in
+    [start_date, end_date], from a single scan of this clinic's active
+    sessions instead of one query per date — used by
+    compute_next_available_slots so a 14-day horizon doesn't turn into 14
+    separate hold queries per doctor."""
     from zoneinfo import ZoneInfo
 
     from apps.chatbot.models import ChatSession, ChatSessionStatus
 
-    held: set[str] = set()
+    held_by_date: dict[date, set[str]] = {}
     now = timezone.now()
     sessions = ChatSession.objects.filter(
         clinic=clinic, status=ChatSessionStatus.ACTIVE
@@ -295,9 +438,12 @@ def active_holds_for_date(clinic: Any, target_date: date) -> set[str]:
             if exp < now:
                 continue
             slot_dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
-            if slot_dt.date() != target_date:
+            d = slot_dt.date()
+            if not (start_date <= d <= end_date):
                 continue
-            held.add(f"{doctor_id}|{slot_dt.replace(second=0, microsecond=0).isoformat()}")
+            held_by_date.setdefault(d, set()).add(
+                f"{doctor_id}|{slot_dt.replace(second=0, microsecond=0).isoformat()}"
+            )
         except Exception:
             continue
-    return held
+    return held_by_date
