@@ -1,6 +1,6 @@
 """Unit tests for the embedding service (mocked providers)."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from django.test import SimpleTestCase, override_settings
 
@@ -10,14 +10,14 @@ from apps.knowledge.embeddings.service import EmbeddingService
 
 
 class _FakeProvider:
-    model_name = "test-model"
-    dimensions = 768
+    model_name = "text-embedding-3-small"
+    dimensions = 1536
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        return [[0.1] * 768 for _ in texts]
+        return [[0.1] * 1536 for _ in texts]
 
     def embed_query(self, text: str) -> list[float]:
-        return [0.2] * 768
+        return [0.2] * 1536
 
 
 class _BadDimProvider(_FakeProvider):
@@ -26,9 +26,10 @@ class _BadDimProvider(_FakeProvider):
 
 
 @override_settings(
-    EMBEDDING_PROVIDER="local",
-    EMBEDDING_MODEL="test-model",
-    EMBEDDING_DIMENSIONS=768,
+    EMBEDDING_PROVIDER="openai",
+    EMBEDDING_MODEL="text-embedding-3-small",
+    EMBEDDING_DIMENSIONS=1536,
+    OPENAI_API_KEY="sk-test",
 )
 class EmbeddingServiceTests(SimpleTestCase):
     def setUp(self):
@@ -46,26 +47,29 @@ class EmbeddingServiceTests(SimpleTestCase):
         service = EmbeddingService(_FakeProvider())
         vectors = service.embed_many(["a", "b"])
         self.assertEqual(len(vectors), 2)
-        self.assertEqual(len(vectors[0]), 768)
+        self.assertEqual(len(vectors[0]), 1536)
 
-    @patch("apps.knowledge.embeddings.factory.LocalEmbeddingProvider", return_value=_FakeProvider())
-    def test_factory_returns_cached_service(self, _mock_local):
+    @patch(
+        "apps.knowledge.embeddings.factory.OpenAIEmbeddingProvider",
+        return_value=_FakeProvider(),
+    )
+    def test_factory_returns_cached_service(self, _mock_openai):
         first = get_embedding_service()
         second = get_embedding_service()
         self.assertIs(first, second)
-        self.assertEqual(first.model_name, "test-model")
+        self.assertEqual(first.model_name, "text-embedding-3-small")
 
     @override_settings(EMBEDDING_PROVIDER="unknown")
     def test_factory_rejects_unknown_provider(self):
         with self.assertRaises(EmbeddingError):
             get_embedding_service()
 
-    @override_settings(
-        EMBEDDING_PROVIDER="openai",
-        EMBEDDING_MODEL="text-embedding-3-small",
-        EMBEDDING_DIMENSIONS=1536,
-        OPENAI_API_KEY="sk-test",
-    )
+    @override_settings(EMBEDDING_PROVIDER="local")
+    def test_factory_rejects_removed_local_provider(self):
+        with self.assertRaises(EmbeddingError) as ctx:
+            get_embedding_service()
+        self.assertIn("removed", str(ctx.exception).lower())
+
     @patch(
         "apps.knowledge.embeddings.factory.OpenAIEmbeddingProvider",
         return_value=_FakeProvider(),
