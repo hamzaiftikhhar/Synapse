@@ -15,7 +15,6 @@ openai>=1.40,<2.0
 twilio>=9.0,<10.0
 pypdf>=5.0,<6.0
 openpyxl>=3.1,<4.0
-sentence-transformers>=3.0,<4.0
 # Gemini NLU uses HTTPS REST (stdlib urllib) — no google-genai required.
 # Optional: google-genai>=1.0,<2.0  # if you prefer the official SDK later
 
