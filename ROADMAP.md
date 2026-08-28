@@ -1007,6 +1007,72 @@ correctly under the new 5.0s/7.0s one. This is the single clearest piece
 of evidence the fix works: an otherwise-identical slow call that used to
 fail now succeeds.
 
+### Phase 23 follow-up — the deliberately-deferred cold-process case, now fixed
+
+Reported live via a real pasted trace: the first chat message sent right
+after the Django dev server auto-reloaded (StatReloader restart, triggered
+by an unrelated code edit) failed with `OpenAI API timed out after 5.0s`
+→ clarify fallback; an immediate retry of the identical message succeeded
+in 4.4s. This is exactly the case Phase 23 above isolated and explicitly
+left unfixed as "not representative of a real deployment where workers
+don't restart between sessions" — true for the *frequency* (dev-only
+reload churn vs. a rare prod worker respawn), but the underlying cost is
+real either way: whoever sends the first message to a freshly started
+worker pays it, dev or prod.
+
+**Measured directly** (`manage.py shell`, fresh process, real configured
+OpenAI key — not estimated): a cold `models.list()` call took **5834ms**;
+the very next `classify()` call on that now-warm connection took
+**3224ms**. The gap (~2.6s) is pure DNS+TCP+TLS+auth handshake cost, and
+the cold total (~5.8s) lines up exactly with Phase 23's previously-observed
+"5.8-6s outlier." At a 5.0s single-provider budget, a cold call fails;
+a warm one comfortably succeeds.
+
+**Fix:** mirrors the exact pattern `apps.knowledge.apps.KnowledgeConfig`
+already uses for the embedding model (Phase 9B) — warm the connection at
+process startup instead of on the first real request.
+- `OpenAINLUProvider.warm_up()` (`openai_provider.py`): fires one free,
+  non-billed `models.list()` call through the same cached client
+  `classify()` will use, so the pool has a live connection before any
+  real user message arrives. Swallows failures — best-effort, never
+  raises.
+- `warm_up_nlu_provider()` (`nlu/factory.py`): resolves the configured
+  provider and calls `warm_up()` if it defines one. Gemini has no
+  persistent-client concept (raw `urllib` per call, confirmed in Phase 23)
+  and simply doesn't define `warm_up()` — skipped via `getattr`, no
+  special-casing needed.
+- `ChatbotConfig.ready()` (`apps/chatbot/apps.py`, previously empty) calls
+  it, gated by a `should_warm_up_nlu(sys.argv)` skip-list identical in
+  intent to `should_warm_up_embeddings` (test/migrate/shell/etc. don't
+  serve requests and shouldn't pay for a warm connection; `run_chat_eval`
+  is skipped because it's explicitly offline/no-live-LLM-calls per
+  CLAUDE.md). Fires on every dev-server reload (that's the point — it's
+  exactly when the bug reproduces) and once per real worker process in
+  production.
+
+**Files:** `apps/chatbot/nlu/openai_provider.py` (`warm_up`),
+`apps/chatbot/nlu/factory.py` (`warm_up_nlu_provider`),
+`apps/chatbot/apps.py` (`ready()` + `should_warm_up_nlu`, was empty).
+
+**Tests:** 13 new, `apps/chatbot/tests/test_nlu_warmup.py` — argv skip-list
+(mirrors `test_embedding_warmup.py`'s coverage), `warm_up_nlu_provider()`
+calls the provider's `warm_up()` when present / no-ops safely when absent
+(Gemini) / swallows a construction failure, `OpenAINLUProvider.warm_up()`
+no-ops with no API key, hits `models.list()` with a 3s timeout on the
+cached client, swallows a network failure, and reuses the exact same
+client instance a real `classify()` call would. `apps.chatbot.tests
+apps.knowledge.tests` — **630/630**. Eval **674/682 (98.8%)** unchanged
+(warm-up never runs under `run_chat_eval`, and doesn't touch
+routing/classify logic itself). `manage.py check` clean.
+
+**Known limitations:** no live re-measurement of "8 fresh dev-server
+reloads, 0/8 fallbacks" (Phase 23's own gold-standard verification for the
+first two fixes) — the shell-based measurement above proves the mechanism
+end-to-end (cold vs. warm, same client, real key) but wasn't repeated
+across multiple real server restarts. Reasonable given the direct,
+quantified proof already in hand, but flagged rather than silently assumed
+equivalent.
+
 ## ✅ Phase 24 — Booking wizard UI/UX pass
 
 **Reported:** double top margin above the wizard card vs. the earlier
@@ -3952,6 +4018,36 @@ this change didn't touch).
   first pass; a real per-clinic admin UI and/or a soft per-session cap
   would need its own scoping.
 
+## ✅ Phase 43 — Remove local SentenceTransformer embeddings
+
+Triggered by an AWS/EC2 deploy: `pip install -r requirements/base.txt`
+still pulled `sentence-transformers` (and therefore `torch`) even though
+chat RAG already used OpenAI `text-embedding-3-small`. The local BGE
+provider was leftover from the earlier switch (see Knowledge — OpenAI
+embeddings below) — defaults were OpenAI, but the code path and the
+dependency were still installed and `EMBEDDING_PROVIDER=local` would still
+try to load a Hugging Face model at gunicorn start.
+
+**What changed.** Deleted `apps/knowledge/embeddings/local.py`. Factory
+only builds `OpenAIEmbeddingProvider`; `EMBEDDING_PROVIDER=local` raises
+`EmbeddingError` telling the operator to set openai. `warm_up_embedding_service()`
+is a hard no-op (does not call `get_embedding_service()`), so a leftover
+`local` env var cannot import torch at process start. Dropped
+`sentence-transformers` from `requirements/base.txt`.
+
+**Files:** `apps/knowledge/embeddings/local.py` (deleted),
+`apps/knowledge/embeddings/factory.py`, `apps/knowledge/apps.py` (comment),
+`apps/knowledge/tests/test_embeddings.py`,
+`apps/knowledge/tests/test_embedding_warmup.py`, `requirements/base.txt`,
+`config/settings/base.py`, `.env.example`, `ARCHITECTURE.md` §9.
+
+**Tests:** factory rejects `local` with "removed"; warm-up does not touch
+the embedding service even when provider is still `local`. Run
+`python manage.py test apps.knowledge.tests --keepdb`.
+
+**Not this phase:** reindexing clinic documents (still required after the
+768→1536 migration); NLU still uses OpenAI/Gemini as before.
+
 ## 💤 Deferred — Conversation state / coreference
 
 Real, confirmed from transcript ("which one treats cancer?" → "Dr. Chloe
@@ -4731,6 +4827,10 @@ knowledge embedding tests, `ARCHITECTURE.md` §9,
 vectors were intentionally cleared. Chat completions were already OpenAI;
 only the embedding backend changed.
 
+**Follow-up (Phase 43).** The local provider and `sentence-transformers`
+dep were still in the tree after this switch and broke a lean AWS install.
+Removed entirely — OpenAI is the only embedding backend.
+
 **Follow-up (Apex load).** The clinic still failed in the browser after
 the backfill. Two Apex-specific problems, both now cleared:
 
@@ -4743,3 +4843,174 @@ the backfill. Two Apex-specific problems, both now cleared:
 Also: a stale staff JWT on `/embed/...` used to 401 `/auth/me` and bounce
 the public embed to `/login`. Redirect now only happens on portal routes
 (`/dashboard`, `/onboarding`, `/select-tenant`).
+
+---
+
+## ✅ Pre-deployment pass — debug-dump hardening, query efficiency (EC2 t3.micro, 1GB RAM)
+
+**Objective.** User is deploying to a resource-constrained EC2 t3.micro
+(1GB RAM total). Asked for three things: clear out local log/JSON debug
+artifacts, confirm the dependency footprint won't strain the box (the
+526MB PyTorch/sentence-transformers concern), and audit for N+1/redundant
+DB queries in the request-hot paths before deploying.
+
+**Dependency footprint — already resolved, not new work here.** Confirmed
+`apps/knowledge/embeddings/local.py` is gone and `EMBEDDING_PROVIDER`
+defaults to `openai` with a hard error on `local` — this is Phase 43's
+own follow-up above, already done and tested (39/39 knowledge). Confirmed
+directly: `torch`/`sentence-transformers` are not in any `requirements/
+*.txt` (only present in this dev machine's `.venv` as an untracked
+leftover, 573MB, never installed by a fresh `pip install -r requirements/
+production.txt`). No numpy/pandas anywhere in `apps/` either — the
+"apps.importer SIGFPE" note in CLAUDE.md is leftover from that same old
+local-embedding install, not a real prod dependency. Nothing to fix.
+
+**Debug-dump hardening.** `pipeline_debug_enabled()`
+(`apps/chatbot/pipeline_debug.py`) now hard-gates on `settings.DEBUG`
+before checking `DEBUG_CHAT_PIPELINE` — previously only the env var
+controlled it, so a local `.env` copied to production would flood stdout
+and write a JSON trace file per chat message on a disk-constrained box.
+`production.py` already hardcodes `DEBUG = False` (not env-overridable),
+so this was already low-risk, but it's a cheap defense-in-depth guard.
+Deleted 2,686 stale debug JSON files (29MB) from `logs/chat/` — already
+gitignored/untracked, pure local accumulation from this session's testing.
+
+**Query-efficiency audit.** Delegated a codebase-wide audit (chat/booking/
+widget/analytics/dashboard hot paths) to a research agent, then verified
+each finding against the actual source before fixing — 8 of 9 findings
+were real and fixed; 1 (doctor-catalog fetched independently 2-3x per
+chat message across `engine.py`/`resolvers.py`) is real but lower-impact
+and deferred, see below.
+
+1. **`_doctor_options` (booking wizard "Choose a doctor" step) —
+   confirmed up to ~1,400 queries per render.** `_next_available_slot()`
+   was called once per candidate doctor (up to 20), each looping 14 days
+   and re-querying schedule/leave/appointments/holds *for that one doctor
+   alone* every day. Measured the exact mechanism live via
+   `manage.py shell`, not estimated. Fixed with a new
+   `compute_next_available_slots()` (`apps/chatbot/booking/slots.py`) that
+   batches all 4 lookups (schedule, leave, appointments, holds) across
+   *all* candidate doctors and the *whole* 14-day horizon into a small
+   constant number of queries, then walks the horizon in pure Python per
+   doctor. Extracted the slot-boundary math shared with the existing
+   single-day `compute_slots_for_day` into a new pure (no-query)
+   `_expand_day_slots` helper so both paths stay correct from one
+   implementation instead of two. Also added `active_holds_for_range`
+   (one scan of active sessions bucketed by date) and had the existing
+   `active_holds_for_date` delegate to it. Regression test asserts query
+   count is *identical* for 2 vs 8 doctors (not just "smaller") —
+   `test_booking_query_efficiency.py`.
+2. **`prefetch_related` silently defeated by `.filter()`.**
+   `doctor_to_dict()` (`sql_tool/utils.py`) called
+   `doc.services.filter(is_deleted=False)` — a `.filter()` on an
+   already-prefetched related manager clones the queryset and re-queries
+   instead of hitting the prefetch cache, a well-known Django gotcha.
+   Fired on every `DOCTOR_SEARCH` chat message and on every row of
+   finding #1. Fixed: `.all()` + a Python `if not s.is_deleted` filter,
+   which does use the cache.
+3. **`list_specialties` — per-row `.count()` N+1.** Fixed with
+   `.annotate(doctor_count=Count("doctors", filter=Q(...)))`, one query
+   instead of up to 20.
+4. **`_service_options` — same per-row `.count()` N+1, plus no cap at
+   all** on the base queryset (every other list handler in this codebase
+   already bounds itself). Same `annotate(Count(...))` fix, plus a `[:100]`
+   cap (the frontend does client-side search over the full "all" list, so
+   this stays a full catalog, just not an unbounded one).
+5. **Specialty re-fetched after already being loaded.**
+   `resolve_specialty_for_service()` (`nlu/resolvers.py`) loaded a full
+   `Specialty` row (including `.name`) but returned only the id;
+   `engine.py` then called `_specialty_display_name()` — a second
+   `.get()` purely to re-fetch `.name`. Fixed by splitting the query core
+   into `resolve_specialty_object_for_service()` (returns the row) with
+   `resolve_specialty_for_service()` as a thin id-only wrapper (kept
+   unchanged for existing callers/tests); `engine.py` now calls the
+   object-returning version directly and `_specialty_display_name` is
+   deleted (dead code once the redundant call was gone). Updated one test
+   mock (`test_tiered_router.py`) that was patching the now-bypassed
+   wrapper.
+6. **Chat history fetched twice in one request.** `engine.py` loaded
+   `_load_history(session, limit=6)` for NLU context near the top of
+   `process()`, then `_generate_response()` independently loaded
+   `_load_history(session, limit=2)` again for the same session — same
+   rows, different limit. Threaded the already-loaded `recent_turns`
+   through `_compose_from_plan` → `_generate_response` (new optional
+   parameter each), which now slices `recent_turns[-2:]` instead of
+   re-querying; falls back to a fresh load only if not provided.
+7. **Doctors dashboard list — classic unprefetched M2M N+1.**
+   `apps/api/doctors/router.py::list_doctors` had no
+   `select_related`/`prefetch_related`; `_serialize()` called
+   `doctor.specialties.values_list(...)` / `doctor.services.values_list(
+   ...)` per row — and, same gotcha as #2, `.values_list()` on a
+   prefetched manager also bypasses the cache. Fixed both: added
+   `.prefetch_related("specialties", "services")` to the list queryset,
+   and changed `_serialize` to `.all()` + Python id extraction (works
+   correctly whether or not the manager was prefetched, so the single-
+   object create/retrieve/update call sites are unaffected). No test
+   coverage existed for this endpoint at all — added
+   `apps/doctors/tests.py::ListDoctorsQueryCountTests` (correctness +
+   flat-query-count-across-page-size).
+8. **Analytics `/insights` — the exact same aggregate query run twice.**
+   `insights()` calls `overview()` (which already computes
+   `patients_returning` via a specific filter chain) and then, right
+   after, re-runs the *identical* filter chain a second time under a
+   different key name. Fixed: reuse `base["summary"]["patients_returning"]`.
+
+**Deferred, not fixed — real but lower priority.** Doctor-catalog data is
+independently fetched up to 3x for the same clinic on any doctor-related
+chat turn: `build_doctor_catalog` (unconditional, every message),
+`resolve_entities`→`_match_doctor`, and `resolve_doctor_candidates` each
+run their own query (`engine.py:93,177,354`; `nlu/resolvers.py`). Real and
+confirmed reachable together, but each query is already small/bounded
+(`.only()`, capped), so the win (2 queries saved per doctor-message) is
+much smaller than #1 was, and the correct fix — threading one fetched
+roster through all three call sites — touches NLU-resolver code this
+session has repeatedly found to be correctness-sensitive (Phase 41).
+Deferred rather than rushed.
+
+**Also found, unrelated, not fixed — pre-existing test date-flake.**
+`apps/appointments/tests/factories.py` hardcodes
+`SLOT_START = datetime(2026, 8, 20, 15, 0, tzinfo=LA)`. Now that this
+session's in-fiction "today" has advanced to 2026-08-28, that fixture is
+in the past, and `compute_slots_for_day`'s (correct) "don't offer a slot
+that's already passed" filter now excludes it — breaking 4 tests in
+`apps/appointments/tests/` that assert a slot at that fixed time is
+offered/not-offered. **Confirmed independent of this phase's changes**:
+reproduced identically by temporarily restoring the pre-edit `slots.py`
+and re-running — same 4 failures, same error, before touching anything.
+Same shape as the Phase 9A date-flake this file's own working agreement
+points to as the bar for handling this correctly: not fixed here (out of
+this phase's stated scope — query efficiency, not test fixtures), flagged
+plainly instead of silently working around it.
+
+**Files changed:** `apps/chatbot/pipeline_debug.py` (+test),
+`apps/chatbot/booking/slots.py` (`_expand_day_slots`,
+`compute_next_available_slots`, `active_holds_for_range`),
+`apps/chatbot/booking/serializers.py` (`_doctor_options`,
+`_service_options`, removed dead `_next_available_slot`),
+`apps/chatbot/sql_tool/utils.py` (`doctor_to_dict`),
+`apps/chatbot/sql_tool/handlers/doctors.py` (`list_specialties`),
+`apps/chatbot/nlu/resolvers.py` (`resolve_specialty_object_for_service`),
+`apps/chatbot/engine.py` (`_specialty_display_name` removed,
+`recent_turns` threaded through), `apps/api/doctors/router.py`
+(`list_doctors`, `_serialize`), `apps/api/analytics/service.py`
+(`insights`), `apps/chatbot/tests/test_tiered_router.py` (patch target
+fix), new `apps/chatbot/tests/test_booking_query_efficiency.py` (5 tests),
+new tests in `apps/doctors/tests.py` (2 tests).
+
+**Tests:** 8 new/updated. `apps.chatbot.tests apps.knowledge.tests
+apps.doctors.tests apps.api.analytics apps.api.doctors apps.api.widget.tests
+apps.patients.tests` — **734/734**. `apps.appointments.tests` — 77/81, the
+4 failures being the pre-existing, independently-confirmed date-flake
+above (not this phase's). Eval: **674/682 (98.8%)**, unchanged (no
+NLU/routing logic touched — the resolvers.py change only restructures
+which function returns what, same query, same matching behavior).
+
+**Recommended next steps (not started):** bump/relativize the
+`apps/appointments/tests/factories.py` `SLOT_START` fixture so it doesn't
+go stale again; consider the deferred doctor-catalog dedup above if further
+tightening the chat hot path matters; for the actual EC2 deploy, size
+gunicorn's worker count deliberately (`--workers 2`, not the
+`(2×cpu)+1` default — a 1GB box can't afford 3 workers, `--max-requests`
+to recycle any slow memory creep) — no gunicorn/Procfile config exists in
+this repo yet to audit directly, this is an operational recommendation
+for whatever process manager is used on the box.
