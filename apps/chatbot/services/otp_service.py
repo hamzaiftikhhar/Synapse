@@ -6,7 +6,7 @@ import hashlib
 import logging
 import secrets
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import date, timedelta
 
 from django.conf import settings
 from django.utils import timezone
@@ -51,6 +51,12 @@ class OTPSendResult:
 class OTPVerifyResult:
     patient: Patient
     session: ChatSession | None
+    # Phase 42A — set only when a date_of_birth was actually passed in and
+    # matched (or was captured fresh); False whenever no DOB check ran at
+    # all, e.g. a clinic with verification_mode="none" never calls this
+    # with one. Distinct from "OTP itself succeeded", which is always true
+    # by the time this result exists.
+    dob_verified: bool = False
 
 
 def _hash_code(code: str) -> str:
@@ -249,6 +255,7 @@ def verify_otp(
     session_token: str | None = None,
     first_name: str | None = None,
     last_name: str | None = None,
+    date_of_birth: date | None = None,
 ) -> OTPVerifyResult:
     session: ChatSession | None = None
     if session_token:
@@ -297,6 +304,19 @@ def verify_otp(
     if patient is None:
         raise OTPError("Patient not found — request a new code", status_code=404)
 
+    # Phase 42A — DOB check runs only after the code itself is already
+    # confirmed correct (otp.verified_at set above) and consumed: a wrong
+    # DOB still burns this code, so retrying DOB guesses costs a fresh
+    # code request each time rather than being free against one valid
+    # code. A mismatch/lockout blocks verification entirely — the session
+    # is never authenticated as this patient, same as a wrong code.
+    dob_verified = False
+    if date_of_birth is not None:
+        try:
+            dob_verified = patient_service.verify_date_of_birth(patient, date_of_birth)
+        except patient_service.IdentityVerificationError as exc:
+            raise OTPError(str(exc), status_code=exc.status_code) from exc
+
     if first_name or last_name:
         patient_service.update_profile(
             patient,
@@ -321,4 +341,4 @@ def verify_otp(
 
         link_session_visitor_to_patient(session, patient)
 
-    return OTPVerifyResult(patient=patient, session=session)
+    return OTPVerifyResult(patient=patient, session=session, dob_verified=dob_verified)

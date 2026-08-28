@@ -221,7 +221,7 @@ class BookingConfirmLinksVisitorTests(TestCase):
             doctor_id=str(self.doctor.id), doctor_name=self.doctor.full_name,
             slot_start=self.slot_start, slot_end=self.slot_end,
         )
-        details = {"first_name": first_name}
+        details = {"first_name": first_name, "date_of_birth": "1990-01-01"}
         if phone:
             details["phone"] = phone
         if email:
