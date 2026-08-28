@@ -18,6 +18,22 @@ from apps.chatbot.sql_tool.utils import (
 )
 from apps.chatbot.temporal import TemporalQuery
 
+# Words that appear in booking/availability talk but are never a doctor's
+# name — shared by search_doctors and doctor_availability so a fix to one
+# can't drift from the other (Phase 41: "should" from "which doctor
+# should I see" was extracted as doctor_name and reproduced live — zero
+# doctors ever matched a name filter for "should"; previously only one of
+# the two copies would have needed the fix, exactly the drift this shared
+# constant prevents).
+_NAME_NOISE = {
+    "please", "doctor", "doctors", "dentist", "help", "find",
+    "me", "a", "the", "good", "best", "free", "available", "open",
+    "any", "some", "all", "on", "in", "at", "morning", "afternoon",
+    "evening", "slot", "slots",
+    "should", "would", "could", "can", "will", "shall", "do", "does", "did",
+    "i", "my", "see", "seeing",
+}
+
 
 def _slot_at_or_after(slot: dict, floor_time) -> bool:
     start = slot.get("start") or ""
@@ -62,12 +78,6 @@ def search_doctors(ctx: SQLContext) -> SQLResult:
         names = entity_list(nlu.entities.doctor_name)
         # Ignore politeness / filler / availability tokens mistaken for names
         # e.g. "is any dr free on tuesday" → "free" must not filter doctors
-        _NAME_NOISE = {
-            "please", "doctor", "doctors", "dentist", "help", "find",
-            "me", "a", "the", "good", "best", "free", "available", "open",
-            "any", "some", "all", "on", "in", "at", "morning", "afternoon",
-            "evening", "slot", "slots",
-        }
         names = [
             n
             for n in names
@@ -177,12 +187,6 @@ def doctor_availability(ctx: SQLContext) -> SQLResult:
         doctor_qs = doctor_qs.filter(id__in=doctor_ids)
     else:
         names = entity_list(nlu.entities.doctor_name)
-        _NAME_NOISE = {
-            "please", "doctor", "doctors", "dentist", "help", "find",
-            "me", "a", "the", "good", "best", "free", "available", "open",
-            "any", "some", "all", "on", "in", "at", "morning", "afternoon",
-            "evening", "slot", "slots",
-        }
         names = [
             n
             for n in names
