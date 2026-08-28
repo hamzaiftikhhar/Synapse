@@ -635,6 +635,11 @@ export type ChatResumeOut = {
   has_history: boolean;
   messages: ChatMessageHistoryOut[];
   has_more: boolean;
+  /** An in-progress (not yet confirmed) booking on this session, if any —
+   * separate from historical booking_wizard chat messages, which are
+   * always rendered inert. Same shape a live BookingWizard already
+   * consumes from /booking/start|step. */
+  active_booking?: BookingStepPayload | null;
 };
 
 export type ChatMessagesPageOut = {
@@ -749,7 +754,11 @@ export type BookingStepPayload = {
   /** Set when a select_hero action's slot was taken between render and tap. */
   stale_hero?: boolean;
   /** Present on step "review" — same shape as `confirmation` below, minus
-   * the fields that don't exist until the patient taps Confirm. */
+   * the fields that don't exist until the patient taps Confirm. Phase
+   * 42A: every field here is real backend/Patient state, never
+   * reconstructed from conversation prose — phone/email/insurance/
+   * location/disclaimer are shown so the patient reviews the actual
+   * appointment that Confirm & Book would create, not a summary of it. */
   review?: {
     slot_summary?: string;
     doctor_name?: string;
@@ -759,16 +768,25 @@ export type BookingStepPayload = {
     end?: string;
     first_name?: string;
     last_name?: string;
+    phone?: string;
+    email?: string;
+    insurance_plan_name?: string | null;
+    dob_verified?: boolean;
+    location?: string;
+    disclaimer?: string;
   } | null;
   confirmation?: {
     confirmation_code?: string;
     appointment_id?: string;
     slot_summary?: string;
     doctor_name?: string;
+    service_name?: string;
     date?: string;
     start?: string;
     first_name?: string;
     last_name?: string;
+    insurance_plan_name?: string | null;
+    location?: string;
   } | null;
 };
 
