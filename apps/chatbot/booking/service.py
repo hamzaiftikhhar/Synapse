@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import secrets
 import string
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -59,6 +59,16 @@ class BookingService:
         if insurance_name and insurance_name not in text:
             text = f"{text} (insurance: {insurance_name})".strip() if text else f"Book with {insurance_name}"
 
+        # Phase 42A — resolve to a real InsurancePlan, not just free text
+        # folded into `reason` (the old behavior: never resolved, never
+        # shown at review, never actually set on the Appointment despite
+        # the FK existing). Reuses the same name→plan matching
+        # resolve_entities already does for the chat/NLU path — no new
+        # matching logic, just an actual place for the result to land.
+        insurance_plan_id, insurance_plan_name = cls._resolve_insurance(
+            clinic, insurance_name
+        )
+
         existing = cls._load_active(chat_session)
         prefills = any([specialty_id, doctor_id, service_id, slot_start])
         if existing and not prefills:
@@ -90,6 +100,10 @@ class BookingService:
                 reason=text,
             )
             session.suggested_specialty_ids = [s["id"] for s in suggested]
+
+        if insurance_plan_id:
+            session.insurance_plan_id = insurance_plan_id
+            session.insurance_plan_name = insurance_plan_name
 
         cls._apply_prefill(
             session,
@@ -134,6 +148,55 @@ class BookingService:
             payload["guidance"] = guidance
             payload["suggested_specialties"] = suggested
         return payload
+
+    @staticmethod
+    def _resolve_insurance(
+        clinic: Any, insurance_name: str | None
+    ) -> tuple[str | None, str | None]:
+        """Free-text provider/plan name → a real InsurancePlan on this
+        clinic, reusing the exact same matcher the chat/NLU path already
+        uses (`resolve_entities`) rather than a second parallel one."""
+        if not insurance_name:
+            return None, None
+        from apps.chatbot.nlu.resolvers import resolve_entities
+        from apps.chatbot.nlu.schemas import ExtractedEntities
+        from apps.insurance.models import InsurancePlan
+
+        resolved = resolve_entities(
+            clinic, ExtractedEntities(insurance_provider=insurance_name)
+        )
+        plan_id = resolved.insurance_plan_id
+        if isinstance(plan_id, list):
+            plan_id = plan_id[0] if plan_id else None
+        if not plan_id:
+            return None, None
+        plan = InsurancePlan.objects.filter(
+            clinic=clinic, id=plan_id, is_deleted=False
+        ).first()
+        if plan is None:
+            return None, None
+        name = f"{plan.provider_name} ({plan.plan_name})" if plan.plan_name else plan.provider_name
+        return str(plan.id), name
+
+    @classmethod
+    def active_booking_payload(cls, clinic: Any, chat_session: Any) -> dict[str, Any] | None:
+        """Read-only snapshot of an in-progress booking, for session resume.
+
+        Phase 42A: `/chat/resume` used to only replay historical chat
+        messages — an interrupted mid-wizard booking had no way back once
+        the tab closed and reopened, since `hydrateHistoryRow` deliberately
+        stamps any *historical* booking_wizard message `completed: true`
+        (frontend message-parser.ts) so an old, already-processed wizard
+        card from real history can never mount live again. That's correct
+        for genuine history; it left no path at all for a booking that's
+        still actually in progress. This is the read the frontend uses to
+        tell the two apart and remount a live wizard at its real step. Pure
+        read — `serialize_step` only formats existing state, `_load_active`
+        already excludes CONFIRMED bookings."""
+        session = cls._load_active(chat_session)
+        if session is None:
+            return None
+        return serialize_step(clinic, session)
 
     @staticmethod
     def _load_active(chat_session: Any) -> BookingSession | None:
@@ -619,10 +682,20 @@ class BookingService:
             last = str(value.get("last_name") or "").strip()
             phone = str(value.get("phone") or "").strip()
             email = str(value.get("email") or "").strip().lower()
+            dob_raw = str(value.get("date_of_birth") or "").strip()
             cfg = get_booking_config(clinic)
             vmode = cfg.get("verification_mode") or "sms"
             if not first:
                 raise BookingError("First name is required")
+            if not dob_raw:
+                raise BookingError("Date of birth is required")
+            try:
+                dob = date.fromisoformat(dob_raw)
+            except ValueError:
+                raise BookingError("Enter a valid date of birth") from None
+            today = timezone.now().date()
+            if dob > today or dob.year < today.year - 120:
+                raise BookingError("Enter a valid date of birth")
 
             # Normalize: if a single contact was mis-filed, classify by @
             if phone and "@" in phone and not email:
@@ -647,6 +720,7 @@ class BookingService:
             session.patient_last_name = last
             session.patient_phone = phone
             session.patient_email = email
+            session.pending_dob = dob.isoformat()
             if vmode == "none":
                 # No OTP to type — without a REVIEW stop here, nothing between
                 # this form and a real Appointment would ever require a
@@ -661,12 +735,104 @@ class BookingService:
             cls._save(chat_session, session)
             return serialize_step(clinic, session)
 
+        if action == "verify_otp":
+            # Phase 42A — this is the fix for the gap the docstring on
+            # BookingStep.REVIEW used to describe as intentional: "the
+            # normal DETAILS→OTP path already requires entering a received
+            # code, which is itself a confirming action, so it goes
+            # straight to CONFIRMED." That meant the single most common
+            # booking path — a new or returning patient typing a phone/
+            # email OTP — had no review screen and no separate "yes, book
+            # it" gesture at all; the code-entry submit *was* the booking.
+            # Splitting verification (this action, ends on REVIEW) from
+            # confirmation (confirm_review below, ends on CONFIRMED) closes
+            # that for every path, not just the two that already had it
+            # (an already-authenticated session, or verification_mode=
+            # "none").
+            if session.step != BookingStep.OTP.value:
+                raise BookingError("Not at the verification step")
+            code = str(value.get("otp_code") or "").strip()
+            if not code:
+                raise BookingError("Enter the code we sent you")
+            from apps.chatbot.services.otp_service import OTPError, verify_otp
+
+            dob_value = None
+            if session.pending_dob:
+                try:
+                    dob_value = date.fromisoformat(session.pending_dob)
+                except ValueError:
+                    dob_value = None
+            try:
+                result = verify_otp(
+                    clinic=clinic,
+                    phone=session.patient_phone,
+                    email=session.patient_email,
+                    code=code,
+                    session_token=getattr(chat_session, "session_token", None),
+                    first_name=session.patient_first_name,
+                    last_name=session.patient_last_name,
+                    date_of_birth=dob_value,
+                )
+            except OTPError as exc:
+                raise BookingError(str(exc), status_code=exc.status_code) from exc
+            session.patient_id = str(result.patient.id)
+            session.dob_verified = result.dob_verified
+            session.pending_dob = None
+            session.step = BookingStep.REVIEW.value
+            cls._touch(session)
+            cls._save(chat_session, session)
+            return serialize_step(clinic, session)
+
+        if action == "edit_details":
+            # Lets the patient fix a typo'd name or change their insurance
+            # selection directly from Review, without re-running the whole
+            # DETAILS→OTP flow. Deliberately narrower than submit_details:
+            # phone/email/DOB are the identity-verification anchor (already
+            # OTP+DOB-checked to reach REVIEW at all), so they are not
+            # editable here — changing contact info has to go back through
+            # real verification via the existing "Back" action, same rule
+            # already applied to DOB.
+            if session.step != BookingStep.REVIEW.value:
+                raise BookingError("Nothing to edit yet")
+            first = str(value.get("first_name") or "").strip()
+            if not first:
+                raise BookingError("First name is required")
+            session.patient_first_name = first
+            session.patient_last_name = str(value.get("last_name") or "").strip()
+            if "insurance_name" in value:
+                insurance_plan_id, insurance_plan_name = cls._resolve_insurance(
+                    clinic, str(value.get("insurance_name") or "").strip() or None
+                )
+                session.insurance_plan_id = insurance_plan_id
+                session.insurance_plan_name = insurance_plan_name
+            cls._touch(session)
+            cls._save(chat_session, session)
+            return serialize_step(clinic, session)
+
         if action == "confirm_review":
             if session.step != BookingStep.REVIEW.value:
                 raise BookingError("Nothing to confirm yet")
             patient = None
             otp_verified = False
-            if getattr(chat_session, "is_authenticated", False) and getattr(
+            dob_verified = session.dob_verified
+            if session.patient_id:
+                # Already verified via the "verify_otp" action above — this
+                # confirm is the separate, deliberate "Confirm & book" tap
+                # from REVIEW, not a fresh code submission. A code can only
+                # ever be consumed once (otp.verified_at), so re-running
+                # verify_otp here isn't an option even if we wanted to.
+                from apps.patients.models import Patient
+
+                patient = Patient.objects.filter(
+                    clinic=clinic, id=session.patient_id
+                ).first()
+                if patient is None:
+                    raise BookingError(
+                        "We couldn't find your verified details — please verify again",
+                        status_code=401,
+                    )
+                otp_verified = True
+            elif getattr(chat_session, "is_authenticated", False) and getattr(
                 chat_session, "patient", None
             ):
                 patient = chat_session.patient
@@ -677,6 +843,7 @@ class BookingService:
                 booking_id=session.booking_id,
                 patient=patient,
                 otp_verified=otp_verified,
+                dob_verified=dob_verified,
             )
 
         raise BookingError(f"Unknown action: {action}")
@@ -760,6 +927,7 @@ class BookingService:
         booking_id: str,
         patient: Any | None = None,
         otp_verified: bool = False,
+        dob_verified: bool = False,
     ) -> dict[str, Any]:
         from apps.appointments.models import Appointment, AppointmentSource, AppointmentStatus
         from apps.doctors.models import Doctor
@@ -811,10 +979,25 @@ class BookingService:
             if email and not patient.email:
                 patient.email = email
                 updates.append("email")
+            # Phase 42A — a clinic with verification_mode="none" never
+            # calls verify_otp, so DOB was collected at DETAILS but never
+            # compared/backfilled there. Capture it here (write-once, only
+            # if nothing's on file yet) — this is capture, not a proven
+            # identity check, so dob_verified is deliberately left as
+            # whatever the caller passed (False unless already established
+            # by an OTP path elsewhere this session), not set True here.
+            if not patient.date_of_birth and session.pending_dob:
+                try:
+                    patient.date_of_birth = date.fromisoformat(session.pending_dob)
+                    updates.append("date_of_birth")
+                except ValueError:
+                    pass
             if updates:
                 patient.save(update_fields=updates)
 
         session.patient_id = str(patient.id)
+        session.dob_verified = dob_verified
+        session.pending_dob = None
 
         try:
             doctor = Doctor.objects.get(
@@ -861,6 +1044,7 @@ class BookingService:
                 doctor=doctor,
                 patient=patient,
                 service_id=session.service_id or None,
+                insurance_plan_id=session.insurance_plan_id or None,
                 start_time=start,
                 end_time=end,
                 status=AppointmentStatus.CONFIRMED,
