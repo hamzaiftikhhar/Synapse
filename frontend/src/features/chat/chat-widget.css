@@ -141,6 +141,39 @@
   background-color: var(--accent);
 }
 
+/* Closed-widget marketing teaser — restrained fade/slide only, no bounce,
+   shake, or continuous motion. Each rotation remounts .synapse-teaser-text
+   (via a changing `key`), which restarts this one-shot animation. */
+.synapse-teaser {
+  animation: synapse-teaser-in 320ms ease-out;
+}
+
+.synapse-teaser-text {
+  animation: synapse-teaser-fade 320ms ease-out;
+}
+
+@keyframes synapse-teaser-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes synapse-teaser-fade {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .synapse-thinking-dots::after,
   .synapse-stream-cursor::after {
@@ -153,5 +186,10 @@
 
   .synapse-stream-cursor::after {
     opacity: 1;
+  }
+
+  .synapse-teaser,
+  .synapse-teaser-text {
+    animation: none !important;
   }
 }

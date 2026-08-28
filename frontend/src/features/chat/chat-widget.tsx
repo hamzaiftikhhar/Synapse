@@ -55,6 +55,19 @@ import {
 
 const HISTORY_PAGE_SIZE = 50;
 
+// Phase 42B — closed-widget marketing teaser. Rotates while the launcher
+// bubble is closed; this is the one surface on a clinic's own site that can
+// drive booking conversions, so copy stays professionally accurate — no
+// privacy/confidentiality claims the platform can't actually guarantee.
+const TEASER_MESSAGES = [
+  "Need a doctor? 👋",
+  "Book with your doctor without waiting on hold.",
+  "Not sure who to see? We'll help you find the right doctor.",
+  "Check availability. Pick your doctor. Book your visit.",
+];
+const TEASER_INITIAL_DELAY_MS = 1400;
+const TEASER_ROTATE_MS = 5000;
+
 export type ChatWidgetProps = {
   mode?: "widget" | "embedded";
   clinicName?: string;
@@ -262,6 +275,8 @@ export function ChatWidget({
 
   const [open, setOpen] = useState(mode === "embedded" || defaultOpen);
   const [expanded, setExpanded] = useState(false);
+  const [teaserVisible, setTeaserVisible] = useState(false);
+  const [teaserIndex, setTeaserIndex] = useState(0);
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [typing, setTyping] = useState(false);
@@ -378,6 +393,27 @@ export function ChatWidget({
     },
     [expanded]
   );
+
+  // Closed-widget marketing teaser — only the standalone launcher bubble
+  // has a closed state at all (embedded mode is always open, forced above).
+  // Delay the first appearance so it doesn't flash on page load, then
+  // rotate; hide immediately once opened.
+  useEffect(() => {
+    if (mode !== "widget" || open) {
+      setTeaserVisible(false);
+      return;
+    }
+    const showTimer = setTimeout(() => setTeaserVisible(true), TEASER_INITIAL_DELAY_MS);
+    return () => clearTimeout(showTimer);
+  }, [mode, open]);
+
+  useEffect(() => {
+    if (!teaserVisible) return;
+    const rotateTimer = setInterval(() => {
+      setTeaserIndex((i) => (i + 1) % TEASER_MESSAGES.length);
+    }, TEASER_ROTATE_MS);
+    return () => clearInterval(rotateTimer);
+  }, [teaserVisible]);
 
   // Staff/QA resume — the equivalent of the anonymous-visitor resume
   // effect below, but keyed by the staff JWT's own identity (this user +
@@ -566,11 +602,24 @@ export function ChatWidget({
         const res = await widgetService.resume(clinicSlug, widgetCtx.visitorId);
         if (res.visitor_id) widgetCtx.setVisitorId(res.visitor_id);
         if (res.session_token) rememberSessionToken(res.session_token);
-        if (res.messages.length) {
-          oldestCursorRef.current = res.messages[0].sequence_number;
-          setHasMoreOlder(res.has_more);
+        if (res.messages.length || res.active_booking) {
+          if (res.messages.length) {
+            oldestCursorRef.current = res.messages[0].sequence_number;
+            setHasMoreOlder(res.has_more);
+          }
           stickToBottom.current = true;
-          setMessages(hydrateHistoryMessages(res.messages));
+          const history = hydrateHistoryMessages(res.messages);
+          // Phase 42A — an in-progress booking survives a closed tab; the
+          // historical booking_wizard rows above (if any) are always
+          // inert (hydrateHistoryRow stamps completed:true), so this is
+          // appended separately as the one live, resumable wizard card —
+          // activeWizardId (below) picks it up automatically as the last
+          // non-completed booking_wizard message.
+          setMessages(
+            res.active_booking
+              ? [...history, bookingWizardMessage(res.active_booking)]
+              : history
+          );
           requestAnimationFrame(() => scrollToBottom(false));
         }
       } catch {
@@ -1353,6 +1402,19 @@ export function ChatWidget({
           >
             {panel}
           </div>
+        ) : null}
+
+        {!open && teaserVisible ? (
+          <button
+            type="button"
+            onClick={() => setOpen(true)}
+            aria-label={`${TEASER_MESSAGES[teaserIndex]} — open chat`}
+            className="synapse-teaser pointer-events-auto mb-3 max-w-[240px] rounded-2xl border border-border/70 bg-card px-3.5 py-2.5 text-left text-sm font-medium leading-snug text-foreground shadow-lg transition-colors hover:border-primary/30"
+          >
+            <span key={teaserIndex} className="synapse-teaser-text block">
+              {TEASER_MESSAGES[teaserIndex]}
+            </span>
+          </button>
         ) : null}
 
         <button
