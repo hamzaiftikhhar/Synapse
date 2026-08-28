@@ -7,6 +7,8 @@ from django.test import SimpleTestCase
 from apps.chatbot.conversation_state import (
     ConversationTimeline,
     apply_recovery,
+    classify_doctor_pronoun_reference,
+    classify_gender_question,
     classify_pin_amendment,
     classify_preview_only,
     classify_session_recall,
@@ -415,3 +417,62 @@ class WorkingContextTests(SimpleTestCase):
         tl = ConversationTimeline(shown_doctors=[{"id": "old-1", "name": "Old Doctor"}])
         tl = merge_turn_context(tl, shown_doctors=[{"id": "new-1", "name": "New Doctor"}])
         self.assertEqual([d["id"] for d in tl.shown_doctors], ["new-1"])
+
+
+class GenderQuestionClassifierTests(SimpleTestCase):
+    """Phase 41: gender is never stored on Doctor — this must be a Python
+    decision, not something the Large LLM infers from a name/bio/photo."""
+
+    def test_positive_cases(self):
+        for text in (
+            "Do you have any female doctors?",
+            "Which doctors are women?",
+            "Do you have a male doctor?",
+            "Is Dr. Priya a woman?",
+            "Are there any men doctors here?",
+        ):
+            with self.subTest(text=text):
+                self.assertTrue(classify_gender_question(text), text)
+
+    def test_negative_cases_do_not_misfire(self):
+        for text in (
+            "Which doctors can see children?",
+            "Is he a good doctor?",
+            "What doctors do you have?",
+            "",
+        ):
+            with self.subTest(text=text):
+                self.assertFalse(classify_gender_question(text), text)
+
+
+class DoctorPronounReferenceClassifierTests(SimpleTestCase):
+    """Phase 41: "can she see children" after a single doctor was just
+    discussed. Deliberately narrower than a real coreference engine —
+    subject-position pronoun only, never when the message introduces a
+    more locally obvious human antecedent."""
+
+    def test_positive_cases(self):
+        for text in (
+            "Can she see children?",
+            "Does he provide urgent care?",
+            "What services does she provide?",
+            "When is she available?",
+            "Is the doctor accepting new patients?",
+        ):
+            with self.subTest(text=text):
+                self.assertTrue(classify_doctor_pronoun_reference(text), text)
+
+    def test_family_relation_antecedent_blocks_resolution(self):
+        """"My daughter has a fever, can she see a doctor" — "she" is the
+        daughter, not a previously-discussed doctor. GPT's own plan for
+        this fix didn't account for this risk; added deliberately."""
+        for text in (
+            "My daughter has a fever, can she see a doctor?",
+            "My son is sick. Can Dr. Omar see him?",
+            "My child has trouble breathing, can she be seen today?",
+        ):
+            with self.subTest(text=text):
+                self.assertFalse(classify_doctor_pronoun_reference(text), text)
+
+    def test_unrelated_message_does_not_match(self):
+        self.assertFalse(classify_doctor_pronoun_reference("What doctors do you have?"))

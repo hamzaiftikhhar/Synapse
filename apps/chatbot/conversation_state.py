@@ -655,3 +655,64 @@ def classify_preview_only(message: str) -> bool:
     available times" — show availability without committing to a booking
     action this turn."""
     return bool(_PREVIEW_ONLY_RE.search(message or ""))
+
+
+# Phase 41 — gender is never stored on Doctor (confirmed: no such field on
+# the model), so this must be a Python decision, never an LLM guess from a
+# name/bio/photo. Matched against the raw message, ahead of SQL/vector/LLM.
+_GENDER_DOCTOR_PROXIMITY_RE = re.compile(
+    r"\bdoctors?\b.{0,25}\b(?:female|male|woman|women|man|men)\b"
+    r"|\b(?:female|male|woman|women|man|men)\b.{0,25}\bdoctors?\b",
+    re.I,
+)
+_GENDER_NAMED_DOCTOR_RE = re.compile(
+    r"\bis\s+(?:dr\.?\s+)?[a-z][\w'-]{1,30}\s+a\s+(?:woman|man|male|female)\b",
+    re.I,
+)
+
+
+def classify_gender_question(message: str) -> bool:
+    """"Do you have female doctors?" / "Is Dr. Priya a woman?" — clinic data
+    never carries gender, so this must never fall through to a normal
+    doctor_search that quietly returns an unfiltered list as if it
+    answered the question (reproduced live, Phase 41)."""
+    text = (message or "").strip()
+    if not text:
+        return False
+    return bool(
+        _GENDER_DOCTOR_PROXIMITY_RE.search(text)
+        or _GENDER_NAMED_DOCTOR_RE.search(text)
+    )
+
+
+# Phase 41 — general doctor-pronoun resolution ("can she see children?"
+# after a single doctor was just discussed). Deliberately narrower than a
+# real coreference engine: only fires for a pronoun in the *subject*
+# position of a capability/quality/availability question, and never when
+# the same message introduces a more locally obvious human antecedent
+# ("my daughter" in "my daughter has a fever, can she see a doctor") — a
+# risk GPT's own plan for this fix didn't account for.
+_DOCTOR_PRONOUN_QUESTION_RE = re.compile(
+    r"\b(?:can|does|is|will|do|did|has|would|could)\s+(?:she|he|they)\b"
+    r"|\bwhat\s+(?:services?\s+)?(?:does|do)\s+(?:she|he|they)\b"
+    r"|\bwhen\s+is\s+(?:she|he|they)\b"
+    r"|\b(?:she|he|they)\s+(?:accept|takes?|sees?|treats?|provides?|offers?|specializ\w*)\b"
+    r"|\bthe\s+doctor\b|\bthis\s+doctor\b|\bthat\s+doctor\b",
+    re.I,
+)
+_FAMILY_RELATION_ANTECEDENT_RE = re.compile(
+    r"\bmy\s+(?:daughter|son|child|kid|baby|wife|husband|spouse|mother|father|mom|dad|patient)\b",
+    re.I,
+)
+
+
+def classify_doctor_pronoun_reference(message: str) -> bool:
+    """A pronoun/generic reference ("she"/"he"/"they"/"the doctor") standing
+    in for a specific doctor discussed earlier in the conversation — not a
+    general coreference resolver, just this one narrow, common shape."""
+    text = (message or "").strip()
+    if not text:
+        return False
+    if _FAMILY_RELATION_ANTECEDENT_RE.search(text):
+        return False
+    return bool(_DOCTOR_PRONOUN_QUESTION_RE.search(text))
