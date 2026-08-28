@@ -543,7 +543,7 @@ class EngineLaneIsolationTests(SimpleTestCase):
         self.assertIn("Policy", result.response)
 
     @patch("apps.chatbot.nlu.resolvers.resolve_entities", return_value=ResolvedIds())
-    @patch("apps.chatbot.nlu.resolvers.resolve_specialty_for_service", return_value=None)
+    @patch("apps.chatbot.nlu.resolvers.resolve_specialty_object_for_service", return_value=None)
     @patch("apps.chatbot.booking.discovery.suggest_specialties", return_value=([], ""))
     @patch(
         "apps.chatbot.routing.build_service_catalog",

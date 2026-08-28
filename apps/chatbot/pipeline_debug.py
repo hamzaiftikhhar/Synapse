@@ -33,6 +33,13 @@ _SILENT_PIPELINE_COMMANDS = frozenset({"test", "run_chat_eval"})
 
 
 def pipeline_debug_enabled() -> bool:
+    # Hard-gated on DEBUG regardless of DEBUG_CHAT_PIPELINE — this is a
+    # local-development tool (verbose per-request stdout dump + a JSON
+    # file written to disk on every chat message). An env var left over
+    # from a local .env accidentally copied to production would otherwise
+    # flood log output and grow logs/chat/ unbounded on a small instance.
+    if not settings.DEBUG:
+        return False
     command = sys.argv[1] if len(sys.argv) > 1 else ""
     if command in _SILENT_PIPELINE_COMMANDS:
         return False
