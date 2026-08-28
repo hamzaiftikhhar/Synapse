@@ -398,13 +398,10 @@ def insights(clinic: Clinic, *, days: int) -> dict:
     ai = summarize_usage(clinic_id=cid, days=days)
 
     base = overview(clinic, days=days)
-    returning_patients = (
-        Appointment.objects.filter(clinic_id=cid, created_at__gte=start, created_at__lte=now)
-        .filter(patient__created_at__lt=start)
-        .values("patient_id")
-        .distinct()
-        .count()
-    )
+    # overview() already computed this exact filter chain (same clinic,
+    # same window) for summary.patients_returning — reuse it instead of
+    # running the identical query a second time.
+    returning_patients = base["summary"]["patients_returning"]
 
     return {
         **base,
