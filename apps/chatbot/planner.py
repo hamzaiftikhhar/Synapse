@@ -393,6 +393,10 @@ class PlannerFacts:
     pin_amendment: bool = False
     ordinal_doctor_id: str | None = None
     preview_only: bool = False
+    # Phase 41 — same DB-independent/timeline-dependent split as above.
+    gender_question: bool = False
+    doctor_pronoun_ambiguous: bool = False
+    doctor_pronoun_resolved: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -418,6 +422,9 @@ class PlannerFacts:
             "pin_amendment": self.pin_amendment,
             "ordinal_doctor_id": self.ordinal_doctor_id,
             "preview_only": self.preview_only,
+            "gender_question": self.gender_question,
+            "doctor_pronoun_ambiguous": self.doctor_pronoun_ambiguous,
+            "doctor_pronoun_resolved": self.doctor_pronoun_resolved,
         }
 
 
@@ -604,6 +611,9 @@ def build_planner_facts(
     pin_amendment: bool = False,
     ordinal_doctor_id: str | None = None,
     preview_only: bool = False,
+    gender_question: bool = False,
+    doctor_pronoun_ambiguous: bool = False,
+    doctor_pronoun_resolved: bool = False,
 ) -> PlannerFacts:
     """Assemble runtime facts for the planner. No I/O."""
     topic = _resolve_topic(nlu, message)
@@ -631,6 +641,9 @@ def build_planner_facts(
         pin_amendment=pin_amendment,
         ordinal_doctor_id=ordinal_doctor_id,
         preview_only=preview_only,
+        gender_question=gender_question,
+        doctor_pronoun_ambiguous=doctor_pronoun_ambiguous,
+        doctor_pronoun_resolved=doctor_pronoun_resolved,
     )
 
 
@@ -672,6 +685,31 @@ def build_execution_plan(*, nlu: NLUResult, facts: PlannerFacts) -> ExecutionPla
             direct=True,
             direct_mode="session_recall",
             reason="planner_session_recall",
+            facts=fact_dict,
+        )
+
+    # Phase 41 — gender is never stored on Doctor; must never fall through
+    # to a normal doctor_search that silently returns an unfiltered list as
+    # if it answered the question (reproduced live). Checked ahead of
+    # doctor_ranking_request/etc. since a gender-question message can also
+    # otherwise read as a plain doctor_search.
+    if facts.gender_question:
+        return ExecutionPlan(
+            direct=True,
+            direct_mode="gender_unsupported",
+            reason="planner_gender_unsupported",
+            facts=fact_dict,
+        )
+
+    # Phase 41 — a doctor-pronoun reference ("can she see children?") that
+    # resolved to 2+ possible antecedents (engine.py, from
+    # timeline.shown_doctors) must ask which doctor rather than guess or
+    # dump the full list.
+    if facts.doctor_pronoun_ambiguous:
+        return ExecutionPlan(
+            direct=True,
+            direct_mode="doctor_pronoun_ambiguous",
+            reason="planner_doctor_pronoun_ambiguous",
             facts=fact_dict,
         )
 
