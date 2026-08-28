@@ -355,18 +355,18 @@ def _doctor_payload(doctor: Any) -> dict[str, Any]:
     }
 
 
-def resolve_specialty_for_service(clinic: Clinic, service_id: str | None) -> str | None:
-    """Resolve the specialty most associated with a known service, grounded in
-    real Doctor<->Service<->Specialty relations (Service.category is free text
-    and unused elsewhere in the chat pipeline — this ranks specialties by how
-    many doctors performing this service belong to each one)."""
+def resolve_specialty_object_for_service(clinic: Clinic, service_id: str | None) -> Any | None:
+    """Shared query core for resolve_specialty_for_service — returns the
+    full Specialty row (id *and* name) so a caller that needs both isn't
+    forced to pay for a second .get() just to re-fetch .name after this
+    already loaded it (engine.py used to do exactly that)."""
     if not service_id:
         return None
     from django.db.models import Count
 
     from apps.specialties.models import Specialty
 
-    hit = (
+    return (
         Specialty.objects.filter(
             clinic_id=_clinic_id(clinic),
             is_deleted=False,
@@ -380,6 +380,14 @@ def resolve_specialty_for_service(clinic: Clinic, service_id: str | None) -> str
         .order_by("-cnt")
         .first()
     )
+
+
+def resolve_specialty_for_service(clinic: Clinic, service_id: str | None) -> str | None:
+    """Resolve the specialty most associated with a known service, grounded in
+    real Doctor<->Service<->Specialty relations (Service.category is free text
+    and unused elsewhere in the chat pipeline — this ranks specialties by how
+    many doctors performing this service belong to each one)."""
+    hit = resolve_specialty_object_for_service(clinic, service_id)
     return str(hit.id) if hit else None
 
 
