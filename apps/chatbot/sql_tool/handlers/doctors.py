@@ -113,6 +113,8 @@ def search_doctors(ctx: SQLContext) -> SQLResult:
 
 
 def list_specialties(ctx: SQLContext) -> SQLResult:
+    from django.db.models import Count, Q
+
     from apps.specialties.models import Specialty
 
     clinic = ctx.clinic
@@ -127,6 +129,14 @@ def list_specialties(ctx: SQLContext) -> SQLResult:
         if specs:
             qs = qs.filter(build_name_filter("name", specs))
 
+    # One annotated query instead of a per-specialty .count() (was up to 20
+    # extra COUNT queries per "what specialties do you offer" chat message).
+    qs = qs.annotate(
+        doctor_count=Count(
+            "doctors",
+            filter=Q(doctors__is_deleted=False, doctors__is_active=True),
+        )
+    )
     specialties = list(qs.order_by("name")[:20])
     rows = [
         {
@@ -134,7 +144,7 @@ def list_specialties(ctx: SQLContext) -> SQLResult:
             "name": s.name,
             "slug": s.slug,
             "description": (s.description or "")[:300],
-            "doctor_count": s.doctors.filter(is_deleted=False, is_active=True).count(),
+            "doctor_count": s.doctor_count,
         }
         for s in specialties
     ]
