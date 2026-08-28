@@ -687,15 +687,15 @@ class ChatEngine:
                 # that suppressed specialty discovery above). Never overrides
                 # a specialty the patient already pinned this session.
                 if matched_services and not last_specialty:
-                    from apps.chatbot.nlu.resolvers import resolve_specialty_for_service
+                    from apps.chatbot.nlu.resolvers import resolve_specialty_object_for_service
 
-                    resolved_specialty_id = resolve_specialty_for_service(
+                    specialty_hit = resolve_specialty_object_for_service(
                         clinic, matched_services[0].get("id")
                     )
-                    if resolved_specialty_id:
+                    if specialty_hit:
                         last_specialty = {
-                            "id": resolved_specialty_id,
-                            "name": self._specialty_display_name(clinic, resolved_specialty_id),
+                            "id": str(specialty_hit.id),
+                            "name": specialty_hit.name,
                         }
 
             # Compose response from executed tasks
@@ -718,6 +718,7 @@ class ChatEngine:
                 matched_services=matched_services,
                 last_doctor=last_doctor,
                 last_specialty=last_specialty,
+                recent_turns=recent_turns,
             )
 
         timings["total_ms"] = (time.perf_counter() - started) * 1000
@@ -1192,6 +1193,7 @@ class ChatEngine:
         matched_services: list[dict[str, Any]] | None = None,
         last_doctor: dict[str, Any] | None = None,
         last_specialty: dict[str, Any] | None = None,
+        recent_turns: list[dict[str, str]] | None = None,
     ) -> str:
         """Compose patient-facing text after tasks have been executed."""
         from apps.chatbot.sql_tool import format_sql_results
@@ -1290,6 +1292,7 @@ class ChatEngine:
                 extra_context=booking_text,
                 deadline_seconds=remaining,
                 timings=timings,
+                recent_turns=recent_turns,
             )
             timings["llm_ms"] = (time.perf_counter() - t0) * 1000
             if booking_text and grounded:
@@ -1383,6 +1386,7 @@ class ChatEngine:
         extra_context: str = "",
         deadline_seconds: float | None = None,
         timings: dict[str, Any] | None = None,
+        recent_turns: list[dict[str, str]] | None = None,
     ) -> str:
         """Large LLM — vector_rag lane only. Hard-capped by deadline_seconds."""
         from apps.chatbot.response_llm import (
@@ -1392,7 +1396,10 @@ class ChatEngine:
         )
         from apps.chatbot.sql_tool import format_sql_results
 
-        history = self._load_history(session, limit=2)
+        # process() already loaded the last 6 turns for NLU context
+        # (recent_turns) — reuse its tail instead of a second ChatMessage
+        # query for the same session's same rows, just at a smaller limit.
+        history = recent_turns[-2:] if recent_turns else self._load_history(session, limit=2)
         try:
             return synthesize_clinic_reply(
                 clinic=clinic,
@@ -1416,14 +1423,6 @@ class ChatEngine:
         if sql_rows:
             return format_sql_results(sql_rows)
         return empty_rag_reply(clinic)
-
-    def _specialty_display_name(self, clinic: Any, specialty_id: str) -> str:
-        try:
-            from apps.specialties.models import Specialty
-
-            return Specialty.objects.get(clinic=clinic, id=specialty_id).name
-        except Exception:
-            return ""
 
     def _looks_like_aesthetic_request(self, message: str) -> bool:
         import re
