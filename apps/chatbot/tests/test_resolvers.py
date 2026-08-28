@@ -7,8 +7,10 @@ from django.test import TestCase
 from apps.chatbot.nlu.resolvers import (
     resolve_doctor_candidates,
     resolve_doctor_from_text,
+    resolve_pediatric_service_fallback,
     resolve_specialty_for_service,
 )
+from apps.chatbot.routing import build_doctor_catalog
 from apps.clinics.models import Clinic
 from apps.doctors.models import Doctor, DoctorService, DoctorSpecialty
 from apps.services.models import Service
@@ -153,3 +155,82 @@ class ResolveSpecialtyForServiceTests(TestCase):
 
     def test_none_service_id_returns_none(self):
         self.assertIsNone(resolve_specialty_for_service(self.clinic, None))
+
+
+class DoctorCatalogTests(TestCase):
+    """Phase 41: the Small LLM had no doctor roster in its prompt at all —
+    root cause of "Tell me about Priya and Omar" extracting patient_name
+    instead of doctor_name and misclassifying off_topic (reproduced live).
+    """
+
+    def setUp(self):
+        self.clinic = Clinic.objects.create(
+            slug="catalog-clinic",
+            name="Catalog Clinic",
+            email="catalog@clinic.com",
+            phone="+12125550002",
+            timezone="America/New_York",
+        )
+        self.specialty = Specialty.objects.create(clinic=self.clinic, name="Pediatrics")
+        self.doctor = Doctor.objects.create(
+            clinic=self.clinic, full_name="Dr. Test Doe", is_active=True
+        )
+        DoctorSpecialty.objects.create(
+            clinic=self.clinic, doctor=self.doctor, specialty=self.specialty
+        )
+        Doctor.objects.create(
+            clinic=self.clinic, full_name="Dr. Inactive", is_active=False
+        )
+
+    def test_includes_active_doctors_with_specialty(self):
+        catalog = build_doctor_catalog(self.clinic)
+        names = {d["full_name"]: d["specialty"] for d in catalog}
+        self.assertEqual(names.get("Dr. Test Doe"), "Pediatrics")
+
+    def test_excludes_inactive_doctors(self):
+        catalog = build_doctor_catalog(self.clinic)
+        names = [d["full_name"] for d in catalog]
+        self.assertNotIn("Dr. Inactive", names)
+
+
+class PediatricServiceFallbackTests(TestCase):
+    """Phase 41: a deterministic backstop for "which doctors can see
+    children" when the Small LLM doesn't map it to the real service (a
+    measured, not hypothetical, reliability gap — never the primary
+    mechanism, since the LLM gets it right most of the time)."""
+
+    def setUp(self):
+        self.clinic = Clinic.objects.create(
+            slug="pediatric-fallback-clinic",
+            name="Pediatric Fallback Clinic",
+            email="pedfallback@clinic.com",
+            phone="+12125550003",
+            timezone="America/New_York",
+        )
+        self.pediatric_service = Service.objects.create(
+            clinic=self.clinic, name="Pediatric Well-Child Exam"
+        )
+
+    def test_matches_age_group_language(self):
+        for text in (
+            "Which doctors can see children?",
+            "Which doctors can see my child?",
+            "Do you have anyone who treats kids?",
+            "Who provides pediatric care for infants?",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(
+                    resolve_pediatric_service_fallback(self.clinic, text),
+                    str(self.pediatric_service.id),
+                )
+
+    def test_no_match_without_age_group_language(self):
+        self.assertIsNone(
+            resolve_pediatric_service_fallback(self.clinic, "Do you have any doctors?")
+        )
+
+    def test_no_pediatric_service_returns_none(self):
+        self.pediatric_service.delete()
+        self.assertIsNone(
+            resolve_pediatric_service_fallback(self.clinic, "Which doctors can see children?")
+        )

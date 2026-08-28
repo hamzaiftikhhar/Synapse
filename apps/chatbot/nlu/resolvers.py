@@ -526,3 +526,37 @@ def _match_service(clinic: Clinic, name: str | None) -> str | None:
             best_score = score
             best_id = str(row.id)
     return best_id if best_score >= 0.55 else None
+
+
+_PEDIATRIC_AGE_GROUP_RE = re.compile(
+    r"\b(?:child|children|kid|kids|pediatric|paediatric|infant|infants|"
+    r"baby|babies|toddler|toddlers)\b",
+    re.I,
+)
+
+
+def resolve_pediatric_service_fallback(clinic: Clinic, message: str) -> str | None:
+    """Deterministic backstop for "which doctors can see children"-style
+    capability questions.
+
+    The Small LLM maps these to the clinic's real "Pediatric..." service
+    itself most of the time (it has the service list in context) — this is
+    only a fallback for when it doesn't, not the primary mechanism, so it
+    stays a single narrow, fixed signal (age-group language → a service
+    literally named "pediatric") rather than a general synonym table.
+    """
+    if not _PEDIATRIC_AGE_GROUP_RE.search(message or ""):
+        return None
+    from apps.services.models import Service
+
+    hit = (
+        Service.objects.filter(
+            clinic_id=_clinic_id(clinic),
+            is_deleted=False,
+            is_active=True,
+            name__icontains="pediatr",
+        )
+        .order_by("name")
+        .first()
+    )
+    return str(hit.id) if hit else None
