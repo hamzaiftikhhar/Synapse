@@ -38,8 +38,12 @@ def _serialize(doctor: Doctor) -> DoctorOut:
         is_active=doctor.is_active,
         is_accepting_patients=doctor.is_accepting_patients,
         is_deleted=doctor.is_deleted,
-        specialty_ids=list(doctor.specialties.values_list("id", flat=True)),
-        service_ids=list(doctor.services.values_list("id", flat=True)),
+        # .all() (not .values_list()) so list_doctors' prefetch_related
+        # actually gets used — a .values_list()/.filter() call on a
+        # prefetched related manager clones the queryset and silently
+        # re-queries instead of hitting the cache.
+        specialty_ids=[s.id for s in doctor.specialties.all()],
+        service_ids=[s.id for s in doctor.services.all()],
         created_at=doctor.created_at,
         updated_at=doctor.updated_at,
     )
@@ -110,7 +114,8 @@ def list_doctors(
         qs = qs.filter(Q(full_name__icontains=search) | Q(title__icontains=search))
     qs = qs.order_by("full_name")
     count = qs.count()
-    results = [_serialize(d) for d in qs[offset : offset + limit]]
+    page = qs.prefetch_related("specialties", "services")[offset : offset + limit]
+    results = [_serialize(d) for d in page]
     return PaginatedOut(count=count, results=results)
 
 
