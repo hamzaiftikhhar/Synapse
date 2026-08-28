@@ -308,16 +308,17 @@ see ROADMAP.md.
 ## 9. Embedding / vector search
 
 `EMBEDDING_PROVIDER=openai`, model `text-embedding-3-small` (1536-d)
-(`apps/knowledge/embeddings/openai_provider.py`). Local BGE
-(`BAAI/bge-base-en-v1.5`, 768-d) remains implemented in
-`apps/knowledge/embeddings/local.py` but is not the default. pgvector
-HNSW is `idx_kc_embedding_hnsw` (`0001_initial.py` → `0007` 768-d →
-`0010` 1536-d). Query and stored vectors must share that dimension.
+(`apps/knowledge/embeddings/openai_provider.py`). The local
+SentenceTransformer / BGE provider (`apps/knowledge/embeddings/local.py`)
+was **removed** — it pulled `torch` via `sentence-transformers` and broke
+lean AWS installs. `EMBEDDING_PROVIDER=local` now raises `EmbeddingError`
+with instructions to use OpenAI. pgvector HNSW is `idx_kc_embedding_hnsw`
+(`0001_initial.py` → `0007` 768-d → `0010` 1536-d). Query and stored
+vectors must share that dimension.
 
 `KnowledgeConfig.ready()` still calls `warm_up_embedding_service()`. That
-is a **no-op for OpenAI** (no local model to load). For `EMBEDDING_PROVIDER=local`
-it still preloads SentenceTransformer, guarded by
-`should_warm_up_embeddings(argv)`.
+is a **no-op** (OpenAI has nothing to preload; leftover `local` must not
+try to import torch at gunicorn start).
 
 ## 10. Conversation state — `apps/chatbot/conversation_state.py`
 
@@ -487,8 +488,8 @@ flag anything that looks unscoped rather than assuming it's fine.
 | Service SQL handler | `apps/chatbot/sql_tool/handlers/services.py` |
 | SQL dispatch | `apps/chatbot/sql_tool/service.py` |
 | Vector search | `apps/knowledge/services/similarity_search.py` |
-| Local embedding provider | `apps/knowledge/embeddings/local.py` |
-| Embedding warm-up | `apps/knowledge/apps.py`, `apps/knowledge/embeddings/factory.py` |
+| OpenAI embedding provider | `apps/knowledge/embeddings/openai_provider.py` |
+| Embedding factory / warm-up (no-op) | `apps/knowledge/embeddings/factory.py`, `apps/knowledge/apps.py` |
 | Large LLM synthesis | `apps/chatbot/response_llm.py` |
 | Booking UI eligibility | `apps/chatbot/ui_meta.py` |
 | Booking draft isolation | `apps/chatbot/booking/service.py` (`_apply_prefill`) |
