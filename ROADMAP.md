@@ -3706,6 +3706,252 @@ specified, never letting one mode bleed into the other.
   antecedents (a mentioned service, a mentioned insurance plan) remains
   unbuilt.
 
+## ✅ Phase 42A — Verified booking correctness (DOB check, insurance, real Review & Confirm)
+
+Triggered by a request to professionally redesign patient verification →
+booking → confirmation, plus a marketing teaser for the closed widget and
+symptom-aware doctor routing (Phases 42B/42C, not started — see below).
+Explicitly planned via `EnterPlanMode` before any code changed, after
+three parallel research passes into what already existed. That research
+found the real starting point **much further along than the request
+implied** — a backend-authoritative `BookingSession` + `BookingStep.REVIEW`
+already existed and was already correctly not LLM-controlled — but also
+surfaced one gap bigger than the plan itself assumed, found only by
+reading the code directly rather than trusting the research summary (the
+session's own standing discipline): **`BookingStep.REVIEW`'s own code
+comment said the standard OTP path "already requires entering a received
+code, which is itself a confirming action, so it goes straight to
+CONFIRMED"** — meaning the single most common booking path (a new or
+returning patient typing a phone/email OTP code) had **no review screen
+at all**. The code-entry submit *was* the booking, calling
+`/booking/confirm` directly and creating the `Appointment` in the same
+request. Confirmed by reading `booking-wizard.tsx`'s OTP step handler
+directly (`bookingService.confirm({..., otp_code})`), not just the
+backend comment. This is exactly the "never book silently from
+conversational context" requirement, on the majority path — closing it
+became the central fix of this phase, larger than originally scoped.
+
+### What was built
+
+1. **DOB identity check.** `Patient.date_of_birth` already existed
+   (confirmed unused anywhere in the codebase before this). Two-factor:
+   OTP proves contact ownership, DOB — collected as a structured DETAILS-
+   step form field, never asked about in free-text chat — proves identity
+   against the record that contact resolves to, checked only *after* OTP
+   succeeds (gating on DOB pre-OTP would make it a brute-forceable oracle
+   with no rate limit tied to a proven channel). A patient with no stored
+   DOB (new registration — `send_otp` always get-or-creates the `Patient`
+   row before the code goes out, so "new" and "legacy record predating
+   this check" are the same case) is captured, never compared, never
+   locked out. Lockout (`Patient.dob_check_attempts`/
+   `dob_check_locked_until`, new fields, migration `0004`) is scoped to
+   `(clinic, patient)`, deliberately *not* the `OTPVerification` row —
+   that row's own `attempts` resets to 0 on every resend (confirmed by
+   reading `send_otp`: always creates a fresh row), which would let a
+   resend reset a DOB brute-force counter too if it lived there. Failure
+   messaging is identical for a mismatch and a lockout — never confirms
+   which, or whether a record exists at all for the phone/email given.
+   `apps/patients/services/patient_service.py`'s `verify_date_of_birth`;
+   wired into `otp_service.verify_otp` (new `date_of_birth` param) so the
+   DOB check runs inside the same call that confirms the code, and a
+   wrong DOB blocks the whole verification (session never authenticated),
+   same as a wrong code would — the code itself is still consumed either
+   way, so retrying DOB guesses costs a fresh code request each time.
+2. **The OTP→REVIEW→CONFIRMED split** (the big one). New `apply_step`
+   action `verify_otp`: runs `verify_otp()` (code + DOB), stores the
+   resolved `patient_id`/`dob_verified` on `BookingSession`, and lands on
+   REVIEW — no `Appointment` created. The *existing* `confirm_review`
+   action (already used by the two shortcut paths — an already-
+   authenticated session, or `verification_mode="none"`) now also checks
+   `session.patient_id` first, reusing the already-verified patient rather
+   than requiring a second, impossible OTP submission (a code can only be
+   consumed once). `booking_router.py`'s `/booking/confirm` keeps a
+   backward-compatible fallback branch for a caller that still submits
+   `otp_code` directly without the new two-step flow. Frontend: the OTP
+   step's "Confirm appointment" button (labeled that regardless of what
+   it actually did) now calls the new `verify_otp` step action instead of
+   the direct confirm endpoint, and is relabeled "Verify code" — the
+   REVIEW screen's own already-existing "Confirm booking" button (now
+   "Confirm & book") is the one and only action that creates the
+   `Appointment`, for every path, not just the two that already had it.
+3. **Insurance actually threaded through, not string-concatenated.**
+   `BookingSession` gained `insurance_plan_id`/`insurance_plan_name`.
+   `BookingService._resolve_insurance` reuses `resolve_entities` (the
+   exact same name→plan matcher the chat/NLU path already uses — no new
+   matching logic) instead of the old behavior of folding
+   `insurance_name` into the free-text `reason` and never resolving it to
+   anything. `confirm()`'s `Appointment.objects.create(...)` now passes
+   `insurance_plan_id=session.insurance_plan_id` — the FK existed on
+   `Appointment` since before this phase and was simply never set by this
+   path (confirmed: the separate admin-facing `POST /appointments`
+   endpoint already did this correctly; the wizard path never did).
+4. **Review & Confirm is now actually complete**, for every path. Backend
+   REVIEW/CONFIRMED payloads (`serializers.py`) gained patient phone/
+   email, `insurance_plan_name` (explicit `None` → frontend renders "Not
+   selected", never a blank gap), `dob_verified`, a formatted clinic
+   `location`, and a `review_disclaimer` (new clinic-configurable booking-
+   config default, generic and accurate rather than a specific claim this
+   system can't verify a given clinic meets). Frontend `ReviewStep` renders
+   all of it in a plain summary block before the confirm button — patient,
+   insurance, location, an "Identity verified" indicator when
+   `dob_verified`, and the disclaimer text. **"Go back & edit" turned out
+   to already exist** — the wizard's shared bottom Back button (calling
+   the pre-existing `action="back"`/`prev_step()` mechanism) already
+   renders for every non-path step including REVIEW; the initial research
+   pass's narrower grep missed it, caught here by reading the actual
+   render logic directly rather than trusting that finding as-is.
+5. **Interrupted-booking recovery** — the plan's own flagged blocking
+   prerequisite, verified before anything else was built on it. Confirmed
+   real: `/chat/resume` only ever replayed historical chat messages, and
+   `hydrateHistoryRow` (frontend `message-parser.ts`) deliberately stamps
+   any *historical* `booking_wizard` message `completed: true` so an old,
+   already-processed wizard card from real history can never mount live
+   again — correct for genuine history, but it meant an interrupted,
+   still-in-progress booking had no path back once the tab closed and
+   reopened. New `BookingService.active_booking_payload` (read-only,
+   reuses the existing `_load_active`/`serialize_step`) surfaced through a
+   new `active_booking` field on `/chat/resume`'s response; the frontend
+   appends it as a live (non-`completed`) `booking_wizard` message on
+   resume, which `activeWizardId`'s existing "last non-completed
+   booking_wizard message" logic then picks up automatically — no new
+   frontend wizard-mounting logic needed, just feeding it the one signal
+   it didn't have.
+
+### Explicitly not this phase
+
+Phase 42B (embeddable `<script>` widget-loader + closed-state marketing
+teaser) and Phase 42C (per-clinic condition/specialty data model +
+symptom-aware doctor search, replacing the existing 10-entry hardcoded
+`_SYMPTOM_MAP` soft-suggestion-only fallback in `booking/discovery.py`) —
+both fully scoped in the approved plan, neither started.
+
+**Files changed:** `apps/patients/models.py` (+migration `0004`),
+`apps/patients/services/patient_service.py` (`verify_date_of_birth`,
+`IdentityVerificationError`), `apps/chatbot/services/otp_service.py`
+(`date_of_birth` param, `OTPVerifyResult.dob_verified`),
+`apps/chatbot/booking/state.py` (`insurance_plan_id/name`, `pending_dob`,
+`dob_verified`), `apps/chatbot/booking/service.py` (`verify_otp` action,
+`_resolve_insurance`, `active_booking_payload`, DOB collection/validation
+in `submit_details`, insurance/DOB threaded through `confirm()`),
+`apps/chatbot/booking/serializers.py` (REVIEW/CONFIRMED field
+completeness, `_clinic_location`), `apps/chatbot/booking/config.py`
+(`review_disclaimer` default), `apps/api/widget/booking_router.py`
+(`verify_otp` DOB wiring, backward-compatible confirm fallback),
+`apps/api/widget/router.py` (`active_booking` on `/chat/resume`),
+`frontend/src/features/booking/booking-wizard.tsx` (DOB field, OTP-step
+rewiring, Review/Confirmed field rendering), `frontend/src/features/chat/
+chat-widget.tsx` (resume wiring for `active_booking`), `frontend/src/
+types/api.ts`.
+
+**Tests:** 24 new. `apps.chatbot.tests apps.knowledge.tests
+apps.api.widget.tests apps.patients` — **674/674** (650 baseline-for-this-
+suite-combination + 24 new). Eval: **674/682 (98.8%)** — unchanged (this
+phase doesn't touch NLU/planner/routing). Frontend: `tsc --noEmit` and
+`next build --turbopack` both clean (same pre-existing, unrelated
+warnings already on file from earlier phases this session; one unrelated
+pre-existing `/reset-password`/`/select-tenant` page-data collection
+error in this dev environment, confirmed unrelated by grep — neither
+route was touched).
+
+**Known limitations / found but not fixed:**
+- `useBookingConfirm` (a React Query hook wrapping the now-superseded
+  direct-confirm call) has zero remaining call sites after this phase's
+  frontend rewiring — left in place rather than removed, since deleting a
+  hook with no traceable-by-grep dynamic usage carries more risk than the
+  small cost of one unused export; flagged here rather than silently
+  removed or silently left undocumented.
+- `OTPVerification.attempts` resetting on every resend (confirmed by
+  reading `send_otp`) is a real, pre-existing gap in the *OTP code's own*
+  brute-force protection — noted because it's exactly the pattern DOB's
+  lockout was deliberately built to avoid, but fixing OTP's own counter
+  is a separate concern, not fixed here.
+- `review_disclaimer` ships one sensible default string; no per-clinic
+  admin UI to edit it yet (only via `WidgetSettings.configuration.booking`
+  directly) — acceptable for this phase, a real gap for clinic operators.
+
+### Phase 42A.1 — Live-testing follow-up: Review compactness, inline edit, closed-widget teaser
+
+After live testing the shipped Phase 42A flow, two real gaps surfaced:
+the Review screen was visually heavy (big centered icon, three stacked
+headline lines, py-6 padding — tall enough to need its own internal
+scroll on shorter viewports), and "Go back & edit" via the shared bottom
+Back button meant walking back through OTP re-verification just to fix a
+typo'd name — no actual input fields on Review itself. Separately, the
+closed (bubble) state of the standalone widget had no marketing teaser at
+all — Phase 42B (the full embeddable `<script>` loader + closed-state
+teaser) was explicitly deferred, but the teaser rotation itself doesn't
+depend on that infrastructure for the existing internal `mode="widget"`
+bubble, so it was pulled forward here rather than left broken.
+
+1. **Review screen, compacted.** `ReviewStep` (`booking-wizard.tsx`)
+   dropped the big centered `size-14` icon + 3-line headline block in favor
+   of a compact left-aligned icon+title row (`CalendarCheckIcon` now takes
+   a `small` prop) with doctor/date/time folded into one truncated
+   subline; outer padding/gaps tightened (`py-6 gap-4` → `py-1.5
+   space-y-3`).
+2. **Inline edit on Review.** New backend action `edit_details`
+   (`apply_step` in `service.py`, gated to `session.step == REVIEW`) lets
+   the patient patch `first_name`/`last_name`/`insurance_name` in place —
+   insurance re-resolved through the same `_resolve_insurance` helper
+   `start()` already uses, first_name required non-empty. **Deliberately
+   does not accept phone/email/DOB** — those are the identity-verification
+   anchor already OTP+DOB-checked to reach REVIEW at all; changing contact
+   info still has to go back through real re-verification via the
+   existing Back button, same rule already applied to DOB in 42A proper.
+   Frontend: an "Edit" toggle on the Review summary swaps it for actual
+   `<Input>` fields (first/last name, insurance) with Cancel/Save, calling
+   `runStep("edit_details", ...)` — no new networking code, reuses the
+   existing `runStep` plumbing every other action already goes through.
+3. **Closed-widget marketing teaser** (the closed-bubble slice of Phase
+   42B, pulled forward). `chat-widget.tsx`: a small rotating teaser bubble
+   renders above the launcher button whenever `mode === "widget" && !open`
+   — the four vetted messages from the approved plan (the "Prefer
+   privacy…" variant was already dropped at planning time for making a
+   confidentiality claim the platform can't guarantee). 1.4s initial
+   delay so it doesn't flash on page load, 5s rotation, remounts the
+   message span on each rotation (`key={teaserIndex}`) to restart a single
+   320ms fade/slide-in keyframe — no bounce, shake, or continuous-loop
+   motion. Clicking the bubble opens the chat directly (the actual
+   conversion path). `prefers-reduced-motion` respected by extending the
+   existing media-query block in `chat-widget.css` rather than a parallel
+   mechanism. **Embedded mode is untouched** — it still has no closed
+   state at all (forced open), since giving it one is the loader-script
+   half of Phase 42B (`postMessage`-driven resize, standalone static
+   loader script, origin validation) and wasn't in scope here; this only
+   fixes the internal `mode="widget"` bubble, confirmed visible live by
+   the user after this change.
+
+**Files changed:** `apps/chatbot/booking/service.py` (`edit_details`
+action), `frontend/src/features/booking/booking-wizard.tsx` (compact
+`ReviewStep`, `CalendarCheckIcon` `small` prop, inline edit UI),
+`frontend/src/features/chat/chat-widget.tsx` (teaser state/rotation +
+render), `frontend/src/features/chat/chat-widget.css` (teaser keyframes +
+reduced-motion).
+
+**Tests:** 5 new (`EditDetailsAtReviewTests` in
+`test_booking_otp_review_flow.py` — name/insurance update lands on REVIEW,
+first name required, rejected before REVIEW, phone/email fields ignored,
+edited name reaches the CONFIRMED payload). `apps.chatbot.tests
+apps.knowledge.tests` — **617/617**. `apps.api.widget.tests
+apps.patients.tests` — **62/62**. No eval-battery-relevant code touched.
+Frontend: `tsc --noEmit` clean, `eslint` on both touched files clean (one
+pre-existing, unrelated `react-hooks/exhaustive-deps` warning on a hook
+this change didn't touch).
+
+**Known limitations / found but not fixed:**
+- The full Phase 42B embeddable `<script>` loader (standalone static
+  loader file, `postMessage`+`ResizeObserver` cross-origin resize, origin
+  validation, loader idempotency guard) is still not built — only the
+  closed-state teaser for the existing internal widget bubble. A
+  third-party clinic site still cannot embed this widget at all yet.
+- Phase 42C (per-clinic condition/specialty data + symptom-aware doctor
+  search) — still not started.
+- The teaser has no per-clinic copy customization and no frequency cap
+  beyond "closed" — it rotates the same four hardcoded messages every time
+  the bubble is closed, for every clinic, indefinitely. Acceptable for a
+  first pass; a real per-clinic admin UI and/or a soft per-session cap
+  would need its own scoping.
+
 ## 💤 Deferred — Conversation state / coreference
 
 Real, confirmed from transcript ("which one treats cancer?" → "Dr. Chloe
@@ -3713,13 +3959,19 @@ Bennet" → "book with him" fails to resolve "him"). Deliberately not folded
 into Phase 11 (doctor resolution) — the two are different problems: Phase 11
 is about not over-trusting weak *explicit* evidence, this is about *implicit*
 reference resolution, which needs actual conversation-state design work.
-No phase number assigned yet; needs its own scoping pass before starting.
 **Update (Phase 39):** ordinal list-index references ("the second doctor
 you mentioned", against a still-on-screen list) are now handled —
-`resolve_ordinal_doctor_ref`. This entry now covers specifically what
-that doesn't: unbound pronoun resolution with no list to index into
-("book with him" after a prose bio, "that one" with nothing shown this
-turn). Still open.
+`resolve_ordinal_doctor_ref`.
+**Update (Phase 41):** general subject-position pronoun resolution to the
+most-recently-discussed doctor(s) is now handled too —
+`classify_doctor_pronoun_reference`, including correct ambiguity handling
+("Priya and Omar" both shown → "did you mean X or Y") and a family-
+relation-antecedent guard ("my daughter... can she" doesn't hijack). What
+remains open: pronoun/reference resolution for antecedents that *aren't*
+a doctor (a previously-mentioned service, insurance plan, or specialty —
+"can I get that with my HMO" after discussing a specific plan), and
+object-position or possessive pronoun forms not covered by the current
+classifier's trigger set. Still open, narrower than before.
 
 ## 💤 Deferred — `ThreadPoolExecutor` saturation
 
