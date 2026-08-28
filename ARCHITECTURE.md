@@ -396,16 +396,53 @@ resolves "the second doctor you mentioned" / "the first one" against
 `timeline.shown_doctors` by list index. This is **list-index coreference
 only** — a narrower, different problem from general pronoun resolution.
 
-**No generic coreference** ("him", "that one" *without* an ordinal, "the
-provider we discussed") — confirmed by reading the file; a real
-transcript showing "which one treats cancer?" → "Dr. Chloe Bennet" →
-"book with him" failing to resolve "him" is expected behavior today, not
-a bug in scope for any current phase. Deliberately deferred — do not
-patch ad hoc into doctor resolution or booking; it needs its own phase
-(see ROADMAP.md). Phase 39's `resolve_ordinal_doctor_ref` does not close
-this gap — an ordinal index into a still-on-screen list is a much
-narrower, safer problem than resolving an unbound pronoun against
-whatever was said several turns ago.
+**Doctor-pronoun resolution (Phase 41)** —
+`classify_doctor_pronoun_reference` detects a doctor-directed pronoun
+("she"/"he"/"they"/"the doctor"/"this doctor"/"that doctor") in *subject*
+position of a capability/quality/availability/service question ("can
+she...", "does he provide...", "when is she available", "what services
+does she offer"). Computed in `engine.py` alongside `doctor_followup`/
+`unknown_doctor_requested`, resolved purely from existing
+`ConversationTimeline` state — `shown_doctors` (Phase 39, reliable source
+of "who was actually shown," overwritten only when `search_doctors`
+itself returns rows) is authoritative over the single-mention
+`timeline.doctor` pin:
+- exactly one shown doctor (or a single-mention pin with none shown) →
+  inject `resolved_ids.doctor_id`, same mechanism as
+  `resolve_ordinal_doctor_ref`/`ordinal_doctor_id`; intent is corrected to
+  `DOCTOR_SEARCH` only if it isn't already doctor-related (a backstop —
+  NLU gets these right unaided most of the time, confirmed live).
+- two or more shown doctors → `direct_mode="doctor_pronoun_ambiguous"`
+  (same hard-stop pattern as `session_recall`/`gender_unsupported`),
+  composing "Do you mean Dr. X or Dr. Y?" from `shown_doctors` — never a
+  guess, never the full catalog dumped back.
+- no antecedent at all → falls through unchanged.
+
+**Safety guard, deliberately not present in the external plan this was
+built from:** a family-relation noun in the *same* message ("my
+daughter/son/child/kid/wife/husband/mother/father") blocks resolution
+entirely — "My daughter has a fever, can she see a doctor?" must not
+resolve "she" to a previously-discussed doctor; "she" is the daughter.
+Verified live and by test (`test_doctor_context_resolution.py`).
+
+One precedence fix this required: `_is_doctor_quality_followup`'s "is
+he"/"is she"/"are they" substring check also matches inside "When **is
+she** available?", intercepting it with a generic bio-only reply
+(`_doctor_followup_reply`) before the message ever reached real
+availability data — reproduced live. Pronoun resolution now suppresses
+that older `doctor_followup` flag once it resolves an antecedent, since
+its own trigger set is scoped to capability/availability/service
+phrasing (never generic "is she good"-style quality talk, which stays
+`doctor_followup`'s alone).
+
+**Still no general coreference** — only the doctor case above is
+resolved. A previously-mentioned service, insurance plan, or specialty
+("can I get that with my HMO" after discussing a specific plan) still
+isn't resolved; neither are object-position or possessive pronoun forms
+outside `classify_doctor_pronoun_reference`'s trigger set. Confirmed by
+reading the file. Deliberately deferred — do not patch ad hoc into
+doctor resolution or booking; a fuller general mechanism needs its own
+phase (see ROADMAP.md).
 
 **Preview-only (Phase 39)** — `classify_preview_only` ("don't book
 anything until you show me...", "just show me the available times") sets
@@ -427,7 +464,9 @@ flag anything that looks unscoped rather than assuming it's fine.
 - Service-existence question routing (§6) — Phase 10.
 - RAG degraded-state mislabeling (§7) — Phase 9C.
 - `ThreadPoolExecutor` saturation under concurrent NLU load (§8) — deferred, no phase assigned yet.
-- No coreference/reference resolution (§10) — deferred, needs its own phase.
+- No *general* coreference/reference resolution (§10) — the doctor-pronoun
+  case is resolved as of Phase 41; a mentioned service/insurance/specialty
+  as an antecedent still isn't, deferred, needs its own phase.
 - `ExecutionPlan.scores` / `PlannerScores` — computed, serialized, never read by anything (confirmed: no engine/ui_meta/test/API/frontend consumer). Not removed in Phase 7 because it's a bigger structural change (whole class, ~9 construction sites) than the single-field cleanup done there — deferred to its own small phase.
 - `apps/chatbot/tests.py` (3-line stub) coexists with `apps/chatbot/tests/` (real package) — breaks bare `python manage.py test` with no args (`ImportError: 'tests' module incorrectly imported`). Same issue exists for `apps/knowledge`. Always use explicit labels: `python manage.py test apps.chatbot.tests --keepdb`. Pre-existing, not fixed.
 - `apps/importer` crashes the interpreter (`SIGFPE` inside numpy's macOS `_mac_os_check` at import time, triggered via openpyxl) when run in the same process as other apps in this dev environment — pre-existing, unrelated to chatbot work, exclude it from combined full-suite runs on this machine.
