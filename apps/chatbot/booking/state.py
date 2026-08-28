@@ -53,6 +53,18 @@ class BookingSession:
     hold_expires_at: str | None = None
     confirmation_code: str | None = None
     appointment_id: str | None = None
+    # Phase 42A — resolved insurance plan, threaded through the wizard as
+    # a real InsurancePlan id/name rather than string-concatenated into
+    # `reason` (the old behavior — never resolved, never shown at review,
+    # never actually set on the Appointment despite the FK existing).
+    insurance_plan_id: str | None = None
+    insurance_plan_name: str | None = None
+    # Phase 42A — DOB identity check. `pending_dob` is transient: set at
+    # the DETAILS step, consumed (compared or captured) at OTP-verify
+    # time, then cleared — the raw value is never shown in the REVIEW or
+    # CONFIRMED payload, only the boolean outcome. Never log this field.
+    pending_dob: str | None = None
+    dob_verified: bool = False
     # Reschedule flow: the appointment this booking replaces, if any. Kept
     # active until this new booking is confirmed — cancelled atomically with
     # the new appointment's creation in BookingService.confirm, never eagerly.
