@@ -3,12 +3,27 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import date, timedelta
 from uuid import UUID
 
 from django.utils import timezone
 
 from apps.clinics.models import Clinic
 from apps.patients.models import Patient
+
+_DOB_MAX_ATTEMPTS = 5
+_DOB_LOCKOUT_MINUTES = 30
+_DOB_GENERIC_MESSAGE = "We couldn't verify your identity. Please contact the clinic directly."
+
+
+class IdentityVerificationError(Exception):
+    """Raised by verify_date_of_birth. Message is deliberately identical
+    for a mismatch and a lockout — never confirm to the caller which one
+    it was, or whether a record even exists for the phone/email given."""
+
+    def __init__(self, message: str = _DOB_GENERIC_MESSAGE, *, status_code: int = 401) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 def email_placeholder_phone(email: str) -> str:
@@ -116,3 +131,45 @@ def update_profile(
 
 def get_for_clinic(*, clinic_id: UUID, patient_id: UUID) -> Patient | None:
     return Patient.objects.filter(clinic_id=clinic_id, pk=patient_id).first()
+
+
+def verify_date_of_birth(patient: Patient, dob: date) -> bool:
+    """Compare `dob` against `patient.date_of_birth` — the identity check
+    that runs after OTP proves contact ownership (never before: gating on
+    DOB pre-OTP would make it a brute-forceable oracle with no rate limit
+    tied to a proven channel).
+
+    A patient with no stored DOB (a brand-new record — send_otp always
+    get-or-creates one before the code goes out — or a legacy record that
+    predates this check) has nothing to compare against: captured and
+    treated as verified, never a lockout/mismatch case, so a real patient
+    is never permanently blocked by missing historical data.
+
+    Lockout is scoped to (clinic, patient) via fields on Patient itself,
+    deliberately not the OTPVerification row — that row's own `attempts`
+    resets to 0 on every resend (send_otp always creates a fresh row), so
+    inheriting that pattern here would let a resend reset a DOB
+    brute-force counter too.
+    """
+    now = timezone.now()
+    if patient.dob_check_locked_until and patient.dob_check_locked_until > now:
+        raise IdentityVerificationError(status_code=429)
+
+    if patient.date_of_birth is None:
+        patient.date_of_birth = dob
+        patient.save(update_fields=["date_of_birth", "updated_at"])
+        return True
+
+    if patient.date_of_birth == dob:
+        if patient.dob_check_attempts:
+            patient.dob_check_attempts = 0
+            patient.save(update_fields=["dob_check_attempts", "updated_at"])
+        return True
+
+    patient.dob_check_attempts += 1
+    update_fields = ["dob_check_attempts", "updated_at"]
+    if patient.dob_check_attempts >= _DOB_MAX_ATTEMPTS:
+        patient.dob_check_locked_until = now + timedelta(minutes=_DOB_LOCKOUT_MINUTES)
+        update_fields.append("dob_check_locked_until")
+    patient.save(update_fields=update_fields)
+    raise IdentityVerificationError()
