@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, Loader2, Search, X } from "lucide-react";
+import { ArrowLeft, CheckCircle2, Loader2, Search, X } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -79,6 +79,7 @@ export function BookingWizard({
     last_name: "",
     phone: "",
     email: "",
+    date_of_birth: "",
   });
   const [serviceQuery, setServiceQuery] = useState("");
   const [started, setStarted] = useState(false);
@@ -236,35 +237,6 @@ export function BookingWizard({
     },
     [active, state, clinicSlug, sessionToken, syncToken, onConfirmed]
   );
-
-  const confirm = useCallback(async () => {
-    if (!active || !state?.booking_id || !otpCode.trim()) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const payload = await bookingService.confirm({
-        clinic_slug: clinicSlug,
-        session_token: state.session_token || sessionToken || "",
-        booking_id: state.booking_id,
-        otp_code: otpCode.trim(),
-      });
-      syncToken(payload);
-      setState(payload);
-      onConfirmed?.(payload);
-    } catch (e) {
-      setError(getApiErrorMessage(e));
-    } finally {
-      setLoading(false);
-    }
-  }, [
-    active,
-    state,
-    otpCode,
-    clinicSlug,
-    sessionToken,
-    syncToken,
-    onConfirmed,
-  ]);
 
   const progress = state?.progress;
   const step = state?.step;
@@ -444,7 +416,9 @@ export function BookingWizard({
             summary={(state.options.slot_summary as string) || ""}
             code={otpCode}
             onChange={setOtpCode}
-            onConfirm={() => void confirm()}
+            onConfirm={() =>
+              void runStep("verify_otp", { otp_code: otpCode.trim() })
+            }
             debugCode={debugCode}
             otpSent={otpSent}
             loading={loading}
@@ -458,6 +432,7 @@ export function BookingWizard({
             brandColor={brandColor}
             loading={loading}
             onConfirm={() => void runStep("confirm_review")}
+            onEditDetails={(d) => void runStep("edit_details", d)}
           />
         ) : null}
 
@@ -916,18 +891,21 @@ function DetailsStep({
     last_name: string;
     phone: string;
     email: string;
+    date_of_birth: string;
   };
   onChange: (d: {
     first_name: string;
     last_name: string;
     phone: string;
     email: string;
+    date_of_birth: string;
   }) => void;
   onSubmit: (d: {
     first_name: string;
     last_name: string;
     phone: string;
     email: string;
+    date_of_birth: string;
   }) => void;
   loading: boolean;
   verificationMode?: string;
@@ -965,7 +943,7 @@ function DetailsStep({
       setContactError(classified.error);
       return;
     }
-    if (!next.first_name.trim()) return;
+    if (!next.first_name.trim() || !next.date_of_birth) return;
     onSubmit(next);
   }
 
@@ -1022,14 +1000,35 @@ function DetailsStep({
           <p className="text-xs text-destructive">{contactError}</p>
         ) : null}
       </div>
+      <div className="space-y-1">
+        <Label className="text-xs">Date of birth</Label>
+        <Input
+          type="date"
+          autoComplete="bday"
+          value={details.date_of_birth}
+          max={new Date().toISOString().slice(0, 10)}
+          onChange={(e) =>
+            onChange({ ...details, date_of_birth: e.target.value })
+          }
+          className="h-9 rounded-xl"
+        />
+        <p className="text-[11px] text-muted-foreground">
+          Used only to confirm your identity — never shared in chat.
+        </p>
+      </div>
       <Button
         type="button"
         className="w-full rounded-xl"
-        disabled={loading || !details.first_name.trim() || !contactOk}
+        disabled={
+          loading ||
+          !details.first_name.trim() ||
+          !details.date_of_birth ||
+          !contactOk
+        }
         onClick={handleSubmit}
       >
         {verificationMode === "none"
-          ? "Confirm appointment"
+          ? "Continue to review"
           : "Continue to verification"}
       </Button>
     </div>
@@ -1093,7 +1092,7 @@ function OtpStep({
         disabled={loading || code.trim().length < 4}
         onClick={onConfirm}
       >
-        Confirm appointment
+        Verify code
       </Button>
     </div>
   );
@@ -1104,55 +1103,195 @@ function ReviewStep({
   patientFirstName,
   brandColor,
   onConfirm,
+  onEditDetails,
   loading,
 }: {
   review: NonNullable<BookingStepPayload["review"]>;
   patientFirstName?: string;
   brandColor?: string;
   onConfirm: () => void;
+  onEditDetails: (d: {
+    first_name: string;
+    last_name: string;
+    insurance_name: string;
+  }) => void;
   loading: boolean;
 }) {
   const accent = brandColor || "var(--primary)";
   const name = (patientFirstName || review.first_name || "").trim();
-  const headline = name
-    ? `${name}, please review your appointment before we confirm it.`
-    : "Please review your appointment before we confirm it.";
 
   const timeLabel = formatConfirmTime(review.start);
   const dateLabel = formatConfirmDate(review.date);
   const doctor = review.doctor_name?.trim();
-  const primaryLine = [timeLabel, doctor].filter(Boolean).join("  ·  ");
+  const whenLine = [dateLabel, timeLabel].filter(Boolean).join(" · ");
+  const subLine = [doctor, whenLine].filter(Boolean).join(" · ") || review.slot_summary;
+  const patientLine = [name, review.last_name].filter(Boolean).join(" ").trim();
+  const contactLine = [review.phone, review.email].filter(Boolean).join(" · ");
+
+  const [editing, setEditing] = useState(false);
+  const [firstName, setFirstName] = useState(name);
+  const [lastName, setLastName] = useState(review.last_name || "");
+  const [insurance, setInsurance] = useState(review.insurance_plan_name || "");
+
+  useEffect(() => {
+    if (editing) return;
+    setFirstName(name);
+    setLastName(review.last_name || "");
+    setInsurance(review.insurance_plan_name || "");
+  }, [editing, name, review.last_name, review.insurance_plan_name]);
+
+  function handleSave() {
+    if (!firstName.trim()) return;
+    onEditDetails({
+      first_name: firstName.trim(),
+      last_name: lastName.trim(),
+      insurance_name: insurance.trim(),
+    });
+    setEditing(false);
+  }
 
   return (
-    <div className="flex flex-col items-center gap-4 px-1 py-6 text-center">
-      <CalendarCheckIcon color={accent} />
-      <div className="space-y-2">
-        <p className="text-[15px] font-semibold leading-snug text-foreground">
-          {headline}
-        </p>
-        {primaryLine ? (
-          <p className="text-base font-semibold tracking-tight text-foreground">
-            {primaryLine}
+    <div className="space-y-3 px-1 py-1.5">
+      <div className="flex items-center gap-2.5">
+        <CalendarCheckIcon color={accent} small />
+        <div className="min-w-0">
+          <p className="text-sm font-semibold leading-snug text-foreground">
+            Review your appointment
           </p>
-        ) : review.slot_summary ? (
-          <p className="text-sm font-medium text-foreground">{review.slot_summary}</p>
-        ) : null}
-        {dateLabel ? (
-          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
-            {dateLabel}
-          </p>
-        ) : null}
-        {review.service_name ? (
-          <p className="text-xs text-muted-foreground">{review.service_name}</p>
-        ) : null}
+          {subLine ? (
+            <p className="truncate text-xs text-muted-foreground">{subLine}</p>
+          ) : null}
+        </div>
       </div>
+
+      {/* Phase 42A — everything Confirm & Book would actually create,
+          shown plainly before the patient commits to it. Every field
+          here is real backend state (BookingSession/Patient), never a
+          summary reconstructed from the conversation. Name + insurance
+          are editable in place (edit_details); phone/email/DOB are the
+          identity-verification anchor, so changing those goes back
+          through Back → real re-verification instead. */}
+      <div className="space-y-2 rounded-xl border border-border/70 bg-muted/30 px-3.5 py-3 text-left text-xs">
+        {editing ? (
+          <>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-1">
+                <Label className="text-[11px]">First name</Label>
+                <Input
+                  value={firstName}
+                  onChange={(e) => setFirstName(e.target.value)}
+                  className="h-8 rounded-lg text-xs"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-[11px]">Last name</Label>
+                <Input
+                  value={lastName}
+                  onChange={(e) => setLastName(e.target.value)}
+                  className="h-8 rounded-lg text-xs"
+                />
+              </div>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-[11px]">Insurance (optional)</Label>
+              <Input
+                value={insurance}
+                onChange={(e) => setInsurance(e.target.value)}
+                placeholder="e.g. Aetna PPO"
+                className="h-8 rounded-lg text-xs"
+              />
+            </div>
+            {contactLine ? (
+              <p className="text-[11px] text-muted-foreground">
+                {contactLine} — use Back below to change contact info
+              </p>
+            ) : null}
+            <div className="flex gap-2 pt-1">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-7 flex-1 rounded-lg text-xs"
+                disabled={loading}
+                onClick={() => setEditing(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                className="h-7 flex-1 rounded-lg text-xs"
+                disabled={loading || !firstName.trim()}
+                onClick={handleSave}
+              >
+                Save
+              </Button>
+            </div>
+          </>
+        ) : (
+          <>
+            {patientLine || contactLine ? (
+              <div className="flex items-start justify-between gap-3">
+                <span className="text-muted-foreground">Patient</span>
+                <span className="text-right font-medium text-foreground">
+                  {patientLine || "—"}
+                  {contactLine ? (
+                    <span className="block font-normal text-muted-foreground">
+                      {contactLine}
+                    </span>
+                  ) : null}
+                </span>
+              </div>
+            ) : null}
+            <div className="flex items-start justify-between gap-3">
+              <span className="text-muted-foreground">Insurance</span>
+              <span className="text-right font-medium text-foreground">
+                {review.insurance_plan_name || "Not selected"}
+              </span>
+            </div>
+            {review.location ? (
+              <div className="flex items-start justify-between gap-3">
+                <span className="text-muted-foreground">Location</span>
+                <span className="text-right font-medium text-foreground">
+                  {review.location}
+                </span>
+              </div>
+            ) : null}
+            <div className="flex items-center justify-between gap-2 pt-1">
+              {review.dob_verified ? (
+                <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                  <CheckCircle2 className="size-3.5 shrink-0 text-emerald-600" />
+                  Identity verified
+                </span>
+              ) : (
+                <span />
+              )}
+              <button
+                type="button"
+                onClick={() => setEditing(true)}
+                disabled={loading}
+                className="text-[11px] font-medium text-primary hover:underline"
+              >
+                Edit
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+
+      {review.disclaimer ? (
+        <p className="px-1 text-[11px] leading-snug text-muted-foreground">
+          {review.disclaimer}
+        </p>
+      ) : null}
+
       <Button
         type="button"
         className="w-full rounded-xl"
-        disabled={loading}
+        disabled={loading || editing}
         onClick={onConfirm}
       >
-        {loading ? "Confirming…" : "Confirm booking"}
+        {loading ? "Booking…" : "Confirm & book"}
       </Button>
     </div>
   );
@@ -1199,6 +1338,12 @@ function ConfirmedStep({
             {dateLabel}
           </p>
         ) : null}
+        {confirmation.service_name ? (
+          <p className="text-xs text-muted-foreground">{confirmation.service_name}</p>
+        ) : null}
+        {confirmation.location ? (
+          <p className="text-xs text-muted-foreground">{confirmation.location}</p>
+        ) : null}
         {confirmation.confirmation_code ? (
           <p className="pt-1 text-xs text-muted-foreground">
             Code{" "}
@@ -1212,10 +1357,19 @@ function ConfirmedStep({
   );
 }
 
-function CalendarCheckIcon({ color }: { color: string }) {
+function CalendarCheckIcon({
+  color,
+  small = false,
+}: {
+  color: string;
+  small?: boolean;
+}) {
+  const boxClass = small ? "size-9" : "size-14";
+  const badgeClass = small ? "size-4" : "size-6";
+  const badgeIconClass = small ? "size-2.5" : "size-3.5";
   return (
-    <div className="relative flex size-14 items-center justify-center" aria-hidden>
-      <svg viewBox="0 0 48 48" className="size-14">
+    <div className={cn("relative flex items-center justify-center shrink-0", boxClass)} aria-hidden>
+      <svg viewBox="0 0 48 48" className={boxClass}>
         <rect
           x="6"
           y="10"
@@ -1243,10 +1397,13 @@ function CalendarCheckIcon({ color }: { color: string }) {
         <rect x="10" y="22" width="28" height="16" rx="2" fill={`${cssColorWithAlpha(color, 0.12)}`} />
       </svg>
       <span
-        className="absolute bottom-1 right-0 flex size-6 items-center justify-center rounded-full text-white shadow-sm"
+        className={cn(
+          "absolute bottom-0 right-0 flex items-center justify-center rounded-full text-white shadow-sm",
+          badgeClass
+        )}
         style={{ backgroundColor: color }}
       >
-        <svg viewBox="0 0 16 16" className="size-3.5" aria-hidden>
+        <svg viewBox="0 0 16 16" className={badgeIconClass} aria-hidden>
           <path
             d="M3.5 8.2 6.4 11l6-7"
             fill="none"
