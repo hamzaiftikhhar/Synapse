@@ -25,6 +25,20 @@ def reset_nlu_provider() -> None:
     _provider = None
 
 
+def warm_up_nlu_provider() -> None:
+    """Best-effort connection warm-up for the configured NLU provider —
+    see OpenAINLUProvider.warm_up for why this matters. Providers with no
+    persistent-client concept to warm (e.g. Gemini, which uses urllib per
+    call) simply don't define warm_up() and are skipped. Never raises."""
+    try:
+        provider = get_nlu_provider()
+    except NLUError:
+        return
+    warm_up = getattr(provider, "warm_up", None)
+    if warm_up is not None:
+        warm_up()
+
+
 def _build_provider() -> NLUProvider:
     name = str(settings.NLU_PROVIDER).lower().strip()
     model = settings.NLU_MODEL

@@ -50,6 +50,29 @@ class OpenAINLUProvider:
             self._client = OpenAI(api_key=self._api_key, timeout=30.0)
         return self._client
 
+    def warm_up(self) -> None:
+        """Best-effort: open the connection pool ahead of the first real
+        request. Caching the client (above) means it's only *constructed*
+        once, but `httpx` connects lazily — constructing the object alone
+        doesn't open a socket. Left alone, the first classify() call of a
+        process still pays a full DNS+TCP+TLS handshake to api.openai.com
+        on top of real inference time. Confirmed live (ROADMAP Phase 23):
+        the first message right after a Django dev-server reload times out
+        against the configured NLU budget while an otherwise-identical
+        warm-connection call comfortably succeeds. `models.list()` is a
+        free, non-billed OpenAI endpoint — this only needs a live
+        connection sitting in the pool, not a real completion. Never
+        raises: warm-up is a latency optimization, not a correctness
+        requirement — classify() still works from a cold pool, just
+        slower.
+        """
+        if not self._api_key:
+            return
+        try:
+            self._get_client().with_options(timeout=3.0).models.list()
+        except Exception:
+            logger.info("OpenAI NLU warm-up failed (non-fatal)", exc_info=True)
+
     def classify(
         self,
         *,
