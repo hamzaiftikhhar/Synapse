@@ -4,12 +4,12 @@ import sys
 
 from django.apps import AppConfig
 
-# Management commands that never serve a real request — warming up a
-# ~400MB local embedding model at the start of `manage.py test` (or
-# migrate/shell/etc.) would tax every one of them for zero benefit. Anything
-# not in this list (runserver, or no subcommand at all — e.g. gunicorn
-# importing config.wsgi:application) is treated as a real serving process
-# and gets the warm-up.
+# Management commands that never serve a real request. Embedding warm-up
+# itself is a no-op (OpenAI has nothing to preload locally); the skip list
+# still matches chatbot NLU warm-up so test/migrate/shell never pay for
+# work they don't need. Anything not in this list (runserver, or no
+# subcommand — e.g. gunicorn importing config.wsgi:application) is treated
+# as a serving process.
 _SKIP_WARMUP_COMMANDS = frozenset(
     {
         "test",
