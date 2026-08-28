@@ -215,6 +215,8 @@ def booking_otp_send(request, payload: BookingOtpSendIn):
 @router.post("/booking/confirm", auth=None)
 def booking_confirm(request, payload: BookingConfirmIn):
     """Verify OTP (when required) and create the appointment."""
+    from datetime import date
+
     from apps.chatbot.booking.config import get_booking_config
 
     clinic = _resolve_clinic(payload.clinic_slug)
@@ -228,8 +230,22 @@ def booking_confirm(request, payload: BookingConfirmIn):
     phone = booking.get("patient_phone") or ""
     email = booking.get("patient_email") or ""
 
+    # Phase 42A — DOB was collected at the DETAILS step (submit_details)
+    # and held only on this server-side booking dict, never exposed back
+    # to the client; parsed here and handed to verify_otp, which is the
+    # one place that runs the actual comparison (only after the OTP code
+    # itself is confirmed correct — see otp_service.verify_otp).
+    dob_value: date | None = None
+    pending_dob = booking.get("pending_dob") or ""
+    if pending_dob:
+        try:
+            dob_value = date.fromisoformat(pending_dob)
+        except ValueError:
+            dob_value = None
+
     patient = None
     otp_verified = False
+    dob_verified = False
     if vmode == "none":
         otp_verified = False
     else:
@@ -242,11 +258,13 @@ def booking_confirm(request, payload: BookingConfirmIn):
                 session_token=session.session_token,
                 first_name=booking.get("patient_first_name"),
                 last_name=booking.get("patient_last_name"),
+                date_of_birth=dob_value,
             )
         except OTPError as exc:
             raise HttpError(exc.status_code, str(exc)) from exc
         patient = otp_result.patient
         otp_verified = True
+        dob_verified = otp_result.dob_verified
 
     try:
         result = BookingService.confirm(
@@ -255,6 +273,7 @@ def booking_confirm(request, payload: BookingConfirmIn):
             booking_id=payload.booking_id,
             patient=patient,
             otp_verified=otp_verified,
+            dob_verified=dob_verified,
         )
     except BookingError as exc:
         raise HttpError(exc.status_code, str(exc)) from exc

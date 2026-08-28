@@ -198,6 +198,66 @@ class ResumeExistingVisitorTests(TestCase):
         self.assertEqual(resp.json()["session_token"], "tok-newer")
 
 
+class ResumeActiveBookingTests(TestCase):
+    """Phase 42A: an in-progress booking must survive a closed tab —
+    separate from historical booking_wizard chat rows, which are always
+    rendered inert on resume (see hydrateHistoryRow in message-parser.ts).
+    """
+
+    def setUp(self):
+        self.clinic = _make_clinic("resume-active-booking")
+        self.visitor = ChatVisitor.objects.create(
+            clinic=self.clinic, visitor_key="booking-visitor"
+        )
+
+    def _session_with_booking(self, *, step: str) -> ChatSession:
+        from apps.chatbot.booking.state import BookingSession
+
+        booking = BookingSession.create(clinic_id=str(self.clinic.id), mode="service_first")
+        booking.step = step
+        return ChatSession.objects.create(
+            clinic=self.clinic,
+            visitor=self.visitor,
+            session_token="tok-booking",
+            status=ChatSessionStatus.ACTIVE,
+            conversation_context={"booking": booking.to_dict()},
+        )
+
+    def test_in_progress_booking_is_surfaced_on_resume(self):
+        from apps.chatbot.booking.state import BookingStep
+
+        session = self._session_with_booking(step=BookingStep.PATH.value)
+        resp = self.client.get(
+            RESUME_URL, {"clinic_slug": self.clinic.slug},
+            headers={_VISITOR_HEADER: "booking-visitor"},
+        )
+        body = resp.json()
+        self.assertIsNotNone(body["active_booking"])
+        self.assertEqual(body["active_booking"]["step"], BookingStep.PATH.value)
+
+    def test_confirmed_booking_is_not_surfaced_as_active(self):
+        from apps.chatbot.booking.state import BookingStep
+
+        self._session_with_booking(step=BookingStep.CONFIRMED.value)
+        resp = self.client.get(
+            RESUME_URL, {"clinic_slug": self.clinic.slug},
+            headers={_VISITOR_HEADER: "booking-visitor"},
+        )
+        self.assertIsNone(resp.json()["active_booking"])
+
+    def test_no_booking_at_all_is_none_not_an_error(self):
+        ChatSession.objects.create(
+            clinic=self.clinic, visitor=self.visitor, session_token="tok-nobooking",
+            status=ChatSessionStatus.ACTIVE,
+        )
+        resp = self.client.get(
+            RESUME_URL, {"clinic_slug": self.clinic.slug},
+            headers={_VISITOR_HEADER: "booking-visitor"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertIsNone(resp.json()["active_booking"])
+
+
 class ResumePaginationChainTests(TestCase):
     """Step 4-correction requirement: resume's own initial page is bounded
     exactly like every other page — never a "load everything" path — and

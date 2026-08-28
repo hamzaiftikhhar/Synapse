@@ -69,6 +69,12 @@ class ChatResumeOut(Schema):
     has_history: bool
     messages: list[ChatMessageHistoryOut]
     has_more: bool
+    # Phase 42A — an in-progress booking (not yet CONFIRMED) on this
+    # session, if any. Historical booking_wizard messages in `messages`
+    # are always inert (see hydrateHistoryRow) — this is the separate,
+    # live signal the frontend uses to remount an interrupted wizard at
+    # its real step instead of losing it.
+    active_booking: dict | None = None
 
 
 class ChatMessagesPageOut(Schema):
@@ -224,12 +230,15 @@ def resume_chat(request, clinic_slug: str):
         )
 
     rows, has_more = _message_page(session, before=None, limit=_DEFAULT_PAGE_SIZE)
+    from apps.chatbot.booking.service import BookingService
+
     return ChatResumeOut(
         session_token=session.session_token,
         visitor_id=visitor.visitor_key,
         has_history=bool(rows),
         messages=_serialize_messages(rows),
         has_more=has_more,
+        active_booking=BookingService.active_booking_payload(clinic, session),
     )
 
 
