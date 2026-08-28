@@ -1,10 +1,14 @@
 from datetime import time
 
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 
 from apps.api.test_helpers import make_clinic_admin
-from apps.doctors.models import Doctor, DoctorSchedule
+from apps.doctors.models import Doctor, DoctorSchedule, DoctorService, DoctorSpecialty
 from apps.doctors.services.doctor_service import create_doctor
+from apps.services.models import Service
+from apps.specialties.models import Specialty
 
 
 class DoctorScheduleTests(TestCase):
@@ -119,3 +123,60 @@ class DoctorCreateDefaultsTests(TestCase):
             clinic=self.clinic, full_name="Dr. Bilingual", languages=["en", "ur"]
         )
         self.assertEqual(list(doctor.languages), ["en", "ur"])
+
+
+class ListDoctorsQueryCountTests(TestCase):
+    """Dashboard "Doctors" list page — previously 2 unprefetched M2M
+    queries (specialties, services) per row, up to ~200 extra queries for
+    a full 100-row page."""
+
+    def setUp(self):
+        self.user, self.clinic, self.headers = make_clinic_admin(
+            email="owner@doctors-list.test", clinic_slug="doctors-list-clinic"
+        )
+
+    def _seed(self, count: int) -> None:
+        specialty, _ = Specialty.objects.get_or_create(
+            clinic=self.clinic, slug="general", defaults={"name": "General"}
+        )
+        service, _ = Service.objects.get_or_create(
+            clinic=self.clinic, name="Checkup", defaults={"duration_min": 30}
+        )
+        for i in range(count):
+            doctor = Doctor.objects.create(
+                clinic=self.clinic, full_name=f"Dr. {Doctor.objects.count()}-{i}"
+            )
+            DoctorSpecialty.objects.create(
+                clinic=self.clinic, doctor=doctor, specialty=specialty
+            )
+            DoctorService.objects.create(
+                clinic=self.clinic, doctor=doctor, service=service
+            )
+
+    def test_specialty_and_service_ids_are_still_correct(self):
+        self._seed(3)
+        resp = self.client.get("/api/v1/doctors", headers=self.headers)
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(len(body["results"]), 3)
+        for row in body["results"]:
+            self.assertEqual(len(row["specialty_ids"]), 1)
+            self.assertEqual(len(row["service_ids"]), 1)
+
+    def test_query_count_does_not_scale_with_page_size(self):
+        self._seed(2)
+        with CaptureQueriesContext(connection) as few_ctx:
+            self.client.get("/api/v1/doctors", headers=self.headers)
+
+        self._seed(8)
+        with CaptureQueriesContext(connection) as many_ctx:
+            self.client.get("/api/v1/doctors", headers=self.headers)
+
+        few, many = len(few_ctx.captured_queries), len(many_ctx.captured_queries)
+        self.assertEqual(
+            few,
+            many,
+            f"query count scaled with row count ({few} for 2 doctors vs "
+            f"{many} for 10) — the unprefetched specialties/services N+1 "
+            "has crept back in",
+        )
