@@ -161,6 +161,8 @@ def _hero_slot(clinic: Any, cfg: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _service_options(clinic: Any, session: BookingSession) -> dict[str, Any]:
+    from django.db.models import Count, Q
+
     from apps.services.models import Service
 
     qs = Service.objects.filter(
@@ -171,15 +173,28 @@ def _service_options(clinic: Any, session: BookingSession) -> dict[str, Any]:
         # Specialty never determines booking eligibility — only which
         # services are listed when chat already pinned an area of care.
         qs = qs.filter(doctors__specialties__id=session.specialty_id).distinct()
+    # One annotated query instead of a per-service .count() (was up to one
+    # extra COUNT query per active service, every time this booking step
+    # renders), plus a defensive cap — the frontend does client-side search
+    # over "all", not paginated server-side, so this must stay a full
+    # catalog, just not an unbounded one.
+    qs = qs.annotate(
+        doctor_count=Count(
+            "doctors",
+            filter=Q(
+                doctors__is_deleted=False,
+                doctors__is_active=True,
+                doctors__is_accepting_patients=True,
+            ),
+        )
+    )[:100]
     all_services = [
         {
             "id": str(s.id),
             "name": s.name,
             "slug": getattr(s, "slug", "") or "",
             "description": (s.description or "")[:200],
-            "doctor_count": s.doctors.filter(
-                is_deleted=False, is_active=True, is_accepting_patients=True
-            ).count(),
+            "doctor_count": s.doctor_count,
         }
         for s in qs
     ]
@@ -193,6 +208,7 @@ def _service_options(clinic: Any, session: BookingSession) -> dict[str, Any]:
 
 
 def _doctor_options(clinic: Any, session: BookingSession) -> dict[str, Any]:
+    from apps.chatbot.booking.slots import compute_next_available_slots
     from apps.doctors.models import Doctor
 
     qs = (
@@ -208,10 +224,16 @@ def _doctor_options(clinic: Any, session: BookingSession) -> dict[str, Any]:
     if session.service_id:
         qs = qs.filter(doctor_services__service_id=session.service_id).distinct()
 
+    candidate_doctors = list(qs[:20])
+    # Batched across all 20 candidates + the 14-day horizon into a handful
+    # of queries total — see compute_next_available_slots for why this
+    # used to be a per-doctor loop that fanned out into ~1,400 queries.
+    next_slots = compute_next_available_slots(clinic, doctors=candidate_doctors)
+
     doctors = []
-    for d in qs[:20]:
+    for d in candidate_doctors:
         row = doctor_to_dict(d)
-        next_slot = _next_available_slot(clinic, d)
+        next_slot = next_slots.get(str(d.id))
         doctors.append(
             {
                 "id": row["id"],
@@ -374,23 +396,6 @@ def _slot_summary(session: BookingSession) -> str:
         except ValueError:
             parts.append(session.slot_start)
     return " · ".join(parts) if parts else ""
-
-
-def _next_available_slot(clinic: Any, doctor: Any) -> dict[str, Any] | None:
-    tz = clinic_timezone(clinic)
-    today = timezone.now().astimezone(tz).date()
-    for i in range(14):
-        d = today + timedelta(days=i)
-        slots = _slots_for_day(
-            clinic,
-            target_date=d,
-            doctor_id=str(doctor.id),
-            service_id=None,
-            mode="choose_doctor",
-        )
-        if slots:
-            return slots[0]
-    return None
 
 
 def _doctors_for_session(
