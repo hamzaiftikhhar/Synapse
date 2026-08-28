@@ -85,3 +85,40 @@ def build_service_catalog(clinic: Any, *, limit: int = 40) -> list[dict[str, Any
         return [{"id": str(s.id), "name": s.name} for s in qs]
     except Exception:
         return []
+
+
+def build_doctor_catalog(clinic: Any, *, limit: int = 40) -> list[dict[str, Any]]:
+    """Active doctors for this clinic — grounds the Small NLU's doctor_name
+    extraction and intent classification against who's actually on staff.
+
+    Phase 41: without this, the NLU had no way to tell a real doctor's bare
+    first name ("Priya") from a patient's name, and no way to recognize a
+    two-doctor mention ("Priya and Omar") as being about doctors at all —
+    reproduced live: "Tell me about Priya and Omar" extracted
+    patient_name="Priya", doctor_name=null, and classified off_topic.
+    """
+    try:
+        from apps.doctors.models import Doctor
+
+        clinic_id = getattr(clinic, "id", None)
+        if clinic_id is None:
+            return []
+        qs = (
+            Doctor.objects.filter(
+                clinic_id=clinic_id, is_deleted=False, is_active=True
+            )
+            .prefetch_related("specialties")
+            .order_by("full_name")[:limit]
+        )
+        return [
+            {
+                "id": str(d.id),
+                "full_name": d.full_name,
+                "specialty": next(
+                    (s.name for s in d.specialties.all()), ""
+                ),
+            }
+            for d in qs
+        ]
+    except Exception:
+        return []

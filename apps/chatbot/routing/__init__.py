@@ -8,6 +8,7 @@ from apps.chatbot.routing.confidence import (
     confidence_meta,
 )
 from apps.chatbot.routing.doc_catalog import (
+    build_doctor_catalog,
     build_document_catalog,
     build_service_catalog,
     catalog_for_nlu_context,
@@ -31,6 +32,7 @@ __all__ = [
     "ConfidenceBand",
     "apply_confidence_policy",
     "confidence_meta",
+    "build_doctor_catalog",
     "build_document_catalog",
     "build_service_catalog",
     "catalog_for_nlu_context",
