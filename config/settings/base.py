@@ -254,9 +254,8 @@ KNOWLEDGE_CHUNK_MIN_CHARS = env.int("KNOWLEDGE_CHUNK_MIN_CHARS", default=40)
 # Phase 3: embed + index on upload (set False to chunk-only for debugging)
 KNOWLEDGE_RUN_EMBEDDINGS = env.bool("KNOWLEDGE_RUN_EMBEDDINGS", default=True)
 
-# Embedding provider — see docs/rag/EMBEDDING-PROVIDER-SWITCH.md
-# OpenAI text-embedding-3-small (1536-d). Local BGE remains available via
-# EMBEDDING_PROVIDER=local (requires a matching vector(768) column).
+# Embedding provider — OpenAI only (ARCHITECTURE.md §9).
+# Local SentenceTransformer / BGE was removed; do not set EMBEDDING_PROVIDER=local.
 EMBEDDING_PROVIDER = env("EMBEDDING_PROVIDER", default="openai")
 EMBEDDING_MODEL = env("EMBEDDING_MODEL", default="text-embedding-3-small")
 EMBEDDING_DIMENSIONS = env.int("EMBEDDING_DIMENSIONS", default=1536)
