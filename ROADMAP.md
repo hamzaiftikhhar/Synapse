@@ -3474,6 +3474,238 @@ framing guard) or checked against a much larger random sample from the
 same five real-question sources, would be the natural follow-up — not
 started here, this phase fixed exactly the five proven cases.
 
+## ✅ Phase 41 — Doctor-search precision + context/pronoun resolution
+
+Triggered by the user's own real-world testing plus an external reviewer
+(GPT), consulted separately, who produced a 7-failure critique, a
+suggested implementation prompt, and a 45-question test matrix. Explicit
+instruction this time: don't implement GPT's prompt blindly — understand
+the real architecture first, verify every claim against actual code and
+live traces, correct anything GPT got wrong, and only then plan (via
+`EnterPlanMode`, presented and approved before any code changed) and
+implement. That verification changed the diagnosis in real ways (below),
+and live testing during implementation surfaced four more real bugs GPT's
+own critique never mentioned.
+
+**What GPT got right, confirmed live:** "which doctors can see children"
+and "do you have female doctors" both hit `search_doctors` with zero
+filters, returning the same unfiltered top-3 regardless of question
+semantics. "Tell me about Priya and Omar" (bare first names) extracted
+`patient_name` instead of `doctor_name` and misclassified `off_topic`.
+"Aetna HMO" and "Aetna PPO" returned the identical row.
+
+**What GPT got wrong, caught before writing any code:** GPT's suggested
+mechanism was `service_filter_mode` — grepped every consumer of that
+field; it's read only by the `services` SQL handler (a different concept,
+"what services do you offer"), never by `search_doctors`. Implementing
+GPT's suggestion would have been a plausible-looking dead end.
+`search_doctors` (`sql_tool/handlers/doctors.py`) already filters
+correctly by `service_id`/`specialty_id`/`doctor_id` when populated — the
+real gap was entirely upstream, in two places GPT never identified: (1)
+the Small LLM had **no doctor roster in its prompt at all** —
+`build_document_catalog`/`build_service_catalog` exist, there was no
+`build_doctor_catalog`, which is the actual root cause of the Priya/Omar
+misclassification too, not a separate issue; (2) no rule mapping a
+capability phrase ("see children") to the matching catalog service name,
+and even with one, `_match_service`'s plain `icontains` wouldn't catch
+"children" against "Pediatric Well-Child Exam" (no textual overlap). GPT
+also didn't reproduce two of its own claimed failures: "Tell me about
+Priya" → "What doctors do you have?" already correctly returned the full
+catalog (Failure 7 didn't reproduce), and "Book Dr. Sarah Monday
+afternoon" already correctly classified `book_appointment` (not
+`doctor_search` as claimed) — though the underlying entity noise
+(`doctor_name: ["Sarah","Sarah Monday"]`) was real, just not currently
+symptomatic. GPT's pronoun-resolution design also had a real safety gap
+of its own: nothing in its plan accounted for "My daughter has a fever,
+can she see a doctor" — where "she" is the daughter, not a previously-
+discussed doctor. Added as an explicit guard (below), not part of GPT's
+own suggestion.
+
+**Root causes and fixes, in the order found:**
+
+1. **No doctor roster reaches the Small LLM.** New `build_doctor_catalog`
+   (`routing/doc_catalog.py`), same shape as `build_service_catalog` —
+   `{id, full_name, specialty}` — wired into `engine.py`'s `nlu_ctx` next
+   to `services`, rendered as a new `Doctors:` line in `nlu/prompts.py`.
+   One new system-prompt rule: a name matching the roster is
+   `doctor_name`, not `patient_name`; two listed doctors in one message →
+   `doctor_name` array of both, `doctor_search` even with no other
+   clinic-fact keyword. This is the single highest-leverage fix — it's
+   what let every downstream pronoun/ambiguity mechanism receive correct
+   data to work with.
+2. **Capability-phrase → service resolution.** New system-prompt rule:
+   "which doctors can see/treat children/kids", "who provides pediatric
+   care" → `doctor_search` (never `faq`), `entities.service` = the listed
+   "Pediatric..." service verbatim. Measured, not assumed, reliability:
+   isolated tests hit 5/5, but under the *full* prompt (with the clinic's
+   membership-contract `Docs:` block also present) it measurably missed
+   sometimes. Added a **deterministic Python backstop**,
+   `resolve_pediatric_service_fallback` (`nlu/resolvers.py`) — age-group
+   language (child/children/kid/kids/pediatric/infant/baby/toddler) with
+   no service already resolved falls back to the clinic's own
+   "pediatric"-named service. Scoped to `intent == DOCTOR_SEARCH` only —
+   a symptom report ("my child has a fever") that happens to contain
+   "child" must not get silently narrowed to only well-child-exam
+   providers; that's a different question (acute vs. routine care) this
+   fallback has no business answering. This is a narrow, single-concept
+   heuristic (not a general synonym table, consistent with the explicit
+   "no brittle keyword lists for every sentence" instruction), and
+   follows the same "Python heuristics as sensors supplementing NLU"
+   pattern already established in `routing/heuristics.py`.
+3. **Gender questions — deterministic, not inferred.** `Doctor` has no
+   gender field (confirmed, full model read). New
+   `classify_gender_question` (`conversation_state.py`, regex over the
+   raw message) + new `direct_mode="gender_unsupported"` planner
+   short-circuit (same pattern as Phase 39's `session_recall`) — stops
+   before SQL/vector/LLM entirely, fixed response explaining gender isn't
+   tracked. The Large LLM never sees the doctor list for this question,
+   so it can't guess from bios/names.
+4. **Doctor-pronoun resolution — the "critical part" per the user's own
+   framing.** Reuses 100% existing Phase 39 state
+   (`ConversationTimeline.doctor`, `.shown_doctors`) — no new fields. New
+   `classify_doctor_pronoun_reference` detects a doctor-directed pronoun
+   ("she/he/they/the doctor") as the subject of a capability/quality/
+   availability/service question. **Safety guard GPT's own plan omitted,
+   added deliberately:** a family-relation noun in the same message ("my
+   daughter/son/child/kid/wife/husband") blocks resolution — "she" in "my
+   daughter has a fever, can she see a doctor" must not resolve to a
+   previously-discussed doctor. Wiring in `engine.py`, computed alongside
+   the existing `doctor_followup`/`unknown_doctor_requested` sensors:
+   `len(shown_doctors) == 1` (or a single-mention `timeline.doctor` pin)
+   → inject `resolved_ids.doctor_id`, same mechanism as Phase 39's
+   `ordinal_doctor_id`, and correct `intent` only if it isn't already
+   doctor-related (a backstop, not the primary mechanism — NLU gets it
+   right unaided most of the time). `len(shown_doctors) >= 2` → new
+   `direct_mode="doctor_pronoun_ambiguous"` planner branch, "Do you mean
+   Dr. X or Dr. Y?" composed from `shown_doctors` names.
+5. **Insurance plan-type precision (PPO vs HMO).** Two stacked causes,
+   both real: (a) `insurance_accepted`'s provider matching ignored
+   `plan_type` entirely; (b) `resolve_entities`'s own `_match_insurance`
+   isn't plan-type aware either, and with two same-provider plans can
+   silently resolve to the wrong specific one via query tie-breaking —
+   which then *bypassed* the first fix, since a resolved `plan_ids`
+   originally skipped type-checking. Fixed by making the type check
+   independent of which path resolved a candidate: when the message names
+   a type, match by provider text (not the possibly-wrong resolved
+   `plan_ids`) and let the type filter pick the right row; when the named
+   type genuinely isn't on file, say so honestly ("We don't see an Aetna
+   PPO plan on file, but we do accept Aetna (HMO Plus)") instead of
+   presenting the other type as the answer.
+6. **Booking entity precision.** Strengthened NLU prompt rule: `doctor_name`
+   is one clean value, never a day-of-week/time-of-day word appended, and
+   never both a clean and contaminated version of the same name in the
+   array — fixed `["Sarah","Sarah Monday"]` → `["Sarah"]`, 6/6 verified.
+   Also fixed a real regression this same rule-strengthening pass
+   introduced: the new roster/capability rules briefly made "book Dr.
+   Sarah Monday afternoon" less reliably `book_appointment` (observed
+   `doctor_search` under full-prompt conditions); added an explicit
+   contrast ("this wins even when the message also names a doctor from
+   the roster") and reconfirmed 5/5.
+
+**Found live during implementation, not in GPT's critique at all:**
+
+7. **A separate fuzzy-resolution path silently collapsed a correct
+   multi-doctor resolution to one.** `resolve_entities` correctly
+   resolves `doctor_name:["Priya","Omar"]` to both real ids — but
+   `engine.py`'s free-text single-best-match resolver
+   (`resolve_doctor_candidates`, used to fill gaps when NLU's *own*
+   extraction is too coarse) then unconditionally overwrote that with
+   whichever one scored higher, discarding the second doctor. Fixed by
+   skipping that fuzzy overwrite whenever `resolved_ids.doctor_id` is
+   already a genuine multi-value list.
+8. **The old, narrower `doctor_followup` mechanism pre-empted the new,
+   more precise one.** `_is_doctor_quality_followup`'s "is he"/"is she"/
+   "are they" substring check also matches inside "When **is she**
+   available?" — intercepting it with a generic bio reply instead of
+   real availability data, even after the new pronoun resolver correctly
+   identified Priya and NLU correctly said `doctor_availability`. Fixed
+   by having pronoun resolution suppress the older flag once it resolves
+   an antecedent — its own trigger set is already scoped to capability/
+   availability/service phrasing, never generic "is she good"-style
+   quality talk, so deferring to it is strictly more correct.
+9. **"should" was extracted as a doctor's name.** "Which doctor **should**
+   I see?" (an entirely natural, common phrasing) → `doctor_name:
+   "should"` → zero doctors ever match a name filter for "should" →
+   empty result on a completely ordinary question. `_NAME_NOISE`
+   (`sql_tool/handlers/doctors.py`) — the existing defensive filter for
+   exactly this class of false positive — didn't include modal verbs.
+   Also found and fixed in passing: `_NAME_NOISE` was duplicated
+   verbatim in two functions in the same file; consolidated into one
+   shared module-level constant so a future fix to one can't drift from
+   the other (which is exactly how "should" would have needed fixing
+   twice).
+
+**Files changed:** `apps/chatbot/routing/doc_catalog.py` (new
+`build_doctor_catalog`), `apps/chatbot/routing/__init__.py` (export),
+`apps/chatbot/engine.py` (catalog wiring, pediatric-service fallback,
+pronoun-sensor computation, multi-resolution guard, doctor_followup
+precedence), `apps/chatbot/nlu/prompts.py` (roster/capability/entity-
+precision rules), `apps/chatbot/conversation_state.py`
+(`classify_gender_question`, `classify_doctor_pronoun_reference`),
+`apps/chatbot/planner.py` (`gender_unsupported`/`doctor_pronoun_ambiguous`
+`direct_mode` branches), `apps/chatbot/nlu/resolvers.py`
+(`resolve_pediatric_service_fallback`), `apps/chatbot/sql_tool/handlers/
+insurance.py` (plan-type matching), `apps/chatbot/sql_tool/handlers/
+doctors.py` (`_NAME_NOISE` consolidation + additions). Test files: new
+`apps/chatbot/tests/test_doctor_context_resolution.py` (+6),
+`apps/chatbot/tests/test_conversation_state.py` (+5),
+`apps/chatbot/tests/test_resolvers.py` (+5),
+`apps/chatbot/tests/test_sql_tool.py` (+3).
+
+**Tests:** 19 new regression tests. `apps.chatbot.tests
+apps.knowledge.tests` — **597/597** (578 baseline + 19 new). Eval:
+**674/682 (98.8%)** — identical to baseline, `doctors`/`booking`/
+`insurance` lanes all 100%, same two pre-existing unrelated adversarial
+gaps, checked after every fix round (this phase touched NLU prompts,
+planner, and three SQL handlers — regression risk was real and checked
+for, not assumed away).
+
+**Live-verified, full trace, across a 22-scenario representative subset
+of GPT's own 45-question matrix** (all ten rounds; NLU intent/confidence/
+entities, planner facts, SQL filters/rows, vector executed/hits, LLM
+called or not, final response — not just "does the reply look right"):
+capability filtering converges correctly for all 5 Round-1 phrasings;
+gender questions never reach SQL for any Round-2 phrasing, including a
+named doctor ("Is Dr. Priya a woman?"); the full Round-3 pronoun chain
+resolves "she" → Priya across four consecutive turns including a real
+availability lookup; the Round-3 ambiguous case ("Priya and Omar" → "can
+she") correctly asks which doctor; all 6 Round-4/5 booking phrasings
+extract clean entities and the correct intent (`book_appointment` vs.
+`doctor_availability` vs. `doctor_search` for the intentionally-soft
+"thinking about seeing" case); Round-6 fever+child+named-doctor cases
+route correctly; Round-7 HMO/PPO precision holds through the full engine
+(not just the isolated handler); Round-9 emergency priority is
+unaffected; the Round-10 full context-contamination chain (catalog query
+→ specific follow-up → catalog query → pronoun) resolves exactly as
+specified, never letting one mode bleed into the other.
+
+**Known limitations / found but not fixed:**
+- The capability-phrase NLU rule (fix 2) is measurably not 100% reliable
+  on its own under the full prompt — this is why a deterministic Python
+  backstop was added rather than trusting the prompt rule alone; the
+  backstop is currently scoped to pediatric/age-group language only
+  (the one capability explicitly tested), not a general capability→
+  service mapping.
+- "Which doctors accept Aetna PPO?" (list doctors filtered by an
+  insurance plan, not "does this clinic accept X") isn't handled — a
+  different, more complex capability (Round 8's constraint-intersection
+  territory), out of scope for this phase.
+- "I have Aetna PPO. Can Dr. Omar see my child?" surfaced a real,
+  pre-existing (not introduced here) data gap: the `doctor_insurances`
+  junction table has zero rows for at least one real doctor in the dev
+  seed data, so any doctor-scoped insurance question returns "not on
+  file" regardless of what the clinic broadly accepts. Root-caused via
+  direct query, not fixed — a seed-data/junction-population issue, not a
+  logic bug in the fixed insurance handler.
+- Round 8 (compound multi-constraint booking — pediatric + insurance +
+  time in one request) and general emergency-threshold tuning remain
+  explicitly out of scope, as previously documented (Phase 39, Phase 40).
+- The pediatric-service backstop and pronoun resolution together close
+  most of the "Deferred — Conversation state / coreference" entry below
+  for the *doctor* case specifically; general coreference for other
+  antecedents (a mentioned service, a mentioned insurance plan) remains
+  unbuilt.
+
 ## 💤 Deferred — Conversation state / coreference
 
 Real, confirmed from transcript ("which one treats cancer?" → "Dr. Chloe
