@@ -19,6 +19,14 @@ class Patient(TenantModel, TimestampedModel):
         blank=True,
         help_text="Set when phone OTP verification succeeds.",
     )
+    # Phase 42A — date-of-birth identity check, scoped to (clinic, patient)
+    # rather than the OTPVerification row: OTP's own attempts counter
+    # resets on every resend (a fresh OTPVerification row starts at
+    # attempts=0), which would let a resend reset a DOB brute-force
+    # counter too if it lived there instead. Independent of OTP lifecycle
+    # by design — see apps/patients/services/patient_service.py.
+    dob_check_attempts = models.PositiveSmallIntegerField(default=0)
+    dob_check_locked_until = models.DateTimeField(null=True, blank=True)
     metadata = models.JSONField(default=dict, blank=True)
 
     class Meta: #Meta is used to define the database table name and constraints and indexes
