@@ -243,7 +243,13 @@ def doctor_to_dict(doc: Any) -> dict[str, Any]:
         "languages": list(doc.languages or []),
         "is_accepting_patients": doc.is_accepting_patients,
         "specialties": [s.name for s in doc.specialties.all()],
-        "services": [s.name for s in doc.services.filter(is_deleted=False)],
+        # .all() (not .filter()) so callers that already did
+        # .prefetch_related("services") actually hit that cache — a
+        # .filter() call on a prefetched related manager silently bypasses
+        # the prefetch and re-queries per doctor (confirmed: this was
+        # firing on every doctor_search chat message and on every row of
+        # the booking wizard's doctor-picker step).
+        "services": [s.name for s in doc.services.all() if not s.is_deleted],
     }
 
 
