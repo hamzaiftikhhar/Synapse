@@ -11,7 +11,7 @@ class EmbeddingService:
     """
     Application-facing embedding API.
 
-    Callers use this class only — never import SentenceTransformer or OpenAI.
+    Callers use this class only — never import an embedding SDK directly.
     """
 
     def __init__(self, provider: EmbeddingProvider) -> None:
