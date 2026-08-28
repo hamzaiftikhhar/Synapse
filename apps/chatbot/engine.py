@@ -80,15 +80,17 @@ class ChatEngine:
 
         from apps.chatbot.routing import (
             apply_routing_heuristics,
+            build_doctor_catalog,
             build_document_catalog,
             build_service_catalog,
             catalog_for_nlu_context,
         )
 
-        # Document + service catalogs for Small NLU + heuristics
+        # Document + service + doctor catalogs for Small NLU + heuristics
         t0 = time.perf_counter()
         doc_catalog = build_document_catalog(clinic)
         service_catalog = build_service_catalog(clinic)
+        doctor_catalog = build_doctor_catalog(clinic)
         timings["doc_catalog_ms"] = (time.perf_counter() - t0) * 1000
 
         ctx = conversation_context or self._build_context(session) or {}
@@ -120,6 +122,13 @@ class ChatEngine:
             nlu_ctx["services"] = ", ".join(
                 s.get("name") or "" for s in service_catalog[:20]
             )[:600]
+        if doctor_catalog:
+            nlu_ctx["doctors"] = ", ".join(
+                f"{d.get('full_name')} ({d.get('specialty')})"
+                if d.get("specialty")
+                else str(d.get("full_name") or "")
+                for d in doctor_catalog[:30]
+            )[:900]
         # Lets the classifier resolve a short/bare reply ("sure", "earliest")
         # against what the assistant's immediately preceding turn actually
         # offered, instead of guessing a topic from zero context — the gap
@@ -156,13 +165,39 @@ class ChatEngine:
             service_catalog=service_catalog,
         )
 
-        from apps.chatbot.nlu.resolvers import resolve_entities
+        from apps.chatbot.nlu.resolvers import (
+            resolve_entities,
+            resolve_pediatric_service_fallback,
+        )
+        from apps.chatbot.nlu.schemas import Intent
         from dataclasses import replace
 
         nlu_result = replace(
             nlu_result,
             resolved_ids=resolve_entities(clinic, nlu_result.entities),
         )
+        # Phase 41 — the Small LLM maps "which doctors can see children" to
+        # the clinic's real Pediatric service most of the time (verified
+        # live), but not reliably (measured miss rate under the full
+        # prompt); this is the deterministic backstop for when it doesn't,
+        # never overriding a service it did resolve. Scoped to intent
+        # already doctor_search — a symptom report ("my child has a
+        # fever") that happens to contain "child" must not get silently
+        # narrowed to only well-child-exam providers; that's a different
+        # question (acute vs. routine care) this fallback has no business
+        # answering.
+        if (
+            nlu_result.intent == Intent.DOCTOR_SEARCH
+            and not nlu_result.resolved_ids.service_id
+        ):
+            _pediatric_id = resolve_pediatric_service_fallback(clinic, message)
+            if _pediatric_id:
+                nlu_result = replace(
+                    nlu_result,
+                    resolved_ids=replace(
+                        nlu_result.resolved_ids, service_id=_pediatric_id
+                    ),
+                )
 
         # Working context (Phase 39) — pin what this turn itself stated,
         # independent of whether SQL/vector even ran, so a later "what
@@ -305,8 +340,19 @@ class ChatEngine:
         doctor_mentioned = mentions_doctor(message) or bool(
             getattr(nlu_result.entities, "doctor_name", None)
         )
+        # Phase 41 — if resolve_entities already resolved *multiple* explicit
+        # doctor_name entities (e.g. "Tell me about Priya and Omar" →
+        # doctor_name:["Priya","Omar"] → resolved_ids.doctor_id is already
+        # both real ids), the single-best-guess fuzzy resolver below must
+        # not collapse that back down to one doctor — reproduced live: it
+        # silently overwrote a correct 2-doctor resolution with whichever
+        # one scored higher in free-text fuzzy matching.
+        already_multi_resolved = (
+            isinstance(nlu_result.resolved_ids.doctor_id, list)
+            and len(nlu_result.resolved_ids.doctor_id) >= 2
+        )
         doctor_resolution = resolve_doctor_candidates(
-            clinic, message if doctor_mentioned else ""
+            clinic, message if (doctor_mentioned and not already_multi_resolved) else ""
         )
         if doctor_resolution.doctor and doctor_resolution.confidence_band == "high":
             doc = doctor_resolution.doctor
@@ -354,6 +400,8 @@ class ChatEngine:
         # other three thread through as facts for observability and get
         # actually applied below.
         from apps.chatbot.conversation_state import (
+            classify_doctor_pronoun_reference,
+            classify_gender_question,
             classify_pin_amendment,
             classify_preview_only,
             classify_session_recall,
@@ -399,6 +447,66 @@ class ChatEngine:
         timeline = merge_turn_context(timeline, preview_only=preview_only)
         ctx = save_timeline(ctx, timeline)
 
+        # Phase 41 — gender is a Python decision (see planner's
+        # gender_unsupported branch), never something the LLM infers from a
+        # name/bio/photo.
+        gender_question = classify_gender_question(message)
+
+        # Phase 41 — doctor-pronoun resolution ("can she see children?").
+        # Reuses timeline.shown_doctors (Phase 39, already reliably
+        # maintained: overwritten only when search_doctors actually returns
+        # rows, untouched by an intervening non-doctor-search turn) as the
+        # source of truth for "who was just discussed" — no new state.
+        doctor_pronoun_ambiguous = False
+        doctor_pronoun_resolved = False
+        if not gender_question and classify_doctor_pronoun_reference(message):
+            shown = timeline.shown_doctors or []
+            antecedent = None
+            if len(shown) == 1:
+                antecedent = shown[0]
+            elif len(shown) >= 2:
+                doctor_pronoun_ambiguous = True
+            elif timeline.doctor and timeline.doctor.get("id"):
+                antecedent = timeline.doctor
+            if antecedent and antecedent.get("id"):
+                doctor_pronoun_resolved = True
+                # _is_doctor_quality_followup's "is she"/"is he"/"are they"
+                # substrings also match capability/availability questions
+                # phrased as "when IS SHE available" / "IS SHE able to..." —
+                # reproduced live: it intercepted "When is she available?"
+                # with a generic bio reply instead of real availability
+                # data. classify_doctor_pronoun_reference's own trigger set
+                # is already scoped to capability/availability/service
+                # phrasing (not "is she good"-style quality talk, which
+                # stays doctor_followup's alone), so once it resolves an
+                # antecedent, it takes priority over the older, broader
+                # substring match.
+                doctor_followup = False
+                nlu_result = replace(
+                    nlu_result,
+                    resolved_ids=replace(
+                        nlu_result.resolved_ids,
+                        doctor_id=str(antecedent["id"]),
+                    ),
+                )
+                # Only correct intent when it isn't already doctor-related —
+                # NLU usually gets "can she see children" right on its own
+                # (confirmed live); this backstops the case where it
+                # doesn't (e.g. misroutes to off_topic/medical_question).
+                if nlu_result.intent not in (
+                    Intent.DOCTOR_SEARCH,
+                    Intent.DOCTOR_AVAILABILITY,
+                    Intent.BOOK_APPOINTMENT,
+                    Intent.RESCHEDULE_APPOINTMENT,
+                ):
+                    nlu_result = replace(
+                        nlu_result,
+                        intent=Intent.DOCTOR_SEARCH,
+                        confidence=max(float(nlu_result.confidence or 0), 0.8),
+                        clarification_needed=False,
+                        is_off_topic=False,
+                    )
+
         # ── 2. Planner (no I/O) → ExecutionPlan ─────────────────────────────
         t0 = time.perf_counter()
         facts = build_planner_facts(
@@ -425,6 +533,9 @@ class ChatEngine:
             pin_amendment=pin_amendment,
             ordinal_doctor_id=(ordinal_doctor or {}).get("id"),
             preview_only=preview_only,
+            gender_question=gender_question,
+            doctor_pronoun_ambiguous=doctor_pronoun_ambiguous,
+            doctor_pronoun_resolved=doctor_pronoun_resolved,
         )
         exec_plan = build_execution_plan(nlu=nlu_result, facts=facts)
         nlu_result = apply_plan_to_nlu(nlu_result, exec_plan)
@@ -456,6 +567,12 @@ class ChatEngine:
 
                 response_text = compose_session_recall(
                     session_recall_field, timeline  # type: ignore[has-type]
+                )
+            elif exec_plan.direct_mode == "gender_unsupported":
+                response_text = self._gender_unsupported_reply()
+            elif exec_plan.direct_mode == "doctor_pronoun_ambiguous":
+                response_text = self._doctor_pronoun_ambiguous_reply(
+                    timeline.shown_doctors  # type: ignore[has-type]
                 )
             elif exec_plan.doctor_followup and last_doctor:
                 response_text = self._doctor_followup_reply(last_doctor)
@@ -942,6 +1059,19 @@ class ChatEngine:
             "booking under that name. I can help you choose from the clinic's listed "
             "doctors or search by specialty instead."
         )
+
+    def _gender_unsupported_reply(self) -> str:
+        return (
+            "Our doctor profiles don't include gender information, so I can't filter "
+            "by that. I can tell you about specialties, services offered, or "
+            "availability instead — would that help?"
+        )
+
+    def _doctor_pronoun_ambiguous_reply(self, shown_doctors: list[dict[str, Any]]) -> str:
+        names = [d.get("name") for d in (shown_doctors or []) if d.get("name")]
+        if len(names) >= 2:
+            return f"Do you mean {' or '.join(names[:3])}?"
+        return "Which doctor did you mean?"
 
     def _fast_path(self, decision: Any, message: str, clinic: Any) -> str:
         from apps.chatbot.nlu.schemas import Route
