@@ -12,7 +12,7 @@ import { cn } from "@/lib/utils";
 import { hydrateHistoryMessages } from "@/features/chat/message-parser";
 import { MessageRenderer } from "@/features/chat/messages";
 import { useConversationMessages, useConversations, useAnalyticsOverview } from "@/hooks/api";
-import { MetricStat } from "@/components/dashboard/charts";
+import { GlyphStat } from "@/components/dashboard/insights";
 import type { ConversationSummary } from "@/types/api";
 
 const PAGE_SIZE = 30;
@@ -92,13 +92,25 @@ export default function ConversationsPage() {
         description="Patient conversations from your chat widget — read-only."
       />
       <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <MetricStat label="Total" value={inbox?.total ?? data?.count ?? "—"} />
-        <MetricStat label="Active" value={inbox?.active ?? "—"} />
-        <MetricStat label="Closed" value={inbox?.closed ?? "—"} />
-        <MetricStat
+        <GlyphStat
+          label="Total conversations"
+          value={(inbox?.total ?? data?.count ?? 0).toLocaleString()}
+          glyph="chat"
+        />
+        <GlyphStat
+          label="Active"
+          value={(inbox?.active ?? 0).toLocaleString()}
+          glyph="pulse"
+        />
+        <GlyphStat
+          label="Closed"
+          value={(inbox?.closed ?? 0).toLocaleString()}
+          glyph="booking"
+        />
+        <GlyphStat
           label="Needs attention"
-          value={inbox?.escalated ?? "—"}
-          accent="amber"
+          value={(inbox?.escalated ?? 0).toLocaleString()}
+          glyph="people"
         />
       </div>
       <div className="flex h-[calc(100vh-280px)] min-h-[480px] gap-4">
