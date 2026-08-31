@@ -1,8 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/dashboard/page-header";
+import { WorkspaceRelated } from "@/components/dashboard/workspace-related";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -15,13 +17,17 @@ import { useAuth } from "@/providers/auth-provider";
 import { cn } from "@/lib/utils";
 
 const SECTIONS = [
-  { id: "general", label: "General" },
-  { id: "booking", label: "Booking & verification" },
+  { id: "workspace", label: "Workspace" },
+  { id: "booking", label: "Booking" },
   { id: "widget", label: "Widget" },
-  { id: "features", label: "Feature flags" },
-  { id: "security", label: "Security" },
   { id: "notifications", label: "Notifications" },
 ] as const;
+
+type SectionId = (typeof SECTIONS)[number]["id"];
+
+function isSectionId(value: string | null): value is SectionId {
+  return SECTIONS.some((s) => s.id === value);
+}
 
 function BookingSection() {
   const { data, isLoading } = useWidgetSettings();
@@ -59,14 +65,17 @@ function BookingSection() {
 
   return (
     <div className="space-y-4">
-      <h2 className="text-sm font-semibold">Booking & verification</h2>
-      <p className="text-sm text-muted-foreground">
-        Patient verification mode is{" "}
-        <code className="rounded bg-muted px-1">
-          {data?.configuration.booking?.verification_mode ?? "sms"}
-        </code>
-        . Change it from Chatbot settings.
-      </p>
+      <div>
+        <h2 className="text-sm font-semibold text-foreground">Booking</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Lead time and cancellation copy for the patient widget. Identity
+          verification mode is{" "}
+          <code className="rounded-md bg-muted px-1.5 py-0.5 text-xs text-foreground">
+            {data?.configuration.booking?.verification_mode ?? "sms"}
+          </code>
+          — change it from Chatbot when that control ships.
+        </p>
+      </div>
       <div className="grid gap-4 sm:grid-cols-2">
         <div className="space-y-1.5">
           <Label>Booking lead time (hours)</Label>
@@ -127,7 +136,13 @@ function WidgetSection() {
 
   return (
     <div className="space-y-5">
-      <h2 className="text-sm font-semibold">Widget</h2>
+      <div>
+        <h2 className="text-sm font-semibold text-foreground">Widget</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Greeting and appearance patients see on your site. Use Chatbot to
+          QA the live assistant.
+        </p>
+      </div>
       <div className="space-y-1.5">
         <Label>Greeting</Label>
         <Input value={greeting} onChange={(e) => setGreeting(e.target.value)} />
@@ -145,85 +160,106 @@ function WidgetSection() {
   );
 }
 
-export default function SettingsPage() {
-  const [section, setSection] = useState<(typeof SECTIONS)[number]["id"]>(
-    "general"
+function WorkspaceSection() {
+  return (
+    <div className="space-y-3">
+      <div>
+        <h2 className="text-sm font-semibold text-foreground">Workspace</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Settings is for booking rules, the public widget, and notifications.
+          Clinic identity and your staff login are separate so they are not
+          edited in two places.
+        </p>
+      </div>
+      <ul className="space-y-2 text-sm text-muted-foreground">
+        <li>
+          <span className="font-medium text-foreground">Clinic profile</span>
+          {" — "}
+          practice name, address, and clinic contact.
+        </li>
+        <li>
+          <span className="font-medium text-foreground">Business hours</span>
+          {" — "}
+          weekly open and close times used for booking.
+        </li>
+        <li>
+          <span className="font-medium text-foreground">Your account</span>
+          {" — "}
+          staff name, email, and password (avatar menu).
+        </li>
+      </ul>
+    </div>
   );
+}
+
+function SettingsBody() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const fromUrl = searchParams.get("tab");
+  const section: SectionId = isSectionId(fromUrl) ? fromUrl : "workspace";
+
+  function setSection(id: SectionId) {
+    router.replace(`/dashboard/settings?tab=${id}`, { scroll: false });
+  }
 
   return (
-    <div>
-      <PageHeader title="Settings" description="Workspace and booking preferences." />
+    <div className="max-w-5xl">
+      <PageHeader
+        title="Settings"
+        description="Workspace preferences for booking, the patient widget, and notifications."
+      />
       <div className="flex flex-col gap-6 lg:flex-row">
-        <nav className="flex shrink-0 gap-1 overflow-x-auto lg:w-48 lg:flex-col">
+        <nav
+          aria-label="Settings sections"
+          className="flex shrink-0 gap-1 overflow-x-auto lg:w-48 lg:flex-col"
+        >
           {SECTIONS.map((s) => (
             <button
               key={s.id}
               type="button"
               onClick={() => setSection(s.id)}
               className={cn(
-                "rounded-xl px-3 py-2 text-left text-sm whitespace-nowrap",
+                "rounded-lg px-3 py-2 text-left text-sm whitespace-nowrap",
                 section === s.id
                   ? "bg-primary/10 font-medium text-primary"
-                  : "text-muted-foreground hover:bg-muted"
+                  : "text-muted-foreground hover:bg-muted hover:text-foreground"
               )}
             >
               {s.label}
             </button>
           ))}
         </nav>
-        <div className="min-w-0 flex-1 rounded-2xl border border-border bg-card p-5">
-          {section === "general" ? (
-            <div className="space-y-3">
-              <h2 className="text-sm font-semibold">General</h2>
-              <p className="text-sm text-muted-foreground">
-                Clinic name, timezone, and contact details are managed under
-                Clinic for now.
-              </p>
-              <a
-                href="/dashboard/clinic"
-                className="inline-flex h-8 items-center rounded-lg border border-border px-3 text-sm hover:bg-muted"
-              >
-                Open clinic profile
-              </a>
-            </div>
-          ) : null}
+        <div className="min-w-0 flex-1 rounded-xl bg-card p-5 ring-1 ring-foreground/6">
+          {section === "workspace" ? <WorkspaceSection /> : null}
           {section === "booking" ? <BookingSection /> : null}
           {section === "widget" ? <WidgetSection /> : null}
-          {section === "features" ? (
-            <div className="space-y-2">
-              <h2 className="text-sm font-semibold">Feature flags</h2>
-              <ul className="list-inside list-disc text-sm text-muted-foreground">
-                <li>ai_chat, booking, knowledge_base, analytics</li>
-                <li>email_otp, sms_otp</li>
-                <li>doctor_portal</li>
-              </ul>
-            </div>
-          ) : null}
-          {section === "security" ? (
-            <div className="space-y-2">
-              <h2 className="text-sm font-semibold">Security</h2>
-              <p className="text-sm text-muted-foreground">
-                Change password from Profile. 2FA is deferred.
-              </p>
-              <a
-                href="/dashboard/profile"
-                className="inline-flex h-8 items-center rounded-lg border border-border px-3 text-sm hover:bg-muted"
-              >
-                Open profile
-              </a>
-            </div>
-          ) : null}
           {section === "notifications" ? (
             <div className="space-y-2">
-              <h2 className="text-sm font-semibold">Notifications</h2>
+              <h2 className="text-sm font-semibold text-foreground">
+                Notifications
+              </h2>
               <p className="text-sm text-muted-foreground">
-                Staff verification and password reset use NotificationService
-                (console/SMTP). Patient OTP uses SMS or email providers.
+                Staff verification and password reset use the platform
+                notification service (console or SMTP). Patient OTP uses SMS
+                or email providers configured for the clinic.
               </p>
             </div>
           ) : null}
         </div>
       </div>
+      <WorkspaceRelated current="settings" />
     </div>
+  );
+}
+
+export default function SettingsPage() {
+  return (
+    <Suspense
+      fallback={
+        <p className="text-sm text-muted-foreground">Loading settings…</p>
+      }
+    >
+      <SettingsBody />
+    </Suspense>
   );
 }
