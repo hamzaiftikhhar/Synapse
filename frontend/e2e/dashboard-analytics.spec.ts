@@ -2,10 +2,11 @@ import { execSync } from "node:child_process";
 import { expect, test } from "@playwright/test";
 
 const REPO_ROOT = "/Users/apple/development/Synapse";
+const PYTHON = `${REPO_ROOT}/.venv/bin/python`;
 
 function djangoShell(code: string): string {
   const out = execSync(
-    `python manage.py shell -c '${code.replace(/'/g, "'\\''")}'`,
+    `${PYTHON} manage.py shell -c '${code.replace(/'/g, "'\\''")}'`,
     { cwd: REPO_ROOT, encoding: "utf-8" }
   );
   const lines = out.trim().split("\n");
@@ -101,14 +102,16 @@ print("ok")
       timeout: 15_000,
     });
     await expect(page.getByText("Understand how patients interact with Synapse.")).toBeVisible();
+    await expect(page.getByText("Appointments today")).toBeVisible();
+    await expect(page.getByText("Patients with upcoming visits")).toBeVisible();
     await expect(page.getByText("Conversation volume")).toBeVisible();
     await expect(page.getByText("No conversations yet")).toBeVisible();
-    // exact: true — "Appointments by specialty" is a second, later-added
-    // panel heading that also contains the word "Appointments".
     await expect(page.getByRole("heading", { name: "Appointments", exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Patients", exact: true })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Providers" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "AI usage" })).toBeVisible();
+    await expect(page.getByText("Patients by appointment count")).toHaveCount(0);
+    await expect(page.getByText("Appointments by provider")).toHaveCount(0);
+    await expect(page.getByText("Provider performance")).toHaveCount(0);
   });
 
   test("failed overview request shows a retryable error", async ({ page }) => {
