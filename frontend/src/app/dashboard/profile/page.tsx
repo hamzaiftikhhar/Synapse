@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/dashboard/page-header";
+import { WorkspaceRelated } from "@/components/dashboard/workspace-related";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -67,14 +68,16 @@ export default function ProfilePage() {
     }
   }
 
+  const isPlatform = user?.role === "SUPER_ADMIN" && !clinic;
+
   return (
-    <div>
+    <div className="max-w-3xl">
       <PageHeader
-        title="Profile"
-        description="Your staff account. Clinic owners see their tenant; platform operators do not need one."
+        title="Your account"
+        description="This is your staff login — name, email, and password. Clinic name and address are on Clinic profile."
       />
 
-      <div className="grid max-w-3xl gap-5 lg:grid-cols-5">
+      <div className="grid gap-5 lg:grid-cols-5">
         <Card className="lg:col-span-3">
           <CardHeader>
             <CardTitle>Details</CardTitle>
@@ -115,13 +118,15 @@ export default function ProfilePage() {
             </div>
             <div className="flex items-center justify-between gap-3">
               <span className="text-muted-foreground">Workspace</span>
-              <span className="text-right font-medium text-navy">
+              <span className="text-right font-medium text-foreground">
                 {clinic?.name ?? (user?.role === "SUPER_ADMIN" ? "Platform" : "—")}
               </span>
             </div>
             <div className="flex items-center justify-between gap-3">
               <span className="text-muted-foreground">Verified</span>
-              <span>{user?.email_verified ? "Yes" : "No"}</span>
+              <span className="text-foreground">
+                {user?.email_verified ? "Yes" : "No"}
+              </span>
             </div>
           </CardContent>
         </Card>
@@ -163,6 +168,8 @@ export default function ProfilePage() {
           </CardContent>
         </Card>
       </div>
+
+      {isPlatform ? null : <WorkspaceRelated current="profile" />}
     </div>
   );
 }
