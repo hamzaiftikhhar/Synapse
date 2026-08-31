@@ -67,7 +67,10 @@ export function DashboardTopbar() {
       <div className="flex items-center gap-1">
         <ThemeToggle />
         <DropdownMenu>
-          <DropdownMenuTrigger className="inline-flex h-8 items-center gap-2 rounded-full border border-border bg-background py-1 pr-3 pl-1 text-sm transition-colors hover:bg-muted">
+          <DropdownMenuTrigger
+            aria-label="Account menu"
+            className="inline-flex h-8 items-center gap-2 rounded-full border border-border bg-background py-1 pr-3 pl-1 text-sm transition-colors hover:bg-muted"
+          >
             <span className="flex size-6 items-center justify-center rounded-full bg-primary text-[11px] font-semibold text-primary-foreground">
               {(user?.first_name?.[0] || user?.email?.[0] || "?").toUpperCase()}
             </span>
