@@ -131,13 +131,18 @@ export default function ChatbotQaPage() {
           </CardHeader>
           <CardContent className="space-y-3 text-sm text-muted-foreground">
             <p>
-              {/* TODO: Backend endpoint required — chatbot branding / greeting config */}
-              Widget branding, greeting copy, and feature flags will land here
-              once clinic chatbot config APIs exist.
+              Greeting, colors, and widget chrome are edited under{" "}
+              <Link
+                href="/dashboard/settings?tab=widget"
+                className="font-medium text-primary hover:underline"
+              >
+                Settings → Widget
+              </Link>
+              . This page is for live QA of the assistant.
             </p>
             <p>
-              Meanwhile the floating widget is available on every portal page
-              and the marketing site. Preview patient-facing tone from{" "}
+              The same floating widget is on every portal page. Preview
+              patient-facing tone from{" "}
               <Link href="/" className="text-primary hover:underline">
                 the landing page
               </Link>
