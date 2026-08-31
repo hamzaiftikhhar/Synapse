@@ -156,7 +156,13 @@ function NavSection({
           open ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
         )}
       >
-        <div className="min-h-0 overflow-hidden">
+        <div
+          className={cn(
+            "min-h-0 overflow-hidden",
+            !open && "invisible pointer-events-none"
+          )}
+          inert={!open || undefined}
+        >
           <div className="space-y-0.5 pb-0.5">
             {group.items.map((item) => (
               <NavLink

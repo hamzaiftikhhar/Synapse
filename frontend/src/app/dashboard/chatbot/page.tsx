@@ -13,10 +13,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useAuth } from "@/providers/auth-provider";
 import { useAnalyticsOverview } from "@/hooks/api";
+import { GlyphStat } from "@/components/dashboard/insights";
 import {
   AnalyticsAreaChart,
   ChartPanel,
-  MetricStat,
   seriesHasValues,
 } from "@/components/dashboard/charts";
 
@@ -33,15 +33,20 @@ export default function ChatbotQaPage() {
       />
 
       <div className="mb-6 grid gap-3 sm:grid-cols-3">
-        <MetricStat
+        <GlyphStat
           label="Total conversations"
-          value={overview.data?.summary.conversations ?? "—"}
+          value={(overview.data?.summary.conversations ?? 0).toLocaleString()}
+          glyph="chat"
         />
-        <MetricStat label="Active" value={overview.data?.ops.inbox.active ?? "—"} />
-        <MetricStat
+        <GlyphStat
+          label="Active"
+          value={(overview.data?.ops.inbox.active ?? 0).toLocaleString()}
+          glyph="pulse"
+        />
+        <GlyphStat
           label="Escalated"
-          value={overview.data?.ops.inbox.escalated ?? "—"}
-          accent="amber"
+          value={(overview.data?.ops.inbox.escalated ?? 0).toLocaleString()}
+          glyph="people"
         />
       </div>
       <div className="mb-6">

@@ -5,10 +5,10 @@ import { Ban, Calendar, Pencil, Plus, Search } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { DataTableShell, EmptyState } from "@/components/dashboard/shell";
+import { GlyphStat } from "@/components/dashboard/insights";
 import {
   AnalyticsAreaChart,
   ChartPanel,
-  MetricStat,
   seriesHasValues,
 } from "@/components/dashboard/charts";
 import { Badge } from "@/components/ui/badge";
@@ -182,16 +182,25 @@ export default function AppointmentsPage() {
         }
       />
       <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <MetricStat label="Today" value={weekly.data?.ops.appointments_today ?? "—"} />
-        <MetricStat label="Upcoming" value={weekly.data?.ops.appointments_upcoming ?? "—"} />
-        <MetricStat
-          label="Completed"
-          value={weekly.data?.ops.appointments_completed ?? "—"}
-          accent="green"
+        <GlyphStat
+          label="Appointments today"
+          value={(weekly.data?.ops.appointments_today ?? 0).toLocaleString()}
+          glyph="calendar"
         />
-        <MetricStat
+        <GlyphStat
+          label="Upcoming"
+          value={(weekly.data?.ops.appointments_upcoming ?? 0).toLocaleString()}
+          glyph="booking"
+        />
+        <GlyphStat
+          label="Completed"
+          value={(weekly.data?.ops.appointments_completed ?? 0).toLocaleString()}
+          glyph="pulse"
+        />
+        <GlyphStat
           label="Cancelled"
-          value={weekly.data?.ops.appointments_cancelled ?? "—"}
+          value={(weekly.data?.ops.appointments_cancelled ?? 0).toLocaleString()}
+          glyph="stethoscope"
         />
       </div>
       <div className="mb-4">

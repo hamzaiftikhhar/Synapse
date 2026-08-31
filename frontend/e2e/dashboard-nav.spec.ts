@@ -2,10 +2,11 @@ import { execSync } from "node:child_process";
 import { expect, test } from "@playwright/test";
 
 const REPO_ROOT = "/Users/apple/development/Synapse";
+const PYTHON = `${REPO_ROOT}/.venv/bin/python`;
 
 function djangoShell(code: string): string {
   const out = execSync(
-    `python manage.py shell -c '${code.replace(/'/g, "'\\''")}'`,
+    `${PYTHON} manage.py shell -c '${code.replace(/'/g, "'\\''")}'`,
     { cwd: REPO_ROOT, encoding: "utf-8" }
   );
   const lines = out.trim().split("\n");
@@ -81,12 +82,21 @@ print("ok")
     await expect(nav.getByRole("link", { name: "Chatbot" })).toBeVisible();
 
     // Person account is avatar-only — not a clinic destination.
+    // exact: true — "Clinic profile" would otherwise match "Profile".
+    await expect(nav.getByRole("link", { name: "Profile", exact: true })).toHaveCount(0);
     await expect(nav.getByRole("link", { name: "Your account" })).toHaveCount(0);
-    await expect(nav.getByRole("link", { name: "Profile" })).toHaveCount(0);
 
     // Workspace starts collapsed on Overview.
+    await expect(nav.getByRole("button", { name: "Workspace" })).toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
     await expect(nav.getByRole("link", { name: "Clinic profile" })).toBeHidden();
     await nav.getByRole("button", { name: "Workspace" }).click();
+    await expect(nav.getByRole("button", { name: "Workspace" })).toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
     await expect(nav.getByRole("link", { name: "Clinic profile" })).toBeVisible();
     await expect(nav.getByRole("link", { name: "Settings" })).toBeVisible();
 
@@ -143,11 +153,12 @@ print("ok")
     ).toBeVisible({ timeout: 15_000 });
 
     await page.getByRole("button", { name: "Open menu" }).click();
-    const nav = page.getByRole("navigation", { name: "Clinic portal" });
+    const sheet = page.locator("[data-slot='sheet-content']");
+    const nav = sheet.getByRole("navigation", { name: "Clinic portal" });
     await expect(nav).toBeVisible();
     await expect(nav.getByText("Front desk", { exact: true })).toBeVisible();
 
-    const sidebar = page.getByTestId("dashboard-sidebar");
+    const sidebar = sheet.getByTestId("dashboard-sidebar");
     const box = await sidebar.boundingBox();
     expect(box).toBeTruthy();
     expect(box!.width).toBeGreaterThan(200);

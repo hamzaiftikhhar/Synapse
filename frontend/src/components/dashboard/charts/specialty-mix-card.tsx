@@ -89,14 +89,10 @@ export function SpecialtyMixCard({
             const share = Math.round((row.count / total) * 100);
             const width = Math.max(8, Math.round((row.count / max) * 100));
             return (
-              <li key={row.label} className="relative overflow-hidden rounded-[12px]">
+                  <li key={row.label} className="relative overflow-hidden rounded-[12px] bg-muted/40">
                 <div
-                  className="absolute inset-y-0 left-0 bg-[#1E4D8C]/[0.09]"
+                  className="absolute inset-y-0 left-0 bg-primary/10"
                   style={{ width: `${width}%` }}
-                  aria-hidden
-                />
-                <div
-                  className="absolute inset-y-2 left-0 w-[3px] rounded-full bg-[#1E4D8C]"
                   aria-hidden
                 />
                 <div className="relative flex items-center gap-3 px-4 py-3">
