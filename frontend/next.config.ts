@@ -3,10 +3,18 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   transpilePackages: ["react-pdf", "pdfjs-dist"],
-  // Parent-repo package-lock.json otherwise makes Turbopack treat the
-  // monorepo root as the app root, so `next build` cannot collect pages.
+
   turbopack: {
     root: path.join(__dirname),
+  },
+
+  async rewrites() {
+    return [
+      {
+        source: "/api/v1/:path*",
+        destination: "http://54.245.63.144/api/v1/:path*",
+      },
+    ];
   },
 };
 
