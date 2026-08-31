@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { WorkspaceRelated } from "@/components/dashboard/workspace-related";
 import { CLINIC_TYPE_OPTIONS } from "@/features/onboarding/clinic-types";
 import { useClinicProfile, useUpdateClinicProfile } from "@/hooks/api";
 import { getApiErrorMessage } from "@/lib/api/client";
@@ -44,6 +45,30 @@ const EMPTY_FORM: FormState = {
   postal_code: "",
   country: "",
 };
+
+function FieldGroup({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description?: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className="space-y-4">
+      <div>
+        <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+          {title}
+        </h2>
+        {description ? (
+          <p className="mt-1 text-sm text-muted-foreground">{description}</p>
+        ) : null}
+      </div>
+      {children}
+    </section>
+  );
+}
 
 export default function ClinicPage() {
   const { data, isLoading } = useClinicProfile();
@@ -97,10 +122,10 @@ export default function ClinicPage() {
   }
 
   return (
-    <div>
+    <div className="max-w-3xl">
       <PageHeader
-        title="Clinic"
-        description="Clinic profile, address, and contact details."
+        title="Clinic profile"
+        description="How this practice appears to patients and staff. Hours, booking rules, and your personal login live on their own pages."
         actions={
           <Button onClick={onSave} disabled={update.isPending}>
             {update.isPending ? "Saving…" : "Save"}
@@ -108,82 +133,126 @@ export default function ClinicPage() {
         }
       />
       <Card>
-        <CardContent className="space-y-5">
+        <CardContent className="space-y-8">
           {isLoading && !data ? (
             <p className="text-sm text-muted-foreground">Loading…</p>
           ) : (
             <>
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div className="space-y-1.5">
-                  <Label>Clinic name</Label>
-                  <Input value={form.name} onChange={(e) => set("name", e.target.value)} />
+              <FieldGroup
+                title="Identity"
+                description="Shown on the public widget and in the staff portal."
+              >
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <Label>Clinic name</Label>
+                    <Input
+                      value={form.name}
+                      onChange={(e) => set("name", e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Clinic type</Label>
+                    <Select
+                      value={form.clinic_type || null}
+                      onValueChange={(v) =>
+                        v && set("clinic_type", v as ClinicType)
+                      }
+                      items={CLINIC_TYPE_OPTIONS}
+                    >
+                      <SelectTrigger className="w-full">
+                        <SelectValue placeholder="Select a type" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {CLINIC_TYPE_OPTIONS.map((option) => (
+                          <SelectItem key={option.value} value={option.value}>
+                            {option.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </div>
-                <div className="space-y-1.5">
-                  <Label>Clinic type</Label>
-                  <Select
-                    value={form.clinic_type || null}
-                    onValueChange={(v) => v && set("clinic_type", v as ClinicType)}
-                    items={CLINIC_TYPE_OPTIONS}
-                  >
-                    <SelectTrigger className="w-full">
-                      <SelectValue placeholder="Select a type" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {CLINIC_TYPE_OPTIONS.map((option) => (
-                        <SelectItem key={option.value} value={option.value}>
-                          {option.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div className="space-y-1.5">
-                  <Label>Email</Label>
-                  <Input value={form.email} onChange={(e) => set("email", e.target.value)} />
-                </div>
-                <div className="space-y-1.5">
-                  <Label>Phone</Label>
-                  <Input value={form.phone} onChange={(e) => set("phone", e.target.value)} />
-                </div>
-              </div>
+              </FieldGroup>
+
               <div className="h-px bg-border" />
-              <div className="space-y-1.5">
-                <Label>Street address</Label>
-                <Input value={form.line1} onChange={(e) => set("line1", e.target.value)} />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Address line 2</Label>
-                <Input value={form.line2} onChange={(e) => set("line2", e.target.value)} />
-              </div>
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div className="space-y-1.5">
-                  <Label>City</Label>
-                  <Input value={form.city} onChange={(e) => set("city", e.target.value)} />
+
+              <FieldGroup
+                title="Contact"
+                description="Clinic inbox and phone — not your personal staff account."
+              >
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <Label>Email</Label>
+                    <Input
+                      value={form.email}
+                      onChange={(e) => set("email", e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Phone</Label>
+                    <Input
+                      value={form.phone}
+                      onChange={(e) => set("phone", e.target.value)}
+                    />
+                  </div>
                 </div>
+              </FieldGroup>
+
+              <div className="h-px bg-border" />
+
+              <FieldGroup title="Address">
                 <div className="space-y-1.5">
-                  <Label>State</Label>
-                  <Input value={form.state} onChange={(e) => set("state", e.target.value)} />
-                </div>
-              </div>
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div className="space-y-1.5">
-                  <Label>ZIP / postal code</Label>
+                  <Label>Street address</Label>
                   <Input
-                    value={form.postal_code}
-                    onChange={(e) => set("postal_code", e.target.value)}
+                    value={form.line1}
+                    onChange={(e) => set("line1", e.target.value)}
                   />
                 </div>
                 <div className="space-y-1.5">
-                  <Label>Country</Label>
-                  <Input value={form.country} onChange={(e) => set("country", e.target.value)} />
+                  <Label>Address line 2</Label>
+                  <Input
+                    value={form.line2}
+                    onChange={(e) => set("line2", e.target.value)}
+                  />
                 </div>
-              </div>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <Label>City</Label>
+                    <Input
+                      value={form.city}
+                      onChange={(e) => set("city", e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>State</Label>
+                    <Input
+                      value={form.state}
+                      onChange={(e) => set("state", e.target.value)}
+                    />
+                  </div>
+                </div>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <Label>ZIP / postal code</Label>
+                    <Input
+                      value={form.postal_code}
+                      onChange={(e) => set("postal_code", e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Country</Label>
+                    <Input
+                      value={form.country}
+                      onChange={(e) => set("country", e.target.value)}
+                    />
+                  </div>
+                </div>
+              </FieldGroup>
             </>
           )}
         </CardContent>
       </Card>
+      <WorkspaceRelated current="clinic" />
     </div>
   );
 }
