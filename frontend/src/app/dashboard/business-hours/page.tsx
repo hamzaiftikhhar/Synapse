@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/dashboard/page-header";
+import { WorkspaceRelated } from "@/components/dashboard/workspace-related";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
@@ -39,8 +40,8 @@ export default function BusinessHoursPage() {
   return (
     <div>
       <PageHeader
-        title="Business Hours"
-        description="Weekly open/close schedule for the clinic. Used as the default for booking availability."
+        title="Business hours"
+        description="Weekly open and close times for this clinic. Used as the default for booking availability."
         actions={
           <Button onClick={onSave} disabled={update.isPending}>
             {update.isPending ? "Saving…" : "Save"}
@@ -56,6 +57,7 @@ export default function BusinessHoursPage() {
           )}
         </CardContent>
       </Card>
+      <WorkspaceRelated current="hours" />
     </div>
   );
 }
