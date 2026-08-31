@@ -38,7 +38,11 @@ export function DashboardTopbar() {
           >
             <Menu className="size-4" />
           </SheetTrigger>
-          <SheetContent side="left" className="w-64 p-0">
+          <SheetContent
+            side="left"
+            showCloseButton={false}
+            className="w-64 max-w-[16rem] gap-0 border-sidebar-border bg-sidebar p-0 text-sidebar-foreground data-[side=left]:w-64 data-[side=left]:sm:max-w-[16rem]"
+          >
             <DashboardSidebar onNavigate={() => setOpen(false)} />
           </SheetContent>
         </Sheet>
@@ -85,7 +89,7 @@ export function DashboardTopbar() {
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
             <DropdownMenuItem onClick={() => router.push("/dashboard/profile")}>
-              Profile
+              Your account
             </DropdownMenuItem>
             {isSuper && !inClinicAsSuper ? (
               <DropdownMenuItem
