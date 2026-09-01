@@ -192,6 +192,72 @@ class AnalyticsOverviewTests(TestCase):
         self.assertGreaterEqual(body["ops"]["inbox"]["escalated"], 1)
         self.assertGreaterEqual(body["ops"]["inbox"]["total"], 1)
 
+    def test_today_schedule_lists_only_todays_appointments_by_time(self):
+        # Clinic-local "today" (AppointmentWorld defaults to America/Los_Angeles) —
+        # matches how the backend computes today_start/today_end, so this stays
+        # correct regardless of what UTC time the test happens to run at.
+        now_local = timezone.now().astimezone(LA)
+        today_early = now_local.replace(hour=9, minute=0, second=0, microsecond=0)
+        today_late = now_local.replace(hour=14, minute=0, second=0, microsecond=0)
+        tomorrow = now_local + timedelta(days=1)
+        self.world.create_row(
+            status=AppointmentStatus.CONFIRMED,
+            start_time=today_late, end_time=today_late + timedelta(minutes=30),
+        )
+        self.world.create_row(
+            status=AppointmentStatus.PENDING,
+            start_time=today_early, end_time=today_early + timedelta(minutes=30),
+            confirmation_code=unique_code(), patient=self.world.patient_b,
+        )
+        self.world.create_row(
+            status=AppointmentStatus.CONFIRMED,
+            start_time=tomorrow, end_time=tomorrow + timedelta(minutes=30),
+            confirmation_code=unique_code(),
+        )
+        body = self.client.get(OVERVIEW, headers=self.world.headers).json()
+        schedule = body["today_schedule"]
+        # Only the two "today" rows, ordered by start_time (earliest first).
+        self.assertEqual(len(schedule), 2)
+        self.assertEqual(schedule[0]["status"], "pending")
+        self.assertEqual(schedule[1]["status"], "confirmed")
+        self.assertTrue(schedule[0]["patient_name"])
+        self.assertTrue(schedule[0]["doctor_name"])
+
+    def test_today_schedule_empty_when_nothing_today(self):
+        body = self.client.get(OVERVIEW, headers=self.world.headers).json()
+        self.assertEqual(body["today_schedule"], [])
+
+    def test_next_appointment_is_the_soonest_future_visit_regardless_of_day(self):
+        now = timezone.now()
+        soon = now + timedelta(hours=2)
+        later = now + timedelta(days=3)
+        self.world.create_row(
+            status=AppointmentStatus.CONFIRMED,
+            start_time=later, end_time=later + timedelta(minutes=30),
+        )
+        self.world.create_row(
+            status=AppointmentStatus.PENDING,
+            start_time=soon, end_time=soon + timedelta(minutes=30),
+            confirmation_code=unique_code(), patient=self.world.patient_b,
+        )
+        body = self.client.get(OVERVIEW, headers=self.world.headers).json()
+        self.assertIsNotNone(body["next_appointment"])
+        self.assertEqual(body["next_appointment"]["status"], "pending")
+
+    def test_next_appointment_null_when_nothing_upcoming(self):
+        body = self.client.get(OVERVIEW, headers=self.world.headers).json()
+        self.assertIsNone(body["next_appointment"])
+
+    def test_next_appointment_excludes_cancelled_and_completed(self):
+        now = timezone.now()
+        soon = now + timedelta(hours=1)
+        self.world.create_row(
+            status=AppointmentStatus.CANCELLED,
+            start_time=soon, end_time=soon + timedelta(minutes=30),
+        )
+        body = self.client.get(OVERVIEW, headers=self.world.headers).json()
+        self.assertIsNone(body["next_appointment"])
+
 
 class AnalyticsInsightsTests(TestCase):
     def setUp(self):

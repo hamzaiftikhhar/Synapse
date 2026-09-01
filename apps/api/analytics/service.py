@@ -193,6 +193,27 @@ def overview(clinic: Clinic, *, days: int) -> dict:
     today_end = today_start + timedelta(days=1)
     upcoming_qs = appt_qs.filter(start_time__gte=now, status__in=live_statuses)
 
+    # Dashboard "Today's schedule" module — every appointment today
+    # regardless of status (a completed one earlier today is still part of
+    # today's picture), not just the count already in ops.appointments_today.
+    today_schedule = [
+        _appointment_row(appt)
+        for appt in appt_qs.filter(
+            start_time__gte=today_start, start_time__lt=today_end
+        )
+        .select_related("patient", "doctor", "service")
+        .order_by("start_time")
+    ]
+    # Fallback for the empty-today case — the single next upcoming visit,
+    # whatever day it falls on. Reuses upcoming_qs (already the "live,
+    # future" filter ops.appointments_upcoming counts).
+    next_appt = (
+        upcoming_qs.select_related("patient", "doctor", "service")
+        .order_by("start_time")
+        .first()
+    )
+    next_appointment = _appointment_row(next_appt) if next_appt else None
+
     return {
         "range_days": days,
         "timezone": clinic.timezone,
@@ -232,6 +253,8 @@ def overview(clinic: Clinic, *, days: int) -> dict:
         "appointments_by_specialty": specialties,
         "appointments_by_specialty_more": specialties_more,
         "appointment_source_radar": _source_radar(in_window),
+        "today_schedule": today_schedule,
+        "next_appointment": next_appointment,
     }
 
 

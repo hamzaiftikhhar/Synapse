@@ -1090,6 +1090,8 @@ export type AnalyticsOverview = {
   appointments_by_specialty: AnalyticsNamedCount[];
   appointments_by_specialty_more: number;
   appointment_source_radar: AppointmentSourceRadarPoint[];
+  today_schedule: AnalyticsCalendarUpcoming[];
+  next_appointment: AnalyticsCalendarUpcoming | null;
 };
 
 export type AppointmentSourceRadarPoint = {
