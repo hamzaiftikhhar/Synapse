@@ -1,10 +1,9 @@
 "use client";
 
 import { useAnalyticsBreakdown } from "@/hooks/api";
-import { AnalyticsHorizontalBarChart } from "./bars-donut";
 import { ChartPanel } from "./chart-card";
 import type { AnalyticsRange } from "./colors";
-import { CHART } from "./colors";
+import { RankedBreakdownList } from "./ranked-breakdown-list";
 
 export function BreakdownBarCard({
   dimension,
@@ -13,7 +12,7 @@ export function BreakdownBarCard({
   emptyTitle,
   emptyDescription,
   range = "30d",
-  height = 220,
+  valueLabel = "appointments",
 }: {
   dimension: "doctor" | "service" | "specialty" | "insurance";
   title: string;
@@ -21,7 +20,7 @@ export function BreakdownBarCard({
   emptyTitle: string;
   emptyDescription: string;
   range?: AnalyticsRange;
-  height?: number;
+  valueLabel?: string;
 }) {
   const query = useAnalyticsBreakdown(dimension, range);
   const items = query.data?.items ?? [];
@@ -43,7 +42,7 @@ export function BreakdownBarCard({
         ) : null
       }
     >
-      <AnalyticsHorizontalBarChart data={items} height={height} color={CHART.purple} />
+      <RankedBreakdownList items={items} valueLabel={valueLabel} />
     </ChartPanel>
   );
 }

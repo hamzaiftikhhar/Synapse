@@ -1,8 +1,8 @@
-export { CHART, STATUS_COLOR, RANGE_OPTIONS, type AnalyticsRange } from "./colors";
+export { CHART, DOCTOR_STATUS_COLORS, STATUS_COLOR, RANGE_OPTIONS, type AnalyticsRange } from "./colors";
 export { ChartCard, ChartEmptyState, ChartSkeleton, ChartErrorState, ChartPanel } from "./chart-card";
 export { DateRangeSelector } from "./date-range-selector";
 export { MetricStat, MetricChange } from "./metric-stat";
-export { AnalyticsTooltip } from "./tooltip";
+export { AnalyticsTooltip, rechartsTooltipWrapperStyle } from "./tooltip";
 export { AnalyticsLegend } from "./legend";
 export { AnalyticsLineChart, AnalyticsAreaChart } from "./line-area";
 export {
@@ -11,6 +11,8 @@ export {
   AnalyticsDonutChart,
 } from "./bars-donut";
 export { BreakdownBarCard } from "./breakdown-card";
+export { DoctorStatusStackCard } from "./doctor-status-stack-card";
+export { RankedBreakdownList } from "./ranked-breakdown-list";
 export { AppointmentSourceRadarCard } from "./source-radar-card";
 export { BookingCalendarCard } from "./booking-calendar-card";
 export { AppointmentStatusCard } from "./appointment-status-card";
