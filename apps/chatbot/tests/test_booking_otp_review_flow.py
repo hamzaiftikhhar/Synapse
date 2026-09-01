@@ -69,7 +69,7 @@ class StandardOtpBookingFlowTests(TestCase):
         self.slot_start = start.isoformat()
         self.slot_end = end.isoformat()
 
-    def _start_and_submit_details(self, *, phone="+15559991234", dob="1990-01-01"):
+    def _start_and_submit_details(self, *, email="sam@example.com", dob="1990-01-01"):
         started = BookingService.start(
             clinic=self.clinic,
             chat_session=self.chat_session,
@@ -83,15 +83,15 @@ class StandardOtpBookingFlowTests(TestCase):
             chat_session=self.chat_session,
             booking_id=started["booking_id"],
             action="submit_details",
-            value={"first_name": "Sam", "phone": phone, "date_of_birth": dob},
+            value={"first_name": "Sam", "email": email, "date_of_birth": dob},
         )
         self.assertEqual(submitted["step"], BookingStep.OTP.value)
-        return started["booking_id"], phone
+        return started["booking_id"], email
 
     def test_verify_otp_lands_on_review_without_creating_an_appointment(self):
-        booking_id, phone = self._start_and_submit_details()
+        booking_id, email = self._start_and_submit_details()
         sent = send_otp(
-            clinic=self.clinic, phone=phone,
+            clinic=self.clinic, email=email,
             session_token=self.chat_session.session_token,
         )
 
@@ -106,9 +106,9 @@ class StandardOtpBookingFlowTests(TestCase):
         self.assertFalse(Appointment.objects.filter(clinic=self.clinic).exists())
 
     def test_confirm_review_after_verify_otp_creates_the_appointment_exactly_once(self):
-        booking_id, phone = self._start_and_submit_details()
+        booking_id, email = self._start_and_submit_details()
         sent = send_otp(
-            clinic=self.clinic, phone=phone,
+            clinic=self.clinic, email=email,
             session_token=self.chat_session.session_token,
         )
         BookingService.apply_step(
@@ -131,9 +131,9 @@ class StandardOtpBookingFlowTests(TestCase):
         )
 
     def test_wrong_otp_code_stays_on_otp_step_no_appointment(self):
-        booking_id, phone = self._start_and_submit_details()
+        booking_id, email = self._start_and_submit_details()
         send_otp(
-            clinic=self.clinic, phone=phone,
+            clinic=self.clinic, email=email,
             session_token=self.chat_session.session_token,
         )
 
@@ -152,14 +152,14 @@ class StandardOtpBookingFlowTests(TestCase):
         from datetime import date
 
         Patient.objects.create(
-            clinic=self.clinic, phone="+15559995678", first_name="Returning",
-            last_name="Patient", date_of_birth=date(1980, 6, 15),
+            clinic=self.clinic, phone="+15559995678", email="returning@example.com",
+            first_name="Returning", last_name="Patient", date_of_birth=date(1980, 6, 15),
         )
-        booking_id, phone = self._start_and_submit_details(
-            phone="+15559995678", dob="1999-12-31"
+        booking_id, email = self._start_and_submit_details(
+            email="returning@example.com", dob="1999-12-31"
         )
         sent = send_otp(
-            clinic=self.clinic, phone=phone,
+            clinic=self.clinic, email=email,
             session_token=self.chat_session.session_token,
         )
 
@@ -180,7 +180,7 @@ class StandardOtpBookingFlowTests(TestCase):
         session's own step machine already gates this (confirm_review
         requires session.step == REVIEW, which only verify_otp/the
         shortcut paths ever set)."""
-        booking_id, _phone = self._start_and_submit_details()
+        booking_id, _email = self._start_and_submit_details()
         with self.assertRaises(BookingError):
             BookingService.apply_step(
                 clinic=self.clinic,
@@ -231,7 +231,7 @@ class EditDetailsAtReviewTests(TestCase):
         self.slot_start = start.isoformat()
         self.slot_end = (start + timedelta(minutes=30)).isoformat()
 
-    def _reach_review(self, phone="+15559993456"):
+    def _reach_review(self, email="sam@example.com"):
         started = BookingService.start(
             clinic=self.clinic,
             chat_session=self.chat_session,
@@ -245,10 +245,10 @@ class EditDetailsAtReviewTests(TestCase):
             chat_session=self.chat_session,
             booking_id=started["booking_id"],
             action="submit_details",
-            value={"first_name": "Sam", "phone": phone, "date_of_birth": "1990-01-01"},
+            value={"first_name": "Sam", "email": email, "date_of_birth": "1990-01-01"},
         )
         sent = send_otp(
-            clinic=self.clinic, phone=phone,
+            clinic=self.clinic, email=email,
             session_token=self.chat_session.session_token,
         )
         review = BookingService.apply_step(
@@ -309,7 +309,7 @@ class EditDetailsAtReviewTests(TestCase):
 
     def test_edit_details_ignores_phone_and_email_fields(self):
         booking_id, review = self._reach_review()
-        original_phone = review["review"]["phone"]
+        original_email = review["review"]["email"]
         result = BookingService.apply_step(
             clinic=self.clinic,
             chat_session=self.chat_session,
@@ -321,8 +321,8 @@ class EditDetailsAtReviewTests(TestCase):
                 "email": "someone-else@example.com",
             },
         )
-        self.assertEqual(result["review"]["phone"], original_phone)
-        self.assertFalse(result["review"]["email"])
+        self.assertEqual(result["review"]["email"], original_email)
+        self.assertFalse(result["review"]["phone"])
 
     def test_confirmed_appointment_reflects_the_edited_name(self):
         booking_id, _review = self._reach_review()
