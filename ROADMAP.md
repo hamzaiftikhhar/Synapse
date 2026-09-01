@@ -5129,3 +5129,127 @@ dashboard still has a required phone field (`apps/api/patients/schemas.py`
 presumably still requires it) — deliberately left alone as manual CRM
 data entry, a different concern from chatbot verification; flagged in
 case the user wants that changed too later.
+
+---
+
+## ✅ Clinic Dashboard redesign — hierarchy, AI insight, operational modules
+
+**Objective.** User provided a detailed design brief (Linear/Stripe/Vercel/
+Attio-inspired) asking for a hierarchy/UX redesign of the main dashboard —
+explicitly a restructure, not a rebuild: keep every existing metric, chart,
+and data source, reorganize around "what needs my attention" instead of a
+flat wall of equal-weight cards, and add one genuinely new thing (an
+AI-generated insight surface).
+
+**What was already there, reused rather than rebuilt.** The existing
+design system (`InsightCard`, `KpiSparkCard`, `ChartCard`/`ChartPanel`,
+`MetricStat`/`MetricChange`, `STATUS_COLOR`/`STATUS_BADGE_VARIANT`) already
+matched the brief's restraint principles closely — subtle rings not heavy
+borders, token-based color, a real semantic status palette. This phase
+extended that system rather than introducing a second one.
+
+**New, real-data-backed modules (no fabricated metrics):**
+1. **Clinic Pulse** — 4 primary operational tiles (Appointments today,
+   Upcoming, Active conversations, Needs attention), visually distinct
+   from the existing historical KPI row (which stays, relabeled "This
+   period" underneath) via a plainer `PulseTile` (bigger number, no
+   sparkline) and small uppercase section eyebrows.
+2. **Needs Attention** (`needs-attention-card.tsx`) — escalated
+   conversations (`ops.inbox.escalated`) + pending appointments (from
+   `appointment_status`), both already-fetched fields. Empty state: "You're
+   all caught up." No fabricated issue types (missing provider assignment
+   etc. from the brief's examples) — only what the backend actually has.
+3. **Synapse Insight** (`synapse-insight.ts` + `synapse-insight-card.tsx`)
+   — a deterministic, rule-based insight computed entirely from data
+   already on the page (volume change % → specialty concentration % →
+   escalation summary → steady-state fallback), zero new requests, no LLM
+   call. Matches this codebase's own "Python decides, LLM doesn't
+   improvise where determinism will do" bias, applied to a UI insight
+   surface instead of chat routing.
+4. **Today's Schedule** (`today-schedule-card.tsx`) — real per-appointment
+   rows for today (time/patient/provider·service/status badge), with a
+   "next upcoming visit" fallback when today is empty. Required a small
+   **additive backend change**: `overview()` (`apps/api/analytics/
+   service.py`) gained `today_schedule` (every appointment today,
+   any status) and `next_appointment` (the next live one, any day) —
+   new top-level keys on the existing `/analytics/overview` response, no
+   response schema (route has none) so purely additive, no breaking
+   change. Extracted a shared `_appointment_row()` helper, also now used
+   by `calendar_month()`'s existing "upcoming" list (was inline-duplicated
+   there before).
+
+**Also reused for the "metric → chart → drill-down" hierarchy:**
+`ChartCard`/`ChartPanel` gained optional `metrics`/`footer` slots
+(backward-compatible — existing callers that omit them render identically)
+so the Conversations & Appointments panel now shows the two headline
+numbers + change badges above the chart and a "View analytics →"
+drill-down below it, instead of just a bare chart in a card.
+
+**Recent Conversations** gained a status dot (active/escalated/closed,
+reusing the existing `ConversationSummary.status`/`email` fields — no new
+fetch) and the whole row is now a clickable link, per the brief's ask.
+
+**Real bug found and fixed mid-implementation, unrelated to the redesign
+itself:** the long-running `manage.py runserver` process (started earlier
+this session) had **not picked up the `service.py` backend edit** —
+confirmed directly via `curl` against the live server: the response was
+missing `today_schedule`/`next_appointment` entirely, while an in-process
+`manage.py shell` call to the same function returned them correctly. This
+produced a visibly broken "No appointments scheduled today" even though
+`ops.appointments_today` (from the same response) correctly said 3 —
+caught by comparing the Pulse tile against the new card in a live
+screenshot, not assumed away. Root-caused to a stale dev-server reload
+(not a code bug — confirmed by touching the file to force Django's
+StatReloader to restart the worker, then re-verifying via `curl` that the
+new fields appeared). Documented here specifically because it's a sharp
+edge worth remembering: **a long-running dev server can silently miss a
+reload — verify against the actual live response, not just `tsc`/tests,
+before trusting a browser screenshot.**
+
+**Verification — actually run, not just typechecked:** `tsc --noEmit` and
+`eslint` clean on every touched file. Backend:
+`apps.api.analytics apps.chatbot.tests` — **639/640** (the 1 failure is
+the already-diagnosed, unrelated `test_the_earliest_opening_is_not_offered
+_as_a_substitute` date-boundary flake from earlier this session — this
+session's wall-clock has now crossed further into September, same root
+cause, not re-diagnosed, still out of scope). 6 new backend tests for
+`today_schedule`/`next_appointment` (today-only filtering, empty case,
+soonest-regardless-of-day, cancelled/completed exclusion). Live-rendered
+via Playwright against the actual running dev server (not a component
+test) in three states — populated (3 today's appointments, escalated
+conversation, pending appointment, specialty mix), fully empty (every
+module's empty state, including "You're all caught up" and the
+steady-state Synapse Insight sentence), and tablet width (834px, confirms
+responsive collapse to 2-column tiles rather than a single-column wall) —
+zero console errors in any of the three. Screenshots reviewed directly,
+not assumed from code reading.
+
+**Files changed:** `apps/api/analytics/service.py` (`_appointment_row`,
+`today_schedule`/`next_appointment` on `overview()`, `calendar_month()`
+dedup), `apps/api/analytics/tests.py` (+6), `frontend/src/types/api.ts`
+(`AnalyticsOverview.today_schedule`/`.next_appointment`), `frontend/src/
+components/dashboard/charts/chart-card.tsx` (`metrics`/`footer` slots),
+new `frontend/src/components/dashboard/insights/{needs-attention-card,
+synapse-insight,synapse-insight-card,today-schedule-card}.tsx`, `insights/
+index.ts` (new exports), `frontend/src/app/dashboard/page.tsx`
+(full restructure — Clinic Pulse, This period, Synapse Insight + Needs
+Attention, enhanced Conversations & Appointments panel, Today's Schedule +
+Recent Conversations, existing Appointment Status/Specialty
+Mix/Booking Calendar preserved).
+
+**Explicitly preserved, not touched:** every existing metric, chart, and
+data source named in the brief's "must remain available" list — nothing
+was removed, only reorganized. `AppointmentStatusCard`/`SpecialtyMixCard`/
+`AppointmentSourceRadarCard`/`BookingCalendarCard` internals unchanged
+(already matched the brief's per-card hierarchy principle — title +
+description + primary metric baked into the visualization + legend).
+
+**Known limitations:** the "Needs attention" pending-appointments link
+goes to `/dashboard/appointments` generally (no `?status=pending` deep
+link — that page has no query-param filtering support yet, confirmed
+before linking there; adding one wasn't in scope). Recent Conversations
+rows link to the conversations list generally, not a specific
+conversation (no deep-linking support there either, same reason).
+Synapse Insight's "significant change" threshold (±15%) and specialty
+"concentration" threshold (≥40% share) are reasonable starting constants,
+not tuned against real clinic data yet.
