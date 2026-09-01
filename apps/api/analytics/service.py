@@ -570,6 +570,21 @@ def _person_name(obj) -> str:
     return str(getattr(obj, "full_name", "") or "").strip()
 
 
+def _appointment_row(appt) -> dict:
+    """Shared shape for a single appointment row across the dashboard's
+    today-schedule / next-appointment / calendar-upcoming surfaces."""
+    service = getattr(appt, "service", None)
+    return {
+        "id": str(appt.id),
+        "start_time": appt.start_time.isoformat() if appt.start_time else "",
+        "end_time": appt.end_time.isoformat() if appt.end_time else "",
+        "patient_name": _person_name(getattr(appt, "patient", None)),
+        "doctor_name": _person_name(getattr(appt, "doctor", None)),
+        "service_name": str(getattr(service, "name", "") or "").strip(),
+        "status": appt.status or "",
+    }
+
+
 def calendar_month(clinic: Clinic, *, year: int | None, month: int | None) -> dict:
     """Month grid counts (clinic-local days) plus the next upcoming visits."""
     y, m, start, end, now_local, tz = parse_year_month(clinic, year, month)
@@ -595,32 +610,19 @@ def calendar_month(clinic: Clinic, *, year: int | None, month: int | None) -> di
             continue
         days.append({"date": iso, "count": int(row.get("n") or 0)})
 
-    upcoming = []
-    for appt in (
-        Appointment.objects.filter(
-            clinic_id=cid,
-            start_time__gte=dj_timezone.now(),
-            status__in=_UPCOMING_STATUSES,
+    upcoming = [
+        _appointment_row(appt)
+        for appt in (
+            Appointment.objects.filter(
+                clinic_id=cid,
+                start_time__gte=dj_timezone.now(),
+                status__in=_UPCOMING_STATUSES,
+            )
+            .select_related("patient", "doctor", "service")
+            .order_by("start_time")[:3]
         )
-        .select_related("patient", "doctor", "service")
-        .order_by("start_time")[:3]
-    ):
-        start_iso = appt.start_time.isoformat() if appt.start_time else ""
-        end_iso = appt.end_time.isoformat() if appt.end_time else ""
-        if not start_iso:
-            continue
-        service = getattr(appt, "service", None)
-        upcoming.append(
-            {
-                "id": str(appt.id),
-                "start_time": start_iso,
-                "end_time": end_iso,
-                "patient_name": _person_name(getattr(appt, "patient", None)),
-                "doctor_name": _person_name(getattr(appt, "doctor", None)),
-                "service_name": str(getattr(service, "name", "") or "").strip(),
-                "status": appt.status or "",
-            }
-        )
+        if appt.start_time
+    ]
 
     return {
         "year": y,
