@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { MessageSquare } from "lucide-react";
+import { ArrowRight, MessageSquare } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { EmptyState } from "@/components/dashboard/shell";
@@ -16,14 +16,22 @@ import {
   SpecialtyMixCard,
   ChartPanel,
   DateRangeSelector,
+  MetricChange,
   greetingForHour,
   seriesHasValues,
   type AnalyticsRange,
 } from "@/components/dashboard/charts";
 import { CHART } from "@/components/dashboard/charts/colors";
-import { InsightCard, GlyphStat, KpiSparkCard } from "@/components/dashboard/insights";
+import {
+  InsightCard,
+  KpiSparkCard,
+  NeedsAttentionCard,
+  SynapseInsightCard,
+  TodayScheduleCard,
+} from "@/components/dashboard/insights";
 import { useAnalyticsOverview, useConversations } from "@/hooks/api";
 import { useAuth } from "@/providers/auth-provider";
+import { cn } from "@/lib/utils";
 
 function hourInZone(timeZone: string): number {
   const hour = new Intl.DateTimeFormat("en-US", {
@@ -35,11 +43,51 @@ function hourInZone(timeZone: string): number {
   return Number.isFinite(parsed) ? parsed : new Date().getHours();
 }
 
+const CONVERSATION_STATUS_DOT: Record<string, string> = {
+  active: "bg-info",
+  escalated: "bg-destructive",
+  closed: "bg-muted-foreground/40",
+};
+
+/** Quiet primary-metric tile for the Clinic Pulse row — bigger, plainer
+ * number than the historical KpiSparkCard row below it (no sparkline):
+ * this is "what's true right now," not a trend. */
+function PulseTile({
+  label,
+  value,
+  hint,
+  href,
+}: {
+  label: string;
+  value: string | number;
+  hint?: string;
+  href?: string;
+}) {
+  const inner = (
+    <InsightCard className="h-full p-5">
+      <p className="text-[13px] text-muted-foreground">{label}</p>
+      <p className="mt-2 text-[1.9rem] font-semibold leading-none tracking-tight text-navy tabular-nums">
+        {value}
+      </p>
+      {hint ? <p className="mt-2 text-[12px] text-muted-foreground">{hint}</p> : null}
+    </InsightCard>
+  );
+  if (!href) return inner;
+  return (
+    <Link
+      href={href}
+      className="block h-full rounded-[10px] outline-none transition-shadow hover:shadow-[0_1px_0_0_rgba(0,0,0,0.02),0_4px_16px_-4px_rgba(15,23,42,0.12)] focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      {inner}
+    </Link>
+  );
+}
+
 export default function DashboardHomePage() {
   const { clinic, user } = useAuth();
   const [range, setRange] = useState<AnalyticsRange>("30d");
   const overview = useAnalyticsOverview(range);
-  const conversations = useConversations({ limit: 8 });
+  const conversations = useConversations({ limit: 6 });
 
   const timeZone = clinic?.timezone || "UTC";
   const name =
@@ -49,6 +97,11 @@ export default function DashboardHomePage() {
   const trend = data?.conversation_appointment_trend ?? [];
   const specialties = data?.appointments_by_specialty ?? [];
   const recentChats = conversations.data?.results ?? [];
+
+  const pendingAppointments =
+    data?.appointment_status.find((row) => row.status === "pending")?.count ?? 0;
+  const escalatedConversations = data?.ops.inbox.escalated ?? 0;
+  const needsAttentionCount = pendingAppointments + escalatedConversations;
 
   return (
     <div>
@@ -72,6 +125,48 @@ export default function DashboardHomePage() {
         </InsightCard>
       ) : null}
 
+      {/* Clinic Pulse — what's true right now, not a trend. */}
+      <p className="mb-2.5 text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">
+        Clinic pulse
+      </p>
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        {overview.isLoading || !data ? (
+          Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="h-[104px] animate-pulse rounded-[10px] bg-muted/70" />
+          ))
+        ) : (
+          <>
+            <PulseTile
+              label="Appointments today"
+              value={data.ops.appointments_today.toLocaleString()}
+              href="/dashboard/appointments"
+            />
+            <PulseTile
+              label="Upcoming"
+              value={data.ops.appointments_upcoming.toLocaleString()}
+              hint="Confirmed or pending visits ahead"
+              href="/dashboard/appointments"
+            />
+            <PulseTile
+              label="Conversations"
+              value={data.ops.inbox.active.toLocaleString()}
+              hint="Currently active"
+              href="/dashboard/conversations"
+            />
+            <PulseTile
+              label="Needs attention"
+              value={needsAttentionCount.toLocaleString()}
+              hint={needsAttentionCount > 0 ? "Requires action" : "All clear"}
+              href="/dashboard/conversations"
+            />
+          </>
+        )}
+      </div>
+
+      {/* Secondary, historical metrics — same period, trend-oriented. */}
+      <p className="mb-2.5 mt-6 text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">
+        This period
+      </p>
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {overview.isLoading || !summary ? (
           Array.from({ length: 4 }).map((_, i) => (
@@ -111,6 +206,15 @@ export default function DashboardHomePage() {
         )}
       </div>
 
+      {/* Synapse insight + needs attention — the "why" and the "what now." */}
+      <div className="mt-4 grid gap-4 lg:grid-cols-[1.3fr_1fr]">
+        <SynapseInsightCard data={data} isLoading={overview.isLoading} />
+        <NeedsAttentionCard
+          escalatedConversations={escalatedConversations}
+          pendingAppointments={pendingAppointments}
+        />
+      </div>
+
       <div className="mt-4 flex flex-col gap-4 lg:flex-row">
         <ChartPanel
           title="Conversations & Appointments"
@@ -122,6 +226,39 @@ export default function DashboardHomePage() {
                 { label: "Appointments", color: CHART.green },
               ]}
             />
+          }
+          metrics={
+            summary ? (
+              <div className="flex flex-wrap gap-x-8 gap-y-3">
+                <div>
+                  <p className="text-[1.4rem] font-semibold leading-none tracking-tight text-navy tabular-nums">
+                    {summary.conversations.toLocaleString()}
+                  </p>
+                  <p className="mt-1.5 flex items-center gap-1.5 text-[12px] text-muted-foreground">
+                    conversations
+                    <MetricChange value={summary.conversations_change_pct} />
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[1.4rem] font-semibold leading-none tracking-tight text-navy tabular-nums">
+                    {summary.appointments.toLocaleString()}
+                  </p>
+                  <p className="mt-1.5 flex items-center gap-1.5 text-[12px] text-muted-foreground">
+                    appointments
+                    <MetricChange value={summary.appointments_change_pct} />
+                  </p>
+                </div>
+              </div>
+            ) : null
+          }
+          footer={
+            <Link
+              href="/dashboard/analytics"
+              className="inline-flex items-center gap-1 text-[12.5px] font-medium text-primary hover:underline"
+            >
+              View analytics
+              <ArrowRight className="size-3" />
+            </Link>
           }
           isLoading={overview.isLoading}
           isError={overview.isError}
@@ -137,7 +274,7 @@ export default function DashboardHomePage() {
               { key: "conversations", label: "Conversations", color: CHART.purple },
               { key: "appointments", label: "Appointments", color: CHART.green },
             ]}
-            height={280}
+            height={260}
           />
         </ChartPanel>
         <AppointmentSourceRadarCard
@@ -149,27 +286,70 @@ export default function DashboardHomePage() {
         />
       </div>
 
-      <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <GlyphStat
-          label="Appointments today"
-          value={(data?.ops.appointments_today ?? 0).toLocaleString()}
-          glyph="calendar"
+      {/* Today's operational picture + the inbox. */}
+      <div className="mt-4 flex flex-col gap-4 lg:flex-row">
+        <TodayScheduleCard
+          todaySchedule={data?.today_schedule}
+          nextAppointment={data?.next_appointment}
+          timeZone={timeZone}
+          patientsUpcoming={data?.ops.patients_upcoming}
+          doctorsWithUpcoming={data?.ops.doctors_with_upcoming}
+          className="lg:w-[58%]"
         />
-        <GlyphStat
-          label="Patients with upcoming visits"
-          value={(data?.ops.patients_upcoming ?? 0).toLocaleString()}
-          glyph="people"
-        />
-        <GlyphStat
-          label="Providers with upcoming visits"
-          value={(data?.ops.doctors_with_upcoming ?? 0).toLocaleString()}
-          glyph="stethoscope"
-        />
-        <GlyphStat
-          label="Escalated conversations"
-          value={(data?.ops.inbox.escalated ?? 0).toLocaleString()}
-          glyph="chat"
-        />
+
+        <InsightCard overflow="hidden" className="min-w-0 flex-1 lg:w-[42%]">
+          <div className="flex items-center justify-between gap-3 border-b border-border px-5 py-3">
+            <p className="text-sm font-medium text-navy">Recent conversations</p>
+            <Link
+              href="/dashboard/conversations"
+              className="inline-flex items-center gap-1 text-[12.5px] font-medium text-primary hover:underline"
+            >
+              View all
+              <ArrowRight className="size-3" />
+            </Link>
+          </div>
+          {conversations.isLoading ? (
+            <div className="h-48 animate-pulse bg-muted/50" />
+          ) : !recentChats.length ? (
+            <EmptyState
+              icon={MessageSquare}
+              title="No conversations yet"
+              description="Patient chats from the widget will show up here."
+            />
+          ) : (
+            <ul>
+              {recentChats.map((c) => (
+                <li key={c.id} className="border-b border-border/70 last:border-0">
+                  <Link
+                    href="/dashboard/conversations"
+                    className="block px-5 py-3 transition-colors hover:bg-muted/50"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="flex min-w-0 items-center gap-2">
+                        <span
+                          className={cn(
+                            "size-1.5 shrink-0 rounded-full",
+                            CONVERSATION_STATUS_DOT[c.status] ?? "bg-muted-foreground/40"
+                          )}
+                          aria-hidden
+                        />
+                        <span className="truncate text-sm font-medium text-navy">
+                          {c.display_name}
+                        </span>
+                      </span>
+                      <span className="shrink-0 text-[11px] text-muted-foreground">
+                        {formatDistanceToNow(new Date(c.last_active_at), { addSuffix: true })}
+                      </span>
+                    </div>
+                    <p className="mt-0.5 truncate pl-3.5 text-[12px] text-muted-foreground">
+                      {c.last_message_preview || "No messages yet"}
+                    </p>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
+        </InsightCard>
       </div>
 
       <div className="mt-4 grid gap-4 lg:grid-cols-2">
@@ -188,45 +368,8 @@ export default function DashboardHomePage() {
         />
       </div>
 
-      <div className="mt-4 flex flex-col gap-4 lg:flex-row">
-        <InsightCard overflow="hidden" className="min-w-0 flex-1">
-          <div className="flex items-center justify-between gap-3 border-b border-border px-5 py-3">
-            <p className="text-sm font-medium text-navy">Recent conversations</p>
-            <Link
-              href="/dashboard/conversations"
-              className="inline-flex h-7 items-center rounded-[8px] border border-border px-2.5 text-[0.8rem] hover:bg-muted"
-            >
-              Inbox
-            </Link>
-          </div>
-          {conversations.isLoading ? (
-            <div className="h-48 animate-pulse bg-muted/50" />
-          ) : !recentChats.length ? (
-            <EmptyState
-              icon={MessageSquare}
-              title="No conversations yet"
-              description="Patient chats from the widget will show up here."
-            />
-          ) : (
-            <ul>
-              {recentChats.map((c) => (
-                <li key={c.id} className="border-b border-border/70 px-5 py-3 last:border-0">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="truncate text-sm font-medium text-navy">{c.display_name}</p>
-                    <span className="shrink-0 text-[11px] text-muted-foreground">
-                      {formatDistanceToNow(new Date(c.last_active_at), { addSuffix: true })}
-                    </span>
-                  </div>
-                  <p className="mt-0.5 truncate text-[12px] text-muted-foreground">
-                    {c.last_message_preview || "No messages yet"}
-                  </p>
-                </li>
-              ))}
-            </ul>
-          )}
-        </InsightCard>
-
-        <BookingCalendarCard timeZone={timeZone} className="w-full lg:w-[33%] lg:shrink-0" />
+      <div className="mt-4">
+        <BookingCalendarCard timeZone={timeZone} className="w-full lg:max-w-[420px]" />
       </div>
     </div>
   );
