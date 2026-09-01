@@ -1,6 +1,13 @@
 "use client";
 
+import type { CSSProperties } from "react";
 import { formatChartLabel } from "./format";
+
+/** Keeps Recharts hover cards above donut center labels and other overlays. */
+export const rechartsTooltipWrapperStyle: CSSProperties = {
+  zIndex: 50,
+  outline: "none",
+};
 
 export function AnalyticsTooltip({
   active,
@@ -18,8 +25,8 @@ export function AnalyticsTooltip({
 }) {
   if (!active || !payload?.length) return null;
   return (
-    <div className="rounded-[10px] border border-border bg-card px-3 py-2.5 shadow-md">
-      <p className="text-[12px] font-medium text-navy">{formatChartLabel(label)}</p>
+    <div className="rounded-[10px] border border-border bg-popover px-3 py-2.5 text-popover-foreground shadow-md">
+      <p className="text-[12px] font-medium text-foreground">{formatChartLabel(label)}</p>
       <ul className="mt-1.5 space-y-1">
         {payload.map((item) => {
           const value = typeof item.value === "number" ? item.value : Number(item.value ?? 0);
@@ -31,7 +38,7 @@ export function AnalyticsTooltip({
                 style={{ background: String(item.color) }}
               />
               <span className="text-muted-foreground">{name}</span>
-              <span className="ml-auto tabular-nums text-navy">
+              <span className="ml-auto tabular-nums text-foreground">
                 {Number.isFinite(value) ? value.toLocaleString() : "—"}
               </span>
             </li>

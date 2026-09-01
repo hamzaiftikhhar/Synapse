@@ -1,6 +1,7 @@
 "use client";
 
 import { InsightCard } from "@/components/dashboard/insights/insight-card";
+import { RankedBreakdownList } from "@/components/dashboard/charts/ranked-breakdown-list";
 import { cn } from "@/lib/utils";
 import type { AnalyticsNamedCount } from "@/types/api";
 
@@ -43,15 +44,15 @@ export function SpecialtyMixCard({
     <InsightCard overflow="hidden" className={cn("flex h-full p-6", className)}>
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h2 className="text-[15px] font-semibold tracking-[-0.02em] text-[#152038]">
+          <h2 className="text-[15px] font-semibold tracking-tight text-foreground">
             Appointments by specialty
           </h2>
-          <p className="mt-0.5 text-[12px] leading-relaxed text-[#6B7280]">
+          <p className="mt-0.5 text-[12px] leading-relaxed text-muted-foreground">
             Top specialties from booked visits
           </p>
         </div>
         {more > 0 ? (
-          <span className="shrink-0 pt-0.5 text-[11px] tabular-nums text-[#8B95A7]">
+          <span className="shrink-0 pt-0.5 text-[11px] tabular-nums text-muted-foreground">
             +{more} more
           </span>
         ) : null}
@@ -60,17 +61,17 @@ export function SpecialtyMixCard({
       {isLoading ? (
         <div className="mt-5 space-y-2">
           {Array.from({ length: 5 }).map((_, i) => (
-            <div key={i} className="h-12 animate-pulse rounded-[12px] bg-[#EEF2F7]" />
+            <div key={i} className="h-12 animate-pulse rounded-[12px] bg-muted/70" />
           ))}
         </div>
       ) : isError ? (
         <div className="mt-5 flex h-[240px] flex-col items-center justify-center text-center">
-          <p className="text-sm font-medium text-[#152038]">Unable to load specialties</p>
+          <p className="text-sm font-medium text-foreground">Unable to load specialties</p>
           {onRetry ? (
             <button
               type="button"
               onClick={onRetry}
-              className="mt-2 text-[13px] font-medium text-[#1E4D8C] hover:underline"
+              className="mt-2 text-[13px] font-medium text-primary hover:underline"
             >
               Try again
             </button>
@@ -78,41 +79,15 @@ export function SpecialtyMixCard({
         </div>
       ) : !hasData ? (
         <div className="mt-5 flex h-[240px] flex-col items-center justify-center px-4 text-center">
-          <p className="text-sm font-medium text-[#152038]">No specialty mix yet</p>
-          <p className="mt-1 max-w-[240px] text-[13px] leading-relaxed text-[#6B7280]">
+          <p className="text-sm font-medium text-foreground">No specialty mix yet</p>
+          <p className="mt-1 max-w-[240px] text-[13px] leading-relaxed text-muted-foreground">
             Appointments linked to providers with specialties will show here.
           </p>
         </div>
       ) : (
-        <ol className="mt-5 space-y-2">
-          {rows.map((row, index) => {
-            const share = Math.round((row.count / total) * 100);
-            const width = Math.max(8, Math.round((row.count / max) * 100));
-            return (
-                  <li key={row.label} className="relative overflow-hidden rounded-[12px] bg-muted/40">
-                <div
-                  className="absolute inset-y-0 left-0 bg-primary/10"
-                  style={{ width: `${width}%` }}
-                  aria-hidden
-                />
-                <div className="relative flex items-center gap-3 px-4 py-3">
-                  <span className="w-5 shrink-0 text-[11px] font-medium tabular-nums text-[#8B95A7]">
-                    {String(index + 1).padStart(2, "0")}
-                  </span>
-                  <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-[#152038]">
-                    {row.label}
-                  </span>
-                  <span className="shrink-0 text-[15px] font-semibold tabular-nums tracking-[-0.03em] text-[#152038]">
-                    {row.count.toLocaleString()}
-                  </span>
-                  <span className="w-10 shrink-0 text-right text-[11px] tabular-nums text-[#8B95A7]">
-                    {share}%
-                  </span>
-                </div>
-              </li>
-            );
-          })}
-        </ol>
+        <div className="mt-5">
+          <RankedBreakdownList items={rows} />
+        </div>
       )}
     </InsightCard>
   );

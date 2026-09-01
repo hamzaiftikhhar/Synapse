@@ -6,6 +6,7 @@ import { STATUS_LABEL } from "@/features/appointments/constants";
 import { cn } from "@/lib/utils";
 import type { AnalyticsStatusCount } from "@/types/api";
 import { STATUS_COLOR } from "./colors";
+import { AnalyticsTooltip, rechartsTooltipWrapperStyle } from "./tooltip";
 
 const ORDER = [
   "confirmed",
@@ -41,25 +42,6 @@ function normalize(data: AnalyticsStatusCount[] | undefined): StatusRow[] {
   }));
 }
 
-function StatusTooltip({
-  active,
-  payload,
-}: {
-  active?: boolean;
-  payload?: Array<{ name?: string; value?: number; payload?: StatusRow }>;
-}) {
-  if (!active || !payload?.length) return null;
-  const row = payload[0];
-  return (
-    <div className="rounded-[10px] border border-[#152038]/10 bg-white px-3 py-2 shadow-[0_12px_32px_rgba(21,32,56,0.12)]">
-      <p className="text-[12px] font-medium text-[#152038]">{row.name}</p>
-      <p className="mt-0.5 text-[13px] tabular-nums text-[#152038]">
-        {Number(row.value ?? 0).toLocaleString()}
-      </p>
-    </div>
-  );
-}
-
 export function AppointmentStatusCard({
   data,
   isLoading,
@@ -81,24 +63,24 @@ export function AppointmentStatusCard({
   return (
     <InsightCard overflow="hidden" className={cn("flex h-full p-6", className)}>
       <div>
-        <h2 className="text-[15px] font-semibold tracking-[-0.02em] text-[#152038]">
+        <h2 className="text-[15px] font-semibold tracking-tight text-foreground">
           Appointment status
         </h2>
-        <p className="mt-0.5 text-[12px] leading-relaxed text-[#6B7280]">
+        <p className="mt-0.5 text-[12px] leading-relaxed text-muted-foreground">
           Status of appointments booked in this period
         </p>
       </div>
 
       {isLoading ? (
-        <div className="mt-5 h-[240px] animate-pulse rounded-[12px] bg-[#F4F6F9]" />
+        <div className="mt-5 h-[240px] animate-pulse rounded-[12px] bg-muted/70" />
       ) : isError ? (
         <div className="mt-5 flex h-[240px] flex-col items-center justify-center text-center">
-          <p className="text-sm font-medium text-[#152038]">Unable to load status</p>
+          <p className="text-sm font-medium text-foreground">Unable to load status</p>
           {onRetry ? (
             <button
               type="button"
               onClick={onRetry}
-              className="mt-2 text-[13px] font-medium text-[#3D7EFF] hover:underline"
+              className="mt-2 text-[13px] font-medium text-primary hover:underline"
             >
               Try again
             </button>
@@ -106,41 +88,46 @@ export function AppointmentStatusCard({
         </div>
       ) : !hasData ? (
         <div className="mt-5 flex h-[240px] flex-col items-center justify-center px-4 text-center">
-          <p className="text-sm font-medium text-[#152038]">No visits booked yet</p>
-          <p className="mt-1 max-w-[220px] text-[13px] leading-relaxed text-[#6B7280]">
+          <p className="text-sm font-medium text-foreground">No visits booked yet</p>
+          <p className="mt-1 max-w-[220px] text-[13px] leading-relaxed text-muted-foreground">
             Status mix appears once appointments are created in this period.
           </p>
         </div>
       ) : (
         <div className="mt-5 flex min-h-0 flex-1 flex-col gap-6 sm:flex-row sm:items-center">
           <div className="relative mx-auto h-[200px] w-[200px] shrink-0">
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie
-                  data={slices}
-                  dataKey="count"
-                  nameKey="label"
-                  innerRadius={64}
-                  outerRadius={86}
-                  paddingAngle={3}
-                  stroke="#fff"
-                  strokeWidth={3}
-                  isAnimationActive={false}
-                >
-                  {slices.map((row) => (
-                    <Cell key={row.status} fill={row.color} />
-                  ))}
-                </Pie>
-                <Tooltip content={<StatusTooltip />} />
-              </PieChart>
-            </ResponsiveContainer>
-            <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
-              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#8B95A7]">
+            <div className="pointer-events-none absolute inset-0 z-0 flex flex-col items-center justify-center">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
                 Booked
               </p>
-              <p className="text-[28px] font-semibold leading-none tabular-nums tracking-[-0.04em] text-[#152038]">
+              <p className="text-[28px] font-semibold leading-none tabular-nums tracking-tight text-foreground">
                 {total.toLocaleString()}
               </p>
+            </div>
+            <div className="relative z-10 h-full w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie
+                    data={slices}
+                    dataKey="count"
+                    nameKey="label"
+                    innerRadius={64}
+                    outerRadius={86}
+                    paddingAngle={3}
+                    stroke="var(--card)"
+                    strokeWidth={3}
+                    isAnimationActive={false}
+                  >
+                    {slices.map((row) => (
+                      <Cell key={row.status} fill={row.color} />
+                    ))}
+                  </Pie>
+                  <Tooltip
+                    content={<AnalyticsTooltip />}
+                    wrapperStyle={rechartsTooltipWrapperStyle}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
             </div>
           </div>
 
@@ -153,11 +140,11 @@ export function AppointmentStatusCard({
                     className="size-2.5 shrink-0 rounded-[3px]"
                     style={{ background: row.color }}
                   />
-                  <span className="min-w-0 flex-1 truncate text-[#152038]">{row.label}</span>
-                  <span className="tabular-nums font-semibold text-[#152038]">
+                  <span className="min-w-0 flex-1 truncate text-foreground">{row.label}</span>
+                  <span className="tabular-nums font-semibold text-foreground">
                     {row.count.toLocaleString()}
                   </span>
-                  <span className="w-9 text-right text-[12px] tabular-nums text-[#8B95A7]">
+                  <span className="w-9 text-right text-[12px] tabular-nums text-muted-foreground">
                     {pct}%
                   </span>
                 </li>

@@ -12,6 +12,7 @@ import {
 } from "recharts";
 import type { AppointmentSourceRadarPoint } from "@/types/api";
 import { cn } from "@/lib/utils";
+import { rechartsTooltipWrapperStyle } from "./tooltip";
 
 const SERIES = [
   { key: "phone" as const, label: "Calls", color: "#f59e0b" },
@@ -30,11 +31,8 @@ function DarkRadarTooltip({
 }) {
   if (!active || !payload?.length) return null;
   return (
-    <div
-      className="min-w-[148px] rounded-[12px] border border-white/10 px-3 py-2.5 shadow-[0_18px_40px_rgba(0,0,0,0.45)]"
-      style={{ background: "#121a2c" }}
-    >
-      <p className="text-[12px] font-medium text-white">{label}</p>
+    <div className="min-w-[148px] rounded-[12px] border border-border bg-popover px-3 py-2.5 text-popover-foreground shadow-md">
+      <p className="text-[12px] font-medium">{label}</p>
       <ul className="mt-1.5 space-y-1">
         {payload.map((item) => (
           <li key={item.name} className="flex items-center gap-2 text-[12px]">
@@ -42,8 +40,8 @@ function DarkRadarTooltip({
               className="size-1.5 rounded-full"
               style={{ background: String(item.color) }}
             />
-            <span className="text-white/65">{item.name}</span>
-            <span className="ml-auto tabular-nums text-white">
+            <span className="text-muted-foreground">{item.name}</span>
+            <span className="ml-auto tabular-nums">
               {Number(item.value ?? 0).toLocaleString()}
             </span>
           </li>
@@ -145,7 +143,10 @@ export function AppointmentSourceRadarCard({
                   tickLine={false}
                 />
                 <PolarRadiusAxis tick={false} axisLine={false} />
-                <Tooltip content={<DarkRadarTooltip />} />
+                <Tooltip
+                  content={<DarkRadarTooltip />}
+                  wrapperStyle={rechartsTooltipWrapperStyle}
+                />
                 {SERIES.map((s) => (
                   <Radar
                     key={s.key}

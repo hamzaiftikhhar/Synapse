@@ -11,7 +11,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { AnalyticsTooltip } from "./tooltip";
+import { AnalyticsTooltip, rechartsTooltipWrapperStyle } from "./tooltip";
 import { CHART } from "./colors";
 import { formatChartTick } from "./format";
 
@@ -54,7 +54,7 @@ export function AnalyticsLineChart({
             {...axis}
           />
           <YAxis allowDecimals={false} width={36} {...axis} />
-          <Tooltip content={<AnalyticsTooltip />} />
+          <Tooltip content={<AnalyticsTooltip />} wrapperStyle={rechartsTooltipWrapperStyle} />
           {series.map((s) => (
             <Line
               key={s.key}
@@ -103,7 +103,7 @@ export function AnalyticsAreaChart({
             {...axis}
           />
           <YAxis allowDecimals={false} width={36} {...axis} />
-          <Tooltip content={<AnalyticsTooltip />} />
+          <Tooltip content={<AnalyticsTooltip />} wrapperStyle={rechartsTooltipWrapperStyle} />
           <Area
             type="monotone"
             dataKey={dataKey}
