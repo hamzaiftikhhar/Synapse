@@ -67,7 +67,7 @@ export function BookingWizard({
   const brandColor =
     config?.configuration?.widget?.primary_color?.trim() || undefined;
   const verificationMode =
-    config?.configuration?.booking?.verification_mode || "sms";
+    config?.configuration?.booking?.verification_mode || "email";
   const [state, setState] = useState<BookingStepPayload | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -883,7 +883,7 @@ function DetailsStep({
   onChange,
   onSubmit,
   loading,
-  verificationMode = "sms",
+  verificationMode = "email",
 }: {
   options: Record<string, unknown>;
   details: {
@@ -915,10 +915,10 @@ function DetailsStep({
   );
   const [contactError, setContactError] = useState<string | null>(null);
 
-  const contactLabel = "Email or phone number for verification";
-  const contactPlaceholder = "name@example.com or +1 555 123 4567";
-  // Always accept either contact; backend picks SMS vs email OTP channel
-  const effectiveMode = "sms_or_email";
+  const contactLabel = "Email address";
+  const contactPlaceholder = "name@example.com";
+  // Phone/SMS verification is disabled for now — email only.
+  const effectiveMode = "email";
 
   function handleContactChange(raw: string) {
     setContactDraft(raw);
@@ -984,9 +984,9 @@ function DetailsStep({
       <div className="space-y-1">
         <Label className="text-xs">{contactLabel}</Label>
         <Input
-          type="text"
-          inputMode="text"
-          autoComplete="username"
+          type="email"
+          inputMode="email"
+          autoComplete="email"
           value={contactDraft}
           onChange={(e) => handleContactChange(e.target.value)}
           placeholder={contactPlaceholder}

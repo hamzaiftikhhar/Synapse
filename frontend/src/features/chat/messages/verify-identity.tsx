@@ -5,23 +5,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ChatInlineCard } from "@/features/chat/components/chat-inline-card";
 import { OtpInput } from "@/features/chat/components/otp-input";
-import { PhoneInput } from "@/features/chat/components/phone-input";
 import { getApiErrorMessage } from "@/lib/api/client";
-import {
-  isValidEmail,
-  isValidOtpCode,
-  isValidPhoneDigits,
-} from "@/lib/contact-validation";
+import { isValidEmail, isValidOtpCode } from "@/lib/contact-validation";
 import { widgetAuthService } from "@/services";
 
 const RESEND_COOLDOWN_SECONDS = 30;
-
-function formatContact(method: "phone" | "email", contact: string): string {
-  if (method === "email") return contact;
-  // +15551234567 -> +1 555-123-4567 (best-effort, purely cosmetic)
-  const match = contact.match(/^(\+\d{1,3})(\d{3})(\d{3})(\d{4})$/);
-  return match ? `${match[1]} ${match[2]}-${match[3]}-${match[4]}` : contact;
-}
 
 export function VerifyIdentity({
   clinicSlug,
@@ -42,7 +30,6 @@ export function VerifyIdentity({
    * whatever it unlocked (e.g. an appointments list) has already shown. */
   completed?: boolean;
 }) {
-  const [method, setMethod] = useState<"phone" | "email">("phone");
   const [contact, setContact] = useState("");
   const [code, setCode] = useState("");
   const [stage, setStage] = useState<"contact" | "code">("contact");
@@ -86,17 +73,13 @@ export function VerifyIdentity({
   }
 
   function contactIsValid(): boolean {
-    return method === "phone" ? isValidPhoneDigits(contact) : isValidEmail(contact);
+    return isValidEmail(contact);
   }
 
   async function sendCode(isResend = false) {
     if (loading || resending) return;
     if (!contactIsValid()) {
-      setFieldError(
-        method === "phone"
-          ? "Enter a valid phone number."
-          : "Enter a valid email address."
-      );
+      setFieldError("Enter a valid email address.");
       return;
     }
     setFieldError(null);
@@ -107,8 +90,7 @@ export function VerifyIdentity({
       const result = await widgetAuthService.sendOtp({
         clinic_slug: clinicSlug,
         session_token: activeSessionToken,
-        phone: method === "phone" ? contact : undefined,
-        email: method === "email" ? contact : undefined,
+        email: contact,
       });
       rememberSessionToken(result.session_token);
       setDebugCode(result.debug_code ?? null);
@@ -136,8 +118,7 @@ export function VerifyIdentity({
       const result = await widgetAuthService.verifyOtp({
         clinic_slug: clinicSlug,
         session_token: activeSessionToken,
-        phone: method === "phone" ? contact : undefined,
-        email: method === "email" ? contact : undefined,
+        email: contact,
         code: code.trim(),
       });
       const token =
@@ -171,50 +152,23 @@ export function VerifyIdentity({
           <div>
             <p className="text-sm font-semibold text-foreground">Verify it&apos;s you</p>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              We&apos;ll text or email a code to confirm it&apos;s really you before
+              We&apos;ll email a code to confirm it&apos;s really you before
               showing your appointments.
             </p>
           </div>
-          <div className="flex gap-1.5">
-            <Button
-              type="button"
-              size="xs"
-              variant={method === "phone" ? "default" : "outline"}
-              onClick={() => {
-                setMethod("phone");
-                setContact("");
-                setFieldError(null);
-              }}
-            >
-              Phone
-            </Button>
-            <Button
-              type="button"
-              size="xs"
-              variant={method === "email" ? "default" : "outline"}
-              onClick={() => {
-                setMethod("email");
-                setContact("");
-                setFieldError(null);
-              }}
-            >
-              Email
-            </Button>
-          </div>
-          {method === "phone" ? (
-            <PhoneInput onChange={setContact} autoFocus />
-          ) : (
-            <Input
-              type="email"
-              inputMode="email"
-              autoComplete="email"
-              autoFocus
-              value={contact}
-              onChange={(e) => setContact(e.target.value)}
-              placeholder="Email address"
-              className="h-9 rounded-lg text-sm"
-            />
-          )}
+          <Input
+            type="email"
+            inputMode="email"
+            autoComplete="email"
+            autoFocus
+            value={contact}
+            onChange={(e) => {
+              setContact(e.target.value);
+              setFieldError(null);
+            }}
+            placeholder="Email address"
+            className="h-9 rounded-lg text-sm"
+          />
           {fieldError ? <p className="text-xs text-destructive">{fieldError}</p> : null}
           <Button
             type="button"
@@ -231,7 +185,7 @@ export function VerifyIdentity({
           <div>
             <p className="text-sm font-semibold text-foreground">Verify your identity</p>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              We sent a code to {formatContact(method, contact)}.{" "}
+              We sent a code to {contact}.{" "}
               <button
                 type="button"
                 onClick={changeContact}
