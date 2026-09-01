@@ -39,7 +39,7 @@ class ConversationSummaryOut(Schema):
     id: str
     session_token: str
     display_name: str
-    phone: str | None = None
+    email: str | None = None
     is_authenticated: bool
     status: str
     message_count: int

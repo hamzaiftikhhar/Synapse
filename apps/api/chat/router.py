@@ -217,7 +217,7 @@ def list_conversations(
         qs = qs.filter(
             Q(patient__first_name__icontains=search)
             | Q(patient__last_name__icontains=search)
-            | Q(patient__phone__icontains=search)
+            | Q(patient__email__icontains=search)
         )
     count = qs.count()
     sessions = list(qs[offset : offset + limit])
@@ -278,19 +278,19 @@ def _serialize_conversation(session: object) -> ConversationSummaryOut:
     visitor = session.visitor  # type: ignore[attr-defined]
     if patient is not None:
         display_name = patient.full_name or "Unnamed patient"
-        phone = patient.phone
+        email = patient.email
     elif visitor is not None:
         display_name = "Anonymous visitor"
-        phone = None
+        email = None
     else:
         display_name = "Anonymous"
-        phone = None
+        email = None
     last_message_content = getattr(session, "last_message_content", None)
     return ConversationSummaryOut(
         id=str(session.id),  # type: ignore[attr-defined]
         session_token=session.session_token,  # type: ignore[attr-defined]
         display_name=display_name,
-        phone=phone,
+        email=email,
         is_authenticated=session.is_authenticated,  # type: ignore[attr-defined]
         status=session.status,  # type: ignore[attr-defined]
         message_count=getattr(session, "message_count_annotated", 0),

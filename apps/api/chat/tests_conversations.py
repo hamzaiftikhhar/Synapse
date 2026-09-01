@@ -94,9 +94,13 @@ class ConversationsListTests(TestCase):
         self.assertEqual(body["results"][0]["message_count"], 2)
         self.assertEqual(body["results"][0]["last_message_preview"], "message 2")
 
-    def test_conversation_with_a_known_patient_shows_their_name_and_phone(self):
+    def test_conversation_with_a_known_patient_shows_their_name_and_email(self):
         patient = Patient.objects.create(
-            clinic=self.clinic, first_name="Ali", last_name="Test", phone="+15551234567"
+            clinic=self.clinic,
+            first_name="Ali",
+            last_name="Test",
+            phone="+15551234567",
+            email="ali@example.com",
         )
         ChatSession.objects.create(
             clinic=self.clinic,
@@ -108,7 +112,7 @@ class ConversationsListTests(TestCase):
         resp = self.client.get(CONVERSATIONS_URL, headers=self.headers)
         body = resp.json()
         self.assertEqual(body["results"][0]["display_name"], "Ali Test")
-        self.assertEqual(body["results"][0]["phone"], "+15551234567")
+        self.assertEqual(body["results"][0]["email"], "ali@example.com")
 
     def test_legacy_session_with_no_visitor_or_patient_shows_anonymous(self):
         ChatSession.objects.create(
@@ -138,6 +142,31 @@ class ConversationsListTests(TestCase):
         body = resp.json()
         self.assertEqual(body["count"], 1)
         self.assertEqual(body["results"][0]["session_token"], "tok-sara")
+
+    def test_search_filters_by_patient_email(self):
+        p1 = Patient.objects.create(
+            clinic=self.clinic, first_name="Sara", last_name="Jones",
+            phone="+15550001111", email="sara.jones@example.com",
+        )
+        p2 = Patient.objects.create(
+            clinic=self.clinic, first_name="Bilal", last_name="Khan",
+            phone="+15550002222", email="bilal.khan@example.com",
+        )
+        ChatSession.objects.create(
+            clinic=self.clinic, patient=p1, session_token="tok-sara-email",
+            status=ChatSessionStatus.ACTIVE,
+        )
+        ChatSession.objects.create(
+            clinic=self.clinic, patient=p2, session_token="tok-bilal-email",
+            status=ChatSessionStatus.ACTIVE,
+        )
+
+        resp = self.client.get(
+            CONVERSATIONS_URL, {"search": "sara.jones"}, headers=self.headers
+        )
+        body = resp.json()
+        self.assertEqual(body["count"], 1)
+        self.assertEqual(body["results"][0]["session_token"], "tok-sara-email")
 
     def test_ordered_by_most_recently_active_first(self):
         older = ChatSession.objects.create(
