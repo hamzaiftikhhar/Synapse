@@ -220,6 +220,38 @@ class AnalyticsInsightsTests(TestCase):
         labels = [row["label"] for row in resp.json()["items"]]
         self.assertIn("Dr. Alpha", labels)
 
+    def test_breakdown_doctor_status(self):
+        now = timezone.now()
+        self.world.create_row(
+            doctor=self.world.doctor_a,
+            status=AppointmentStatus.COMPLETED,
+            start_time=now - timedelta(hours=2),
+            end_time=now - timedelta(hours=1, minutes=30),
+        )
+        self.world.create_row(
+            doctor=self.world.doctor_a,
+            status=AppointmentStatus.PENDING,
+            start_time=now - timedelta(hours=1),
+            end_time=now - timedelta(minutes=30),
+        )
+        self.world.create_row(
+            doctor=self.world.doctor_b,
+            status=AppointmentStatus.CANCELLED,
+            start_time=now - timedelta(minutes=45),
+            end_time=now - timedelta(minutes=15),
+        )
+        resp = self.client.get(
+            BREAKDOWN + "?dimension=doctor_status&range=30d", headers=self.world.headers
+        )
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["dimension"], "doctor_status")
+        by_label = {row["label"]: row for row in body["items"]}
+        self.assertEqual(by_label["Dr. Alpha"]["completed"], 1)
+        self.assertEqual(by_label["Dr. Alpha"]["pending"], 1)
+        self.assertEqual(by_label["Dr. Alpha"]["total"], 2)
+        self.assertEqual(by_label["Dr. Bravo"]["cancelled"], 1)
+
     def test_clinic_owner_does_not_see_ai_cost(self):
         body = self.client.get(INSIGHTS, headers=self.world.headers).json()
         self.assertFalse(body["show_cost"])

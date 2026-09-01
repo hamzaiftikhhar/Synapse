@@ -449,6 +449,51 @@ def breakdown(clinic: Clinic, *, days: int, dimension: str) -> dict:
         )
         return {"dimension": dimension, "items": items, "more": more}
 
+    if dimension == "doctor_status":
+        provider_rows = list(
+            in_start.values("doctor_id", "doctor__full_name")
+            .annotate(count=Count("id"))
+            .order_by("-count")
+        )
+        if not provider_rows:
+            return {"dimension": dimension, "items": [], "more": 0}
+
+        doctor_ids = [row["doctor_id"] for row in provider_rows]
+        by_doc: dict[UUID, dict] = {
+            row["doctor_id"]: {
+                "label": row["doctor__full_name"],
+                "pending": 0,
+                "confirmed": 0,
+                "completed": 0,
+                "cancelled": 0,
+                "no_show": 0,
+                "rescheduled": 0,
+                "total": int(row["count"]),
+            }
+            for row in provider_rows
+        }
+        status_fields = {
+            AppointmentStatus.PENDING: "pending",
+            AppointmentStatus.CONFIRMED: "confirmed",
+            AppointmentStatus.COMPLETED: "completed",
+            AppointmentStatus.CANCELLED: "cancelled",
+            AppointmentStatus.NO_SHOW: "no_show",
+            AppointmentStatus.RESCHEDULED: "rescheduled",
+        }
+        raw = (
+            in_start.filter(doctor_id__in=doctor_ids)
+            .values("doctor_id", "status")
+            .annotate(n=Count("id"))
+        )
+        for row in raw:
+            item = by_doc.get(row["doctor_id"])
+            field = status_fields.get(row["status"])
+            if item is None or field is None:
+                continue
+            item[field] = int(row["n"])
+        items = [by_doc[did] for did in doctor_ids if did in by_doc]
+        return {"dimension": dimension, "items": items, "more": 0}
+
     if dimension == "service":
         rows = list(
             in_start.exclude(service_id=None)
