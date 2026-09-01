@@ -226,7 +226,7 @@ def booking_confirm(request, payload: BookingConfirmIn):
         raise HttpError(404, "Booking session not found")
 
     cfg = get_booking_config(clinic)
-    vmode = cfg.get("verification_mode") or "sms"
+    vmode = cfg.get("verification_mode") or "email"
     phone = booking.get("patient_phone") or ""
     email = booking.get("patient_email") or ""
 

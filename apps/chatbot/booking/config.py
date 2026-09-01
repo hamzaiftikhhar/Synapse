@@ -11,7 +11,7 @@ DEFAULT_BOOKING_CONFIG: dict[str, Any] = {
     "mode": "service_first",
     "ai_discovery": True,
     "require_auth": True,
-    "verification_mode": "sms",  # sms | email | sms_or_email | none
+    "verification_mode": "email",  # sms | email | sms_or_email | none
     "max_slots_preview": 5,
     "date_horizon_days": 30,
     "slot_hold_minutes": 10,

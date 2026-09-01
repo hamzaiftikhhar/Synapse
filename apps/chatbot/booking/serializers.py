@@ -65,13 +65,13 @@ def serialize_step(clinic: Any, session: BookingSession) -> dict[str, Any]:
             "phone": session.patient_phone,
             "email": session.patient_email,
             "date_of_birth": session.pending_dob,
-            "verification_mode": cfg.get("verification_mode") or "sms",
+            "verification_mode": cfg.get("verification_mode") or "email",
         }
     elif step == BookingStep.OTP.value:
         payload["options"] = {
             "phone": session.patient_phone,
             "email": session.patient_email,
-            "verification_mode": cfg.get("verification_mode") or "sms",
+            "verification_mode": cfg.get("verification_mode") or "email",
             "slot_summary": _slot_summary(session),
         }
         if session.hold_expires_at:

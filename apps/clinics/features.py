@@ -10,7 +10,12 @@ DEFAULT_FEATURE_FLAGS: dict[str, bool] = {
     "knowledge_base": True,
     "analytics": True,
     "email_otp": True,
-    "sms_otp": True,
+    # SMS/phone verification disabled for now — a deliberate product
+    # decision, not dead code: the Twilio integration and every sms/
+    # sms_or_email code path stay in place so this can flip back to True
+    # per-clinic later. resolve_otp_channel() (otp_service.py) is the
+    # single enforcement point this flag gates.
+    "sms_otp": False,
     "doctor_portal": False,
 }
 
@@ -36,7 +41,7 @@ def default_widget_configuration() -> dict[str, Any]:
             "mode": "service_first",
             "ai_discovery": True,
             "require_auth": True,
-            "verification_mode": "sms",
+            "verification_mode": "email",
             "max_slots_preview": 5,
             "date_horizon_days": 14,
             "slot_hold_minutes": 10,
@@ -62,10 +67,10 @@ def get_verification_mode(clinic: Any) -> str:
             return mode
         # Legacy boolean
         if "require_auth" in booking:
-            return "sms" if booking.get("require_auth") else "none"
+            return "email" if booking.get("require_auth") else "none"
     except Exception:
         pass
-    return "sms"
+    return "email"
 
 
 def get_feature_flags(clinic: Any) -> dict[str, bool]:

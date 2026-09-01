@@ -684,7 +684,7 @@ class BookingService:
             email = str(value.get("email") or "").strip().lower()
             dob_raw = str(value.get("date_of_birth") or "").strip()
             cfg = get_booking_config(clinic)
-            vmode = cfg.get("verification_mode") or "sms"
+            vmode = cfg.get("verification_mode") or "email"
             if not first:
                 raise BookingError("First name is required")
             if not dob_raw:
