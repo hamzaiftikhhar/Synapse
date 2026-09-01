@@ -8,3 +8,7 @@ export { KpiTile, GlyphStat } from "./kpi-tile";
 export { KpiSparkCard } from "./kpi-spark-card";
 export { ActivityCalendar, type ActivityDay } from "./activity-calendar";
 export { inkSlot } from "./chart-geom";
+export { NeedsAttentionCard } from "./needs-attention-card";
+export { SynapseInsightCard } from "./synapse-insight-card";
+export { computeSynapseInsight, type SynapseInsight } from "./synapse-insight";
+export { TodayScheduleCard } from "./today-schedule-card";
