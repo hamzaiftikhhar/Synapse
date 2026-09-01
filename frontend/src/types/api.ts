@@ -653,7 +653,7 @@ export type ConversationSummary = {
   id: string;
   session_token: string;
   display_name: string;
-  phone: string | null;
+  email: string | null;
   is_authenticated: boolean;
   status: string;
   message_count: number;
@@ -1194,13 +1194,31 @@ export type AnalyticsInsights = AnalyticsOverview & {
 
 export type AnalyticsBreakdownDimension =
   | "doctor"
+  | "doctor_status"
   | "service"
   | "specialty"
   | "insurance"
   | "new_patients";
 
+export type DoctorStatusBreakdownRow = {
+  label: string;
+  pending: number;
+  confirmed: number;
+  completed: number;
+  cancelled: number;
+  no_show: number;
+  rescheduled: number;
+  total: number;
+};
+
+export type AnalyticsDoctorStatusBreakdown = {
+  dimension: "doctor_status";
+  items: DoctorStatusBreakdownRow[];
+  more: number;
+};
+
 export type AnalyticsBreakdown = {
-  dimension: AnalyticsBreakdownDimension;
+  dimension: Exclude<AnalyticsBreakdownDimension, "doctor_status">;
   items: AnalyticsNamedCount[];
   more: number;
 };

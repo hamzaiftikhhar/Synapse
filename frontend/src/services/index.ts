@@ -722,12 +722,22 @@ export const analyticsService = {
     return data;
   },
   async breakdown(
-    dimension: import("@/types/api").AnalyticsBreakdownDimension,
+    dimension: Exclude<
+      import("@/types/api").AnalyticsBreakdownDimension,
+      "doctor_status"
+    >,
     range = "30d"
   ) {
     const { data } = await api.get<import("@/types/api").AnalyticsBreakdown>(
       "/analytics/breakdown",
       { params: { dimension, range } }
+    );
+    return data;
+  },
+  async doctorStatusBreakdown(range = "30d") {
+    const { data } = await api.get<import("@/types/api").AnalyticsDoctorStatusBreakdown>(
+      "/analytics/breakdown",
+      { params: { dimension: "doctor_status", range } }
     );
     return data;
   },

@@ -11,6 +11,16 @@ export const CHART = {
   track: "rgba(15, 23, 42, 0.06)",
 } as const;
 
+/** Purple monochromatic stack — lightest at top, darkest at bottom of each bar. */
+export const DOCTOR_STATUS_COLORS: Record<string, string> = {
+  completed: "#4C1D95",
+  confirmed: "#6D28D9",
+  pending: "#8B5CF6",
+  rescheduled: "#A78BFA",
+  no_show: "#C4B5FD",
+  cancelled: "#EDE9FE",
+};
+
 /** Appointment status — high-chroma clinical dots, not muddy ochre/slate. */
 export const STATUS_COLOR: Record<string, string> = {
   confirmed: "#3D7EFF",

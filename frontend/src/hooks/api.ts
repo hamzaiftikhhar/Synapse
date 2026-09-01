@@ -437,12 +437,22 @@ export function useAnalyticsInsights(range: string) {
 }
 
 export function useAnalyticsBreakdown(
-  dimension: import("@/types/api").AnalyticsBreakdownDimension,
+  dimension: Exclude<
+    import("@/types/api").AnalyticsBreakdownDimension,
+    "doctor_status"
+  >,
   range: string
 ) {
   return useQuery({
     queryKey: queryKeys.analyticsBreakdown(dimension, range),
     queryFn: () => analyticsService.breakdown(dimension, range),
+  });
+}
+
+export function useAnalyticsDoctorStatusBreakdown(range: string) {
+  return useQuery({
+    queryKey: queryKeys.analyticsBreakdown("doctor_status", range),
+    queryFn: () => analyticsService.doctorStatusBreakdown(range),
   });
 }
 

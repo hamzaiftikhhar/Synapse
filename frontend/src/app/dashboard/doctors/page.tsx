@@ -47,7 +47,7 @@ import {
   useUpdateDoctorSchedule,
   useAnalyticsOverview,
 } from "@/hooks/api";
-import { BreakdownBarCard, MetricStat } from "@/components/dashboard/charts";
+import { DoctorStatusStackCard, MetricStat } from "@/components/dashboard/charts";
 import { getApiErrorMessage } from "@/lib/api/client";
 import type { Doctor } from "@/types/api";
 
@@ -256,13 +256,7 @@ export default function DoctorsPage() {
               value={overview.data?.ops.doctors_with_upcoming ?? "—"}
             />
           </div>
-          <BreakdownBarCard
-            dimension="doctor"
-            title="Appointments by doctor"
-            description="Top providers in the last 30 days"
-            emptyTitle="No appointments yet"
-            emptyDescription="Booked visits will rank providers here."
-          />
+          <DoctorStatusStackCard />
         </div>
       ) : null}
 
