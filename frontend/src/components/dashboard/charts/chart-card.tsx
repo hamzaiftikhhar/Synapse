@@ -19,14 +19,14 @@ export function ChartCard({
 }) {
   return (
     <InsightCard overflow="visible" className={cn("p-5", className)}>
-      <div className="mb-4 flex items-start justify-between gap-3">
-        <div>
-          <p className="text-[15px] font-medium text-navy">{title}</p>
+      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <p className="text-[15px] font-medium text-foreground">{title}</p>
           {description ? (
             <p className="mt-0.5 text-[12px] text-muted-foreground">{description}</p>
           ) : null}
         </div>
-        {action}
+        {action ? <div className="w-full shrink-0 sm:w-auto">{action}</div> : null}
       </div>
       {children}
     </InsightCard>
@@ -42,7 +42,7 @@ export function ChartEmptyState({
 }) {
   return (
     <div className="flex h-[240px] flex-col items-center justify-center px-6 text-center">
-      <p className="text-sm font-medium text-navy">{title}</p>
+      <p className="text-sm font-medium text-foreground">{title}</p>
       <p className="mt-1 max-w-sm text-[13px] text-muted-foreground">{description}</p>
     </div>
   );
@@ -60,7 +60,7 @@ export function ChartSkeleton({ className }: { className?: string }) {
 export function ChartErrorState({ onRetry }: { onRetry?: () => void }) {
   return (
     <div className="flex h-[240px] flex-col items-center justify-center gap-2 text-center">
-      <p className="text-sm font-medium text-navy">Unable to load analytics</p>
+      <p className="text-sm font-medium text-foreground">Unable to load analytics</p>
       {onRetry ? (
         <button
           type="button"
