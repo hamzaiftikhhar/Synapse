@@ -185,7 +185,6 @@ export default function PatientsPage() {
             <TableHeader>
               <TableRow>
                 <TableHead>Name</TableHead>
-                <TableHead>Phone</TableHead>
                 <TableHead>Email</TableHead>
                 <TableHead>Verified</TableHead>
                 <TableHead className="w-24" />
@@ -195,7 +194,6 @@ export default function PatientsPage() {
               {rows.map((p) => (
                 <TableRow key={p.id}>
                   <TableCell className="font-medium">{p.full_name}</TableCell>
-                  <TableCell>{p.phone}</TableCell>
                   <TableCell className="text-muted-foreground">{p.email || "—"}</TableCell>
                   <TableCell>
                     <Badge variant="secondary">

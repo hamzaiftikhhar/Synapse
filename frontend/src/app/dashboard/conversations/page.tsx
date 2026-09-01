@@ -117,7 +117,7 @@ export default function ConversationsPage() {
         <div className="flex w-80 shrink-0 flex-col overflow-hidden rounded-2xl border border-border bg-card">
           <div className="border-b border-border p-3">
             <Input
-              placeholder="Search by name or phone…"
+              placeholder="Search by name or email…"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="h-8"
@@ -171,7 +171,7 @@ export default function ConversationsPage() {
                     {selected.display_name}
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    {selected.phone || "No phone on file"}
+                    {selected.email || "No email on file"}
                   </p>
                 </div>
               </div>

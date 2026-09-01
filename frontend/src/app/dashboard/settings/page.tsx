@@ -71,7 +71,7 @@ function BookingSection() {
           Lead time and cancellation copy for the patient widget. Identity
           verification mode is{" "}
           <code className="rounded-md bg-muted px-1.5 py-0.5 text-xs text-foreground">
-            {data?.configuration.booking?.verification_mode ?? "sms"}
+            {data?.configuration.booking?.verification_mode ?? "email"}
           </code>
           — change it from Chatbot when that control ships.
         </p>
