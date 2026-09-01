@@ -1,9 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
-import { toast } from "sonner";
+import { useEffect } from "react";
 import { HelpCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -12,8 +10,8 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { WorkspaceSwitcher } from "@/components/dashboard/workspace-switcher";
 import { APP_NAME } from "@/constants";
-import { getApiErrorMessage } from "@/lib/api/client";
 import { useAuth } from "@/providers/auth-provider";
 import { cn } from "@/lib/utils";
 import { ONBOARDING_STAGES } from "./steps";
@@ -79,9 +77,7 @@ export function OnboardingShell({
   children: ReactNode;
 }) {
   const frame = cn("mx-auto px-6", wide ? "max-w-5xl" : "max-w-3xl");
-  const { user, clinic, canExitClinic, exitClinic } = useAuth();
-  const router = useRouter();
-  const [exiting, setExiting] = useState(false);
+  const { user, clinic, canExitClinic } = useAuth();
   const impersonating =
     user?.role === "SUPER_ADMIN" && Boolean(clinic) && canExitClinic;
 
@@ -92,57 +88,17 @@ export function OnboardingShell({
     };
   }, []);
 
-  async function handleExit() {
-    setExiting(true);
-    try {
-      await exitClinic();
-      toast.success("Returned to platform");
-      router.push("/dashboard/platform/clinics");
-    } catch (err) {
-      toast.error(getApiErrorMessage(err));
-    } finally {
-      setExiting(false);
-    }
-  }
-
   return (
     <TooltipProvider>
       <div className="theme-instrument theme-light flex h-dvh flex-col overflow-hidden bg-background">
-        {impersonating ? (
-          <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-warning/25 bg-warning/10 px-4 py-2.5 sm:px-6">
-            <p className="text-sm text-foreground">
-              <span className="font-semibold">{clinic?.name}</span>
-              <span className="text-muted-foreground">
-                {" "}
-                · Super Admin testing setup
-              </span>
-            </p>
-            <div className="flex shrink-0 gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => router.push("/dashboard/platform/clinics")}
-              >
-                Switch clinic
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                disabled={exiting}
-                onClick={() => void handleExit()}
-              >
-                {exiting ? "Exiting…" : "Exit clinic"}
-              </Button>
-            </div>
-          </div>
-        ) : null}
         <header className="shrink-0 border-b border-border">
-          <div className={cn("flex h-14 items-center justify-between", frame)}>
+          <div className={cn("flex h-14 items-center justify-between gap-3", frame)}>
             <span className="text-sm font-semibold tracking-tight text-navy">
               {APP_NAME}
             </span>
-            <Tooltip>
+            <div className="flex items-center gap-2">
+              {impersonating ? <WorkspaceSwitcher /> : null}
+              <Tooltip>
               <TooltipTrigger
                 render={
                   <button
@@ -159,6 +115,7 @@ export function OnboardingShell({
                 time.
               </TooltipContent>
             </Tooltip>
+            </div>
           </div>
         </header>
 
