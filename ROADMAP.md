@@ -5014,3 +5014,118 @@ gunicorn's worker count deliberately (`--workers 2`, not the
 to recycle any slow memory creep) — no gunicorn/Procfile config exists in
 this repo yet to audit directly, this is an operational recommendation
 for whatever process manager is used on the box.
+
+---
+
+## ✅ SMS/phone verification disabled — email-only, for now
+
+**Objective.** Deliberate product decision: disable phone-number OTP
+verification everywhere (chatbot booking, the separate "verify to view my
+appointments" chat card, and any dashboard table showing a patient's
+phone), keep the code intact for a later per-clinic re-enable ("future
+thing," not a ripout), and prove the resulting email-only flow actually
+works end to end with a real inbox.
+
+**Root cause / mechanism.** `verification_mode` (`sms | email |
+sms_or_email | none`) and the `sms_otp` feature flag
+(`apps.clinics.features.DEFAULT_FEATURE_FLAGS`) already existed as the
+two config knobs gating `otp_service.resolve_otp_channel()` — the single
+enforcement point every OTP send/verify goes through. Both defaulted to
+SMS-favoring (`verification_mode="sms"`, `sms_otp=True`). Flipped both
+defaults (`sms_otp=False`, `verification_mode="email"`) rather than
+deleting the sms/sms_or_email code paths — `resolve_otp_channel` still
+correctly serves an explicit `sms` request if a clinic later re-enables
+`sms_otp=True`, verified by a dedicated test.
+
+**Found live, not guessed:** all 6 existing clinics in this DB (including
+`horizon-family-care`, the one under active manual testing) had
+`verification_mode` **and** `sms_otp` explicitly stored in
+`WidgetSettings.configuration` — code-level defaults alone would not have
+touched them. Backfilled all 6 rows (`verification_mode` → `"email"`,
+`sms_otp` → `False`) directly; the frontend already only ever sends
+`email` now regardless, so `resolve_otp_channel`'s request-honoring logic
+would have papered over a stale stored `"sms"` mode anyway, but leaving
+it stale would have shown wrong copy anywhere the raw value is displayed
+(dashboard Settings page).
+
+**Changes:**
+1. **Backend defaults** (defense in depth, 6 call sites):
+   `apps/clinics/features.py` (`DEFAULT_FEATURE_FLAGS.sms_otp`,
+   `default_widget_configuration()`, `get_verification_mode()`'s
+   fallback + legacy-boolean branch), `apps/chatbot/booking/config.py`,
+   `apps/chatbot/booking/service.py`, `apps/chatbot/booking/
+   serializers.py` (×2), `apps/api/widget/booking_router.py`.
+2. **Booking wizard `DetailsStep`** (`booking-wizard.tsx`): the contact
+   field is now a plain `<Input type="email">` — "Email address" only,
+   `classifyContact(..., "email")` instead of the old accept-either
+   `"sms_or_email"` mode. No UI path to type a phone number remains.
+3. **`VerifyIdentity`** (`verify-identity.tsx` — the separate chat-inline
+   card for "view/cancel my appointment," distinct from the booking
+   wizard): dropped the phone/email method toggle and `PhoneInput`
+   entirely; email-only, same as the wizard. `PhoneInput`
+   (`chat/components/phone-input.tsx`) had no other callers — deleted.
+4. **Dashboard tables/detail views showing a phone number:**
+   patients list (`dashboard/patients/page.tsx`) — dropped the Phone
+   column (left the staff-facing add/edit-patient dialog's phone field
+   alone — that's manual CRM data entry, not chatbot verification, out
+   of this change's scope). Conversations inbox
+   (`dashboard/conversations/page.tsx` + backend `ConversationSummaryOut`
+   /`_serialize_conversation` in `apps/api/chat/`) — swapped `phone` for
+   `email` in the schema, the detail-panel subtitle, and the search
+   filter (`patient__phone__icontains` → `patient__email__icontains`).
+   Settings page's display fallback updated too.
+
+**Explicitly not touched:** `Patient.phone`/`Patient.email` model fields
+(no migration — phone stays a real, populated column for legacy/manual-
+entry patients; the OTP path already had a synthetic-placeholder-phone
+mechanism for email-only patients from earlier work, reused as-is, not
+new). Twilio integration, `TwilioSMSProvider`, and every `sms`/
+`sms_or_email` branch in `resolve_otp_channel`/`send_otp` — dormant, not
+deleted.
+
+**Tests:** `test_booking_otp_review_flow.py`'s `StandardOtpBookingFlowTests`
++ `EditDetailsAtReviewTests` (9 tests, written earlier this session) relied
+on the old SMS default with no explicit override — updated to submit/
+verify via email, matching the new standard path (same pattern as Phase
+42A's own DOB-field test updates: a deliberate default change, not a bug).
+New `test_sms_otp_disabled.py` (10 tests) locks in the actual
+`resolve_otp_channel` behavior matrix: default clinic → email; explicit
+`sms` request under default `email` mode → gracefully falls back to email
+(not an error); a clinic with a stale stored `verification_mode="sms"` →
+still blocked from real SMS by the `sms_otp` flag; a clinic that
+explicitly re-enables `sms_otp=True` → SMS still genuinely works (proves
+this is a flip-able default, not vestigial code); `send_otp` with
+phone-only and no email → correctly rejected ("Email is required"), since
+nothing in the UI can produce that request anymore but the backend must
+still fail closed. New tests in `apps/api/chat/tests_conversations.py`
+(email display + email search). `apps.chatbot.tests apps.api.chat
+apps.doctors.tests apps.patients.tests apps.api.widget.tests apps.clinics
+apps.knowledge.tests` — **771/772** (the 1 failure is
+`test_the_earliest_opening_is_not_offered_as_a_substitute`, confirmed
+unrelated: a second date-boundary flake, same family as the `SLOT_START`
+one above — this session's wall-clock crossed from August into September
+mid-session, and the test's own "tomorrow" check now collides with the
+word "September" already present in an unrelated schedule-horizon
+message; not caused by anything in this change, flagged rather than
+fixed, out of scope). Eval **674/682 (98.8%)**, unchanged. Frontend
+`tsc --noEmit` and `eslint` clean on every touched file.
+
+**Live end-to-end verification (not simulated):** ran the full
+start → submit_details(email only) → send_otp → verify_otp →
+confirm_review pipeline via `manage.py shell` (not `manage.py test`, so
+the real `ResendEmailProvider` fires, confirmed by the
+`EMAIL provider=resend` log line rather than `provider=console`) against
+a throwaway clinic with **no explicit verification config at all** —
+proving the bare defaults work, not just an explicitly-configured
+clinic. Sent a real OTP to `alihamxa366@gmail.com`; **the user
+independently confirmed receiving code `499536` in their actual inbox**,
+matching this run's `debug_code` exactly. The resulting `Patient` row's
+`phone` field held the synthetic `email:<hash>` placeholder — confirmed
+no real phone number was ever collected or stored. Throwaway
+clinic/doctor/appointment/patient data deleted afterward.
+
+**Known limitations:** the staff-facing "Add/Edit patient" dialog in the
+dashboard still has a required phone field (`apps/api/patients/schemas.py`
+presumably still requires it) — deliberately left alone as manual CRM
+data entry, a different concern from chatbot verification; flagged in
+case the user wants that changed too later.
