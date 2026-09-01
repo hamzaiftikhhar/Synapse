@@ -206,17 +206,17 @@ export function DashboardSidebar({ onNavigate }: { onNavigate?: () => void }) {
       className="flex h-full w-full flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground lg:w-64"
     >
       <div className="flex h-14 items-center gap-2.5 border-b border-sidebar-border px-4">
-        <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-sidebar-primary text-sm font-bold text-sidebar-primary-foreground">
-          S
-        </div>
-        <div className="min-w-0 flex-1">
+        <Link
+          href={showPlatformNav ? "/dashboard/platform" : "/dashboard"}
+          className="flex min-w-0 flex-1 items-center gap-2.5 rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+        >
+          <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-sidebar-primary text-sm font-bold text-sidebar-primary-foreground">
+            S
+          </div>
           <p className="truncate text-sm font-semibold tracking-tight text-sidebar-foreground">
             {APP_NAME}
           </p>
-          <p className="truncate text-[11px] text-sidebar-foreground/45">
-            {showPlatformNav ? "Platform" : clinic?.name ?? "Clinic portal"}
-          </p>
-        </div>
+        </Link>
         {onNavigate ? (
           <button
             type="button"

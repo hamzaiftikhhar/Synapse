@@ -6,7 +6,6 @@ import { ProtectedRoute } from "@/components/auth/protected-route";
 import { DashboardSidebar } from "@/components/dashboard/sidebar";
 import { DashboardThemeProvider } from "@/components/dashboard/theme-provider";
 import { DashboardTopbar } from "@/components/dashboard/topbar";
-import { ViewingClinicBanner } from "@/components/dashboard/viewing-clinic-banner";
 import { DashboardWidgetProvider } from "@/components/dashboard/widget-provider-bridge";
 import { useAuth } from "@/providers/auth-provider";
 
@@ -55,7 +54,6 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
           </div>
           <div className="flex min-w-0 flex-1 flex-col">
             <DashboardTopbar />
-            <ViewingClinicBanner />
             <main className="flex-1 p-4 pb-24 lg:p-6 lg:pb-24">{children}</main>
           </div>
         </div>
