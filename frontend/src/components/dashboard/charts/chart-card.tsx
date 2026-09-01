@@ -8,18 +8,26 @@ export function ChartCard({
   title,
   description,
   action,
+  metrics,
+  footer,
   children,
   className,
 }: {
   title: string;
   description?: string;
   action?: ReactNode;
+  /** Primary metric(s) rendered between the header and the chart — the
+   * "metric → chart → drill-down" hierarchy: a number the chart explains,
+   * not just decoration around it. */
+  metrics?: ReactNode;
+  /** Drill-down action (e.g. "View analytics →") below the chart. */
+  footer?: ReactNode;
   children: ReactNode;
   className?: string;
 }) {
   return (
     <InsightCard overflow="visible" className={cn("p-5", className)}>
-      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <p className="text-[15px] font-medium text-foreground">{title}</p>
           {description ? (
@@ -28,7 +36,9 @@ export function ChartCard({
         </div>
         {action ? <div className="w-full shrink-0 sm:w-auto">{action}</div> : null}
       </div>
-      {children}
+      {metrics ? <div className="mt-4">{metrics}</div> : null}
+      <div className="mt-4">{children}</div>
+      {footer ? <div className="mt-4 border-t border-border/70 pt-3.5">{footer}</div> : null}
     </InsightCard>
   );
 }
@@ -78,6 +88,8 @@ export function ChartPanel({
   title,
   description,
   action,
+  metrics,
+  footer,
   isLoading,
   isError,
   onRetry,
@@ -90,6 +102,8 @@ export function ChartPanel({
   title: string;
   description?: string;
   action?: ReactNode;
+  metrics?: ReactNode;
+  footer?: ReactNode;
   isLoading?: boolean;
   isError?: boolean;
   onRetry?: () => void;
@@ -100,7 +114,14 @@ export function ChartPanel({
   className?: string;
 }) {
   return (
-    <ChartCard title={title} description={description} action={action} className={className}>
+    <ChartCard
+      title={title}
+      description={description}
+      action={action}
+      metrics={!isLoading && !isError ? metrics : undefined}
+      footer={footer}
+      className={className}
+    >
       {isLoading ? (
         <ChartSkeleton />
       ) : isError ? (
