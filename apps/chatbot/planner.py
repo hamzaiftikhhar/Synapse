@@ -82,6 +82,90 @@ def _entity_corroborates(domain: str | None, nlu: NLUResult) -> bool:
     return bool(getattr(nlu.entities, field, None))
 
 
+# ── Compound-message entity scoping (Phase 50) ──────────────────────────────
+#
+# Several SQL handlers apply a doctor/service entity as a "bonus" narrowing
+# filter beyond their own primary purpose (e.g. insurance_accepted narrowing
+# by doctor_id, search_doctors narrowing by service_id). That is correct for
+# a genuine single-clause message ("does Dr. Smith accept Aetna") but wrong
+# the moment the entity actually belongs to a *different* clause of a
+# compound message ("do you accept Aetna and can I book with Dr. Vance" —
+# live-confirmed to produce a false "not accepted" answer when the named
+# doctor doesn't personally carry the same plan the clinic does).
+#
+# Each tier list is a priority ordering of which intents most plausibly
+# "own" an entity field when 2+ different intents that could claim it are
+# BOTH present in the same message. A single present intent is never
+# contested (nothing to compare it against), so ordinary single-intent
+# messages are entirely unaffected. This is intent-shape based, not
+# entity-value based — no doctor/service/insurance name is hardcoded here.
+_DOCTOR_ENTITY_TIERS: tuple[frozenset[Intent], ...] = (
+    frozenset(
+        {Intent.BOOK_APPOINTMENT, Intent.RESCHEDULE_APPOINTMENT, Intent.DOCTOR_AVAILABILITY}
+    ),
+    frozenset({Intent.DOCTOR_SEARCH}),
+)
+_SERVICE_ENTITY_TIERS: tuple[frozenset[Intent], ...] = (
+    frozenset({Intent.BOOK_APPOINTMENT, Intent.PRICING}),
+    frozenset({Intent.SERVICES_OFFERED, Intent.DOCTOR_SEARCH}),
+)
+
+# A losing intent's own SQL task(s) that the contested entity must be
+# withheld from. Intents absent here (e.g. an intent that never reads this
+# entity at all) simply have nothing to block.
+_DOCTOR_BLOCKED_TASKS_BY_INTENT: dict[Intent, tuple[str, ...]] = {
+    Intent.INSURANCE_ACCEPTED: ("insurance",),
+    Intent.INSURANCE_VERIFICATION: ("insurance",),
+    Intent.SERVICES_OFFERED: ("services", "pricing"),
+    Intent.PRICING: ("services", "pricing"),
+    Intent.DOCTOR_SEARCH: ("doctors",),
+}
+_SERVICE_BLOCKED_TASKS_BY_INTENT: dict[Intent, tuple[str, ...]] = {
+    Intent.INSURANCE_ACCEPTED: ("insurance",),
+    Intent.INSURANCE_VERIFICATION: ("insurance",),
+    Intent.DOCTOR_SEARCH: ("doctors",),
+}
+
+
+def _winning_entity_tier(
+    tiers: tuple[frozenset[Intent], ...], present: set[Intent]
+) -> frozenset[Intent] | None:
+    for tier in tiers:
+        if tier & present:
+            return tier
+    return None
+
+
+def _compute_blocked_entity_fields(nlu: NLUResult) -> dict[str, frozenset[str]]:
+    present = {nlu.intent, *nlu.secondary_intents}
+    blocked: dict[str, set[str]] = {}
+
+    def _apply(
+        entity_field: str,
+        resolved_field: str,
+        tiers: tuple[frozenset[Intent], ...],
+        blocked_tasks_by_intent: dict[Intent, tuple[str, ...]],
+    ) -> None:
+        has_value = bool(getattr(nlu.entities, entity_field, None)) or bool(
+            getattr(nlu.resolved_ids, resolved_field, None)
+        )
+        if not has_value:
+            return
+        winner = _winning_entity_tier(tiers, present)
+        if winner is None:
+            return
+        for intent in present:
+            if intent in winner:
+                continue
+            for task in blocked_tasks_by_intent.get(intent, ()):
+                blocked.setdefault(task, set()).update((entity_field, resolved_field))
+
+    _apply("doctor_name", "doctor_id", _DOCTOR_ENTITY_TIERS, _DOCTOR_BLOCKED_TASKS_BY_INTENT)
+    _apply("service", "service_id", _SERVICE_ENTITY_TIERS, _SERVICE_BLOCKED_TASKS_BY_INTENT)
+
+    return {k: frozenset(v) for k, v in blocked.items()}
+
+
 _VECTOR_INTENTS = frozenset(
     {
         Intent.FAQ,
@@ -223,6 +307,13 @@ class ExecutionPlan:
     # "which services does this turn refer to." SQL handlers filter by this
     # instead of independently re-matching the message themselves.
     resolved_service_ids: list[str] = field(default_factory=list)
+    # Phase 50 — compound-message entity scoping. task name -> entity field
+    # names that task must ignore this turn, because the entity plausibly
+    # belongs to a *different* intent/task also present in this message
+    # (see _compute_blocked_entity_fields below). Empty for every ordinary
+    # single-intent message — this only ever narrows an already-planned
+    # task's filters, never invents or removes a task.
+    blocked_entity_fields: dict[str, frozenset[str]] = field(default_factory=dict)
 
     @property
     def primary_lane(self) -> Lane:
@@ -321,6 +412,9 @@ class ExecutionPlan:
             "ui_priority": self.ui_priority.value,
             "fallback_vector_tasks": list(self.fallback_vector_tasks),
             "resolved_service_ids": list(self.resolved_service_ids),
+            "blocked_entity_fields": {
+                k: sorted(v) for k, v in self.blocked_entity_fields.items()
+            },
         }
 
     def to_planner_decision(self) -> PlannerDecision:
@@ -1019,6 +1113,12 @@ def build_execution_plan(*, nlu: NLUResult, facts: PlannerFacts) -> ExecutionPla
     if fallback_vector_tasks:
         reason_parts.append("fallback_vector:" + ",".join(fallback_vector_tasks))
 
+    blocked_entity_fields = _compute_blocked_entity_fields(nlu) if sql_tasks else {}
+    if blocked_entity_fields:
+        reason_parts.append(
+            "blocked:" + ",".join(f"{k}={'|'.join(sorted(v))}" for k, v in blocked_entity_fields.items())
+        )
+
     return ExecutionPlan(
         clarify=clarify and not (booking or sql_tasks or vector_tasks),
         direct=False,
@@ -1032,6 +1132,7 @@ def build_execution_plan(*, nlu: NLUResult, facts: PlannerFacts) -> ExecutionPla
         doctor_followup=facts.doctor_followup,
         fallback_vector_tasks=fallback_vector_tasks,
         resolved_service_ids=list(facts.matched_service_ids),
+        blocked_entity_fields=blocked_entity_fields,
     )
 
 

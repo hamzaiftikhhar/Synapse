@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from django.test import SimpleTestCase
 
-from apps.chatbot.nlu.schemas import parse_nlu_payload
+from apps.chatbot.nlu.schemas import Intent, parse_nlu_payload
 from apps.chatbot.planner import (
     build_execution_plan,
     build_planner_facts,
     choose_plan,
 )
+from apps.chatbot.routing.heuristics import apply_routing_heuristics
 from apps.chatbot.routing.lanes import Lane
 
 
@@ -370,3 +371,208 @@ class ExecutionPlanTests(SimpleTestCase):
         )
         self.assertIn("services", plan.sql_tasks)
         self.assertTrue(plan.fallback_vector_tasks)
+
+
+class FAQOverwriteRemovalTests(SimpleTestCase):
+    """Regression for the heuristics.py fix: apply_routing_heuristics used
+    to rewrite intent to FAQ for PRICING/SERVICES_OFFERED/CLINIC_HOURS/
+    UNKNOWN whenever knowledge_q+catalog were true, which erased
+    _INTENT_SQL_TASKS's lookup for the real intent with no benefit (vector
+    routing is derived independently from facts.knowledge_q). Runs the full
+    heuristics -> planner chain, not build_execution_plan alone, since the
+    bug was specifically in what heuristics.py handed the planner."""
+
+    def _catalog(self, keyword: str, summary: str) -> list[dict]:
+        return [
+            {
+                "id": "doc1",
+                "title": "Policy",
+                "routing_keywords": [keyword],
+                "routing_summary": summary,
+            }
+        ]
+
+    def test_pricing_intent_keeps_its_sql_task_alongside_vector(self):
+        nlu = parse_nlu_payload(
+            {
+                "intent": "pricing",
+                "confidence": 0.7,
+                "entities": {"service": "Annual Physical"},
+            }
+        )
+        message = "how early should I arrive and how much is the annual physical"
+        catalog = self._catalog("arrive", "arrive early instructions")
+        heuristic_out = apply_routing_heuristics(
+            message=message, nlu=nlu, document_catalog=catalog, service_catalog=[]
+        )
+        self.assertEqual(heuristic_out.intent, Intent.PRICING)
+        plan = build_execution_plan(
+            nlu=heuristic_out,
+            facts=build_planner_facts(
+                message=message,
+                nlu=heuristic_out,
+                knowledge_q=True,
+                has_catalog=True,
+                doc_match=True,
+            ),
+        )
+        self.assertIn("pricing", plan.sql_tasks)
+        self.assertIn("general_faq", plan.vector_tasks)
+
+    def test_services_offered_intent_keeps_its_sql_task_alongside_vector(self):
+        nlu = parse_nlu_payload(
+            {
+                "intent": "services_offered",
+                "confidence": 0.7,
+                "entities": {},
+            }
+        )
+        message = "what should I know before my visit and what services do you offer"
+        catalog = self._catalog("before", "pre-visit instructions")
+        heuristic_out = apply_routing_heuristics(
+            message=message, nlu=nlu, document_catalog=catalog, service_catalog=[]
+        )
+        self.assertEqual(heuristic_out.intent, Intent.SERVICES_OFFERED)
+        plan = build_execution_plan(
+            nlu=heuristic_out,
+            facts=build_planner_facts(
+                message=message,
+                nlu=heuristic_out,
+                knowledge_q=True,
+                has_catalog=True,
+                doc_match=True,
+                service_list=True,
+            ),
+        )
+        self.assertIn("services", plan.sql_tasks)
+        self.assertIn("general_faq", plan.vector_tasks)
+
+    def test_clinic_hours_intent_keeps_its_sql_task_alongside_vector(self):
+        nlu = parse_nlu_payload(
+            {
+                "intent": "clinic_hours",
+                "confidence": 0.7,
+                "entities": {},
+            }
+        )
+        message = "what should I bring and what are your hours"
+        catalog = self._catalog("bring", "what to bring to your appointment")
+        heuristic_out = apply_routing_heuristics(
+            message=message, nlu=nlu, document_catalog=catalog, service_catalog=[]
+        )
+        self.assertEqual(heuristic_out.intent, Intent.CLINIC_HOURS)
+        plan = build_execution_plan(
+            nlu=heuristic_out,
+            facts=build_planner_facts(
+                message=message,
+                nlu=heuristic_out,
+                knowledge_q=True,
+                has_catalog=True,
+                doc_match=True,
+            ),
+        )
+        self.assertIn("hours", plan.sql_tasks)
+        self.assertIn("general_faq", plan.vector_tasks)
+
+
+class MultiIntentCompoundTests(SimpleTestCase):
+    """If the NLU correctly populates secondary_intents for a compound
+    message (the contract the prompt strengthening targets), the planner's
+    existing fan-out must actually answer both halves. This asserts the
+    downstream contract works — LLM compliance itself is validated by the
+    eval battery, not a unit test."""
+
+    def test_insurance_plus_doctor_availability_both_attach(self):
+        nlu = parse_nlu_payload(
+            {
+                "intent": "insurance_accepted",
+                "secondary_intents": ["doctor_availability"],
+                "confidence": 0.9,
+                "entities": {
+                    "insurance_provider": "Aetna",
+                    "doctor_name": "Vance",
+                    "date": "next tuesday",
+                },
+            }
+        )
+        message = "do you accept aetna and can i see dr vance next tuesday"
+        plan = build_execution_plan(
+            nlu=nlu,
+            facts=build_planner_facts(
+                message=message,
+                nlu=nlu,
+                doctor_availability_query=True,
+            ),
+        )
+        self.assertIn("insurance", plan.sql_tasks)
+        self.assertIn("availability", plan.sql_tasks)
+
+    def test_pricing_plus_services_offered_both_attach(self):
+        nlu = parse_nlu_payload(
+            {
+                "intent": "pricing",
+                "secondary_intents": ["services_offered"],
+                "confidence": 0.9,
+                "entities": {"service": "Strep Test"},
+            }
+        )
+        message = "what's the price of a strep test and can i walk in today"
+        plan = build_execution_plan(
+            nlu=nlu,
+            facts=build_planner_facts(message=message, nlu=nlu),
+        )
+        self.assertIn("pricing", plan.sql_tasks)
+        self.assertIn("services", plan.sql_tasks)
+
+
+class EmergencyVsUrgentAvailabilityTests(SimpleTestCase):
+    """The prompt now distinguishes danger-symptom emergencies from same-day
+    urgency language. This locks the *downstream* contract: once NLU
+    correctly emits is_emergency=False for pure scheduling urgency, the
+    planner must route to availability, not the emergency short-circuit —
+    and the reverse must still short-circuit to DIRECT immediately."""
+
+    def test_urgent_scheduling_language_without_danger_routes_to_availability(self):
+        nlu = parse_nlu_payload(
+            {
+                "intent": "doctor_availability",
+                "confidence": 0.9,
+                "is_emergency": False,
+                "entities": {"date": "today"},
+            }
+        )
+        message = "asap, need someone today"
+        plan = build_execution_plan(
+            nlu=nlu,
+            facts=build_planner_facts(
+                message=message,
+                nlu=nlu,
+                doctor_availability_query=True,
+                urgent_availability=True,
+            ),
+        )
+        self.assertFalse(plan.emergency)
+        self.assertIn("availability", plan.sql_tasks)
+
+    def test_genuine_emergency_still_short_circuits_regardless_of_urgency_signal(self):
+        """The fix must never weaken real emergency detection — is_emergency
+        still wins outright even if urgent_availability also happens to be
+        true for the same message."""
+        nlu = parse_nlu_payload(
+            {
+                "intent": "emergency",
+                "confidence": 0.99,
+                "is_emergency": True,
+                "entities": {},
+            }
+        )
+        plan = build_execution_plan(
+            nlu=nlu,
+            facts=build_planner_facts(
+                message="chest pain, can't breathe, need help asap",
+                nlu=nlu,
+                urgent_availability=True,
+            ),
+        )
+        self.assertTrue(plan.emergency)
+        self.assertEqual(plan.direct_mode, "emergency")

@@ -21,6 +21,15 @@ class SQLContext:
     # filter by service should read this first — it means "which IDs did
     # the planner authorize me to query," not "let me guess from scratch."
     resolved_service_ids: list[str] = field(default_factory=list)
+    # Entity fields (e.g. "doctor_id") each SQL task name is told to ignore
+    # this turn — computed once, centrally, by the planner (see
+    # planner.ExecutionPlan.blocked_entity_fields) whenever a compound
+    # message has an entity that plausibly belongs to a *different*
+    # intent/task than this one. A handler consults its own task-name
+    # key(s) here instead of independently deciding whether a "bonus"
+    # entity filter is safe to apply — see sql_tool/handlers/{insurance,
+    # services,doctors}.py for the exact guard shape.
+    blocked_entity_fields: dict[str, frozenset[str]] = field(default_factory=dict)
 
 
 @dataclass
