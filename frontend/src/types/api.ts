@@ -43,6 +43,10 @@ export type Clinic = {
 
 export type ClinicProfile = Clinic & {
   email: string;
+  /** Public-widget embed/CORS allowlist. Empty means the widget is not
+   * usable from any third-party site yet — see apps/clinics/models.py
+   * Clinic.allowed_origins. */
+  allowed_origins: string[];
   created_at: string;
   updated_at: string;
 };
@@ -55,6 +59,7 @@ export type ClinicProfileUpdateInput = {
   address?: ClinicAddress;
   timezone?: string;
   onboarding_step?: string;
+  allowed_origins?: string[];
 };
 
 export type BusinessHour = {

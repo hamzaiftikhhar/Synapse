@@ -3,13 +3,19 @@
 import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
+import { Plus, X } from "lucide-react";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { WorkspaceRelated } from "@/components/dashboard/workspace-related";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { useUpdateWidgetSettings, useWidgetSettings } from "@/hooks/api";
+import {
+  useClinicProfile,
+  useUpdateClinicProfile,
+  useUpdateWidgetSettings,
+  useWidgetSettings,
+} from "@/hooks/api";
 import { getApiErrorMessage } from "@/lib/api/client";
 import { appearanceFromConfig, appearanceToConfig } from "@/features/chat/widget-theme";
 import { WidgetAppearanceEditor } from "@/features/chat/widget-appearance-editor";
@@ -160,6 +166,101 @@ function WidgetSection() {
   );
 }
 
+function AllowedOriginsSection() {
+  const { data, isLoading } = useClinicProfile();
+  const update = useUpdateClinicProfile();
+  const [newOrigin, setNewOrigin] = useState("");
+
+  const origins = data?.allowed_origins ?? [];
+
+  async function addOrigin() {
+    const value = newOrigin.trim();
+    if (!value) return;
+    try {
+      await update.mutateAsync({ allowed_origins: [...origins, value] });
+      setNewOrigin("");
+    } catch (err) {
+      toast.error(getApiErrorMessage(err));
+    }
+  }
+
+  async function removeOrigin(origin: string) {
+    try {
+      await update.mutateAsync({ allowed_origins: origins.filter((o) => o !== origin) });
+    } catch (err) {
+      toast.error(getApiErrorMessage(err));
+    }
+  }
+
+  if (isLoading) {
+    return <p className="text-sm text-muted-foreground">Loading…</p>;
+  }
+
+  return (
+    <div className="space-y-3 border-t border-border pt-5">
+      <div>
+        <h3 className="text-sm font-semibold text-foreground">Allowed origins</h3>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Websites allowed to embed and use this widget, e.g.{" "}
+          <code className="rounded-md bg-muted px-1.5 py-0.5 text-xs text-foreground">
+            https://yourclinic.com
+          </code>
+          . The widget will not work on any external site until at least one
+          is added here.
+        </p>
+      </div>
+      {origins.length > 0 ? (
+        <div className="flex flex-wrap gap-2">
+          {origins.map((origin) => (
+            <span
+              key={origin}
+              className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/50 py-1 pr-1.5 pl-3 text-sm"
+            >
+              {origin}
+              <button
+                type="button"
+                aria-label={`Remove ${origin}`}
+                onClick={() => void removeOrigin(origin)}
+                className="flex size-5 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground"
+              >
+                <X className="size-3" />
+              </button>
+            </span>
+          ))}
+        </div>
+      ) : (
+        <p className="text-sm text-warning">
+          No origins registered yet — the widget is not usable on any
+          external site.
+        </p>
+      )}
+      <div className="flex flex-wrap gap-2">
+        <Input
+          value={newOrigin}
+          onChange={(e) => setNewOrigin(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              void addOrigin();
+            }
+          }}
+          placeholder="https://yourclinic.com"
+          className="min-w-[14rem] flex-1"
+          aria-label="Origin URL"
+        />
+        <Button
+          type="button"
+          variant="outline"
+          onClick={() => void addOrigin()}
+          disabled={!newOrigin.trim() || update.isPending}
+        >
+          <Plus className="size-4" /> Add
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function WorkspaceSection() {
   return (
     <div className="space-y-3">
@@ -232,7 +333,12 @@ function SettingsBody() {
         <div className="min-w-0 flex-1 rounded-xl bg-card p-5 ring-1 ring-foreground/6">
           {section === "workspace" ? <WorkspaceSection /> : null}
           {section === "booking" ? <BookingSection /> : null}
-          {section === "widget" ? <WidgetSection /> : null}
+          {section === "widget" ? (
+            <div className="space-y-6">
+              <WidgetSection />
+              <AllowedOriginsSection />
+            </div>
+          ) : null}
           {section === "notifications" ? (
             <div className="space-y-2">
               <h2 className="text-sm font-semibold text-foreground">
