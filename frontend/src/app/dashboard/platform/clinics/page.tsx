@@ -83,7 +83,13 @@ export default function PlatformClinicsPage() {
     }
   }
 
-  async function setStatus(id: string, status: string) {
+  async function setStatus(id: string, name: string, slug: string, status: string) {
+    // Rows can look nearly identical (same owner submitting a typo'd retry
+    // produces two adjacent, near-duplicate names) — naming both the clinic
+    // and its slug here is what makes a misclick on the wrong row visible
+    // before it fires, not just a generic "are you sure?".
+    const verb = status === "suspended" ? "Suspend" : "Activate";
+    if (!confirm(`${verb} ${name} (${slug})?`)) return;
     try {
       await platformService.patchClinic(id, { status });
       toast.success(status === "suspended" ? "Clinic suspended" : "Clinic activated");
@@ -216,7 +222,7 @@ export default function PlatformClinicsPage() {
                           <Button
                             size="sm"
                             variant="outline"
-                            onClick={() => void setStatus(c.id, "suspended")}
+                            onClick={() => void setStatus(c.id, c.name, c.slug, "suspended")}
                           >
                             Suspend
                           </Button>
@@ -224,7 +230,7 @@ export default function PlatformClinicsPage() {
                           <Button
                             size="sm"
                             variant="outline"
-                            onClick={() => void setStatus(c.id, "active")}
+                            onClick={() => void setStatus(c.id, c.name, c.slug, "active")}
                           >
                             Activate
                           </Button>
