@@ -79,7 +79,7 @@ python manage.py run_chat_eval --target 520
 python manage.py test apps.chatbot.tests.test_nlu.NLUTotalBudgetTests --keepdb -v 2
 ```
 
-Current baseline (see ROADMAP.md for the phase that produced it): **346/346
+Current baseline (see ROADMAP.md for the phase that produced it): **759/759
 chatbot+knowledge tests, 674/682 (98.8%) eval.** Anything that changes
 either number needs an explanation in the phase report — a drop isn't
 automatically a regression (see Phase 3 in ROADMAP.md for a real example of
