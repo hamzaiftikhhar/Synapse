@@ -599,6 +599,7 @@ class ChatEngine:
                     patient=patient,
                     message=message,
                     resolved_service_ids=exec_plan.resolved_service_ids,
+                    blocked_entity_fields=exec_plan.blocked_entity_fields,
                 )
                 timings["sql_ms"] = (time.perf_counter() - t0) * 1000
 
@@ -1119,6 +1120,7 @@ class ChatEngine:
         patient: Any = None,
         message: str = "",
         resolved_service_ids: list[str] | None = None,
+        blocked_entity_fields: dict[str, frozenset[str]] | None = None,
     ) -> list[dict[str, Any]]:
         from apps.chatbot.sql_tool import SQLTool
 
@@ -1129,6 +1131,7 @@ class ChatEngine:
             patient=patient,
             message=message,
             resolved_service_ids=resolved_service_ids,
+            blocked_entity_fields=blocked_entity_fields,
         )
         return [r.to_dict() for r in results]
 
