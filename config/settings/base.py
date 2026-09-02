@@ -66,6 +66,7 @@ MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "corsheaders.middleware.CorsMiddleware",
+    "core.middleware.WidgetCorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -166,6 +167,12 @@ from corsheaders.defaults import default_headers
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[])
 CORS_ALLOW_HEADERS = list(default_headers) + ["x-tenant-id", "x-synapse-visitor-id"]
+# Public widget + patient chat get a per-clinic dynamic origin allowlist
+# instead (see core.middleware.WidgetCorsMiddleware) — corsheaders has no
+# concept of a DB-backed, per-clinic origin list, so those paths are
+# excluded here and handled independently. Everything else under /api/v1/
+# keeps the static CORS_ALLOWED_ORIGINS policy above, unchanged.
+CORS_URLS_REGEX = r"^/api/v1/(?!widget/)(?!chat/message/?$).*$"
 
 # ─── JWT — dual auth (staff portal vs patient widget) ─────────────────────────
 
@@ -284,6 +291,11 @@ CHAT_CONFIDENCE_LOW = env.float("CHAT_CONFIDENCE_LOW", default=0.45)
 
 NLU_ENABLE_RULES = env.bool("NLU_ENABLE_RULES", default=True)
 NLU_RULES_BEFORE_LLM = env.bool("NLU_RULES_BEFORE_LLM", default=False)
+# Phase 45 — conservative catalog-grounded deterministic pre-LLM routing
+# (apps/chatbot/nlu/tier1.py). Independent of NLU_ENABLE_RULES/
+# NLU_RULES_BEFORE_LLM above (those are message-only regex tiers; this is
+# catalog-grounded and clinic-scoped). Flip off to instantly disable.
+NLU_TIER1_ENABLED = env.bool("NLU_TIER1_ENABLED", default=True)
 # Secondary provider after primary failure (circuit-breaker aware)
 NLU_SECONDARY_PROVIDER = env("NLU_SECONDARY_PROVIDER", default="gemini")
 NLU_FALLBACK_OPENAI = env.bool("NLU_FALLBACK_OPENAI", default=True)
