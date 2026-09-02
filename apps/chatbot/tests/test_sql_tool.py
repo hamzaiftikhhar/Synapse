@@ -166,6 +166,83 @@ class SearchDoctorsTests(SQLToolTestBase):
         self.assertIn("Cardiology", result.rows[0]["specialties"])
 
 
+class SearchDoctorsLanguageTests(SQLToolTestBase):
+    """Doctor.languages is catalog data (ISO 639-1 codes) — search_doctors
+    must filter by *any* language present on file via the universal name/code
+    table in nlu/languages.py, never a per-language routing rule. Deliberately
+    uses languages absent from every other test/fixture in this session
+    (Mandarin/Swahili/Urdu, not Spanish/Punjabi/Arabic) to prove genericity
+    rather than re-confirming the exact examples that exposed the bug."""
+
+    def setUp(self):
+        super().setUp()
+        self.doctor.languages = ["en"]
+        self.doctor.save(update_fields=["languages"])
+        self.mandarin_doctor = Doctor.objects.create(
+            clinic=self.clinic,
+            full_name="Dr. Li Wei",
+            title="MD",
+            is_accepting_patients=True,
+            languages=["en", "zh"],
+        )
+        self.swahili_urdu_doctor = Doctor.objects.create(
+            clinic=self.clinic,
+            full_name="Dr. Amara Njeri",
+            title="MD",
+            is_accepting_patients=True,
+            languages=["sw", "ur"],
+        )
+
+    def test_filters_by_language_name(self):
+        ctx = SQLContext(
+            clinic=self.clinic,
+            nlu=_nlu(Intent.DOCTOR_SEARCH, entities=ExtractedEntities(language="Mandarin")),
+        )
+        result = search_doctors(ctx)
+        self.assertTrue(result.found)
+        names = {r["full_name"] for r in result.rows}
+        self.assertEqual(names, {"Dr. Li Wei"})
+
+    def test_filters_by_a_second_unrelated_language(self):
+        """Same mechanism, different language — proves this isn't a
+        Mandarin-specific path either."""
+        ctx = SQLContext(
+            clinic=self.clinic,
+            nlu=_nlu(Intent.DOCTOR_SEARCH, entities=ExtractedEntities(language="Urdu")),
+        )
+        result = search_doctors(ctx)
+        self.assertTrue(result.found)
+        names = {r["full_name"] for r in result.rows}
+        self.assertEqual(names, {"Dr. Amara Njeri"})
+
+    def test_no_doctor_speaks_requested_language(self):
+        ctx = SQLContext(
+            clinic=self.clinic,
+            nlu=_nlu(Intent.DOCTOR_SEARCH, entities=ExtractedEntities(language="French")),
+        )
+        result = search_doctors(ctx)
+        self.assertFalse(result.found)
+
+    def test_no_language_entity_returns_all_doctors_unfiltered(self):
+        ctx = SQLContext(
+            clinic=self.clinic,
+            nlu=_nlu(Intent.DOCTOR_SEARCH, entities=ExtractedEntities()),
+        )
+        result = search_doctors(ctx)
+        names = {r["full_name"] for r in result.rows}
+        self.assertIn("Dr. Hamza Ali", names)
+
+    def test_unrecognized_language_word_matches_nothing_not_everything(self):
+        """An unresolvable language value must never silently fall back to
+        an unfiltered doctor list."""
+        ctx = SQLContext(
+            clinic=self.clinic,
+            nlu=_nlu(Intent.DOCTOR_SEARCH, entities=ExtractedEntities(language="Klingon")),
+        )
+        result = search_doctors(ctx)
+        self.assertFalse(result.found)
+
+
 class ListSpecialtiesTests(SQLToolTestBase):
     def test_lists_all_specialties(self):
         ctx = SQLContext(clinic=self.clinic, nlu=_nlu(Intent.DOCTOR_SEARCH))

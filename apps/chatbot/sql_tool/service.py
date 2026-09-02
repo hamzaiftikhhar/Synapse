@@ -88,6 +88,7 @@ class SQLTool:
         patient: object | None = None,
         message: str = "",
         resolved_service_ids: list[str] | None = None,
+        blocked_entity_fields: dict[str, frozenset[str]] | None = None,
     ) -> list[SQLResult]:
         """Execute SQL tools named by the ExecutionPlan (planner source of truth)."""
         from apps.chatbot.sql_tool.cache import get_cached_result, set_cached_result
@@ -98,6 +99,7 @@ class SQLTool:
             patient=patient,
             message=message or "",
             resolved_service_ids=list(resolved_service_ids or []),
+            blocked_entity_fields=dict(blocked_entity_fields or {}),
         )
         clinic_id = getattr(clinic, "id", None)
         results: list[SQLResult] = []

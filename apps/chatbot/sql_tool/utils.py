@@ -10,6 +10,16 @@ from zoneinfo import ZoneInfo
 from django.db.models import Q
 from django.utils import timezone
 
+# Single source of truth for "how many doctors can come back from a browse
+# query" — matches the ceiling insurance/services/specialties already use.
+# Was independently hardcoded to [:3] in the SQL handler, the formatter's
+# text preview, AND ui_meta's card mapping — a clinic with more than 3
+# doctors could never have all of them discovered via "what doctors do you
+# have", and the three call sites could silently drift out of sync with
+# each other. This is a ceiling (SQL fetches up to this many), not a
+# re-truncation at every layer downstream.
+DOCTOR_LIST_CEILING = 20
+
 
 def entity_list(value: Any) -> list[str]:
     if value is None:

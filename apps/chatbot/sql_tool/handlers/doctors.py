@@ -7,8 +7,10 @@ from typing import Any
 
 from django.utils import timezone
 
+from apps.chatbot.nlu.languages import resolve_language_codes
 from apps.chatbot.sql_tool.base import SQLContext, SQLResult
 from apps.chatbot.sql_tool.utils import (
+    DOCTOR_LIST_CEILING,
     build_name_filter,
     clinic_timezone,
     doctor_to_dict,
@@ -71,10 +73,18 @@ def search_doctors(ctx: SQLContext) -> SQLResult:
         .prefetch_related("specialties", "services")
     )
 
-    doctor_ids = entity_ids(nlu.resolved_ids.doctor_id)
+    # A doctor named only to anchor a *different*, competing intent in the
+    # same message (e.g. "who are your doctors and can I book with Dr.
+    # Vance" — the booking clause, not this browse) must not silently
+    # narrow this task — see planner._compute_blocked_entity_fields. A
+    # genuine single-clause "tell me about Dr. Vance" still filters
+    # normally: this only fires when a doctor-owning intent (booking,
+    # availability, reschedule) is also present in the same message.
+    doctor_blocked = "doctor_id" in ctx.blocked_entity_fields.get("doctors", frozenset())
+    doctor_ids = [] if doctor_blocked else entity_ids(nlu.resolved_ids.doctor_id)
     if doctor_ids:
         qs = qs.filter(id__in=doctor_ids)
-    else:
+    elif not doctor_blocked:
         names = entity_list(nlu.entities.doctor_name)
         # Ignore politeness / filler / availability tokens mistaken for names
         # e.g. "is any dr free on tuesday" → "free" must not filter doctors
@@ -96,17 +106,31 @@ def search_doctors(ctx: SQLContext) -> SQLResult:
             q = build_name_filter("specialties__name", specs)
             qs = qs.filter(q).distinct()
 
-    service_id = nlu.resolved_ids.service_id
+    # Same principle for a service named only to anchor a pricing/services
+    # clause elsewhere in the message — live-confirmed without this guard:
+    # "who are your doctors and how much is a strep test" silently dropped
+    # 3 of 6 real doctors from the browse-all-doctors answer.
+    service_blocked = "service_id" in ctx.blocked_entity_fields.get("doctors", frozenset())
+    service_id = None if service_blocked else nlu.resolved_ids.service_id
     if service_id:
         qs = qs.filter(services__id=service_id).distinct()
-    elif nlu.entities.service:
+    elif not service_blocked and nlu.entities.service:
         qs = qs.filter(services__name__icontains=nlu.entities.service, services__is_deleted=False).distinct()
 
-    doctors = list(qs[:3])
+    language_values = entity_list(getattr(nlu.entities, "language", None))
+    if language_values:
+        lang_codes = resolve_language_codes(language_values)
+        # A language was named but didn't resolve to any known code — filter
+        # to no rows rather than silently ignoring the request and returning
+        # every doctor as if the question had never been asked.
+        qs = qs.filter(languages__overlap=lang_codes) if lang_codes else qs.none()
+
+    doctors = list(qs[:DOCTOR_LIST_CEILING])
     rows = [doctor_to_dict(d) for d in doctors]
     if rows:
         names = ", ".join(r["full_name"] for r in rows[:3])
-        summary = f"Found {len(rows)} doctor(s): {names}."
+        more = f" (+{len(rows) - 3} more)" if len(rows) > 3 else ""
+        summary = f"Found {len(rows)} doctor(s): {names}{more}."
     else:
         summary = "No matching doctors found."
     return SQLResult(handler="search_doctors", found=bool(rows), rows=rows, summary=summary)

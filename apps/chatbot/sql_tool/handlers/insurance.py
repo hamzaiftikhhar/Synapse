@@ -17,7 +17,15 @@ def insurance_accepted(ctx: SQLContext) -> SQLResult:
     nlu = ctx.nlu
     providers = entity_list(nlu.entities.insurance_provider)
     plan_ids = entity_ids(nlu.resolved_ids.insurance_plan_id)
-    doctor_ids = entity_ids(nlu.resolved_ids.doctor_id)
+    # A doctor named elsewhere in a compound message ("...and can I book
+    # with Dr. Vance") is not this task's to narrow by — see
+    # planner._compute_blocked_entity_fields. Only withheld when a
+    # genuinely different clause claims it; a real single-clause "does
+    # Dr. Smith accept Aetna" still narrows normally.
+    blocked = ctx.blocked_entity_fields.get("insurance", frozenset())
+    doctor_ids = (
+        [] if "doctor_id" in blocked else entity_ids(nlu.resolved_ids.doctor_id)
+    )
 
     # Dynamic: match provider names from this clinic's catalog against the message
     if not providers and not plan_ids and ctx.message:

@@ -144,15 +144,22 @@ def format_sql_results(results: list[dict[str, Any]]) -> str:
             if not found or not rows:
                 parts.append(EMPTY_DOCTORS)
                 continue
+            # Text stays a short preview regardless of how many cards render
+            # below (cards are the actual browse surface) — but when there
+            # are more than the preview shows, say so rather than silently
+            # implying the preview is the whole list.
             preview = rows[:3]
             lines = [
                 f"- {r['full_name']}"
                 + (f" ({', '.join(r['specialties'])})" if r.get("specialties") else "")
                 for r in preview
             ]
-            parts.append(
-                "Here are a few doctors who may be a good fit:\n" + "\n".join(lines)
+            intro = (
+                "Here are a few doctors who may be a good fit:"
+                if len(rows) > len(preview)
+                else "Here are the doctors who may be a good fit:"
             )
+            parts.append(intro + "\n" + "\n".join(lines))
             continue
 
         if handler == "list_specialties" and rows:

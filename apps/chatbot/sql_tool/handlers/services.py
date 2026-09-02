@@ -75,7 +75,19 @@ def services_offered(ctx: SQLContext) -> SQLResult:
         if matched_ids and mode == "named":
             qs = qs.filter(id__in=matched_ids)
 
-    doctor_ids = entity_ids(ctx.nlu.resolved_ids.doctor_id)
+    # A doctor named elsewhere in a compound message ("...and can I book
+    # with Dr. Whitaker") is not this task's to narrow by — see
+    # planner._compute_blocked_entity_fields. Live-confirmed without this
+    # guard: "how much is a physical and is Dr. Whitaker available
+    # tomorrow" reported "No services found" for a real, priced,
+    # clinic-wide service, purely because Whitaker personally doesn't
+    # perform it.
+    blocked = ctx.blocked_entity_fields.get("services", frozenset()) | ctx.blocked_entity_fields.get(
+        "pricing", frozenset()
+    )
+    doctor_ids = (
+        [] if "doctor_id" in blocked else entity_ids(ctx.nlu.resolved_ids.doctor_id)
+    )
     if doctor_ids:
         qs = qs.filter(doctors__id__in=doctor_ids).distinct()
 
