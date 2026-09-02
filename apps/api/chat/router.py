@@ -14,7 +14,12 @@ import logging
 from ninja import Query, Router
 from ninja.errors import HttpError
 
-from apps.api.auth.deps import PatientJWTAuth, StaffJWTAuth, clinic_from
+from apps.api.auth.deps import (
+    PatientJWTAuth,
+    StaffJWTAuth,
+    clinic_from,
+    origin_allowed_for_clinic,
+)
 from apps.api.chat.schemas import (
     ChatMessageIn,
     ChatMessageOut,
@@ -46,6 +51,12 @@ def patient_chat_message(request, payload: ChatMessageIn) -> ChatMessageOut:
     auth = request.auth
     clinic = auth.clinic
     patient = auth.patient
+
+    # Defense-in-depth: a leaked/replayed patient JWT should still be unusable
+    # from a website the clinic hasn't registered — same check the anonymous
+    # half of the widget flow (/widget/*) enforces at resolve_public_clinic.
+    if not origin_allowed_for_clinic(request, clinic):
+        raise HttpError(403, "This origin is not registered for this clinic's widget")
 
     message = (payload.message or "").strip()
     if not message:
