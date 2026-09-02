@@ -6,6 +6,7 @@ import logging
 from datetime import timedelta
 from uuid import UUID
 
+from django.db import transaction
 from django.db.models import Avg, Q, Sum
 from django.utils import timezone
 from django.utils.text import slugify
@@ -318,57 +319,84 @@ def list_clinics(request, search: str = ""):
 
 @router.post("/clinics", response=ClinicOut, auth=staff_jwt_auth)
 def create_clinic(request, payload: PlatformClinicCreateIn):
+    """Super Admin: manually provision a clinic.
+
+    All DB writes run in one transaction — this endpoint previously had none
+    at all, so a failure partway through (e.g. the owner-invite email call)
+    left a clinic committed with no widget settings, no owner, and no audit
+    row, while the request still reported as failed. That's the same defect
+    class as apps.api.auth.router.create_clinic's fix: a request that
+    reports failure must guarantee nothing was left behind, or a confused
+    retry creates a duplicate clinic (see the "Umbrella Health" /
+    "Umbrell Health" duplicate-clinic incident this closes).
+    """
     auth = _require_platform(request)
     slug = slugify(payload.slug or payload.name)[:64]
     if Clinic.objects.filter(slug=slug).exists():
         raise HttpError(400, "Clinic slug already taken")
 
-    clinic = Clinic.objects.create(
-        slug=slug,
-        name=payload.name.strip(),
-        email=payload.email.strip(),
-        phone=(payload.phone or "").strip(),
-        timezone=payload.timezone or "America/New_York",
-        status=ClinicStatus.ONBOARDING,
-    )
-    from apps.widget.models import WidgetSettings
+    invite_email: str | None = None
+    invite_token: str | None = None
 
-    WidgetSettings.objects.create(
-        clinic=clinic, configuration=default_widget_configuration()
-    )
-
-    if payload.owner_email:
-        email = payload.owner_email.strip().lower()
-        owner, created = User.objects.get_or_create(
-            email=email,
-            defaults={
-                "username": email.split("@")[0][:40],
-                "role": UserRole.CLINIC_ADMIN,
-                "is_clinic_owner": True,
-                "is_active": True,
-                "email_verified_at": timezone.now(),
-            },
+    with transaction.atomic():
+        clinic = Clinic.objects.create(
+            slug=slug,
+            name=payload.name.strip(),
+            email=payload.email.strip(),
+            phone=(payload.phone or "").strip(),
+            timezone=payload.timezone or "America/New_York",
+            status=ClinicStatus.ONBOARDING,
         )
-        if created:
-            pwd = payload.owner_password or "ChangeMe123!"
-            owner.set_password(pwd)
-            owner.save()
-            _, raw = StaffAuthToken.issue(
-                user=owner, purpose=StaffAuthTokenPurpose.PASSWORD_RESET, ttl_hours=48
+        from apps.widget.models import WidgetSettings
+
+        WidgetSettings.objects.create(
+            clinic=clinic, configuration=default_widget_configuration()
+        )
+
+        if payload.owner_email:
+            email = payload.owner_email.strip().lower()
+            owner, created = User.objects.get_or_create(
+                email=email,
+                defaults={
+                    "username": email.split("@")[0][:40],
+                    "role": UserRole.CLINIC_ADMIN,
+                    "is_clinic_owner": True,
+                    "is_active": True,
+                    "email_verified_at": timezone.now(),
+                },
             )
-            NotificationService.send_password_reset_email(to=email, token=raw)
-        ClinicStaff.objects.get_or_create(
-            user=owner, clinic=clinic, defaults={"is_active": True}
+            if created:
+                pwd = payload.owner_password or "ChangeMe123!"
+                owner.set_password(pwd)
+                owner.save()
+                _, raw = StaffAuthToken.issue(
+                    user=owner, purpose=StaffAuthTokenPurpose.PASSWORD_RESET, ttl_hours=48
+                )
+                invite_email, invite_token = email, raw
+            ClinicStaff.objects.get_or_create(
+                user=owner, clinic=clinic, defaults={"is_active": True}
+            )
+
+        write_audit(
+            action=AuditAction.CLINIC_CREATE,
+            actor=auth.user,
+            clinic=clinic,
+            object_type="clinic",
+            object_id=str(clinic.id),
+            ip_address=client_ip(request),
         )
 
-    write_audit(
-        action=AuditAction.CLINIC_CREATE,
-        actor=auth.user,
-        clinic=clinic,
-        object_type="clinic",
-        object_id=str(clinic.id),
-        ip_address=client_ip(request),
-    )
+    # Outside the transaction and best-effort, deliberately: the clinic is
+    # already durably committed by this point, so a flaky email provider
+    # must not turn a successful creation into a client-visible failure.
+    if invite_email and invite_token:
+        try:
+            NotificationService.send_password_reset_email(to=invite_email, token=invite_token)
+        except Exception:
+            logger.exception(
+                "Failed to send owner invite email for clinic %s", clinic.id
+            )
+
     return ClinicOut(
         id=clinic.id,
         slug=clinic.slug,

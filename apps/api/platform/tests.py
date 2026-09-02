@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 
@@ -320,3 +322,62 @@ class PlatformOpsTests(TestCase):
         self.assertEqual(resp.status_code, 200, resp.content)
         self.assertEqual(resp.json()["first_name"], "Root")
         self.assertEqual(resp.json()["phone_number"], "555-0100")
+
+
+class PlatformClinicCreateAtomicityTests(TestCase):
+    """Regression for the production "Umbrella Health" / "Umbrell Health"
+    duplicate-clinic incident (see apps.api.auth.tests for the self-serve
+    half of the same fix). This endpoint previously had no transaction at
+    all: the clinic, its widget settings, the owner user, and the
+    ClinicStaff link were each committed as soon as created, and a failure
+    in the owner-invite email send (or the audit write) after that point
+    still made the whole request report as failed — even though a fully
+    usable clinic was already sitting in the database. That's exactly what
+    invites a confused retry that creates a second, independent clinic."""
+
+    def setUp(self):
+        self.admin, self.admin_headers = make_super_admin(email="root3@synapse.test")
+
+    def test_failure_after_clinic_row_rolls_back_everything(self):
+        with patch("apps.api.platform.router.write_audit", side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError):
+                self.client.post(
+                    "/api/v1/platform/clinics",
+                    data={
+                        "name": "Duplicate Risk Clinic",
+                        "slug": "duplicate-risk-clinic",
+                        "email": "owner@duprisk.example.com",
+                        "owner_email": "owner-invite@duprisk.example.com",
+                    },
+                    content_type="application/json",
+                    headers=self.admin_headers,
+                )
+
+        self.assertFalse(Clinic.objects.filter(slug="duplicate-risk-clinic").exists())
+        self.assertFalse(User.objects.filter(email="owner-invite@duprisk.example.com").exists())
+
+    def test_owner_invite_email_failure_does_not_undo_the_clinic(self):
+        """The email send is deliberately outside the transaction — the
+        clinic must stay created even if the notification provider is
+        down, since by then the tenant is already durably committed and a
+        client-visible failure here would trigger the same bad retry."""
+        with patch(
+            "apps.api.platform.router.NotificationService.send_password_reset_email",
+            side_effect=RuntimeError("smtp down"),
+        ):
+            resp = self.client.post(
+                "/api/v1/platform/clinics",
+                data={
+                    "name": "Email Flaky Clinic",
+                    "slug": "email-flaky-clinic",
+                    "email": "owner@emailflaky.example.com",
+                    "owner_email": "owner-invite@emailflaky.example.com",
+                },
+                content_type="application/json",
+                headers=self.admin_headers,
+            )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertTrue(Clinic.objects.filter(slug="email-flaky-clinic").exists())
+        self.assertTrue(
+            User.objects.filter(email="owner-invite@emailflaky.example.com").exists()
+        )
