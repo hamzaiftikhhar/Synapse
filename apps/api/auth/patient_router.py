@@ -4,6 +4,7 @@ from django.conf import settings
 from ninja import Router
 from ninja.errors import HttpError
 
+from apps.api.auth.deps import resolve_public_clinic
 from apps.api.auth.jwt import create_patient_access_token
 from apps.api.auth.schemas import (
     ClinicOut,
@@ -16,7 +17,7 @@ from apps.api.auth.schemas import (
 from apps.chatbot.services.otp_service import OTPError
 from apps.chatbot.services.otp_service import send_otp as send_otp_service
 from apps.chatbot.services.otp_service import verify_otp as verify_otp_service
-from apps.clinics.models import Clinic, ClinicStatus
+from apps.clinics.models import Clinic
 
 router = Router(tags=["Auth — Patient (Widget)"])
 
@@ -28,16 +29,6 @@ def _clinic_out(clinic: Clinic) -> ClinicOut:
         name=clinic.name,
         timezone=clinic.timezone,
     )
-
-
-def _resolve_clinic(slug: str) -> Clinic:
-    try:
-        clinic = Clinic.objects.get(slug=slug)
-    except Clinic.DoesNotExist:
-        raise HttpError(404, "Clinic not found") from None
-    if clinic.status == ClinicStatus.SUSPENDED:
-        raise HttpError(403, "Clinic is suspended")
-    return clinic
 
 
 def _patient_out(patient) -> PatientAuthOut:
@@ -59,7 +50,7 @@ def send_otp(request, payload: OTPSendIn):
     new Patient record. (New-patient booking has its own OTP endpoint at
     /widget/booking/otp/send, which is unaffected by this.)
     """
-    clinic = _resolve_clinic(payload.clinic_slug)
+    clinic = resolve_public_clinic(request, payload.clinic_slug)
     try:
         result = send_otp_service(
             clinic=clinic,
@@ -87,7 +78,7 @@ def send_otp(request, payload: OTPSendIn):
 @router.post("/otp/verify", response=PatientTokenOut, auth=None)
 def verify_otp(request, payload: OTPVerifyIn):
     """Verify OTP and issue a short-lived patient JWT."""
-    clinic = _resolve_clinic(payload.clinic_slug)
+    clinic = resolve_public_clinic(request, payload.clinic_slug)
     try:
         result = verify_otp_service(
             clinic=clinic,

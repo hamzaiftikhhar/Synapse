@@ -507,6 +507,16 @@ def create_clinic(request, payload: CreateClinicIn):
         raise HttpError(400, "Use platform clinic create for super admin")
     if not user.email_verified_at:
         raise HttpError(403, "Verify your email before creating a clinic")
+    # One clinic per account through this self-serve path. Without this,
+    # nothing stops a confused retry (e.g. after the request above used to
+    # silently fail post-commit) from creating a second, fully independent
+    # clinic under the same owner — which is exactly how the production
+    # "Umbrella Health" / "Umbrell Health" duplicate happened.
+    if ClinicStaff.objects.filter(user=user, is_active=True).exists():
+        raise HttpError(
+            400,
+            "You already belong to a clinic. Contact support if you need to set up an additional one.",
+        )
 
     slug = slugify(payload.slug or payload.name)[:64]
     if not slug or not re.match(r"^[a-z0-9]+(?:-[a-z0-9]+)*$", slug):
@@ -533,14 +543,22 @@ def create_clinic(request, payload: CreateClinicIn):
         WidgetSettings.objects.create(
             clinic=clinic, configuration=default_widget_configuration()
         )
-    write_audit(
-        action=AuditAction.CLINIC_CREATE,
-        actor=user,
-        clinic=clinic,
-        object_type="clinic",
-        object_id=str(clinic.id),
-        ip_address=client_ip(request),
-    )
+        # Inside the same atomic block as the clinic row itself: this used to
+        # run after the `with` block closed, so a failure here (e.g. a DB
+        # blip on the AuditLog insert) raised *after* the clinic was already
+        # committed — the client saw a request failure and retried, but the
+        # first clinic was never rolled back, leaving two independent clinics
+        # under one account. Keeping it inside the transaction makes success
+        # and failure actually mean what they say: either everything commits
+        # (clinic + staff + widget + audit row) or nothing does.
+        write_audit(
+            action=AuditAction.CLINIC_CREATE,
+            actor=user,
+            clinic=clinic,
+            object_type="clinic",
+            object_id=str(clinic.id),
+            ip_address=client_ip(request),
+        )
     return _clinic_out(clinic)
 
 

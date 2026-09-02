@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from uuid import UUID
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.http import HttpRequest
 from ninja.errors import HttpError
@@ -83,6 +84,52 @@ def resolve_clinic_ref(ref: str) -> Clinic | None:
         return Clinic.objects.get(pk=UUID(ref))
     except (Clinic.DoesNotExist, ValueError, TypeError):
         return None
+
+
+def origin_allowed_for_clinic(request, clinic: Clinic) -> bool:
+    """Public-widget origin allowlist check (see Clinic.allowed_origins).
+
+    A missing Origin header is allowed through: the threat this defends
+    against — an unauthorized *website* embedding/calling a clinic's widget —
+    always produces a browser Origin header, and a non-browser caller could
+    trivially omit it regardless of what we do here. Rejecting on a missing
+    Origin would gain nothing against that caller while breaking any
+    legitimate non-browser tooling.
+
+    settings.CORS_ALLOWED_ORIGINS (the platform's own dashboard/marketing
+    origins) is always allowed regardless of the clinic — the staff dashboard
+    calls these same public endpoints directly for its own "test the bot"
+    widget (see WidgetProvider/GlobalChatWidget), and that must keep working
+    unconditionally, independent of what any given clinic has registered.
+
+    An empty allowed_origins denies every non-platform origin — a clinic
+    must explicitly register at least one origin before its widget is usable
+    from any third-party site. There is no clinic in production today with a
+    live embed, so this is safe to enforce as the default from day one.
+    """
+    origin = request.headers.get("Origin")
+    if not origin:
+        return True
+    if origin in settings.CORS_ALLOWED_ORIGINS:
+        return True
+    return origin in (clinic.allowed_origins or [])
+
+
+def resolve_public_clinic(request, slug: str) -> Clinic:
+    """Resolve a public widget request's clinic_slug to a Clinic, enforcing
+    the same suspended-status + origin-allowlist checks for every public
+    /widget/* (and patient OTP) endpoint. Single choke point — previously
+    duplicated byte-for-byte across apps/api/widget/router.py,
+    apps/api/widget/booking_router.py, and apps/api/auth/patient_router.py."""
+    try:
+        clinic = Clinic.objects.get(slug=slug)
+    except Clinic.DoesNotExist:
+        raise HttpError(404, "Clinic not found") from None
+    if clinic.status == ClinicStatus.SUSPENDED:
+        raise HttpError(403, "Clinic is suspended")
+    if not origin_allowed_for_clinic(request, clinic):
+        raise HttpError(403, "This origin is not registered for this clinic's widget")
+    return clinic
 
 
 def _clinic_from_token(payload: StaffTokenPayload) -> Clinic | None:
