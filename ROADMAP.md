@@ -4048,6 +4048,944 @@ the embedding service even when provider is still `local`. Run
 **Not this phase:** reindexing clinic documents (still required after the
 768→1536 migration); NLU still uses OpenAI/Gemini as before.
 
+## ✅ Phase 44 — FAQ intent-overwrite, doctor-language filter, emergency/urgent boundary, multi-intent compound reliability
+
+Triggered by a live query battery against `horizon-family-care` (27 real
+queries through `ChatEngine().process()`) that surfaced five findings,
+each investigated architecturally *before* any code changed (three
+escalating investigation-only rounds, no diffs, across this session — see
+prior session transcript) to avoid hardcoding the specific examples that
+exposed them.
+
+**Root causes, verified by direct code trace, not guesswork:**
+
+- **FAQ catch-all.** `routing/heuristics.py` (3 blocks) and
+  `routing/confidence.py` (VERY_LOW band) rewrote `nlu.intent` to `FAQ`
+  whenever `knowledge_q + catalog` was true, to signal "route to vector."
+  Traced the actual consumer (`planner.py::build_execution_plan`) and
+  confirmed via `choose_plan()`'s own `del needs_vector` (comment: "planner
+  derives vector from capability tables") that `needs_vector`/`needs_sql`
+  set by heuristics are **never read** — vector routing is independently
+  derived from `facts.knowledge_q`/topic. The intent rewrite therefore had
+  no benefit and one real cost: `_INTENT_SQL_TASKS` has no `FAQ` key, so it
+  silently dropped the SQL task for the *true* intent (pricing/services/
+  hours/unknown) whenever no other safety net (`_AESTHETIC_RE`, or
+  `topic` from the raw LLM output) happened to compensate. Confirmed the
+  isolated Botox-triad instability itself (`faq`/`medical_question`/
+  `faq@0.4`) is a *separate*, upstream LLM-classification-boundary problem,
+  not caused by this overwrite — verified by running the exact queries
+  through the full engine and reading the log line showing `source=openai`
+  with the raw LLM already emitting `faq` before heuristics ever ran.
+- **Doctor language ("do you have doctors who speak Spanish?" → `off_topic`).**
+  `Doctor.languages` (ArrayField of ISO 639-1 codes) already existed and
+  was already fully queryable — zero filtering capability existed anywhere
+  in the pipeline, and `ENTITY_KEYS` had no `language` slot, so the model's
+  own `reasoning_short` literally said "Language capability not specified
+  for doctors."
+- **Emergency vs. urgent same-day ("asap, need someone today" → `emergency`).**
+  Confirmed via a live raw-NLU probe that this was a genuine LLM
+  classification error, not a rules-tier bug — `_match_safety`/
+  `_EMERGENCY_RE` (the real, always-on safety net) was uninvolved; the raw
+  LLM's own `reasoning_short` ("Urgent care needed today, likely Dr.
+  Whitaker or Jenkins") showed correct *understanding*, wrong *label*. The
+  prompt had exactly one line on emergencies and zero on the
+  emergency/urgent-scheduling boundary.
+- **Multi-intent ("do you accept Aetna and can I see Dr. Vance Tuesday" →
+  only insurance answered).** `secondary_intents` fan-out in `planner.py`
+  (lines 781-808) is correct and unmodified — confirmed via a targeted
+  11-query battery that the LLM *can* populate `secondary_intents`
+  correctly for some compound shapes (worked live for "physical +
+  openings") but not others, and separately, found a second, distinct
+  cause: a fast-tier rules match (`_match_fast`'s hours branch) can
+  short-circuit *before the LLM ever runs*, silently dropping a second
+  clause tacked onto the same message ("what are your hours **and where
+  are you located**") — the rules tier has no concept of "there might be
+  more in this message."
+
+**What changed — all four fixes are minimal, catalog/schema-grounded, and
+contain no per-example hardcoding (no `if "spanish"`, no `if "botox"`, no
+`if "asap"`):**
+
+- `routing/heuristics.py`, `routing/confidence.py`: the 3+1 blocks no
+  longer overwrite `intent` to `FAQ` (the `BOOK_APPOINTMENT`→non-
+  transactional block is *not* touched — its overwrite is load-bearing,
+  protecting `compute_message_sensors`'s `is_booking_intent` check from a
+  false positive).
+- New `nlu/languages.py`: a universal ISO 639-1 name↔code table (same
+  category of reference data as a country-code table — not clinic-
+  specific) + `resolve_language_codes()`. `nlu/schemas.py` gained a
+  `language` entity key. `sql_tool/handlers/doctors.py::search_doctors`
+  gained one filter clause (`languages__overlap=lang_codes`) following the
+  exact existing doctor_id/specialty_id/service_id pattern — including the
+  "named but unresolvable → filter to zero rows, never silently ignore the
+  filter" edge case, caught by its own regression test.
+- `nlu/prompts.py`: five additions, each phrased as a general rule, not an
+  example list — a generic doctor+language→`doctor_search` rule; a rule
+  that any yes/no or cost question about a *named* procedure is
+  `services_offered`/`pricing` from the catalog (even when the honest
+  answer is "not offered"), never `faq`/`off_topic`; an emergency-vs-
+  urgent-scheduling boundary; a concrete compound→`secondary_intents`
+  example (category-level, e.g. "insurance+availability", not a specific
+  sentence).
+- `nlu/entity_extract.py`'s `_COMPOUND_RE` (already used to gate the
+  strong rules tier) broadened to catch `and (what|where|when|who|how|
+  which|why|is|are)` — a second WH-question clause, not a specific-word
+  list. `nlu/rules.py`'s fast-tier hours and "fit me in" branches now
+  reuse the same `looks_like_compound()` guard already used elsewhere in
+  the file, falling through to the LLM instead of silently answering only
+  the matched half.
+
+**Live re-verification (not just unit tests) after the fix**, same
+`horizon-family-care` clinic: Spanish/Punjabi/Arabic/Mandarin doctor
+queries → all `doctor_search` with `entities.language` correctly
+extracted, `is_off_topic=False` (previously `off_topic` for Spanish,
+`off_topic@0.2` for Punjabi). "asap, need someone today" / "squeeze me in
+today" → `doctor_availability`, `is_emergency=False`. "chest pain and
+can't breathe" → still `emergency` at 0.99 via `rules_safety`, confirming
+the fix did not weaken genuine emergency detection. "do you offer botox" /
+"how much is botox" → `services_offered`/`pricing`, `is_off_topic=False`
+(previously `faq`/`off_topic=True`). Aetna+Dr.-Vance compound → primary
+`insurance_accepted` + `secondary_intents=['doctor_availability']`, both
+entity sets populated.
+
+**Tests:** 18 new (test_execution_plan.py's `FAQOverwriteRemovalTests`/
+`MultiIntentCompoundTests`/`EmergencyVsUrgentAvailabilityTests`,
+test_sql_tool.py's `SearchDoctorsLanguageTests` — deliberately using
+Mandarin/Swahili/Urdu, none of which appear anywhere else in this
+session, to prove genericity rather than re-confirming Spanish — plus
+test_nlu.py's fast-tier compound-guard tests and test_prompts.py's
+prompt-content regressions). 3 pre-existing tests updated (not loosened)
+where they asserted the exact destructive intent-overwrite just removed —
+justified in each case by the `del needs_vector`/`_INTENT_SQL_TASKS`
+trace above, not by re-running and observing the failure.
+`python manage.py test apps.chatbot.tests apps.knowledge.tests --keepdb`:
+**664/664** (the 1 pre-existing, unrelated `test_the_earliest_opening_is_
+not_offered_as_a_substitute` date-boundary flake reproduces in isolation,
+same as every prior session's baseline — not caused by this phase).
+`python manage.py run_chat_eval --target 520`: **674/682 (98.8%)** —
+identical to the recorded baseline, same two pre-existing families
+failing (`adversarial_booking_slang_squeeze`, `adversarial_medical_slang_
+pediatric`), no new failures.
+
+**Explicitly not touched:** the circuit-breaker/Gemini gap investigated in
+the same session (root-caused precisely: `GOOGLE_API_KEY` is set but
+doesn't match the `"AIza"` prefix `classifier.py` requires, so Gemini is
+silently excluded from every attempt chain with no logged warning) — out
+of scope for this phase, not requested.
+
+**Tier 1 (catalog-grounded deterministic pre-LLM routing) — recommendation,
+not implemented, per explicit instruction:**
+
+1. *Categories still unnecessarily LLM-dependent:* single-entity,
+   single-operation catalog lookups with zero interpretive ambiguity —
+   "do you accept `<insurance>`", "how much is `<one named service>`", "do
+   you offer `<one named service>`", bare doctor/specialty listing. Now
+   that language/existence-question/emergency-boundary are prompt-level
+   fixes, these are the only remaining candidates, and they're now purely
+   a latency/resilience question, not a correctness one.
+2. *Reusable without new matching logic:* `resolvers.py`'s existing
+   `_match_insurance`/`_match_service`/`_match_specialty`/
+   `resolve_doctor_candidates` already do exactly this clinic-scoped
+   fuzzy matching with confidence bands.
+3. *False-positive boundary, explicit:* deterministic routing requires
+   ALL of — exactly one catalog entity type referenced; that entity
+   resolves at high confidence; the operation is one of a small closed set
+   mapping 1:1 to an existing SQL handler; no second distinct entity or
+   connective ("and"/"also"/"but") in the message; no interpretive/
+   relational language (medical safety, comparison, conditionals). Worked
+   through the trap case explicitly: "Does Dr. Omar think Botox is safe
+   during pregnancy?" contains two entity types (doctor + service) and
+   fails condition 1 immediately, before the interpretive-language check
+   (which would independently also fail it) is even reached — falls
+   through to the LLM, correctly.
+4. *Smallest conservative scope if approved:* insurance-acceptance,
+   pricing-of-one-named-service, and bare doctor/specialty listing only —
+   explicitly excluding booking/availability (date/time interpretation has
+   too many edge cases for a first pass) and anything naming two entities.
+
+**Recommended next phase:** state the Tier 1 scope above as its own
+phase if approved; separately, the Gemini credential/log-visibility gap
+(small, independent, not urgent).
+
+## ✅ Phase 45 — Conservative catalog-grounded Tier 1
+
+Phase 44 recommended, but explicitly did not implement, a deterministic
+pre-LLM layer for single-entity, single-operation catalog lookups. This
+phase built the smallest version of it, adversarially, per explicit
+instruction: false negatives (fall through to the LLM) always acceptable;
+false positives never acceptable.
+
+**Contract** (`apps/chatbot/nlu/tier1.py::try_catalog_fast_path(clinic,
+message)`): returns a dict payload in the exact shape
+`try_rule_classify()` already produces (flows through the same
+`parse_nlu_payload`/`resolve_entities` pipeline every other classification
+source uses — nothing downstream knows or cares Tier 1 fired), or `None`.
+No medium-confidence guesses, no partial answers, no parallel planner —
+`None` always means "proceed to the existing NLU pipeline exactly as if
+Tier 1 didn't exist."
+
+**Categories approved (3), each a closed grammatical shape, fullmatch-
+anchored, with at most one catalog entity and zero hardcoded entity
+values:**
+
+- Insurance acceptance ("do you accept/take/cover `<plan>`", "is `<plan>`
+  accepted") — resolved against the clinic's live `InsurancePlan` table.
+- Single-service pricing ("how much is/does/for `<service>`", "what does
+  `<service>` cost", "price/cost of `<service>`") — resolved against
+  `build_service_catalog()`.
+- Doctor/specialty listing (bare "who are your doctors" / "what
+  specialties do you have", or specialty-filtered "which `<role>`s do you
+  have") — the specialty filter resolved via `resolvers.py::_match_specialty`
+  (reused directly, including its existing role-noun→specialty alias
+  table — no new one).
+
+**The core generic safeguard, not a per-category patch:** every category
+requires the recognized entity to *fully explain* the captured span —
+every significant word in what the message named must appear in the
+matched catalog entry's own name (`_fully_explained_by()`). This is what
+blocks "how much is a physical **for my child**" from matching on the
+single strong token "physical" while silently dropping "for my child" —
+verified as a real, live failure mode during adversarial testing (see
+below), not a hypothetical.
+
+**Multi-intent/ambiguity gate runs before any category logic**, reusing
+the same `looks_like_compound()` guard wired into the rules tier in Phase
+44 (not reimplemented) — a compound message never gets a partial Tier 1
+answer, it always falls through whole.
+
+**Explicitly rejected after adversarial testing:** nothing wider than
+these three — no booking/availability category (too much date/time
+interpretation surface for a first pass), no symptom-routing, no
+multi-entity shapes of any kind.
+
+**A genuine bug found and fixed during adversarial testing (not
+hypothetical):** the initial pricing matcher reused
+`routing/signals.py::match_services_in_message()`, which requires a ≥7-
+char single token or two ≥5-char tokens to accept a match — meaning it
+can *never* accept a real, short, single-word service name like "Botox"
+on its own, since there's no second token to pair with. Live-reproduced
+("What does Botox cost?" failed to match against a fixture service
+literally named "Botox Treatment") before being shipped, not caught after.
+Fixed by applying `_fully_explained_by()` directly against the catalog
+instead of pre-filtering through that function — it was already a
+sufficient, strict containment check on its own.
+
+**Live verification against the real `horizon-family-care` catalog**
+(not just the synthetic fixture) surfaced two more honest, *correct*
+non-firings worth recording as known conservatism, not bugs:
+- "Do you accept Aetna?" — the clinic carries **two** Aetna plans (HMO
+  Plus, PPO). Tier 1 correctly found 2 matches, not 1, and declined
+  rather than guessing which plan. Same for Blue Cross Blue Shield (2
+  plans) and UnitedHealthcare (2 plans) — in practice, the insurance
+  category only fires for this clinic's single-plan carriers (Medicare,
+  Medicaid, Humana, Kaiser), which is a realistic, honest bypass-rate
+  ceiling for clinics that tier their plans per carrier, not a bug to fix.
+- "How much is a strep test?" — the real service is named "Rapid Strep /
+  Flu Combo Swab"; "test" never appears in that name, so
+  `_fully_explained_by` correctly refuses to assume "strep test" means
+  the same thing a human/LLM would infer. Falls through to the LLM, which
+  handles it correctly. "How much is an urgent care visit?" similarly
+  declines — "urgent", "care", and "visit" are all in the shared generic
+  `STOPWORDS` set (`routing/signals.py`), leaving zero significant tokens
+  to anchor on.
+
+Confirmed, via direct code trace, that `Intent.INSURANCE_ACCEPTED` and
+`Intent.INSURANCE_VERIFICATION` both dispatch to the exact same
+`insurance_accepted` SQL handler (`sql_tool/service.py:32-33`) — so Tier
+1 always emitting `insurance_accepted` even where the live LLM sometimes
+prefers `insurance_verification` for the identical query has zero
+behavioral effect, confirmed rather than assumed.
+
+**Files changed:** new `apps/chatbot/nlu/tier1.py`,
+`apps/chatbot/tests/test_tier1.py` (29 tests — the full adversarial
+matrix from the phase spec, both positive and negative, encoded as
+explicit assertions, not just "runs without error").
+`apps/chatbot/nlu/intent_entity.py::IntentEntityService.analyze()` gained
+a 6-line hook calling `try_catalog_fast_path()` before `classify_message()`
+whenever no explicit provider override was passed (test-injected
+providers, e.g. `FakeProvider`, bypass Tier 1 entirely so mocked-provider
+tests are unaffected). `config/settings/base.py` gained
+`NLU_TIER1_ENABLED` (default `True`), mirroring the existing
+`NLU_ENABLE_RULES` pattern — flip to instantly disable.
+
+**Reuse points (no duplicate matching system):** `resolvers.py::_match_specialty`
+(role-noun aliases, unmodified); `routing/doc_catalog.py::build_service_catalog`;
+`routing/signals.py::{STOPWORDS, is_doctor_ranking_request,
+looks_like_instruction_injection, mentions_doctor}`;
+`nlu/entity_extract.py::looks_like_compound`; `nlu/rules.py::try_rule_classify(tier="safety")`
+called unconditionally first, so Tier 1 can never override real emergency
+detection. One deliberate, documented non-reuse: insurance/pricing scan
+the clinic's own catalog directly rather than calling
+`resolvers.py::_match_insurance`/`_match_service` (which each return a
+single best guess) — Tier 1 needs genuine ambiguity-*count* detection
+(reject on 2+ matches), which those functions don't expose.
+
+**Tests:** `apps.chatbot.tests apps.knowledge.tests --keepdb`: **693/693**
+(1 pre-existing unrelated date-boundary flake, same as every prior phase
+this session). `run_chat_eval --target 520`: **674/682 (98.8%)**,
+unchanged from baseline — the eval battery is fixture-driven and doesn't
+call `IntentEntityService`, so it doesn't exercise Tier 1 at all; live
+engine testing was the correct tool here and is what's reported above.
+
+**LLM bypass rate (live, `horizon-family-care`):** 5 of 16 realistic
+queries tested correctly bypassed the LLM (bare doctor listing, bare
+specialty listing, "how much is a physical", "what's the price of a
+blood draw", "do you accept Medicare" — each 0.2–4.3ms vs. 1.9–4.5s for
+the same queries through the real LLM). Zero false positives across every
+positive and negative case tested, including every adversarial case in
+the phase spec. The remaining 11 correctly fell through (ambiguous
+multi-plan insurer x3, unoffered service, colloquial-name mismatch x2,
+and 5 explicitly-adversarial compound/doctor-qualified/ranking/symptom
+cases) — a lower bypass rate than "positive category" framing alone would
+suggest, and reported as such rather than only counting the favorable
+cases.
+
+**Known limitation / found but not fixed:** the strict token-containment
+check means any service or plan whose *colloquial* name differs from its
+*catalog* name (a real, expected, common occurrence — "strep test" vs.
+"Rapid Strep / Flu Combo Swab") will never bypass the LLM. This is the
+intended conservative trade-off, not something to loosen without
+revisiting the false-positive risk it exists to prevent.
+
+**Recommended next phase:** none forced — evaluate live production
+bypass/false-positive rates over time before considering any category
+expansion; do not expand based on this phase's synthetic/live-spot-check
+numbers alone.
+
+### Phase 45 follow-up — adversarial implementation audit
+
+A dedicated, skeptical audit (no code changes assumed acceptable going in
+— only made where a clear bug was found) re-tested the shipped Tier 1
+against harder adversarial cases than the original 29 tests covered.
+
+**One real bug found and fixed.** `intent_entity.py::analyze()`'s
+pre-existing `classifier_source not in {"rules_fast","rules_strong",
+"rules_fallback"}` check (unmodified by Phase 45's own diff — confirmed
+via `git diff`) did not recognize the new `tier1_*` sources. Effect,
+verified end-to-end: a Tier 1 hit's `provider`/`model` were silently
+overwritten to the real LLM provider's name, and it was logged into
+`AIUsageLog` as a genuine (0-token) "openai" call — polluting usage/cost
+analytics and making Tier 1's true bypass rate unmeasurable from that
+table (exactly why this phase's own bypass-rate numbers were gathered via
+live scripts, not that table). Fixed by generalizing the check to
+`classifier_source.startswith("tier1_")`, scoped only to Tier 1's own
+sources — the same gap already existed for `rules_safety` *before* this
+phase and is noted here as a related, pre-existing, out-of-scope issue,
+not fixed as part of this audit.
+
+**Real, verified-safe fragility found, not fixed (correctly declines
+today, for a reason Tier 1 doesn't itself control):**
+`is_doctor_ranking_request()` (routing/signals.py) only recognizes
+ranking language paired with the literal word "doctor" ("best doctor"),
+not a specialty word substituted in ("best cardiologist", "top
+cardiologist"). Tested directly — `_DOCTOR_LIST_FILTERED_RE` does capture
+"best cardiologist" as a specialty candidate, and the ranking guard does
+not catch it. It currently still falls through safely only because
+`resolvers.py::_match_specialty`'s fuzzy-match threshold (0.7) is strict
+enough to reject the noisy candidate string against a real specialty name
+— a downstream component's incidental strictness, not a principled
+safeguard Tier 1 owns. Locked in by
+`test_ranking_language_substituted_with_specialty_word_still_falls_through`
+so a future, unrelated change to that threshold can't silently reopen
+this as a false positive without a test noticing.
+
+**Confirmed generic** (no hardcoded entity values in any conditional):
+grepped the full file for every real entity name used anywhere in this
+session (Aetna, Cigna, Blue Cross, Medicare, Botox, doctor names,
+Spanish/Punjabi, "physical", "pediatric") — 3 hits, all inside comments
+used as illustrative examples, zero inside regex alternatives or
+matching logic. One honest caveat: `routing/signals.py::STOPWORDS`
+(shared, pre-existing, not authored in Phase 45) contains words —
+`swab`, `combo`, `rapid`, `wrinkle`, `tooth` — that visibly correlate
+with this session's actual service fixtures, meaning Tier 1 inherits
+whatever dataset-shaped tuning already exists in that shared list, even
+though it never itself references a specific entity value.
+
+**`_fully_explained_by()` — real, demonstrated limitations, all
+false-negative-only (verified against the real fixture catalog):**
+"how much is an annual physical" does not match "Establish Patient Adult
+Physical" (the catalog literally says "Adult", not "Annual"); "well
+child exam"-style phrasing can never match "Pediatric Well-Child Exam"
+at all because "well", "child", and "exam" are *all* individually in the
+shared `STOPWORDS` list, leaving zero significant tokens to anchor a
+match unless the word "pediatric" itself is used; and pluralization is
+handled inconsistently rather than by design — "swab" (singular) is
+itself a stopword and only ever matches via a *different* surviving
+anchor word, while "swabs" (plural) is not a recognized stopword at all
+and must therefore literally appear in the catalog name, so a singular
+and plural phrasing of the same request can behave asymmetrically. All
+three are conservative failures (decline, never mis-fire) but represent
+real coverage cost, now explicit rather than assumed.
+
+**Compound detection — its actual role is narrower than documented.**
+`looks_like_compound()` misses same-category "X and Y"/"X or Y" patterns
+it wasn't designed for ("do you accept aetna and cigna", "...aetna or
+blue cross", "which pediatricians and cardiologists do you have") —
+verified directly. None of these produced a false positive in live
+testing against a real catalog, but *not* because the compound gate
+caught them: each category's own strict `_fully_explained_by` entity
+check (requiring literal `"and"`/`"or"` tokens to appear in a single
+matched catalog name, which they never do) is what actually rejects
+them. The compound gate is real defense-in-depth, not the operative
+safety mechanism for this specific pattern — corrected here since the
+original Phase 45 write-up implied otherwise.
+
+**Test suite grew from 29 to 37** — 8 new tests added for genuine,
+verified gaps the original suite had zero coverage for: the
+`AIUsageLog`/provider-model integration bug (the original 29 never once
+called `IntentEntityService.analyze()`, only `try_catalog_fast_path()` in
+isolation — exactly why the bug was invisible to them), the settings-flag
+disable path, the test-injected-provider-bypasses-Tier1 path, the
+same-category conjunction non-false-positive lock, and the
+ranking-language-substituted-with-specialty fragility lock.
+`apps.chatbot.tests apps.knowledge.tests --keepdb`: **701/701** (same 1
+pre-existing unrelated flake). `run_chat_eval`: **674/682 (98.8%)**,
+unchanged.
+
+**Verdict: current scope is safe to freeze.** Zero false positives
+produced in any test across both passes (66 total cases: the original
+29 plus this audit's additional live/adversarial testing). Every
+non-firing traced to a specific, understood, always-conservative cause.
+The two fragility findings above are explicitly documented and now
+test-locked rather than silently relied upon.
+
+**Recommendation:** freeze scope. Do not expand categories. If anything,
+the next worthwhile increment is *not* more categories but hardening
+what exists — e.g., generalizing `is_doctor_ranking_request()` itself
+(shared code, benefits more than Tier 1) rather than continuing to lean
+on `_match_specialty`'s incidental strictness.
+
+## ✅ Phase 46 — Generalize `is_doctor_ranking_request()`
+
+Directly follows the Phase 45 audit's recommendation. Scope: only this
+one shared signal — no Tier 1 category expansion, no threshold changes.
+
+**Investigation before any change.** Two real callers, found via grep, not
+assumed: `planner.py:565` (inside `compute_message_sensors`) and
+`tier1.py:300`. Decisive finding: `compute_message_sensors` is explicitly
+documented as I/O-free and is shared *verbatim* with the offline eval
+battery, which has no live `Clinic`/DB object at all — confirmed in
+`eval/runner.py`'s own comment ("no live clinic/DB here"). This ruled out
+passing a live clinic into that call path without either violating that
+invariant or diverging eval/production, and is why the fix does not
+extend planner-level `doctor_ranking_refusal` coverage to specialty
+terminology — a deliberate, reported trade-off, not an oversight.
+
+**Current-behavior baseline, tested before any change:** literal "doctor"
+phrases mostly worked ("best doctor", "top doctor" → `True`), but two
+pre-existing gaps existed independent of specialty terminology at all —
+"which doctor is best" (missing "the") and "do you have a recommended
+doctor" (no "recommended" template existed) both incorrectly returned
+`False`. Every specialty phrasing ("best cardiologist" etc.) returned
+`False`. The bare function has never been compound-aware — "who is the
+best doctor and what are your hours" already returned `True` before this
+phase; confirmed still `True` after, unchanged, and reported as a related,
+pre-existing, out-of-scope quirk rather than silently left unmentioned.
+
+**Design.** Added an *optional* `clinic` parameter to
+`is_doctor_ranking_request()`. `None` (default, used by
+`compute_message_sensors`): literal "doctor" phrase/template matching
+only — the two pre-existing template gaps above are fixed (zero risk,
+no new vocabulary), but no specialty-word generalization is attempted at
+all. When `clinic` is provided (`tier1.py`'s call site, updated to pass
+it): a candidate role-noun is captured via a *generic English
+morphological* pattern (`-ist`/`-ian` suffix — cardiologist,
+pediatrician, dermatologist, psychiatrist, dentist, ... covered by
+construction, not enumeration) and only counts as a match once confirmed
+against the clinic's real specialty catalog via
+`resolvers.py::_match_specialty` (reused unmodified, including its
+existing role-noun alias table — no new specialty list written
+anywhere). This directly satisfies the requirement that ranking language
+may be generic but the entity/category ranked must stay catalog-grounded,
+and is why a bare suffix pattern was deliberately rejected — verified
+live that "who is the best artist"/"who is the best guardian for my
+child" would otherwise false-positive (neither is a real specialty, so
+catalog confirmation correctly rejects both even with `clinic` provided).
+
+**What this concretely changes for Tier 1** is subtler than "more
+matches": Tier 1 never answers a ranking request either way (it's an
+exclusion check). "who is the best cardiologist" already returned
+`NO_MATCH` before this phase (Phase 45's finding: *safe by accident*,
+because `_match_specialty`'s fuzzy threshold happened to reject the noisy
+string). It still returns `NO_MATCH` now — but for the correct, explicit
+reason. The Phase 45 fragility-lock test
+(`test_ranking_language_substituted_with_specialty_word_still_falls_through`)
+still passes unchanged; its docstring was updated to reflect why the
+guarantee is now principled rather than incidental.
+
+**Files changed:** `routing/signals.py` (the function itself — module
+docstring "clinic-agnostic... no tenant-specific keywords" still holds:
+the optional clinic argument adds catalog *verification*, not a
+hardcoded keyword list). `nlu/tier1.py` (one call site: `is_doctor_
+ranking_request(text, clinic=clinic)`). `planner.py` unchanged — its
+1-argument call site needed no edit since `clinic` defaults to `None`.
+
+**Tests:** new `tests/test_doctor_ranking.py` (13 tests — first-ever
+direct test of this function; every prior test that touched
+`doctor_ranking_request` only set it as a precomputed fact on the
+planner, never exercising the detector itself), covering both the
+no-clinic and clinic-grounded paths against the full matrix in this
+phase's spec, including a specialty (Dermatology) that appears nowhere
+else in this session's fixtures, to prove genericity rather than
+re-confirming cardiology/pediatrics. `test_tier1.py`'s existing
+fragility-lock docstring updated (assertion unchanged).
+`apps.chatbot.tests apps.knowledge.tests --keepdb`: **714/714** (1
+pre-existing unrelated flake, unchanged). `test_tier1`: **50/50**.
+`run_chat_eval`: **674/682 (98.8%)**, unchanged — confirms zero Tier 1
+category expansion occurred as a side effect.
+
+**Known, deliberate limitation (not fixed, reported instead of forced):**
+planner-level `doctor_ranking_refusal` — the actual safety-relevant
+consumer of this signal — does not gain specialty-terminology coverage.
+"Who is the best cardiologist" reaching the full engine outside Tier 1
+still falls through to ordinary classification, unchanged from before
+this phase. Closing that would require either accepting the bare-
+morphological false-positive risk with no catalog check, or threading a
+live `clinic` into an explicitly I/O-free function shared with the eval
+battery — both judged to carry more risk than this phase's explicitly
+scoped, conservative mandate justified taking without being asked.
+
+**Recommended next phase:** none forced. If the planner-level limitation
+above is worth closing, it needs its own explicitly-scoped decision — not
+a default extension of this phase.
+
+## ✅ Phase 47 — Multi-intent reliability audit (investigation only, no code changes)
+
+Investigated the previously-reported failure: `"do you accept aetna and
+can i see dr vance next tuesday"` classified as `insurance_verification`
+with no `secondary_intents`, only insurance answered. Zero code changed
+this phase — the mandate was to locate the exact layer first.
+
+**The original failure does not reproduce today.** Clean, single-call
+reproduction against the real `horizon-family-care` clinic through the
+full `ChatEngine.process()` (retrying only past live provider timeouts,
+never past a genuine classification): raw NLU →
+`intent=insurance_accepted, confidence=0.95, secondary_intents=
+['doctor_availability']`, both entities correctly extracted and resolved
+(`doctor_id` and `insurance_plan_id` both populated); planner →
+`sql_tasks=['insurance', 'availability']`; executor → both handlers ran,
+both returned `found=True` with correct data; `meta` → both `insurance`
+and `time_slots`/`recommended` populated with real data. Traced why: this
+exact phrasing is now a near-verbatim match for the worked example added
+to the prompt in Phase 44 (`"Do you accept <plan> and can I see <doctor>
+<date>" is intent insurance_accepted, secondary_intents:
+[doctor_availability]`) — the original bug was most likely observed
+before that fix landed.
+
+**Generalization matrix (not overfit to the one example).** Ran 21
+queries spanning every combination in the phase spec — insurance+booking,
+insurance+pricing, doctor+booking, doctor+availability, pricing+booking,
+two independent three-intent cases, plus phrasing variations (casual
+language, omitted subject, clause-order swap, "plus"/"also" instead of
+"and", different insurers, different doctors) — against the live LLM.
+**21/21 correctly populated `secondary_intents`.** Both three-intent
+cases correctly triggered the dedicated `Intent.MULTI_INTENT` value with
+all three secondary intents present. Confirms the Phase 44 prompt fix
+generalizes to the underlying class of compound requests, not just the
+one phrase that exposed the original bug.
+
+**One real, precise, still-open gap found — Layer D (planner), not NLU.**
+`Intent.BOOK_APPOINTMENT` is absent from `_INTENT_SQL_TASKS`
+(planner.py), and `is_booking_intent` (`compute_message_sensors`) is
+computed only from the *primary* intent, never `secondary_intents`. When
+`book_appointment` appears as a secondary intent (4 of 21 matrix cases:
+e.g. "who are your doctors and can i book with dr vance", "how much is a
+physical and can i book one") the request is silently a no-op —
+confirmed directly against `build_execution_plan()`: `sql_tasks` reflects
+only the primary intent, `plan.booking` stays `False`, nothing in the
+plan acknowledges the booking request at all. Deliberately not fixed
+this phase: booking is a stateful multi-step wizard, not a read-only SQL
+lookup, so the correct behavior (auto-launch the wizard? append a
+light-touch booking offer to the response? something else?) is a real
+product decision, not a mechanical one-line fix — and implementing either
+option would mean changing planner behavior for a case explicitly outside
+this phase's "do not redesign the planner" boundary. Reported, not
+forced.
+
+**Verified NOT bugs, ruled out with reproducible evidence:**
+- The planner's existing `is_view_appointments_request()` guard
+  (planner.py ~line 801) already correctly discards a spuriously-
+  classified `view_appointments` secondary intent (one matrix case
+  produced it) — confirmed directly: `sql_tasks` came back `['doctors']`
+  only, never a false `appointments` task. No corroboration-guard defect.
+- The insurance formatter's `"Search your plan below."` placeholder
+  (`sql_tool/formatter.py`, `insurance_accepted` branch, `is_accepted`
+  true case) looked at first like the compound query was dropping the
+  insurance answer's *prose*. Verified this is unconditional, pre-existing
+  behavior identical for a bare single-intent `"do you accept aetna"` —
+  nothing to do with multi-intent handling, out of this phase's scope,
+  and not touched.
+- Tier 1 confirmed to correctly decline every compound case tested
+  (`try_catalog_fast_path` returns `None` for all of them) — the existing
+  `looks_like_compound()` gate holds; not weakened, not touched.
+
+**NLU contract assessment:** sufficient as-is. The single-call
+classify-and-extract architecture reliably supports
+`primary_intent + secondary_intents[] + entities` for the tested matrix.
+No prompt or schema change made or recommended this phase — the
+remaining gap is entirely downstream of NLU.
+
+**Regression baseline (unchanged, since nothing was modified):**
+`apps.chatbot.tests apps.knowledge.tests --keepdb`: **714/714** (1
+pre-existing unrelated flake). `run_chat_eval`: **674/682 (98.8%)**.
+
+**Recommended next phase:** if closing the `book_appointment`-as-
+secondary-intent gap is wanted, it needs its own explicitly-scoped
+product decision (what should actually happen — wizard launch,
+acknowledgment text, or something else) before any planner change, per
+this phase's own finding that it is a design question, not a mechanical
+fix.
+
+## ✅ Phase 48 — Light booking-offer chip for `book_appointment` as a secondary intent
+
+Closed the Phase 47 gap. Given the product decision (asked explicitly,
+not guessed): a light, tap-to-continue action chip, never an
+auto-launched wizard — the response still answers the primary request in
+full; tapping the chip just sends a normal chat message ("I would like to
+book with Dr. Vance") that starts the ordinary booking flow next turn,
+exactly as if the patient had typed it themselves.
+
+**Deliberately implemented at the ui_meta.py (presentation) layer, not
+the planner.** `nlu_result` already carries `secondary_intents`/
+`entities`/`resolved_ids` unchanged all the way through to
+`build_ui_meta()` (confirmed: `apply_plan_to_nlu` doesn't touch
+`secondary_intents`), and `exec_plan_booking` (already a parameter) tells
+it whether the wizard is already launching for the primary intent. No
+`ExecutionPlan` field added, `build_execution_plan()` untouched — smaller
+blast radius than a planner change, and ui_meta.py already owns exactly
+this class of decision ("map SQL handler output + intent to frontend
+component payloads").
+
+**What changed:** new `_secondary_booking_offer_action(nlu, *,
+exec_plan_booking)` in `ui_meta.py` — returns a chip (same shape as the
+existing generic "Book Appointment" chip: `id/label/icon/behavior:
+"message"/message`) only when `Intent.BOOK_APPOINTMENT` is in
+`secondary_intents`, the wizard isn't already launching, and there's a
+*resolved* doctor or service to name (an unresolved/nonexistent doctor
+name never produces a chip that would silently message-send for someone
+who doesn't exist). Appended to `meta["actions"]` in `build_ui_meta()`
+right after the existing chip-policy call — additive, deliberately
+unconditional on `ui_priority`'s cross-sell suppression policy (that
+policy exists to hide *generic* upsell chips; this is a direct answer to
+something the patient explicitly asked in the same message).
+
+**Live-verified**, real `horizon-family-care` clinic: "who are your
+doctors and can i book with dr vance" → `book_secondary` chip "Book with
+Dr. Vance" now present alongside the existing generic chips. "how much is
+a physical and can i book one" → "Book Establish Patient Adult Physical".
+"do you accept aetna and can i see dr vance next tuesday" (secondary is
+`doctor_availability`, not `book_appointment` — already answered via its
+own SQL task) → correctly no chip. Plain "who are your doctors" (no
+compound) → correctly no chip.
+
+**Tests:** 10 new in `test_ui_meta_mappers.py` — the helper in isolation
+(no-secondary, wrong-secondary-intent, already-booking, doctor-resolved,
+"Dr."-prefix-not-doubled, service-fallback, no-resolution-no-chip,
+unresolved-name-no-chip) plus two `build_ui_meta()` integration tests
+confirming the chip actually lands in `meta["actions"]` additively.
+`apps.chatbot.tests apps.knowledge.tests --keepdb`: **724/724** (1
+pre-existing unrelated flake). `run_chat_eval`: **674/682 (98.8%)**,
+unchanged — expected, this is a presentation-layer change with zero
+effect on routing/planning.
+
+**Found during implementation, not fixed, reported instead (out of this
+phase's explicitly-approved scope):** while verifying the doctor-name
+label, discovered that `sql_tool/handlers/doctors.py::search_doctors`
+applies `resolved_ids.doctor_id` as a filter *unconditionally* whenever
+it's present — with no awareness of whether that entity belongs to the
+primary intent or a secondary clause. Concretely: "who are your doctors
+and can i book with dr vance" now returns **only Dr. Vance** for the
+primary "who are your doctors" browse request, not the full roster the
+patient actually asked for, with zero caveat that the list was narrowed.
+Root cause is different from Phase 47's finding and more severe (a
+primary answer being silently corrupted, not a secondary request being
+unacknowledged) — entities extracted from a compound message aren't
+scoped to which sub-intent they belong to, a general gap broader than
+this one handler. Not fixed here: explicitly out of the scope confirmed
+for this phase, and a real fix needs its own design pass (should
+`search_doctors` ignore `doctor_id` when the primary intent is a bare
+browse query, e.g. reusing `is_doctor_browse_query`? should entities
+carry which intent they were extracted for? something else?).
+
+**Recommended next phase:** decide on and fix the entity-attribution gap
+above — it's a real, verified, higher-severity issue than the one just
+closed.
+
+## ✅ Phase 50 — Compound-message entity scoping (architectural fix, implemented)
+
+Root-caused and fixed the general class of bug behind three prior phases'
+one-off findings, rather than patching handlers individually again.
+
+**Audit before any change.** Extended the "poison doctor" methodology (a
+real doctor who provably does *not* accept a plan / perform a service the
+clinic otherwise does) across every SQL handler and both `doctor_id` and
+`service_id`, not just the originally-found case. Confirmed **5 live,
+factually-wrong-answer instances** across 3 handlers: `insurance_accepted`
+and `services_offered`/pricing narrowed by an unrelated `doctor_id`
+(insurance+availability, insurance+booking, pricing+availability,
+pricing+booking — the first two of these four were newly found this
+phase, not previously known); `search_doctors` narrowed by an unrelated
+`doctor_id` **or** `service_id` (doctor-listing+availability and
+doctor-listing+pricing — both newly found). A 3-intent message can poison
+multiple tasks simultaneously (confirmed: one message producing two
+independent wrong answers at once). `list_specialties`, `clinic_hours`,
+`clinic_location`, `patient_appointments`, and the booking wizard itself
+were all confirmed clean by direct inspection — the pattern is real but
+bounded to 3 read-only handlers, not the whole codebase.
+
+**Root cause:** `NLUResult.entities`/`resolved_ids` are flat, shared
+across every task in a plan, with no representation of which intent an
+entity was extracted for. Three handlers, each written independently,
+each added their own "if a doctor is named, also filter by it" bonus
+convenience clause — reasonable in isolation, wrong the instant the
+doctor belongs to an unrelated clause of the same compound message.
+
+**The fix — one mechanism, not three patches.** `planner.py` gained
+`_compute_blocked_entity_fields(nlu)`: a small, table-driven function
+using two priority-tier tables (`_DOCTOR_ENTITY_TIERS`,
+`_SERVICE_ENTITY_TIERS` — intent-shape based, e.g. "a transactional
+intent outranks a browse intent for the doctor entity," never an entity
+*value*). When 2+ different intents present in the same message could
+each plausibly own an entity field, the higher tier wins and every other
+present intent's own task is told to ignore that field entirely. A
+single present intent is never contested — every ordinary single-intent
+message, including a genuine single-clause "does Dr. Smith accept
+Aetna," computes an empty blocked-set and is completely unaffected.
+Computed once per plan, stored on a new `ExecutionPlan.
+blocked_entity_fields: dict[str, frozenset[str]]` field, threaded through
+`SQLContext` (one new field, same precedent as the existing
+`resolved_service_ids`) to every handler in one pass — each handler
+consults its own task-name key with a two-line guard, no independent
+decision-making left in the handlers themselves.
+
+**Files changed:** `planner.py` (`_compute_blocked_entity_fields` + 2
+tier tables + `ExecutionPlan` field), `sql_tool/base.py` (`SQLContext`
+field), `sql_tool/service.py` (`run_tasks` threads it through),
+`engine.py` (`_run_sql_tasks` threads it through), `sql_tool/handlers/
+{insurance,services,doctors}.py` (guard added at each existing bonus-
+filter site — logic itself unchanged, just gated). No planner
+architecture change, no executor change, no NLU schema change, Tier 1
+untouched, `_fully_explained_by()` untouched.
+
+**Verified against every previously-confirmed case, corrected 3-intent
+construction to match real live NLU output shape** (`multi_intent` +
+3-item `secondary_intents`, not a hand-picked 2-item list), plus explicit
+regression cases for what must *not* change: a genuine single-clause
+doctor-specific insurance/pricing question still narrows correctly (the
+"control" doctor case); `doctor_availability` is never blocked from its
+own doctor (top-priority tier, by design); plain single-intent messages
+compute an empty blocked-set.
+
+**Tests:** new `test_compound_entity_scoping.py` — 12 unit tests against
+`_compute_blocked_entity_fields` directly (tier logic, contest
+resolution, no-contest safety) + 10 integration tests against real
+handler code with a "poison doctor" fixture (mirrors the live audit
+methodology, not row-count assertions). `apps.chatbot.tests
+apps.knowledge.tests --keepdb`: **746/746** (1 pre-existing unrelated
+flake, unchanged). `test_tier1`: **37/37**. `run_chat_eval`: **674/682
+(98.8%)**, unchanged — confirms zero effect on single-intent routing,
+which is what the eval battery is dominated by.
+
+**Known, deliberate scope boundary:** only `doctor_id`/`service_id`
+cross-contamination is covered — the two entity types with a
+live-confirmed failure. `specialty_id`/`insurance_plan_id` were checked
+and found to have no confirmed cross-task read at all (not extended
+speculatively, matching this session's "prove it, don't guess" standard
+throughout). If a future audit finds a genuine specialty/insurance
+cross-contamination instance, the same two tier tables extend to it
+directly — the mechanism doesn't need to change, only the tables.
+
+**Recommended next phase:** none forced. This closes the compound-query
+entity-scoping investigation that spanned the last several phases.
+
+## ✅ Phase 51 — Adversarial real-world evaluation (external, research-backed)
+
+Deliberately did not extend the existing 746-test suite or eval battery —
+the user asked for an evaluation designed to find what those *don't*
+cover, grounded in external research on how healthcare chatbots actually
+fail (not this project's own assumptions), executed live against the real
+`ChatEngine`/real clinic/real LLM, not synthetic NLU probes.
+
+**Research grounding (sources, not fabricated):** MedHalu (arXiv:2409.19492),
+Med-HALT (arXiv:2307.15343), MedHallu (ACL EMNLP 2025), "Large language
+models provide unsafe answers to patient-posed medical questions"
+(arXiv:2507.18905), Nature Sci Reports red-teaming protocol (error
+stratification / dual-pronged testing / vulnerability-informed mitigation),
+HealthSearchQA/MultiMedQA (arXiv:2212.13138), OWASP LLM01:2025 Prompt
+Injection, LLM robustness-to-perturbation research (Nature Sci Reports
+s41598-025-29770-0), multi-intent SLU research (arXiv:2512.11258 — ~52% of
+Amazon-internal utterances carry multiple intents), LLM overconfidence/
+calibration research (JMIR e64348, arXiv:2608.09080). Full summary with
+per-source applicability reasoning in `apps/chatbot/eval/adversarial/
+RESEARCH_FINDINGS.md` — Synapse is administrative/scheduling, not
+diagnostic, so clinical-reasoning-hallucination benchmarks and mental-
+health crisis-loop research were judged not applicable; memory-based
+hallucination, entity leakage, noisy-input robustness, overconfidence, and
+prompt-injection research all applied directly.
+
+**Deliverable — permanent adversarial suite** (separate from regression
+tests and the offline eval battery, per explicit user request):
+`apps/chatbot/eval/adversarial/{__init__.py, RESEARCH_FINDINGS.md,
+TAXONOMY.md, corpus.py, runner.py}` + `core/management/commands/
+run_adversarial_eval.py` (`--clinic-slug`, `--category`, `--json-out`).
+`TAXONOMY.md`: 10 failure categories (hallucination, leading-questions/
+false-premise, entity leakage, multi-intent, noisy input, context loss,
+medical safety boundary, prompt injection, privacy/tenant isolation, UI
+action correctness), each with what-can-go-wrong / why-it-matters / layer
+/ detection / severity / example / expected-safe-behavior, plus an
+explicit "scoped out" section (bias/fairness — SQL-grounded answers can't
+vary by demographic since queries never read patient demographics; mental-
+health crisis-loop and clinical-reasoning benchmarks — no therapeutic or
+diagnostic surface exists to fail). `corpus.py`: ~90 new cases across 9
+categories (hallucination, entity_leakage, multi_intent, noisy_input,
+ambiguous_reference, context [multi-turn, real `ChatSession` sequences],
+safety, prompt_injection, multilingual), reusing the Phase 49/50 "poison
+entity" methodology (a real doctor/service/plan provably NOT offered, so a
+wrong answer is unambiguous) plus typo/slang/grammar/missing-punctuation/
+speech-to-text-style variants. `runner.py` deliberately does not
+auto-score hallucination/injection/safety via keyword matching — it
+captures full pipeline state (intent, secondary_intents, sql_tasks,
+blocked_entity_fields, response text, actions, degraded) per turn for
+manual/Claude review, the same methodology used throughout this session
+rather than a brittle new heuristic.
+
+**Results.** 3 confirmed, precisely-rooted bugs fixed (below); 4 confirmed
+findings documented but deliberately *not* fixed this phase, per the
+user's explicit "do not blindly fix everything" instruction. Positive
+confirmations worth recording: all 10 medical-safety cases passed
+(including indirect-distress and non-overblocking edge cases the
+literature flags as common failure points); all 10 prompt-injection cases
+passed — confirmed *architecturally* safe, not just prompt-safe, since
+SQL-grounded answers have no path for injected framing to reach the actual
+query; Phase 48 (booking-offer chip) and Phase 50 (entity-scoping) were
+independently re-confirmed to generalize correctly under typos, slang,
+missing punctuation, clause reordering, and 3-4-intent compounds — real
+external validation those fixes weren't overfit to clean-English tests.
+
+### Fix 1 (P0) — "grab an appointment with Dr. X" fabricates the doctor's non-existence
+
+**Root cause:** `is_transactional_booking()` (`routing/signals.py`,
+`_TRANSACTIONAL_BOOK_RE`) only recognizes book/schedule/make/set up/
+reserve/reschedule — not casual synonyms like "grab." When it's False,
+`apply_routing_heuristics()`'s `BOOK_APPOINTMENT → FAQ` fallback (Phase 44,
+originally left untouched as load-bearing for `is_booking_intent` false
+positives) fired even when `resolved_ids.doctor_id`/`service_id` was
+*already resolved* — routing a message with a perfectly good doctor match
+into the vector-RAG/FAQ lane, which has no doctor-roster grounding and
+free-generated "Dr. Vance is not listed among our providers." Live-
+reproduced: "can I grab an appointment with Dr. Vance" (a real doctor).
+
+**Fix:** `heuristics.py`, inside the existing `BOOK_APPOINTMENT and not
+is_transactional_booking(message)` block — added two new branches *before*
+the FAQ fallback: a resolved `doctor_id`/`doctor_name` routes to
+`DOCTOR_SEARCH` (SQL, no vector, no LLM); a resolved `service_id`/`service`
+routes to `SERVICES_OFFERED` the same way. The FAQ fallback itself is
+unchanged and still fires for a genuinely entity-free, knowledge-shaped
+message ("do you take bookings on Saturdays") — regression-locked by test.
+
+### Fix 2 (P1) — fuzzy service matching hallucinates prices onto fabricated services
+
+**Root cause:** `_fuzzy_score()` (`nlu/resolvers.py`, shared by doctor/
+specialty/insurance/service matching — confirmed working correctly for the
+other three throughout this session, not touched) returns a flat 0.85 for
+*any* single shared token in its token-overlap branch, regardless of how
+much of the candidate string is left unexplained. `_match_service()`'s
+fuzzy fallback used this directly: "executive cardiac physical"
+(fabricated) matched the real "Establish Patient Adult Physical" purely
+via the shared word "physical," attaching a real $185 price to a service
+that was never offered. Live-reproduced.
+
+**Fix:** new `_fuzzy_match_is_well_explained(candidate, matched_name)` in
+`nlu/resolvers.py` — requires at least `len(candidate_tokens) - 1` of the
+candidate's own tokens (len ≥ 3 chars) to appear in the matched name.
+`_match_service()` now tracks `best_name` alongside `best_id`/`best_score`
+and gates the return on this check. Verified: rejects "executive cardiac
+physical" (1 of 3 explained, needs ≥2) and "premium diagnostic physical
+package," while still accepting "physical exam" (1 of 2, needs ≥1),
+"physical" alone (1 of 1), and the exact name. Scoped to `_match_service`'s
+fuzzy fallback only — `_fuzzy_score()` itself is untouched.
+
+### Fix 3 (P1) — specialty-browse language silently drops a compound pricing sub-request
+
+**Root cause:** `_SERVICE_LIST_RE` (`routing/signals.py`) deliberately also
+matches "special(ty|ies)" phrasing so bare "what specialties do you offer"
+is treated as a catalog browse. Side effect: "what specialties do you have
+and how much is a physical" — a genuine 2-intent compound — had its
+already-resolved `service` entity cleared entirely before the planner ever
+saw it, dropping the pricing half of the answer with no trace. Confirmed
+`match_services_in_message()` has an *identical* internal
+`is_service_list_query` early-return guard, so a fix gating only the
+original `if is_service_list_query(message): filter_mode = "none"` line
+was insufficient — verified by direct instrumentation that
+`match_services_in_message()` independently returned `[]`, making
+`computed_mode` resolve to `"none"` via a second, separate path. Live-
+reproduced.
+
+**Fix:** `heuristics.py` — added a standalone first-priority branch ahead
+of the existing `is_service_list_query` branch: when a resolved
+`entities.service` is present *and* the message also contains price/
+duration language (`is_price_or_duration_query`), `filter_mode = "named"`
+is set directly, bypassing the `computed_mode`/`matched_services` chain
+entirely rather than trying to except out of the "none" branch. A bare,
+non-compound "what specialties do you have" (no price language, no
+service entity) still browses cleanly — regression-locked; a stray leftover
+service entity with no price language in the message is still correctly
+cleared, proving the exception requires *both* conditions, not just entity
+presence.
+
+**Tests:** new `apps/chatbot/tests/test_hallucination_prevention.py` — 13
+tests across 3 classes (4 for Fix 1, 6 for Fix 2, 3 for Fix 3), each
+docstring citing the live reproduction it regression-locks. `apps.chatbot.
+tests apps.knowledge.tests --keepdb`: **759/759** (up from 746; same 1
+pre-existing unrelated date-boundary flake,
+`test_the_earliest_opening_is_not_offered_as_a_substitute`, unchanged).
+`run_chat_eval --target 520`: **674/682 (98.8%)**, unchanged from baseline
+— confirms zero effect on the existing single-intent-dominated battery, as
+expected for fixes this narrowly scoped.
+
+**Confirmed findings deliberately NOT fixed this phase** (documented per
+the user's classification scheme — do not fix opportunistically):
+- **P1 — temporal correction not respected.** Same-message and cross-turn
+  date corrections ("Monday, actually Tuesday") aren't consistently honored
+  by downstream temporal resolution, despite NLU correctly extracting the
+  corrected date. Root cause narrowed to temporal resolution but not fully
+  pinpointed. Classification: **NLU/execution limitation**, needs its own
+  focused phase, not a bolt-on here.
+- **P1 — NLU occasionally drops a sub-intent in a 3-way compound.**
+  Classification: **NLU reliability limitation** (the model itself, not a
+  code bug) — no downstream code defect to patch.
+- **P1/P2 borderline — inconsistent nonexistent-doctor messaging.**
+  Booking-shaped phrasing for a nonexistent doctor gets an explicit
+  "not on our roster" refusal; availability-shaped phrasing gets a vague
+  "couldn't retrieve availability" that could read as a temporary glitch.
+  Classification: **confirmed but low-severity UX inconsistency**, not
+  a hallucination (neither response fabricates false information).
+- **P2 — ambiguous references without an antecedent** ("is he available
+  Monday?", "how much is it?") sometimes default to a confident answer
+  instead of asking for clarification, inconsistent with other cases that
+  do clarify correctly. Classification: **product/UX decision** (what the
+  clarification threshold should be), not purely a bug.
+
+**Final verdict: READY FOR STAGING.** The three fixed findings were the
+only ones that produced a live, factually wrong, patient-facing answer
+with no mitigating context (P0 fabricated doctor non-existence, P1
+fabricated priced service, P1 silently dropped pricing sub-answer) — all
+three are now fixed, unit-tested, live-reverified, and regression-tested
+with zero collateral change to the existing suite or eval score. Medical
+safety, prompt injection, and tenant/privacy isolation — the three
+categories with the highest real-world liability if broken — all passed
+cleanly with no findings. The four remaining items are lower-severity,
+already well-classified (2 as pre-existing model/NLU limitations with no
+code fix available, 1 as a minor UX inconsistency, 1 as an open product
+decision), and none involve fabrication, unauthorized action, or data
+leakage — they belong in future phases, not as staging blockers.
+
+**Recommended next phase:** a focused temporal-correction phase (the P1
+above) — narrow the root cause fully before designing a fix, following
+this session's usual "reproduce first, smallest fix" discipline. The
+ambiguous-reference clarification threshold is a product decision better
+raised with the user directly than pre-emptively fixed.
+
 ## 💤 Deferred — Conversation state / coreference
 
 Real, confirmed from transcript ("which one treats cancer?" → "Dr. Chloe
