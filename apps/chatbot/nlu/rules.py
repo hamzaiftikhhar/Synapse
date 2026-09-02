@@ -256,7 +256,15 @@ def _match_fast(text: str) -> dict[str, Any] | None:
         looks_like_knowledge_question,
     )
 
-    if is_business_hours_query(text) and not looks_like_knowledge_question(text):
+    # A compound message ("...and where are you located") must reach the LLM
+    # so the second clause gets classified too — a fast-path short-circuit
+    # here can only ever answer the part it matched (see looks_like_compound;
+    # same guard already used to gate the strong tier below).
+    if (
+        is_business_hours_query(text)
+        and not looks_like_knowledge_question(text)
+        and not looks_like_compound(text)
+    ):
         return _base_payload(
             intent=Intent.CLINIC_HOURS.value,
             confidence=0.96,
@@ -278,7 +286,9 @@ def _match_fast(text: str) -> dict[str, Any] | None:
     # case; kept independent rather than touched by this fix. "hope" also
     # covers the "hop me in" reading — both spellings showed up verbatim
     # in the logs this was found from.
-    if re.search(r"\b(?:hope?|slip|fit|pencil|work)\s+me\s+in\b", text):
+    if re.search(r"\b(?:hope?|slip|fit|pencil|work)\s+me\s+in\b", text) and not looks_like_compound(
+        text
+    ):
         return _base_payload(
             intent=Intent.DOCTOR_AVAILABILITY.value,
             confidence=0.91,

@@ -516,6 +516,24 @@ def _match_insurance(clinic: Clinic, name: str | None) -> str | None:
     return best_id if best_score >= 0.9 else None
 
 
+def _fuzzy_match_is_well_explained(candidate: str, matched_name: str) -> bool:
+    """True unless the matched catalog name leaves most of `candidate`
+    unaccounted for. _fuzzy_score's token-overlap branch scores a flat
+    0.85 for ANY single shared word, regardless of how much of the
+    candidate that leaves unexplained — live-confirmed to let a fabricated
+    "executive cardiac physical" match the real "Establish Patient Adult
+    Physical" purely via the shared word "physical". Allows exactly one
+    unexplained word (so a natural paraphrase like "physical exam" still
+    matches "...Adult Physical") but not more.
+    """
+    cand_tokens = [t for t in re.findall(r"[a-z0-9]+", candidate.lower()) if len(t) >= 3]
+    if not cand_tokens:
+        return True
+    name_tokens = set(re.findall(r"[a-z0-9]+", matched_name.lower()))
+    explained = sum(1 for t in cand_tokens if t in name_tokens)
+    return explained >= max(1, len(cand_tokens) - 1)
+
+
 def _match_service(clinic: Clinic, name: str | None) -> str | None:
     if not name:
         return None
@@ -528,12 +546,18 @@ def _match_service(clinic: Clinic, name: str | None) -> str | None:
         return str(hit.id)
     best_id = None
     best_score = 0.0
+    best_name = ""
     for row in qs.only("id", "name")[:100]:
         score = _fuzzy_score(needle, row.name)
         if score > best_score:
             best_score = score
             best_id = str(row.id)
-    return best_id if best_score >= 0.55 else None
+            best_name = row.name
+    if best_score < 0.55:
+        return None
+    if not _fuzzy_match_is_well_explained(needle, best_name):
+        return None
+    return best_id
 
 
 _PEDIATRIC_AGE_GROUP_RE = re.compile(
