@@ -49,6 +49,11 @@ class Clinic(UUIDModel, TimestampedModel):
     # Empty + status=onboarding means onboarding hasn't been started yet.
     onboarding_step = models.CharField(max_length=32, blank=True, default="")
     onboarding_completed_at = models.DateTimeField(null=True, blank=True)
+    # Public-widget embed/CORS allowlist — full origins ("https://host[:port]", no
+    # path). Empty means the widget is NOT usable from any third-party site (see
+    # apps.api.auth.deps.origin_allowed_for_clinic) — a clinic must explicitly
+    # register at least one origin before its widget works off-platform.
+    allowed_origins = models.JSONField(default=list, blank=True)
 
     class Meta:
         db_table = "clinics"

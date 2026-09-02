@@ -120,6 +120,63 @@ class ClinicProfileTests(TestCase):
         )
         self.assertEqual(resp.status_code, 400)
 
+    def test_patch_accepts_and_normalizes_allowed_origins(self):
+        resp = self.client.patch(
+            "/api/v1/clinics/me",
+            data={
+                "allowed_origins": [
+                    " HTTPS://Example.com/ ",
+                    "https://example.com",  # duplicate once normalized
+                    "https://staging.example.com",
+                ]
+            },
+            content_type="application/json",
+            headers=self.headers,
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        body = resp.json()
+        self.assertEqual(
+            body["allowed_origins"],
+            ["https://example.com", "https://staging.example.com"],
+        )
+        self.clinic.refresh_from_db()
+        self.assertEqual(
+            self.clinic.allowed_origins,
+            ["https://example.com", "https://staging.example.com"],
+        )
+
+    def test_patch_rejects_origin_with_a_path(self):
+        resp = self.client.patch(
+            "/api/v1/clinics/me",
+            data={"allowed_origins": ["https://example.com/some/path"]},
+            content_type="application/json",
+            headers=self.headers,
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_patch_rejects_origin_missing_scheme(self):
+        resp = self.client.patch(
+            "/api/v1/clinics/me",
+            data={"allowed_origins": ["example.com"]},
+            content_type="application/json",
+            headers=self.headers,
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_patch_rejects_too_many_origins(self):
+        resp = self.client.patch(
+            "/api/v1/clinics/me",
+            data={"allowed_origins": [f"https://site{i}.example.com" for i in range(11)]},
+            content_type="application/json",
+            headers=self.headers,
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_get_profile_defaults_allowed_origins_to_empty_list(self):
+        resp = self.client.get("/api/v1/clinics/me", headers=self.headers)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["allowed_origins"], [])
+
     def test_cannot_access_another_clinics_profile(self):
         _, _, other_headers = make_clinic_admin(
             email="owner2@other.test", clinic_slug="other-clinic"
