@@ -9,13 +9,13 @@ from django.utils import timezone
 from ninja import Router, Schema
 from ninja.errors import HttpError
 
-from apps.api.auth.deps import client_ip
+from apps.api.auth.deps import client_ip, resolve_public_clinic
 from apps.api.chat.router import _fallback_out, _to_out
 from apps.api.chat.schemas import ChatMessageOut
 from apps.chatbot.engine import ChatEngine
 from apps.chatbot.marketing_engine import MarketingEngine
 from apps.chatbot.sql_tool.utils import clinic_timezone, format_clinic_when
-from apps.clinics.models import Clinic, ClinicStatus
+from apps.clinics.models import Clinic
 from apps.widget.models import WidgetSettings
 from core.ratelimit import check_rate_limit
 
@@ -137,16 +137,6 @@ class AppointmentRescheduleOut(Schema):
     when: str = ""
 
 
-def _resolve_clinic(slug: str) -> Clinic:
-    try:
-        clinic = Clinic.objects.get(slug=slug)
-    except Clinic.DoesNotExist:
-        raise HttpError(404, "Clinic not found") from None
-    if clinic.status == ClinicStatus.SUSPENDED:
-        raise HttpError(403, "Clinic is suspended")
-    return clinic
-
-
 @router.get("/config", response=WidgetConfigOut, auth=None)
 def widget_config(request, clinic_slug: str):
     """Public widget configuration for tenant detection and branding."""
@@ -156,7 +146,7 @@ def widget_config(request, clinic_slug: str):
         get_verification_mode,
     )
 
-    clinic = _resolve_clinic(clinic_slug)
+    clinic = resolve_public_clinic(request, clinic_slug)
     settings = WidgetSettings.objects.filter(clinic=clinic).first()
     configuration = (
         dict(settings.configuration)
@@ -177,6 +167,31 @@ def widget_config(request, clinic_slug: str):
     )
 
 
+class EmbedPolicyOut(Schema):
+    allowed_origins: list[str] = []
+
+
+@router.get("/embed-policy", response=EmbedPolicyOut, auth=None)
+def widget_embed_policy(request, clinic_slug: str):
+    """Server-to-server only — consumed by the Next.js embed route's Edge
+    Middleware to build the `Content-Security-Policy: frame-ancestors`
+    header for /embed/{clinicSlug}. Deliberately separate from
+    WidgetConfigOut (which the browser-side widget itself fetches for
+    branding): this is per-clinic *security* configuration, and keeping it
+    out of the response the public widget's own JS consumes is a cleaner
+    separation of concerns, even though a registered domain isn't a secret.
+
+    Not routed through resolve_public_clinic — that would enforce the very
+    allowlist this endpoint exists to hand out, and would 403 the Edge
+    Middleware's own server-to-server request (which carries no browser
+    Origin header). An unknown clinic_slug returns an empty list rather than
+    404 — the middleware treats "unknown clinic" and "no origins configured"
+    identically (fail closed to `frame-ancestors 'self'`).
+    """
+    clinic = Clinic.objects.filter(slug=clinic_slug).first()
+    return EmbedPolicyOut(allowed_origins=(clinic.allowed_origins or []) if clinic else [])
+
+
 @router.get("/chat/resume", response=ChatResumeOut, auth=None)
 def resume_chat(request, clinic_slug: str):
     """Resolve the calling browser's most recent conversation, if any.
@@ -194,7 +209,7 @@ def resume_chat(request, clinic_slug: str):
     scrolling up loads everything before it. There is no separate
     "load everything" path anywhere in this system.
     """
-    clinic = _resolve_clinic(clinic_slug)
+    clinic = resolve_public_clinic(request, clinic_slug)
     check_rate_limit(
         "chat_resume_ip", client_ip(request) or "",
         limit=_RESUME_MAX_PER_IP, window_seconds=_RESUME_IP_WINDOW_S,
@@ -257,7 +272,7 @@ def chat_messages_page(
     that cursor) — never offset-based, so concurrent inserts elsewhere in
     the same session can't shift a page's contents underneath a scrolling
     reader (see ROADMAP.md's persistent-chat-history phase for why)."""
-    clinic = _resolve_clinic(clinic_slug)
+    clinic = resolve_public_clinic(request, clinic_slug)
     check_rate_limit(
         "chat_messages_ip", client_ip(request) or "",
         limit=_MESSAGES_MAX_PER_IP, window_seconds=_MESSAGES_IP_WINDOW_S,
@@ -299,7 +314,7 @@ def chat_contact(request, payload: ChatContactIn):
     existing OTP flow. Skip is simply never calling this endpoint — no
     server-side state to represent "skipped" is needed.
     """
-    clinic = _resolve_clinic(payload.clinic_slug)
+    clinic = resolve_public_clinic(request, payload.clinic_slug)
     check_rate_limit(
         "chat_contact_ip", client_ip(request) or "",
         limit=_CONTACT_MAX_PER_IP, window_seconds=_CONTACT_IP_WINDOW_S,
@@ -343,7 +358,7 @@ def guest_chat_message(request, payload: WidgetChatIn):
 
     OTP is only required when booking is confirmed (handled in booking wizard).
     """
-    clinic = _resolve_clinic(payload.clinic_slug)
+    clinic = resolve_public_clinic(request, payload.clinic_slug)
     message = (payload.message or "").strip()
     if not message:
         raise HttpError(422, "Message is required")
@@ -379,7 +394,7 @@ def cancel_appointment(request, payload: AppointmentActionIn):
     """Cancel a patient's own appointment — requires an OTP-verified session."""
     from apps.appointments.models import Appointment, AppointmentStatus
 
-    clinic = _resolve_clinic(payload.clinic_slug)
+    clinic = resolve_public_clinic(request, payload.clinic_slug)
     session = _resolve_authenticated_session(clinic, payload.session_token)
     try:
         appt = Appointment.objects.get(
@@ -404,7 +419,7 @@ def reschedule_appointment(request, payload: AppointmentActionIn):
     """
     from apps.appointments.models import Appointment, AppointmentStatus
 
-    clinic = _resolve_clinic(payload.clinic_slug)
+    clinic = resolve_public_clinic(request, payload.clinic_slug)
     session = _resolve_authenticated_session(clinic, payload.session_token)
     try:
         appt = Appointment.objects.select_related("doctor", "service").get(
@@ -439,7 +454,7 @@ def list_appointments(request, payload: AppointmentsListIn):
     """
     from apps.appointments.models import Appointment, AppointmentStatus
 
-    clinic = _resolve_clinic(payload.clinic_slug)
+    clinic = resolve_public_clinic(request, payload.clinic_slug)
     session = _resolve_authenticated_session(clinic, payload.session_token)
 
     upcoming = (

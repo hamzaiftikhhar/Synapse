@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 from django.core.cache import cache
 from django.db import connections
-from django.test import TestCase, TransactionTestCase
+from django.test import TestCase, TransactionTestCase, override_settings
 
 from apps.chatbot.engine import EngineResult
 from apps.chatbot.models import (
@@ -863,3 +863,102 @@ class CrossVisitorPrivacyTests(TestCase):
         )
         self.assertEqual(own_resp.status_code, 200)
         self.assertEqual(len(own_resp.json()["messages"]), 3)
+
+
+EMBED_POLICY_URL = "/api/v1/widget/embed-policy"
+
+
+class OriginAllowlistTests(TestCase):
+    """Clinic.allowed_origins enforcement, via resolve_public_clinic — the
+    single choke point every public /widget/* endpoint now shares (see
+    apps.api.auth.deps). Exercised through /widget/config since every other
+    endpoint routes through the exact same helper."""
+
+    def test_registered_origin_is_allowed(self):
+        clinic = _make_clinic("origin-allowed")
+        clinic.allowed_origins = ["https://origin-allowed.example.com"]
+        clinic.save(update_fields=["allowed_origins"])
+
+        resp = self.client.get(
+            CONFIG_URL, {"clinic_slug": clinic.slug},
+            headers={"Origin": "https://origin-allowed.example.com"},
+        )
+        self.assertEqual(resp.status_code, 200)
+
+    def test_unregistered_origin_is_rejected(self):
+        clinic = _make_clinic("origin-rejected")
+        clinic.allowed_origins = ["https://the-real-site.example.com"]
+        clinic.save(update_fields=["allowed_origins"])
+
+        resp = self.client.get(
+            CONFIG_URL, {"clinic_slug": clinic.slug},
+            headers={"Origin": "https://evil.example.com"},
+        )
+        self.assertEqual(resp.status_code, 403)
+
+    def test_empty_allowed_origins_rejects_any_non_platform_origin(self):
+        """The security-relevant default: a clinic that hasn't registered
+        anything is NOT open to the world — its widget simply doesn't work
+        from a third-party site yet."""
+        clinic = _make_clinic("origin-unconfigured")
+        self.assertEqual(clinic.allowed_origins, [])
+
+        resp = self.client.get(
+            CONFIG_URL, {"clinic_slug": clinic.slug},
+            headers={"Origin": "https://anything.example.com"},
+        )
+        self.assertEqual(resp.status_code, 403)
+
+    def test_missing_origin_header_is_allowed(self):
+        """Non-browser callers (and every existing test in this file) send
+        no Origin header at all — that must keep working."""
+        clinic = _make_clinic("origin-missing-header")
+
+        resp = self.client.get(CONFIG_URL, {"clinic_slug": clinic.slug})
+        self.assertEqual(resp.status_code, 200)
+
+    @override_settings(CORS_ALLOWED_ORIGINS=["https://dashboard.synapse.test"])
+    def test_platform_origin_is_always_allowed_regardless_of_clinic(self):
+        """Regression for the staff/super-admin dashboard reusing these same
+        public endpoints for its own 'test the bot' widget (WidgetProvider /
+        GlobalChatWidget both fire GET /widget/config with mode='clinic') —
+        this must work even for a clinic with zero registered origins."""
+        clinic = _make_clinic("origin-platform-dashboard")
+        self.assertEqual(clinic.allowed_origins, [])
+
+        resp = self.client.get(
+            CONFIG_URL, {"clinic_slug": clinic.slug},
+            headers={"Origin": "https://dashboard.synapse.test"},
+        )
+        self.assertEqual(resp.status_code, 200)
+
+
+class EmbedPolicyTests(TestCase):
+    """GET /widget/embed-policy — server-to-server only, consumed by the
+    Next.js embed route's Edge Middleware to build its CSP header. Never
+    404s: an unknown clinic and a clinic with nothing configured must look
+    identical to the caller (both mean 'no origins to allow')."""
+
+    def test_known_clinic_returns_its_origins(self):
+        clinic = _make_clinic("embed-policy-known")
+        clinic.allowed_origins = ["https://a.example.com", "https://b.example.com"]
+        clinic.save(update_fields=["allowed_origins"])
+
+        resp = self.client.get(EMBED_POLICY_URL, {"clinic_slug": clinic.slug})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(
+            resp.json()["allowed_origins"],
+            ["https://a.example.com", "https://b.example.com"],
+        )
+
+    def test_unconfigured_clinic_returns_empty_list(self):
+        clinic = _make_clinic("embed-policy-unconfigured")
+
+        resp = self.client.get(EMBED_POLICY_URL, {"clinic_slug": clinic.slug})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["allowed_origins"], [])
+
+    def test_unknown_clinic_slug_returns_empty_list_not_404(self):
+        resp = self.client.get(EMBED_POLICY_URL, {"clinic_slug": "does-not-exist"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["allowed_origins"], [])

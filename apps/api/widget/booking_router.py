@@ -9,9 +9,10 @@ from django.utils import timezone
 from ninja import Router, Schema
 from ninja.errors import HttpError
 
+from apps.api.auth.deps import resolve_public_clinic
 from apps.chatbot.booking.service import BookingError, BookingService
 from apps.chatbot.services.otp_service import OTPError, send_otp, verify_otp
-from apps.clinics.models import Clinic, ClinicStatus
+from apps.clinics.models import Clinic
 
 logger = logging.getLogger(__name__)
 
@@ -62,15 +63,6 @@ class BookingOtpSendIn(Schema):
     booking_id: str
 
 
-def _resolve_clinic(slug: str) -> Clinic:
-    try:
-        clinic = Clinic.objects.get(slug=slug)
-    except Clinic.DoesNotExist:
-        raise HttpError(404, "Clinic not found") from None
-    if clinic.status == ClinicStatus.SUSPENDED:
-        raise HttpError(403, "Clinic is suspended")
-    return clinic
-
 
 def _resolve_session(clinic: Clinic, session_token: str | None):
     from apps.chatbot.models import ChatSession, ChatSessionStatus
@@ -105,7 +97,7 @@ def _wrap(payload: dict, session) -> dict:
 
 @router.post("/booking/start", auth=None)
 def booking_start(request, payload: BookingStartIn):
-    clinic = _resolve_clinic(payload.clinic_slug)
+    clinic = resolve_public_clinic(request, payload.clinic_slug)
     session = _resolve_session(clinic, payload.session_token)
     if payload.replaces_appointment_id:
         from apps.appointments.models import Appointment
@@ -141,7 +133,7 @@ def booking_start(request, payload: BookingStartIn):
 
 @router.post("/booking/step", auth=None)
 def booking_step(request, payload: BookingStepIn):
-    clinic = _resolve_clinic(payload.clinic_slug)
+    clinic = resolve_public_clinic(request, payload.clinic_slug)
     session = _resolve_session(clinic, payload.session_token)
     try:
         result = BookingService.apply_step(
@@ -158,7 +150,7 @@ def booking_step(request, payload: BookingStepIn):
 
 @router.post("/booking/hold", auth=None)
 def booking_hold(request, payload: BookingHoldIn):
-    clinic = _resolve_clinic(payload.clinic_slug)
+    clinic = resolve_public_clinic(request, payload.clinic_slug)
     session = _resolve_session(clinic, payload.session_token)
     try:
         result = BookingService.hold_slot(
@@ -174,7 +166,7 @@ def booking_hold(request, payload: BookingHoldIn):
 @router.post("/booking/otp/send", auth=None)
 def booking_otp_send(request, payload: BookingOtpSendIn):
     """Send OTP for the phone/email collected in the booking details step."""
-    clinic = _resolve_clinic(payload.clinic_slug)
+    clinic = resolve_public_clinic(request, payload.clinic_slug)
     session = _resolve_session(clinic, payload.session_token)
     booking = (session.conversation_context or {}).get("booking") or {}
     if booking.get("booking_id") != payload.booking_id:
@@ -219,7 +211,7 @@ def booking_confirm(request, payload: BookingConfirmIn):
 
     from apps.chatbot.booking.config import get_booking_config
 
-    clinic = _resolve_clinic(payload.clinic_slug)
+    clinic = resolve_public_clinic(request, payload.clinic_slug)
     session = _resolve_session(clinic, payload.session_token)
     booking = (session.conversation_context or {}).get("booking") or {}
     if booking.get("booking_id") != payload.booking_id:
