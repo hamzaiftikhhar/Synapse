@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
+import { EditModeActions } from "@/components/dashboard/edit-mode-actions";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { WorkspaceRelated } from "@/components/dashboard/workspace-related";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -9,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { useEditMode } from "@/hooks/use-edit-mode";
 import { useAuth } from "@/providers/auth-provider";
 import { authService } from "@/services";
 import { getApiErrorMessage } from "@/lib/api/client";
@@ -24,6 +26,7 @@ export default function ProfilePage() {
   const [confirm, setConfirm] = useState("");
   const [saving, setSaving] = useState(false);
   const [pwdBusy, setPwdBusy] = useState(false);
+  const { editing, edit, cancel, done } = useEditMode();
 
   useEffect(() => {
     if (!user) return;
@@ -31,6 +34,15 @@ export default function ProfilePage() {
     setLast(user.last_name ?? "");
     setPhone(user.phone_number ?? "");
   }, [user]);
+
+  function onCancel() {
+    cancel(() => {
+      if (!user) return;
+      setFirst(user.first_name ?? "");
+      setLast(user.last_name ?? "");
+      setPhone(user.phone_number ?? "");
+    });
+  }
 
   async function saveProfile() {
     setSaving(true);
@@ -42,6 +54,7 @@ export default function ProfilePage() {
       });
       await refreshMe();
       toast.success("Profile saved");
+      done();
     } catch (err) {
       toast.error(getApiErrorMessage(err));
     } finally {
@@ -79,18 +92,26 @@ export default function ProfilePage() {
 
       <div className="grid gap-5 lg:grid-cols-5">
         <Card className="lg:col-span-3">
-          <CardHeader>
+          <CardHeader className="flex flex-row items-center justify-between gap-3">
             <CardTitle>Details</CardTitle>
+            <EditModeActions
+              editing={editing}
+              pending={saving}
+              onEdit={edit}
+              onSave={() => void saveProfile()}
+              onCancel={onCancel}
+              saveLabel="Save profile"
+            />
           </CardHeader>
           <CardContent className="space-y-3">
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1.5">
                 <Label>First name</Label>
-                <Input value={first} onChange={(e) => setFirst(e.target.value)} />
+                <Input value={first} onChange={(e) => setFirst(e.target.value)} disabled={!editing} />
               </div>
               <div className="space-y-1.5">
                 <Label>Last name</Label>
-                <Input value={last} onChange={(e) => setLast(e.target.value)} />
+                <Input value={last} onChange={(e) => setLast(e.target.value)} disabled={!editing} />
               </div>
             </div>
             <div className="space-y-1.5">
@@ -99,11 +120,8 @@ export default function ProfilePage() {
             </div>
             <div className="space-y-1.5">
               <Label>Phone</Label>
-              <Input value={phone} onChange={(e) => setPhone(e.target.value)} />
+              <Input value={phone} onChange={(e) => setPhone(e.target.value)} disabled={!editing} />
             </div>
-            <Button disabled={saving} onClick={() => void saveProfile()}>
-              {saving ? "Saving…" : "Save profile"}
-            </Button>
           </CardContent>
         </Card>
 

@@ -3,7 +3,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/dashboard/page-header";
-import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -14,9 +13,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { EditModeActions } from "@/components/dashboard/edit-mode-actions";
 import { WorkspaceRelated } from "@/components/dashboard/workspace-related";
 import { CLINIC_TYPE_OPTIONS } from "@/features/onboarding/clinic-types";
 import { useClinicProfile, useUpdateClinicProfile } from "@/hooks/api";
+import { useEditMode } from "@/hooks/use-edit-mode";
 import { getApiErrorMessage } from "@/lib/api/client";
 import type { ClinicType } from "@/types/api";
 
@@ -70,29 +71,38 @@ function FieldGroup({
   );
 }
 
+function formStateFrom(data: NonNullable<ReturnType<typeof useClinicProfile>["data"]>): FormState {
+  return {
+    name: data.name,
+    clinic_type: data.clinic_type ?? "",
+    email: data.email,
+    phone: data.phone ?? "",
+    line1: data.address?.line1 ?? "",
+    line2: data.address?.line2 ?? "",
+    city: data.address?.city ?? "",
+    state: data.address?.state ?? "",
+    postal_code: data.address?.postal_code ?? "",
+    country: data.address?.country ?? "",
+  };
+}
+
 export default function ClinicPage() {
   const { data, isLoading } = useClinicProfile();
   const update = useUpdateClinicProfile();
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
+  const { editing, edit, cancel, done } = useEditMode();
 
   useEffect(() => {
     if (!data) return;
-    setForm({
-      name: data.name,
-      clinic_type: data.clinic_type ?? "",
-      email: data.email,
-      phone: data.phone ?? "",
-      line1: data.address?.line1 ?? "",
-      line2: data.address?.line2 ?? "",
-      city: data.address?.city ?? "",
-      state: data.address?.state ?? "",
-      postal_code: data.address?.postal_code ?? "",
-      country: data.address?.country ?? "",
-    });
+    setForm(formStateFrom(data));
   }, [data?.id]);
 
   function set<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((prev) => ({ ...prev, [key]: value }));
+  }
+
+  function onCancel() {
+    cancel(() => data && setForm(formStateFrom(data)));
   }
 
   async function onSave() {
@@ -116,6 +126,7 @@ export default function ClinicPage() {
         },
       });
       toast.success("Clinic profile saved");
+      done();
     } catch (err) {
       toast.error(getApiErrorMessage(err));
     }
@@ -127,9 +138,13 @@ export default function ClinicPage() {
         title="Clinic profile"
         description="How this practice appears to patients and staff. Hours, booking rules, and your personal login live on their own pages."
         actions={
-          <Button onClick={onSave} disabled={update.isPending}>
-            {update.isPending ? "Saving…" : "Save"}
-          </Button>
+          <EditModeActions
+            editing={editing}
+            pending={update.isPending}
+            onEdit={edit}
+            onSave={onSave}
+            onCancel={onCancel}
+          />
         }
       />
       <Card>
@@ -148,6 +163,7 @@ export default function ClinicPage() {
                     <Input
                       value={form.name}
                       onChange={(e) => set("name", e.target.value)}
+                      disabled={!editing}
                     />
                   </div>
                   <div className="space-y-1.5">
@@ -158,6 +174,7 @@ export default function ClinicPage() {
                         v && set("clinic_type", v as ClinicType)
                       }
                       items={CLINIC_TYPE_OPTIONS}
+                      disabled={!editing}
                     >
                       <SelectTrigger className="w-full">
                         <SelectValue placeholder="Select a type" />
@@ -186,6 +203,7 @@ export default function ClinicPage() {
                     <Input
                       value={form.email}
                       onChange={(e) => set("email", e.target.value)}
+                      disabled={!editing}
                     />
                   </div>
                   <div className="space-y-1.5">
@@ -193,6 +211,7 @@ export default function ClinicPage() {
                     <Input
                       value={form.phone}
                       onChange={(e) => set("phone", e.target.value)}
+                      disabled={!editing}
                     />
                   </div>
                 </div>
@@ -206,6 +225,7 @@ export default function ClinicPage() {
                   <Input
                     value={form.line1}
                     onChange={(e) => set("line1", e.target.value)}
+                    disabled={!editing}
                   />
                 </div>
                 <div className="space-y-1.5">
@@ -213,6 +233,7 @@ export default function ClinicPage() {
                   <Input
                     value={form.line2}
                     onChange={(e) => set("line2", e.target.value)}
+                    disabled={!editing}
                   />
                 </div>
                 <div className="grid gap-4 sm:grid-cols-2">
@@ -221,6 +242,7 @@ export default function ClinicPage() {
                     <Input
                       value={form.city}
                       onChange={(e) => set("city", e.target.value)}
+                      disabled={!editing}
                     />
                   </div>
                   <div className="space-y-1.5">
@@ -228,6 +250,7 @@ export default function ClinicPage() {
                     <Input
                       value={form.state}
                       onChange={(e) => set("state", e.target.value)}
+                      disabled={!editing}
                     />
                   </div>
                 </div>
@@ -237,6 +260,7 @@ export default function ClinicPage() {
                     <Input
                       value={form.postal_code}
                       onChange={(e) => set("postal_code", e.target.value)}
+                      disabled={!editing}
                     />
                   </div>
                   <div className="space-y-1.5">
@@ -244,6 +268,7 @@ export default function ClinicPage() {
                     <Input
                       value={form.country}
                       onChange={(e) => set("country", e.target.value)}
+                      disabled={!editing}
                     />
                   </div>
                 </div>

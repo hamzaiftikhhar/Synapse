@@ -4,6 +4,7 @@ import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { Plus, X } from "lucide-react";
+import { EditModeActions } from "@/components/dashboard/edit-mode-actions";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { WorkspaceRelated } from "@/components/dashboard/workspace-related";
 import { Button } from "@/components/ui/button";
@@ -16,6 +17,7 @@ import {
   useUpdateWidgetSettings,
   useWidgetSettings,
 } from "@/hooks/api";
+import { useEditMode } from "@/hooks/use-edit-mode";
 import { getApiErrorMessage } from "@/lib/api/client";
 import { appearanceFromConfig, appearanceToConfig } from "@/features/chat/widget-theme";
 import { WidgetAppearanceEditor } from "@/features/chat/widget-appearance-editor";
@@ -41,6 +43,7 @@ function BookingSection() {
   const [leadTime, setLeadTime] = useState("24");
   const [policy, setPolicy] = useState("");
   const [loaded, setLoaded] = useState(false);
+  const { editing, edit, cancel, done } = useEditMode();
 
   useEffect(() => {
     if (!data || loaded) return;
@@ -48,6 +51,14 @@ function BookingSection() {
     setPolicy(data.configuration.booking?.cancellation_policy ?? "");
     setLoaded(true);
   }, [data, loaded]);
+
+  function onCancel() {
+    cancel(() => {
+      if (!data) return;
+      setLeadTime(String(data.configuration.booking?.lead_time_hours ?? 24));
+      setPolicy(data.configuration.booking?.cancellation_policy ?? "");
+    });
+  }
 
   async function onSave() {
     try {
@@ -60,6 +71,7 @@ function BookingSection() {
         },
       });
       toast.success("Booking settings saved");
+      done();
     } catch (err) {
       toast.error(getApiErrorMessage(err));
     }
@@ -71,16 +83,25 @@ function BookingSection() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h2 className="text-sm font-semibold text-foreground">Booking</h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Lead time and cancellation copy for the patient widget. Identity
-          verification mode is{" "}
-          <code className="rounded-md bg-muted px-1.5 py-0.5 text-xs text-foreground">
-            {data?.configuration.booking?.verification_mode ?? "email"}
-          </code>
-          — change it from Chatbot when that control ships.
-        </p>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold text-foreground">Booking</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Lead time and cancellation copy for the patient widget. Identity
+            verification mode is{" "}
+            <code className="rounded-md bg-muted px-1.5 py-0.5 text-xs text-foreground">
+              {data?.configuration.booking?.verification_mode ?? "email"}
+            </code>
+            — change it from Chatbot when that control ships.
+          </p>
+        </div>
+        <EditModeActions
+          editing={editing}
+          pending={update.isPending}
+          onEdit={edit}
+          onSave={onSave}
+          onCancel={onCancel}
+        />
       </div>
       <div className="grid gap-4 sm:grid-cols-2">
         <div className="space-y-1.5">
@@ -91,16 +112,19 @@ function BookingSection() {
             value={leadTime}
             onChange={(e) => setLeadTime(e.target.value)}
             className="w-32"
+            disabled={!editing}
           />
         </div>
       </div>
       <div className="space-y-1.5">
         <Label>Cancellation policy</Label>
-        <Textarea rows={3} value={policy} onChange={(e) => setPolicy(e.target.value)} />
+        <Textarea
+          rows={3}
+          value={policy}
+          onChange={(e) => setPolicy(e.target.value)}
+          disabled={!editing}
+        />
       </div>
-      <Button onClick={onSave} disabled={update.isPending}>
-        {update.isPending ? "Saving…" : "Save"}
-      </Button>
     </div>
   );
 }
@@ -112,6 +136,7 @@ function WidgetSection() {
   const [greeting, setGreeting] = useState("");
   const [appearance, setAppearance] = useState(() => appearanceFromConfig());
   const [loaded, setLoaded] = useState(false);
+  const { editing, edit, cancel, done } = useEditMode();
 
   useEffect(() => {
     if (!data || loaded) return;
@@ -119,6 +144,14 @@ function WidgetSection() {
     setAppearance(appearanceFromConfig(data.configuration.widget));
     setLoaded(true);
   }, [data, loaded]);
+
+  function onCancel() {
+    cancel(() => {
+      if (!data) return;
+      setGreeting(data.configuration.widget?.greeting ?? "");
+      setAppearance(appearanceFromConfig(data.configuration.widget));
+    });
+  }
 
   async function onSave() {
     try {
@@ -131,6 +164,7 @@ function WidgetSection() {
         },
       });
       toast.success("Widget settings saved");
+      done();
     } catch (err) {
       toast.error(getApiErrorMessage(err));
     }
@@ -142,26 +176,38 @@ function WidgetSection() {
 
   return (
     <div className="space-y-5">
-      <div>
-        <h2 className="text-sm font-semibold text-foreground">Widget</h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Greeting and appearance patients see on your site. Use Chatbot to
-          QA the live assistant.
-        </p>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold text-foreground">Widget</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Greeting and appearance patients see on your site. Use Chatbot to
+            QA the live assistant.
+          </p>
+        </div>
+        <EditModeActions
+          editing={editing}
+          pending={update.isPending}
+          onEdit={edit}
+          onSave={onSave}
+          onCancel={onCancel}
+        />
       </div>
-      <div className="space-y-1.5">
-        <Label>Greeting</Label>
-        <Input value={greeting} onChange={(e) => setGreeting(e.target.value)} />
-      </div>
-      <WidgetAppearanceEditor
-        value={appearance}
-        onChange={setAppearance}
-        clinicName={clinic?.name}
-        greeting={greeting}
-      />
-      <Button onClick={onSave} disabled={update.isPending}>
-        {update.isPending ? "Saving…" : "Save"}
-      </Button>
+      {/* WidgetAppearanceEditor uses raw <input>/<button> internally with
+          no disabled prop of its own — fieldset disables every descendant
+          form control in one place rather than threading disabled through
+          it and every input here individually. */}
+      <fieldset disabled={!editing} className="space-y-5 disabled:opacity-60">
+        <div className="space-y-1.5">
+          <Label>Greeting</Label>
+          <Input value={greeting} onChange={(e) => setGreeting(e.target.value)} />
+        </div>
+        <WidgetAppearanceEditor
+          value={appearance}
+          onChange={setAppearance}
+          clinicName={clinic?.name}
+          greeting={greeting}
+        />
+      </fieldset>
     </div>
   );
 }
