@@ -18,6 +18,8 @@ class ClinicProfileOut(Schema):
     status: str
     onboarding_step: str
     onboarding_completed_at: datetime | None = None
+    # Public-widget embed/CORS allowlist — see Clinic.allowed_origins.
+    allowed_origins: list[str] = []
     created_at: datetime
     updated_at: datetime
 
@@ -30,6 +32,7 @@ class ClinicProfileUpdateIn(Schema):
     address: dict | None = None
     timezone: str | None = None
     onboarding_step: str | None = None
+    allowed_origins: list[str] | None = None
 
 
 class BusinessHourOut(Schema):

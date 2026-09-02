@@ -39,6 +39,11 @@ _DAYS = range(7)  # 0=Monday .. 6=Sunday
 # a backend release) — just a defensive shape check so a bad/rogue value
 # can't overflow the column and 500 instead of a clean 400.
 _ONBOARDING_STEP_RE = re.compile(r"^[a-z_]{1,32}$")
+# scheme + host[:port] only — no path/query/fragment/trailing slash. Matches
+# what a browser's Origin header actually looks like, so a stored entry
+# compares equal to it directly (apps.api.auth.deps.origin_allowed_for_clinic).
+_ORIGIN_RE = re.compile(r"^https?://[^/\s]+$")
+_MAX_ALLOWED_ORIGINS = 10
 
 
 def _serialize_clinic(clinic: Clinic) -> ClinicProfileOut:
@@ -54,6 +59,7 @@ def _serialize_clinic(clinic: Clinic) -> ClinicProfileOut:
         status=clinic.status,
         onboarding_step=clinic.onboarding_step,
         onboarding_completed_at=clinic.onboarding_completed_at,
+        allowed_origins=clinic.allowed_origins or [],
         created_at=clinic.created_at,
         updated_at=clinic.updated_at,
     )
@@ -77,6 +83,21 @@ def update_clinic_profile(request, payload: ClinicProfileUpdateIn):
     if "onboarding_step" in data and data["onboarding_step"]:
         if not _ONBOARDING_STEP_RE.match(data["onboarding_step"]):
             raise HttpError(400, "Invalid onboarding step")
+    if data.get("allowed_origins") is not None:
+        cleaned: list[str] = []
+        for raw in data["allowed_origins"]:
+            origin = (raw or "").strip().rstrip("/").lower()
+            if not _ORIGIN_RE.match(origin):
+                raise HttpError(
+                    400,
+                    f"'{raw}' is not a valid origin — use e.g. https://example.com "
+                    "(no path, query, or trailing slash)",
+                )
+            if origin not in cleaned:
+                cleaned.append(origin)
+        if len(cleaned) > _MAX_ALLOWED_ORIGINS:
+            raise HttpError(400, f"At most {_MAX_ALLOWED_ORIGINS} allowed origins per clinic")
+        data["allowed_origins"] = cleaned
     for field, value in data.items():
         setattr(clinic, field, value.strip() if isinstance(value, str) else value)
     clinic.save()
