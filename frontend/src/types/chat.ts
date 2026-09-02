@@ -42,6 +42,7 @@ export type DoctorCardData = {
   photo_url?: string;
   languages?: string[];
   accepting?: boolean;
+  specialties?: string[];
   /** Message to send when the user selects this doctor (from backend). */
   select_message?: string;
   message?: string;

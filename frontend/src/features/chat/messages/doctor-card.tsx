@@ -1,8 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { Search } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { ChatInlineCard } from "@/features/chat/components/chat-inline-card";
 import type { ChatActionHandler, DoctorCardData } from "@/types/chat";
 
@@ -32,6 +34,11 @@ export function DoctorCard({
           {doctor.title ? (
             <p className="truncate text-xs text-primary">{doctor.title}</p>
           ) : null}
+          {doctor.specialties?.length ? (
+            <p className="truncate text-xs text-muted-foreground">
+              {doctor.specialties.join(", ")}
+            </p>
+          ) : null}
         </div>
       </div>
       {doctor.bio ? (
@@ -55,6 +62,10 @@ export function DoctorCard({
   );
 }
 
+// Below this many cards, the list is already scannable at a glance — a
+// search box would just be one more thing to look at for no benefit.
+const SEARCH_THRESHOLD = 6;
+
 export function DoctorCards({
   doctors,
   onAction,
@@ -70,25 +81,54 @@ export function DoctorCards({
   // button still clickable. See ROADMAP.md "Chat card collapse-on-
   // supersede" / Phase 24's follow-up report for the reproduction.
   const [picked, setPicked] = useState(false);
+  const [query, setQuery] = useState("");
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return doctors;
+    return doctors.filter(
+      (d) =>
+        d.name.toLowerCase().includes(q) ||
+        (d.title || "").toLowerCase().includes(q) ||
+        (d.specialties || []).some((s) => s.toLowerCase().includes(q))
+    );
+  }, [doctors, query]);
 
   if (picked) return null;
 
   return (
     <ChatInlineCard className="grid gap-2">
-      {doctors.map((d, i) => (
-        <DoctorCard
-          key={d.id || i}
-          doctor={d}
-          onAction={(action, data) => {
-            if (action === "select_doctor") {
-              setPicked(true);
-              onAction?.(action, { ...(data as object), messageId });
-              return;
-            }
-            onAction?.(action, data);
-          }}
-        />
-      ))}
+      {doctors.length > SEARCH_THRESHOLD ? (
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search by name or specialty"
+            className="h-8 pl-8 text-xs"
+          />
+        </div>
+      ) : null}
+      {filtered.length === 0 ? (
+        <p className="px-1 py-2 text-xs text-muted-foreground">
+          No doctors match &quot;{query}&quot;.
+        </p>
+      ) : (
+        filtered.map((d, i) => (
+          <DoctorCard
+            key={d.id || i}
+            doctor={d}
+            onAction={(action, data) => {
+              if (action === "select_doctor") {
+                setPicked(true);
+                onAction?.(action, { ...(data as object), messageId });
+                return;
+              }
+              onAction?.(action, data);
+            }}
+          />
+        ))
+      )}
     </ChatInlineCard>
   );
 }
