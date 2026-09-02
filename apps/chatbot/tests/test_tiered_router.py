@@ -154,7 +154,11 @@ class HeuristicsTests(SimpleTestCase):
         )
         self.assertTrue(out.needs_vector)
         self.assertTrue(out.needs_llm)
-        self.assertEqual(out.intent, Intent.FAQ)
+        # Intent is no longer rewritten to FAQ (Phase: FAQ overwrite removal)
+        # — build_execution_plan derives the vector task from knowledge_q
+        # independently, so the real intent (unknown, here) survives instead
+        # of being erased before _INTENT_SQL_TASKS ever sees it.
+        self.assertEqual(out.intent, Intent.UNKNOWN)
 
     def test_heuristics_timeout_unknown_with_catalog_goes_vector(self):
         catalog = [
@@ -180,7 +184,9 @@ class HeuristicsTests(SimpleTestCase):
         )
         self.assertTrue(out.needs_vector)
         self.assertFalse(out.clarification_needed)
-        self.assertEqual(out.intent, Intent.FAQ)
+        # Intent is no longer rewritten to FAQ (Phase: FAQ overwrite removal)
+        # — see test_heuristics_force_vector_on_policy_catalog_hit above.
+        self.assertEqual(out.intent, Intent.UNKNOWN)
 
     def test_heuristics_how_much_hours_with_named_service_recovers_sql(self):
         """Strict full-name match + duration may recover SQL (not fuzzy tokens)."""

@@ -110,7 +110,11 @@ class HorizonGoldenPolicyTests(SimpleTestCase):
             document_catalog=list(_DOCS),
             service_catalog=list(_SERVICES),
         )
-        self.assertEqual(out.intent, Intent.FAQ)
+        # Intent is no longer rewritten to FAQ here (Phase: FAQ overwrite
+        # removal) — build_execution_plan attaches the vector task from
+        # knowledge_q/topic independently, so preserving the real intent
+        # (pricing) keeps _INTENT_SQL_TASKS's matching SQL task available too.
+        self.assertEqual(out.intent, Intent.PRICING)
         self.assertTrue(out.needs_vector)
         self.assertFalse(out.needs_sql)
 

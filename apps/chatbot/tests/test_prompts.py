@@ -114,3 +114,45 @@ class SystemPromptTests(SimpleTestCase):
         with real production data (see ROADMAP.md)."""
         prompt = get_system_prompt()
         self.assertIn("off_topic, not faq", prompt)
+
+    def test_system_prompt_has_generic_language_entity_and_doctor_search_rule(self):
+        """Regression: "do you have doctors who speak Spanish/Punjabi" was
+        classified off_topic — there was no language entity slot at all.
+        The rule must name entities.language and stay phrased as a general
+        category (any language name), never a fixed list of languages."""
+        prompt = get_system_prompt()
+        self.assertIn("language", prompt)
+        self.assertIn("entities.language", prompt)
+        self.assertIn("generalizes to any language name", prompt)
+        # The fix must not degrade into per-language hardcoding.
+        self.assertNotIn('"spanish"', prompt.lower())
+        self.assertNotIn('"punjabi"', prompt.lower())
+
+    def test_system_prompt_routes_named_procedure_questions_to_catalog(self):
+        """Regression: "do you offer botox" / "how much is botox" were
+        classified faq/off_topic with is_off_topic=True even though the SQL
+        services/pricing catalog is the authoritative source for whether the
+        clinic performs a named procedure — including when the honest answer
+        is "not offered". The rule must be phrased generally (any named
+        procedure), not name Botox specifically."""
+        prompt = get_system_prompt()
+        self.assertIn("services_offered or pricing", prompt)
+        self.assertIn("even when that exact service isn't in the Services list", prompt)
+
+    def test_system_prompt_distinguishes_emergency_from_scheduling_urgency(self):
+        """Regression: "asap, need someone today" was classified emergency
+        at real confidence — the prompt had no boundary between a danger
+        symptom and wanting the earliest appointment. Must not enumerate
+        urgency words as a special case, only frame the distinction."""
+        prompt = get_system_prompt()
+        self.assertIn("is NOT emergency by itself", prompt)
+        self.assertIn("danger symptom", prompt)
+
+    def test_system_prompt_gives_a_compound_secondary_intents_example(self):
+        """Regression: "do you accept aetna and can I see dr vance next
+        tuesday" only answered the insurance half — secondary_intents was
+        never populated. The existing "Compound->secondary_intents" rule had
+        no example of what counts as compound; this locks in a concrete,
+        category-level (not phrase-specific) example."""
+        prompt = get_system_prompt()
+        self.assertIn("secondary_intents so both get answered", prompt)

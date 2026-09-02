@@ -235,6 +235,30 @@ class RuleClassifierTests(SimpleTestCase):
                 else:
                     self.assertIsNotNone(hit["entities"]["date"])
 
+    def test_fast_path_hours_yields_to_llm_when_message_is_compound(self):
+        """Regression: "what are your hours and where are you located" used
+        to short-circuit at the fast tier on "hours" alone, so the LLM never
+        saw the "and where are you located" half — the second request was
+        silently dropped with no secondary_intents chance at all. A fast-tier
+        rule can only ever answer the part it matched, so a compound message
+        must fall through to the LLM instead (reuses looks_like_compound,
+        the same guard already gating the strong tier just below)."""
+        for msg in (
+            "what are your hours and where are you located",
+            "when do you open and what's your address",
+        ):
+            with self.subTest(msg=msg):
+                hit = try_rule_classify(msg, tier="fast")
+                self.assertIsNone(hit, msg)
+
+    def test_fast_path_hours_still_fires_for_a_plain_single_request(self):
+        """The compound guard must not make the fast path itself dormant —
+        an ordinary, non-compound hours question still short-circuits."""
+        hit = try_rule_classify("what are your hours", tier="fast")
+        self.assertIsNotNone(hit)
+        self.assertEqual(hit["intent"], "clinic_hours")
+        self.assertEqual(hit["_classifier_source"], "rules_fast")
+
     def test_fit_me_in_false_positive_guards(self):
         """"hope"/"work" are common words — must not fire outside the
         specific "<verb> me in" idiom."""
