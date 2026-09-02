@@ -658,21 +658,78 @@ def looks_like_symptom(message: str) -> bool:
     return any(c in text for c in cues)
 
 
-def is_doctor_ranking_request(message: str) -> bool:
+# Legacy literal phrases — unchanged, kept verbatim (including the two
+# odd fixed idioms "best and worst"/"elite type treatment" that don't fit
+# a clean template) so nothing that matched before stops matching.
+_RANKING_DOCTOR_PHRASES = (
+    "best doctor",
+    "worst doctor",
+    "which doctor is the best",
+    "which doctor is the worst",
+    "best and worst",
+    "rank the doctors",
+    "top doctor",
+    "elite type treatment",
+)
+
+_RANKING_WORD = r"(?:best|worst|top|recommended)"
+
+# "doctor" specifically — generalizes only the *template* (optional "the",
+# a "recommended X" shape the legacy list never had), not the entity word.
+# Safe for the I/O-free planner sensor path: zero catalog lookup, zero new
+# vocabulary, so it can never introduce a false positive the legacy phrase
+# list didn't already risk.
+_RANKING_DOCTOR_RE = re.compile(
+    rf"\b{_RANKING_WORD}\s+doctor\b|"
+    rf"\bwhich\s+doctor\s+is\s+(?:the\s+)?(?:best|worst)\b|"
+    rf"\bdoctor\s+is\s+(?:the\s+)?(?:best|worst)\b",
+    re.I,
+)
+
+# A candidate provider/specialist role-noun — English medical/professional
+# role nouns are overwhelmingly "-ist"/"-ian" suffixed (cardiologist,
+# pediatrician, dermatologist, psychiatrist, dentist, specialist, ...).
+# This is a *generic morphological* pattern, not a specialty name list —
+# it still requires clinic-catalog confirmation below before counting as a
+# match, precisely so an unrelated "-ist"/"-ian" word (artist, guardian,
+# librarian) can never trigger a ranking refusal on its own.
+_RANKING_ROLE_CANDIDATE_RE = re.compile(
+    rf"\b{_RANKING_WORD}\s+(?P<role1>[a-z]{{3,}}(?:ist|ian))\b|"
+    rf"\bwhich\s+(?P<role2>[a-z]{{3,}}(?:ist|ian))\s+is\s+(?:the\s+)?(?:best|worst)\b|"
+    rf"\b(?P<role3>[a-z]{{3,}}(?:ist|ian))\s+is\s+(?:the\s+)?(?:best|worst)\b",
+    re.I,
+)
+
+
+def is_doctor_ranking_request(message: str, clinic: Any = None) -> bool:
+    """True for a request to rank/recommend one provider over another.
+
+    `clinic` is optional and catalog-grounds the specialty/provider-role
+    generalization (e.g. "best cardiologist") via the existing specialty
+    resolver — reused, not duplicated. Without it, only the literal word
+    "doctor" is recognized (unchanged, zero-risk default), which is what
+    every current I/O-free caller (planner.py's compute_message_sensors,
+    shared verbatim with the offline eval battery — see its own "no live
+    clinic/DB here" comment) continues to get.
+    """
     text = (message or "").lower()
-    return any(
-        phrase in text
-        for phrase in (
-            "best doctor",
-            "worst doctor",
-            "which doctor is the best",
-            "which doctor is the worst",
-            "best and worst",
-            "rank the doctors",
-            "top doctor",
-            "elite type treatment",
-        )
+    if any(phrase in text for phrase in _RANKING_DOCTOR_PHRASES):
+        return True
+    if _RANKING_DOCTOR_RE.search(text):
+        return True
+    if clinic is None:
+        return False
+    m = _RANKING_ROLE_CANDIDATE_RE.search(text)
+    if not m:
+        return False
+    role = next(
+        (m.group(g) for g in ("role1", "role2", "role3") if m.group(g)), None
     )
+    if not role:
+        return False
+    from apps.chatbot.nlu.resolvers import _match_specialty
+
+    return bool(_match_specialty(clinic, role))
 
 
 def looks_like_instruction_injection(message: str) -> bool:

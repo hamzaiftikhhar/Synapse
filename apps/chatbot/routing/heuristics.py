@@ -69,7 +69,26 @@ def apply_routing_heuristics(
 
     # List/browse always wins. Strict catalog named match beats default "none".
     # Only trust LLM mode when explicitly present in raw payload.
-    if is_service_list_query(message):
+    #
+    # Phase 51 (live-confirmed): _SERVICE_LIST_RE also matches "what
+    # specialt(y|ies)..." phrasing (by design, to catch "what specialties
+    # do you offer" too) — but that made "what specialties do you have and
+    # how much is a physical" treat the WHOLE message as a services browse,
+    # clearing the already-resolved "physical" service entity and silently
+    # dropping the pricing half of the compound question.
+    # match_services_in_message() has the identical is_service_list_query
+    # guard internally (so matched_services/computed_mode are tainted the
+    # same way) — this exception is deliberately its own first-priority
+    # branch, not just skipping the "none" branch below, so it never falls
+    # through to a computed_mode that's already "none" for the same
+    # underlying reason. A resolved service entity co-occurring with
+    # explicit price/duration language is a strong signal this isn't
+    # actually a browse request for THIS clause, even though the message
+    # also contains browse-shaped language elsewhere — reuses the existing
+    # is_price_or_duration_query() signal, not a new detector.
+    if getattr(entities, "service", None) and is_price_or_duration_query(message) and is_service_list_query(message):
+        filter_mode = "named"
+    elif is_service_list_query(message):
         filter_mode = "none"
     elif computed_mode == "named" and matched_services:
         filter_mode = "named"
@@ -185,7 +204,14 @@ def apply_routing_heuristics(
         filter_mode = "none"
         raw["service_filter_mode"] = "none"
 
-    # Policy / membership / cancel-fee frames → vector when docs exist
+    # Policy / membership / cancel-fee frames → vector when docs exist.
+    # Does NOT overwrite intent to FAQ: build_execution_plan() (planner.py)
+    # independently attaches the vector task from facts.knowledge_q, and
+    # _INTENT_SQL_TASKS needs the real intent (PRICING/SERVICES_OFFERED/
+    # CLINIC_HOURS) to still attach the matching SQL task alongside it —
+    # overwriting to FAQ here used to erase that lookup for no routing
+    # benefit (needs_vector/needs_sql below are informational only; the
+    # planner ignores them — see build_execution_plan's docstring).
     if (
         knowledge_q
         and catalog
@@ -198,14 +224,44 @@ def apply_routing_heuristics(
             Intent.CLINIC_HOURS,
         }
     ):
-        intent = Intent.FAQ
         needs_vector = True
         needs_llm = True
         needs_sql = False
         clarification_needed = False
 
     if intent == Intent.BOOK_APPOINTMENT and not is_transactional_booking(message):
-        if catalog or knowledge_q:
+        # Phase 51 (live-confirmed hallucination): "can I grab an
+        # appointment with Dr. Vance" has doctor_id already resolved by
+        # this point, but "grab" isn't in _TRANSACTIONAL_BOOK_RE's verb
+        # list, so this block used to unconditionally fall through to FAQ
+        # below — sending a message about a real, resolved doctor into the
+        # vector/RAG lane, which has no doctor-roster data source and
+        # free-generated "Dr. Vance is not listed among our providers,"
+        # fabricating the non-existence of a real doctor. A resolved
+        # doctor/service entity means a deterministic SQL lookup already
+        # exists for this — strictly safer than free generation, and still
+        # helpful (shows the real doctor/service, with the existing "Book
+        # Appointment" chip to continue). Only falls through to FAQ when
+        # genuinely no concrete entity is resolved.
+        if resolved_ids.doctor_id or entities.doctor_name:
+            intent = Intent.DOCTOR_SEARCH
+            needs_sql = True
+            needs_vector = False
+            needs_llm = False
+            clarification_needed = False
+        elif resolved_ids.service_id or entities.service:
+            intent = Intent.SERVICES_OFFERED
+            needs_sql = True
+            needs_vector = False
+            needs_llm = False
+            clarification_needed = False
+        elif catalog or knowledge_q:
+            # Overwrite to FAQ IS load-bearing here (unlike the blocks
+            # above): leaving intent=BOOK_APPOINTMENT can make
+            # compute_message_sensors' is_booking_intent check true via its
+            # booking_commit/pending_uptake_booking paths and wrongly launch
+            # the booking wizard for a non-transactional "do you take
+            # bookings on Saturdays"-style question.
             intent = Intent.FAQ
             needs_vector = True
             needs_llm = True
@@ -217,7 +273,6 @@ def apply_routing_heuristics(
         if (knowledge_q and catalog) or (doc_hit and knowledge_q):
             needs_vector = True
             needs_llm = True
-            intent = Intent.FAQ
             needs_sql = False
             clarification_needed = False
         elif filter_mode == "named" and matched_services and (

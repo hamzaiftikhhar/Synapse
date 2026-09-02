@@ -181,7 +181,9 @@ def apply_confidence_policy(
             needs_llm = True
             clarification_needed = False
             prefer_vector = True
-            intent = Intent.FAQ if intent == Intent.UNKNOWN else intent
+            # Intent is left as-is (not rewritten to FAQ) — build_execution_plan
+            # attaches the vector task from knowledge_q/topic independently, and
+            # rewriting here would erase _INTENT_SQL_TASKS for the real intent.
             reason += "|vl_catalog_vector"
         elif intent in _SQL_TRUST and needs_sql and float(nlu.confidence or 0) >= 0.55:
             allow_hybrid = False
