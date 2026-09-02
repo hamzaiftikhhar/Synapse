@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from apps.chatbot.nlu.schemas import Intent
+from apps.chatbot.sql_tool.utils import DOCTOR_LIST_CEILING
 
 
 def _entity_nonempty(value: Any) -> bool:
@@ -42,6 +43,68 @@ def _nlu_has_booking_pins(nlu: Any) -> bool:
 
 def _has_availability_handler(sql_results: list[dict[str, Any]]) -> bool:
     return any(block.get("handler") == "doctor_availability" for block in sql_results)
+
+
+def _first_str(value: Any) -> str | None:
+    if isinstance(value, list):
+        value = value[0] if value else None
+    if value in (None, ""):
+        return None
+    return str(value)
+
+
+def _secondary_booking_offer_action(
+    nlu: Any, *, exec_plan_booking: bool
+) -> dict[str, Any] | None:
+    """A light, tap-to-continue booking chip for a compound message whose
+    SECONDARY intent asked to book (e.g. "who are your doctors and can i
+    book with dr vance") — the planner's own `booking` flag is driven only
+    by the *primary* intent (Phase 47 finding: Intent.BOOK_APPOINTMENT has
+    no _INTENT_SQL_TASKS entry and secondary intents don't set
+    facts.is_booking_intent), so this request was previously silently a
+    no-op with zero acknowledgment anywhere in the response.
+
+    Deliberately never launches the wizard itself — `behavior: "message"`
+    just sends a normal chat message, identical in shape and effect to the
+    existing generic "Book Appointment" chip below. The *next* turn goes
+    through the ordinary booking flow exactly as if the patient had typed
+    that message themselves.
+    """
+    if exec_plan_booking or nlu is None:
+        return None
+    secondary = getattr(nlu, "secondary_intents", None) or []
+    if Intent.BOOK_APPOINTMENT not in secondary:
+        return None
+    entities = getattr(nlu, "entities", None)
+    resolved = getattr(nlu, "resolved_ids", None)
+    if entities is None or resolved is None:
+        return None
+
+    doctor_id = _first_str(getattr(resolved, "doctor_id", None))
+    doctor_name = _first_str(getattr(entities, "doctor_name", None))
+    if doctor_id and doctor_name:
+        label_name = doctor_name if doctor_name.lower().startswith("dr") else f"Dr. {doctor_name}"
+        return {
+            "id": "book_secondary",
+            "label": f"Book with {label_name}",
+            "icon": "Calendar",
+            "behavior": "message",
+            "filled": False,
+            "message": f"I would like to book with {label_name}",
+        }
+
+    service_id = getattr(resolved, "service_id", None)
+    service_name = _first_str(getattr(entities, "service", None))
+    if service_id and service_name:
+        return {
+            "id": "book_secondary",
+            "label": f"Book {service_name}",
+            "icon": "Calendar",
+            "behavior": "message",
+            "filled": False,
+            "message": f"I would like to book {service_name}",
+        }
+    return None
 
 
 def build_ui_meta(
@@ -192,7 +255,10 @@ def build_ui_meta(
         rows = block.get("rows") or []
 
         if handler == "search_doctors" and rows:
-            doctors = _dedupe_doctors([_map_doctor(r) for r in rows])[:3]
+            # Handler already bounds the query (DOCTOR_LIST_CEILING) --
+            # this is a ceiling, not a re-truncation, same pattern as the
+            # insurance card list below.
+            doctors = _dedupe_doctors([_map_doctor(r) for r in rows])[:DOCTOR_LIST_CEILING]
             meta["doctors"] = doctors
             has_doctors = bool(doctors)
 
@@ -292,6 +358,20 @@ def build_ui_meta(
         booking_commit=booking_commit,
         ui_priority=ui_priority,
     )
+
+    # A compound message's secondary intent asked to book (e.g. "who are
+    # your doctors and can i book with dr vance") — the primary intent's
+    # own answer above is unaffected; this only adds an explicit, tappable
+    # acknowledgment that the booking half of the message was heard.
+    # Deliberately unconditional on ui_priority's cross-sell chip policy:
+    # that policy exists to suppress *generic* upsell chips, not to hide
+    # a direct answer to something the patient explicitly asked in this
+    # same message.
+    secondary_booking = _secondary_booking_offer_action(
+        nlu, exec_plan_booking=exec_plan_booking
+    )
+    if secondary_booking:
+        meta["actions"].append(secondary_booking)
 
     if is_emergency:
         phone = getattr(clinic, "phone", "") or "911"
