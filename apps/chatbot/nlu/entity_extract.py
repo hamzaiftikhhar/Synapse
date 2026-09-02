@@ -155,7 +155,8 @@ _NEGATION_RE = re.compile(
 )
 
 _COMPOUND_RE = re.compile(
-    r"\b(and also|also tell|plus|in addition|as well as|and can|and do)\b",
+    r"\b(and also|also tell|plus|in addition|as well as|and can|and do|"
+    r"and (?:what|where|when|who|how|which|why|is|are))\b",
     re.IGNORECASE,
 )
 

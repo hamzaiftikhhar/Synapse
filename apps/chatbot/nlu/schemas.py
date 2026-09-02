@@ -80,6 +80,7 @@ ENTITY_KEYS = (
     "patient_name",
     "location",
     "symptom",
+    "language",
 )
 
 # Fields that may be a single string or a list of strings
@@ -91,6 +92,7 @@ MULTI_ENTITY_KEYS = frozenset(
         "date",
         "time",
         "symptom",
+        "language",
     }
 )
 
@@ -106,6 +108,10 @@ class ExtractedEntities:
     patient_name: str | None = None
     location: str | None = None
     symptom: list[str] | str | None = None
+    # Spoken/written language a patient asks a doctor to speak (e.g.
+    # "Spanish", "Punjabi") — resolved against ISO 639-1 codes in
+    # nlu/languages.py, never a per-language routing rule (see search_doctors).
+    language: list[str] | str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

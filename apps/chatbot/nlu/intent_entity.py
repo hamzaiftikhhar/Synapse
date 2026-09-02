@@ -43,25 +43,46 @@ class IntentEntityService:
             raise NLUError("Message is empty")
 
         started = time.perf_counter()
-        try:
-            raw = classify_message(
-                message=text,
-                conversation_context=conversation_context,
-                provider=self._provider,
-            )
-        except NLUError:
-            raise
-        except Exception as exc:
-            raise NLUError(str(exc)) from exc
+        raw: dict[str, Any] | None = None
+        if self._provider is None and getattr(settings, "NLU_TIER1_ENABLED", True):
+            from apps.chatbot.nlu.tier1 import try_catalog_fast_path
+
+            raw = try_catalog_fast_path(clinic, text)
+        if raw is None:
+            try:
+                raw = classify_message(
+                    message=text,
+                    conversation_context=conversation_context,
+                    provider=self._provider,
+                )
+            except NLUError:
+                raise
+            except Exception as exc:
+                raise NLUError(str(exc)) from exc
 
         latency_ms = int((time.perf_counter() - started) * 1000)
         usage = raw.pop("_usage", {}) if isinstance(raw, dict) else {}
         timings_raw = raw.pop("_timings", {}) if isinstance(raw, dict) else {}
         classifier_source = raw.pop("_classifier_source", "unknown")
 
+        # Phase 45 bug found during audit: Tier 1 sources ("tier1_insurance"
+        # etc.) fell through this check unrecognized, so a Tier 1 hit (zero
+        # LLM tokens, zero real API call) got its provider/model silently
+        # overwritten to the real LLM provider below and then logged to
+        # AIUsageLog as if it were a genuine (0-token) "openai" call —
+        # polluting usage/cost analytics and making Tier 1's actual bypass
+        # rate unmeasurable from that table. rules_fast/strong/fallback are
+        # the pre-existing non-LLM sources; classifier_source.startswith("tier1_")
+        # covers every current and future Tier 1 category by construction,
+        # not by naming each one here.
+        is_non_llm_source = classifier_source.startswith("tier1_") or classifier_source in {
+            "rules_fast",
+            "rules_strong",
+            "rules_fallback",
+        }
         provider_name = classifier_source
         model_name = getattr(self._provider, "model_name", "") if self._provider else ""
-        if classifier_source in {"rules_fast", "rules_strong", "rules_fallback"}:
+        if is_non_llm_source:
             model_name = classifier_source
         elif not model_name:
             from apps.chatbot.nlu.factory import get_nlu_provider
@@ -85,11 +106,7 @@ class IntentEntityService:
         timings.classifier_source = str(classifier_source)
         result.timings = timings
 
-        if log_usage and classifier_source not in {
-            "rules_fast",
-            "rules_strong",
-            "rules_fallback",
-        }:
+        if log_usage and not is_non_llm_source:
             self._log_usage(
                 clinic=clinic,
                 session=session,
