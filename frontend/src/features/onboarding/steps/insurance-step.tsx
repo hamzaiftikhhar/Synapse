@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -20,8 +20,8 @@ function planLabel(plan: InsurancePlan) {
   return [plan.provider_name, plan.plan_name, plan.plan_type].filter(Boolean).join(" · ");
 }
 
-export function InsuranceStep({ onNext }: OnboardingStepProps) {
-  const { data } = useInsurancePlans({ limit: 100 });
+export function InsuranceStep({ onNext, onDataPresenceChange }: OnboardingStepProps) {
+  const { data, isLoading } = useInsurancePlans({ limit: 100 });
   const create = useCreateInsurancePlan();
   const remove = useDeleteInsurancePlan();
   const [provider, setProvider] = useState("");
@@ -29,6 +29,10 @@ export function InsuranceStep({ onNext }: OnboardingStepProps) {
   const [planType, setPlanType] = useState("");
 
   const plans = data?.results ?? [];
+
+  useEffect(() => {
+    onDataPresenceChange?.(isLoading || plans.length > 0);
+  }, [isLoading, plans.length, onDataPresenceChange]);
 
   async function addPlan() {
     const name = provider.trim();

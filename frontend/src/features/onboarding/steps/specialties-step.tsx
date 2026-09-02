@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Layers, Pencil, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -14,14 +14,18 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { ensureDoctorCatalogLinks } from "@/features/onboarding/doctor-catalog-links";
 import { ImportTriggerButton } from "@/features/importer/import-trigger-button";
+import { ProviderAssignmentChips } from "@/features/onboarding/provider-assignment";
 import { StepHint } from "@/features/onboarding/step-hint";
 import { SuggestionChip } from "@/features/onboarding/suggestion-chip";
 import { suggestedSpecialtyNames } from "@/features/onboarding/specialty-templates";
 import {
   useCreateSpecialty,
   useDeleteSpecialty,
+  useDoctors,
   useSpecialties,
+  useUpdateDoctor,
   useUpdateSpecialty,
 } from "@/hooks/api";
 import { getApiErrorMessage } from "@/lib/api/client";
@@ -36,20 +40,33 @@ type SpecialtyForm = {
 
 const EMPTY_FORM: SpecialtyForm = { name: "", description: "" };
 
-export function SpecialtiesStep({ onNext }: OnboardingStepProps) {
+export function SpecialtiesStep({ onNext, onDataPresenceChange }: OnboardingStepProps) {
   const { clinic } = useAuth();
   const { data, isLoading } = useSpecialties({ limit: 100 });
+  const { data: doctorsData } = useDoctors({ limit: 100 });
   const create = useCreateSpecialty();
   const update = useUpdateSpecialty();
   const remove = useDeleteSpecialty();
+  const updateDoctor = useUpdateDoctor();
 
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Specialty | null>(null);
   const [form, setForm] = useState<SpecialtyForm>(EMPTY_FORM);
   const [nameError, setNameError] = useState("");
   const [addingName, setAddingName] = useState<string | null>(null);
+  const [togglingKey, setTogglingKey] = useState<string | null>(null);
 
   const specialties = data?.results ?? [];
+  const doctors = doctorsData?.results ?? [];
+  // Same rule as services: one provider has nothing to disambiguate (auto-
+  // linked below), 2+ providers must be assigned explicitly.
+  const needsAssignment = doctors.length > 1;
+
+  useEffect(() => {
+    // Treat "still loading" as present so the Skip affordance doesn't flash
+    // on for a beat before the real count comes back.
+    onDataPresenceChange?.(isLoading || specialties.length > 0);
+  }, [isLoading, specialties.length, onDataPresenceChange]);
   const existing = new Set(specialties.map((s) => s.name.toLowerCase()));
   const suggestions = suggestedSpecialtyNames(clinic?.clinic_type).filter(
     (name) => !existing.has(name.toLowerCase())
@@ -113,9 +130,54 @@ export function SpecialtiesStep({ onNext }: OnboardingStepProps) {
     }
   }
 
-  function onContinue(e: React.FormEvent) {
+  async function toggleDoctorSpecialty(doctorId: string, specialtyId: string) {
+    const doctor = doctors.find((d) => d.id === doctorId);
+    if (!doctor) return;
+    const has = doctor.specialty_ids.includes(specialtyId);
+    const specialty_ids = has
+      ? doctor.specialty_ids.filter((id) => id !== specialtyId)
+      : [...doctor.specialty_ids, specialtyId];
+    setTogglingKey(`${doctorId}:${specialtyId}`);
+    try {
+      await updateDoctor.mutateAsync({ id: doctorId, input: { specialty_ids } });
+    } catch (err) {
+      toast.error(getApiErrorMessage(err));
+    } finally {
+      setTogglingKey(null);
+    }
+  }
+
+  async function onContinue(e: React.FormEvent) {
     e.preventDefault();
-    onNext();
+    if (specialties.length === 0) {
+      onNext();
+      return;
+    }
+    if (needsAssignment) {
+      const unassigned = specialties.filter(
+        (s) => !doctors.some((d) => d.specialty_ids.includes(s.id))
+      );
+      if (unassigned.length > 0) {
+        toast.error(
+          `Assign at least one provider to: ${unassigned.map((s) => s.name).join(", ")}.`
+        );
+        return;
+      }
+      onNext();
+      return;
+    }
+    try {
+      await ensureDoctorCatalogLinks({
+        doctors,
+        specialties,
+        services: [],
+        updateDoctor: (args) => updateDoctor.mutateAsync(args),
+        kind: "specialties",
+      });
+      onNext();
+    } catch (err) {
+      toast.error(getApiErrorMessage(err));
+    }
   }
 
   return (
@@ -170,34 +232,48 @@ export function SpecialtiesStep({ onNext }: OnboardingStepProps) {
           {specialties.map((specialty) => (
             <div
               key={specialty.id}
-              className="flex items-center justify-between rounded-xl border border-border px-4 py-3"
+              className="rounded-xl border border-border px-4 py-3"
             >
-              <div className="min-w-0">
-                <p className="truncate text-sm font-medium text-navy">{specialty.name}</p>
-                {specialty.description ? (
-                  <p className="truncate text-xs text-muted-foreground">
-                    {specialty.description}
-                  </p>
-                ) : null}
+              <div className="flex items-center justify-between">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-navy">{specialty.name}</p>
+                  {specialty.description ? (
+                    <p className="truncate text-xs text-muted-foreground">
+                      {specialty.description}
+                    </p>
+                  ) : null}
+                </div>
+                <div className="flex shrink-0 gap-1">
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    type="button"
+                    onClick={() => openEdit(specialty)}
+                  >
+                    <Pencil className="size-3.5" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    type="button"
+                    onClick={() => void onRemove(specialty.id)}
+                  >
+                    <Trash2 className="size-3.5" />
+                  </Button>
+                </div>
               </div>
-              <div className="flex shrink-0 gap-1">
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  type="button"
-                  onClick={() => openEdit(specialty)}
-                >
-                  <Pencil className="size-3.5" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  type="button"
-                  onClick={() => void onRemove(specialty.id)}
-                >
-                  <Trash2 className="size-3.5" />
-                </Button>
-              </div>
+              {needsAssignment ? (
+                <ProviderAssignmentChips
+                  doctors={doctors}
+                  selectedIds={doctors
+                    .filter((d) => d.specialty_ids.includes(specialty.id))
+                    .map((d) => d.id)}
+                  onToggle={(doctorId) => void toggleDoctorSpecialty(doctorId, specialty.id)}
+                  pending={doctors.some(
+                    (d) => togglingKey === `${d.id}:${specialty.id}` && updateDoctor.isPending
+                  )}
+                />
+              ) : null}
             </div>
           ))}
           <div className="flex flex-wrap gap-2">

@@ -3,10 +3,13 @@ import type { Doctor, DoctorUpdateInput, Service, Specialty } from "@/types/api"
 type UpdateDoctor = (args: { id: string; input: DoctorUpdateInput }) => Promise<unknown>;
 
 /**
- * Booking eligibility is doctors ↔ services. Catalog steps no longer ask
- * the owner to tick those boxes — so any still-unlinked doctor is assigned
- * every current service. Specialties stay optional (discovery only) and
- * are not auto-linked. Existing links are left alone.
+ * Booking eligibility is doctors ↔ services — attaching every service to
+ * every doctor by default is only safe when there's exactly one doctor to
+ * attach them to (nothing to disambiguate). For 2+ doctors this used to
+ * blanket-link regardless, which is how "Cardiology consultation" ended up
+ * bookable with a neurologist. With 2+ doctors, onboarding now asks the
+ * owner to explicitly assign (see specialties-step.tsx / services-step.tsx)
+ * instead of guessing. Existing links are left alone either way.
  */
 export async function ensureDoctorCatalogLinks({
   doctors,
@@ -21,6 +24,7 @@ export async function ensureDoctorCatalogLinks({
   updateDoctor: UpdateDoctor;
   kind: "specialties" | "services" | "both";
 }) {
+  if (doctors.length > 1) return;
   const specialtyIds = specialties.map((s) => s.id);
   const serviceIds = services.map((s) => s.id);
   const patches = doctors.flatMap((doctor) => {

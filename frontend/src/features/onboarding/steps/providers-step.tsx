@@ -107,6 +107,10 @@ export function ProvidersStep({ onNext }: OnboardingStepProps) {
 
   function onContinue(e: React.FormEvent) {
     e.preventDefault();
+    if (providers.length === 0) {
+      toast.error("Add at least one provider before continuing.");
+      return;
+    }
     onNext();
   }
 

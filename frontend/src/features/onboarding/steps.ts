@@ -70,4 +70,10 @@ export const ONBOARDING_FORM_ID = "onboarding-step-form";
  * to advance forward, after their own save succeeds. */
 export type OnboardingStepProps = {
   onNext: () => void;
+  /** Optional steps only: called whenever the step's own data (records the
+   * user has created, not in-progress form fields) goes from empty to
+   * non-empty or back. Lets the shell show a "Skip" affordance exactly
+   * while the step is genuinely empty — once there's anything to lose, the
+   * user must go through Continue instead of a same-looking Skip. */
+  onDataPresenceChange?: (hasData: boolean) => void;
 };

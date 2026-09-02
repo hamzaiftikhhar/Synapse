@@ -15,6 +15,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ImportTriggerButton } from "@/features/importer/import-trigger-button";
 import { ensureDoctorCatalogLinks } from "@/features/onboarding/doctor-catalog-links";
+import { ProviderAssignmentChips } from "@/features/onboarding/provider-assignment";
 import { StepHint } from "@/features/onboarding/step-hint";
 import { SuggestionChip } from "@/features/onboarding/suggestion-chip";
 import {
@@ -73,6 +74,12 @@ export function ServicesStep({ onNext }: OnboardingStepProps) {
   const services = data?.results ?? [];
   const specialties = specialtiesData?.results ?? [];
   const doctors = doctorsData?.results ?? [];
+  // With exactly one provider there's nothing to disambiguate, so the
+  // auto-link-everything shortcut below still applies and no assignment
+  // UI is shown. 2+ providers must be assigned explicitly — see
+  // doctor-catalog-links.ts for why blanket-linking stopped being safe.
+  const needsAssignment = doctors.length > 1;
+  const [togglingKey, setTogglingKey] = useState<string | null>(null);
   const existingNames = new Set(services.map((s) => s.name.toLowerCase()));
   const suggestions = suggestedServiceTemplates(
     clinic?.clinic_type,
@@ -155,8 +162,42 @@ export function ServicesStep({ onNext }: OnboardingStepProps) {
     }
   }
 
+  async function toggleDoctorService(doctorId: string, serviceId: string) {
+    const doctor = doctors.find((d) => d.id === doctorId);
+    if (!doctor) return;
+    const has = doctor.service_ids.includes(serviceId);
+    const service_ids = has
+      ? doctor.service_ids.filter((id) => id !== serviceId)
+      : [...doctor.service_ids, serviceId];
+    setTogglingKey(`${doctorId}:${serviceId}`);
+    try {
+      await updateDoctor.mutateAsync({ id: doctorId, input: { service_ids } });
+    } catch (err) {
+      toast.error(getApiErrorMessage(err));
+    } finally {
+      setTogglingKey(null);
+    }
+  }
+
   async function onContinue(e: React.FormEvent) {
     e.preventDefault();
+    if (services.length === 0) {
+      toast.error("Add at least one service before continuing.");
+      return;
+    }
+    if (needsAssignment) {
+      const unassigned = services.filter(
+        (s) => !doctors.some((d) => d.service_ids.includes(s.id))
+      );
+      if (unassigned.length > 0) {
+        toast.error(
+          `Assign at least one provider to: ${unassigned.map((s) => s.name).join(", ")}.`
+        );
+        return;
+      }
+      onNext();
+      return;
+    }
     try {
       await ensureDoctorCatalogLinks({
         doctors,
@@ -219,24 +260,38 @@ export function ServicesStep({ onNext }: OnboardingStepProps) {
             {services.map((service) => (
               <div
                 key={service.id}
-                className="flex items-center justify-between rounded-xl border border-border bg-card px-4 py-3"
+                className="rounded-xl border border-border bg-card px-4 py-3"
               >
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-medium text-navy">{service.name}</p>
-                  <p className="truncate text-xs text-muted-foreground">
-                    {service.duration_min} min
-                    {formatPrice(service.price_cents) ? ` · ${formatPrice(service.price_cents)}` : ""}
-                    {service.category ? ` · ${service.category}` : ""}
-                  </p>
+                <div className="flex items-center justify-between">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium text-navy">{service.name}</p>
+                    <p className="truncate text-xs text-muted-foreground">
+                      {service.duration_min} min
+                      {formatPrice(service.price_cents) ? ` · ${formatPrice(service.price_cents)}` : ""}
+                      {service.category ? ` · ${service.category}` : ""}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 gap-1">
+                    <Button variant="ghost" size="icon-sm" type="button" onClick={() => openEdit(service)}>
+                      <Pencil className="size-3.5" />
+                    </Button>
+                    <Button variant="ghost" size="icon-sm" type="button" onClick={() => onRemove(service.id)}>
+                      <Trash2 className="size-3.5" />
+                    </Button>
+                  </div>
                 </div>
-                <div className="flex shrink-0 gap-1">
-                  <Button variant="ghost" size="icon-sm" type="button" onClick={() => openEdit(service)}>
-                    <Pencil className="size-3.5" />
-                  </Button>
-                  <Button variant="ghost" size="icon-sm" type="button" onClick={() => onRemove(service.id)}>
-                    <Trash2 className="size-3.5" />
-                  </Button>
-                </div>
+                {needsAssignment ? (
+                  <ProviderAssignmentChips
+                    doctors={doctors}
+                    selectedIds={doctors
+                      .filter((d) => d.service_ids.includes(service.id))
+                      .map((d) => d.id)}
+                    onToggle={(doctorId) => void toggleDoctorService(doctorId, service.id)}
+                    pending={doctors.some(
+                      (d) => togglingKey === `${d.id}:${service.id}` && updateDoctor.isPending
+                    )}
+                  />
+                ) : null}
               </div>
             ))}
             <div className="flex flex-wrap gap-2">

@@ -1,5 +1,7 @@
 "use client";
 
+import { useCallback, useEffect, useState } from "react";
+import { Button } from "@/components/ui/button";
 import { OnboardingShell } from "./onboarding-shell";
 import { AvailabilityStep } from "./steps/availability-step";
 import { BillingStep } from "./steps/billing-step";
@@ -62,9 +64,35 @@ const STEP_COPY: Record<string, { title: string; subtitle: string }> = {
   },
 };
 
+/** Steps a user can genuinely have nothing on — the shell offers a Skip
+ * next to Continue for these while they're empty. Every other step either
+ * requires its own fields (Clinic, Location) or already lands on
+ * sensible non-empty defaults (Hours, Availability, Booking), so Skip
+ * would be meaningless there. */
+const SKIPPABLE_STEPS = new Set(["specialties", "insurance"]);
+
 export function OnboardingFlow() {
   const { stepSlug, stageIndex, isFirst, goNext, goBack, goTo } = useOnboarding();
   const copy = STEP_COPY[stepSlug];
+
+  // Whether the current step has reported that it's empty. Reset on every
+  // step change so a stale "empty" from the previous step can't flash a
+  // Skip button before the new step's own data has reported in.
+  const [stepIsEmpty, setStepIsEmpty] = useState(false);
+  useEffect(() => {
+    setStepIsEmpty(false);
+  }, [stepSlug]);
+
+  const onDataPresenceChange = useCallback((hasData: boolean) => {
+    setStepIsEmpty(!hasData);
+  }, []);
+
+  const canSkip = SKIPPABLE_STEPS.has(stepSlug) && stepIsEmpty;
+  const skipAction = canSkip ? (
+    <Button type="button" variant="ghost" onClick={goNext}>
+      Skip
+    </Button>
+  ) : undefined;
 
   if (stepSlug === "review") {
     return (
@@ -101,6 +129,7 @@ export function OnboardingFlow() {
       subtitle={copy.subtitle}
       onBack={isFirst ? undefined : goBack}
       formId={ONBOARDING_FORM_ID}
+      secondaryAction={skipAction}
           wide={
             stepSlug === "hours" ||
             stepSlug === "availability" ||
@@ -110,9 +139,13 @@ export function OnboardingFlow() {
       {stepSlug === "clinic" ? <ClinicStep onNext={goNext} /> : null}
       {stepSlug === "location" ? <LocationStep onNext={goNext} /> : null}
       {stepSlug === "providers" ? <ProvidersStep onNext={goNext} /> : null}
-      {stepSlug === "specialties" ? <SpecialtiesStep onNext={goNext} /> : null}
+      {stepSlug === "specialties" ? (
+        <SpecialtiesStep onNext={goNext} onDataPresenceChange={onDataPresenceChange} />
+      ) : null}
       {stepSlug === "services" ? <ServicesStep onNext={goNext} /> : null}
-      {stepSlug === "insurance" ? <InsuranceStep onNext={goNext} /> : null}
+      {stepSlug === "insurance" ? (
+        <InsuranceStep onNext={goNext} onDataPresenceChange={onDataPresenceChange} />
+      ) : null}
       {stepSlug === "hours" ? <HoursStep onNext={goNext} /> : null}
       {stepSlug === "availability" ? <AvailabilityStep onNext={goNext} /> : null}
       {stepSlug === "booking" ? <BookingStep onNext={goNext} /> : null}
