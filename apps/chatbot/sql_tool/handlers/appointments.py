@@ -10,13 +10,25 @@ from apps.chatbot.sql_tool.utils import clinic_timezone, format_clinic_when
 
 def patient_appointments(ctx: SQLContext) -> SQLResult:
     from apps.appointments.models import Appointment, AppointmentStatus
+    from apps.clinics.features import get_verification_mode
 
     if ctx.patient is None:
+        # The verify-identity card that follows this reads the clinic's
+        # actual configured mode already (email vs. SMS) — this summary
+        # used to unconditionally say "phone number" even for an
+        # email-verified clinic, contradicting the card shown right below
+        # it.
+        mode = get_verification_mode(ctx.clinic)
+        contact_label = {
+            "sms": "phone number",
+            "email": "email address",
+            "sms_or_email": "phone number or email address",
+        }.get(mode, "contact info")
         return SQLResult(
             handler="patient_appointments",
             found=False,
             summary=(
-                "To cancel or reschedule, please verify your phone number first "
+                f"To cancel or reschedule, please verify your {contact_label} first "
                 "so I can pull up your appointments. You can also start booking "
                 "a new visit if you prefer."
             ),
