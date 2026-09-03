@@ -556,17 +556,28 @@ function ServiceStep({
         />
       </div>
       <ul className="divide-y divide-border rounded-lg border border-border max-h-48 overflow-y-auto">
-        {(query ? filtered : suggested.length ? suggested : filtered).map((s) => (
-          <li key={s.id}>
-            <button
-              type="button"
-              onClick={() => onSelect(s)}
-              className="flex w-full items-center justify-between px-3 py-2.5 text-left text-sm transition-colors hover:bg-accent/60"
-            >
-              <span>{s.plain_label || s.name}</span>
-            </button>
-          </li>
-        ))}
+        {(query ? filtered : suggested.length ? suggested : filtered).map((s) => {
+          const detail = [
+            s.duration_min ? `${s.duration_min} min` : null,
+            s.price_cents ? `$${(s.price_cents / 100).toFixed(0)}` : null,
+          ]
+            .filter(Boolean)
+            .join(" · ");
+          return (
+            <li key={s.id}>
+              <button
+                type="button"
+                onClick={() => onSelect(s)}
+                className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left text-sm transition-colors hover:bg-accent/60"
+              >
+                <span className="min-w-0 truncate">{s.plain_label || s.name}</span>
+                {detail ? (
+                  <span className="shrink-0 text-xs text-muted-foreground">{detail}</span>
+                ) : null}
+              </button>
+            </li>
+          );
+        })}
         {!filtered.length && query ? (
           <li className="px-3 py-4 text-center text-xs text-muted-foreground">
             No matches
@@ -613,19 +624,19 @@ function DoctorStep({
                 {d.name}
               </span>
               <span className="block truncate text-xs text-muted-foreground">
-                {[
-                  (d.specialties || [])[0] || d.title || "Physician",
-                  d.next_available?.label || d.next_available?.time,
-                ]
-                  .filter(Boolean)
-                  .join(" · ")}
+                {(d.specialties || [])[0] || d.title || "Physician"}
               </span>
             </span>
             {/* Whole row is the click target — a real nested <button> here
                 would be invalid HTML, so this is a styled, non-interactive
-                pill (upgraded from the old passive "Select" pill). */}
+                pill. Deliberately not showing next_available here: it's
+                only ever the doctor's *soonest* slot on the *first* day
+                they're open, which can be days out — pairing it with a
+                one-tap "Select" pill was read as "book this specific time
+                right now," not as a same-day estimate. Choosing this
+                doctor always continues to the date/time picker below. */}
             <span className="shrink-0 rounded-full bg-primary px-3 py-1 text-[11px] font-medium text-primary-foreground">
-              Reserve
+              Select
             </span>
           </button>
         ))}

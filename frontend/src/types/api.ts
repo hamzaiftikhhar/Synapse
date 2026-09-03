@@ -702,6 +702,8 @@ export type BookingSpecialty = {
   description?: string;
   doctor_count?: number;
   plain_label?: string;
+  duration_min?: number;
+  price_cents?: number | null;
 };
 
 export type BookingDoctor = {
@@ -716,6 +718,7 @@ export type BookingDoctor = {
     id?: string;
     label?: string;
     start?: string;
+    end?: string;
     date?: string;
     time?: string;
   } | null;
