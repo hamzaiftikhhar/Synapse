@@ -910,6 +910,25 @@ def build_execution_plan(*, nlu: NLUResult, facts: PlannerFacts) -> ExecutionPla
     if facts.urgent_availability and "availability" not in sql_tasks:
         add_sql("availability")
 
+    # A booking-intent turn that names a day/time must always have
+    # availability actually queried — engine.py's _compose_from_plan
+    # independently suppresses its own generic "let's get you booked"
+    # text whenever entities.date/time is present, on the assumption that
+    # the slots it's about to show will speak for themselves. That
+    # assumption used to only hold when is_doctor_availability_query's
+    # narrow keyword heuristic *also* happened to fire — live-confirmed:
+    # "book an appointment for Monday" hits both and works; the very next
+    # turn, "actually make that Tuesday" (a same-session date correction,
+    # is_booking_intent still true, no "free"/"available"/"open" keyword
+    # for the availability heuristic to catch) suppressed the text but
+    # never scheduled availability, producing a genuinely empty response
+    # bubble. Both decisions must be driven by the same signal.
+    if facts.is_booking_intent and "availability" not in sql_tasks:
+        date_v = getattr(nlu.entities, "date", None)
+        time_v = getattr(nlu.entities, "time", None)
+        if date_v not in (None, "", [], ()) or time_v not in (None, "", [], ()):
+            add_sql("availability")
+
     if facts.specialty_list:
         add_sql("specialties")
         # Prefer specialties over services dump for specialty browse

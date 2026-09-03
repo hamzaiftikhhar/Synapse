@@ -373,6 +373,68 @@ class ExecutionPlanTests(SimpleTestCase):
         self.assertTrue(plan.fallback_vector_tasks)
 
 
+class BookingDateCorrectionSchedulesAvailabilityTests(SimpleTestCase):
+    """Live-confirmed bug: engine.py's _compose_from_plan suppresses the
+    generic "let's get you booked" text whenever entities.date/time is
+    present on a booking turn, on the assumption the availability slots
+    it's about to show will speak for themselves. That assumption used to
+    only hold when is_doctor_availability_query's narrow keyword heuristic
+    ("free"/"available"/"open"/"slot") *also* happened to match the same
+    message. "book an appointment for Monday" hits both. The very next
+    turn in the same conversation, "actually make that Tuesday" (a date
+    correction — is_booking_intent still true, no availability keyword),
+    suppressed the text but never scheduled the SQL task that would have
+    filled it back in, producing a completely empty response bubble."""
+
+    def test_booking_intent_with_date_schedules_availability_even_without_keyword(self):
+        nlu = parse_nlu_payload(
+            {
+                "intent": "book_appointment",
+                "confidence": 0.9,
+                "entities": {"date": "tuesday"},
+            }
+        )
+        plan = build_execution_plan(
+            nlu=nlu,
+            facts=_facts(
+                nlu=nlu,
+                message="actually make that Tuesday",
+                is_booking_intent=True,
+            ),
+        )
+        self.assertIn("availability", plan.sql_tasks)
+
+    def test_booking_intent_with_time_only_also_schedules_availability(self):
+        nlu = parse_nlu_payload(
+            {
+                "intent": "book_appointment",
+                "confidence": 0.9,
+                "entities": {"time": "3pm"},
+            }
+        )
+        plan = build_execution_plan(
+            nlu=nlu,
+            facts=_facts(nlu=nlu, message="make it 3pm instead", is_booking_intent=True),
+        )
+        self.assertIn("availability", plan.sql_tasks)
+
+    def test_non_booking_date_mention_does_not_force_availability(self):
+        """Control: a date entity alone, without is_booking_intent, must
+        not start pulling in availability SQL for unrelated turns."""
+        nlu = parse_nlu_payload(
+            {
+                "intent": "clinic_hours",
+                "confidence": 0.9,
+                "entities": {"date": "tuesday"},
+            }
+        )
+        plan = build_execution_plan(
+            nlu=nlu,
+            facts=_facts(nlu=nlu, message="what are your hours on Tuesday"),
+        )
+        self.assertNotIn("availability", plan.sql_tasks)
+
+
 class FAQOverwriteRemovalTests(SimpleTestCase):
     """Regression for the heuristics.py fix: apply_routing_heuristics used
     to rewrite intent to FAQ for PRICING/SERVICES_OFFERED/CLINIC_HOURS/
