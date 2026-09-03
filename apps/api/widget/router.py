@@ -11,7 +11,7 @@ from ninja.errors import HttpError
 
 from apps.api.auth.deps import client_ip, resolve_public_clinic
 from apps.api.chat.router import _fallback_out, _to_out
-from apps.api.chat.schemas import ChatMessageOut
+from apps.api.chat.schemas import ChatMessageOut, ChatTimingsOut
 from apps.chatbot.engine import ChatEngine
 from apps.chatbot.marketing_engine import MarketingEngine
 from apps.chatbot.sql_tool.utils import clinic_timezone, format_clinic_when
@@ -91,6 +91,15 @@ class ChatContactIn(Schema):
 class ChatContactOut(Schema):
     linked: bool
     patient_verified: bool
+
+
+class SpecialtySearchIn(Schema):
+    clinic_slug: str
+    specialty_id: str
+
+
+class ClinicOnlyActionIn(Schema):
+    clinic_slug: str
 
 
 class AppointmentActionIn(Schema):
@@ -387,6 +396,76 @@ def guest_chat_message(request, payload: WidgetChatIn):
     out = _to_out(result)
     out.meta = {**out.meta, "session_token": session.session_token, "visitor_id": visitor.visitor_key}
     return out
+
+
+@router.post("/specialty/search", response=ChatMessageOut, auth=None)
+def specialty_search(request, payload: SpecialtySearchIn):
+    """Doctors for a specialty the patient picked from a UI card.
+
+    Deliberately bypasses ChatEngine/NLU entirely — the frontend already
+    knows exactly which specialty was selected (see ui_actions.py's
+    docstring), so there is no language to understand, only a database
+    lookup to run. Same ChatMessageOut response shape as /chat/guest so
+    the widget renders the result (doctor cards, or an honest no-match
+    message) through its existing response handling, unchanged.
+    """
+    from apps.chatbot.ui_actions import search_doctors_for_specialty
+
+    clinic = resolve_public_clinic(request, payload.clinic_slug)
+    result = search_doctors_for_specialty(clinic, payload.specialty_id)
+    return ChatMessageOut(
+        response=result["response"],
+        route="ui_action",
+        intent="doctor_search",
+        confidence=1.0,
+        needs_sql=True,
+        needs_vector=False,
+        needs_llm=False,
+        timings=ChatTimingsOut(),
+        meta=result["meta"],
+    )
+
+
+@router.post("/doctors/browse", response=ChatMessageOut, auth=None)
+def doctors_browse(request, payload: ClinicOnlyActionIn):
+    """"Find a Doctor" main-menu button — frontend-authored label, not
+    user language, so it bypasses ChatEngine/NLU the same way specialty
+    cards do (see ui_actions.browse_doctors)."""
+    from apps.chatbot.ui_actions import browse_doctors
+
+    clinic = resolve_public_clinic(request, payload.clinic_slug)
+    result = browse_doctors(clinic)
+    return ChatMessageOut(
+        response=result["response"],
+        route="ui_action",
+        intent="doctor_search",
+        confidence=1.0,
+        needs_sql=True,
+        needs_vector=False,
+        needs_llm=False,
+        timings=ChatTimingsOut(),
+        meta=result["meta"],
+    )
+
+
+@router.post("/clinic/hours", response=ChatMessageOut, auth=None)
+def clinic_hours_action(request, payload: ClinicOnlyActionIn):
+    """"Clinic Hours" main-menu button — same rationale as doctors_browse."""
+    from apps.chatbot.ui_actions import clinic_hours_info
+
+    clinic = resolve_public_clinic(request, payload.clinic_slug)
+    result = clinic_hours_info(clinic)
+    return ChatMessageOut(
+        response=result["response"],
+        route="ui_action",
+        intent="clinic_hours",
+        confidence=1.0,
+        needs_sql=True,
+        needs_vector=False,
+        needs_llm=False,
+        timings=ChatTimingsOut(),
+        meta=result["meta"],
+    )
 
 
 @router.post("/appointments/cancel", response=AppointmentCancelOut, auth=None)
