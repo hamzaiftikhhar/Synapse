@@ -195,6 +195,9 @@ def _service_options(clinic: Any, session: BookingSession) -> dict[str, Any]:
             "slug": getattr(s, "slug", "") or "",
             "description": (s.description or "")[:200],
             "doctor_count": s.doctor_count,
+            "duration_min": s.duration_min,
+            "price_cents": s.price_cents,
+            "price": f"${s.price_cents / 100:.2f}" if s.price_cents else "Contact for pricing",
         }
         for s in qs
     ]
