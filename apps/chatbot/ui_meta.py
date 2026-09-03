@@ -225,7 +225,10 @@ def build_ui_meta(
         if last_insurance and last_insurance.get("name"):
             booking["insurance_name"] = last_insurance.get("name")
         meta["booking"] = booking
-        # Soft specialty chips still useful; wizard embeds via booking.launch
+        # Soft specialty chips still useful; wizard embeds via booking.launch.
+        # No select_message here on purpose — the frontend dispatches a
+        # structured select_specialty action carrying this id (see
+        # specialty-card.tsx), not a synthesized chat message.
         if suggested and not booking_commit:
             meta["specialties"] = [
                 {
@@ -234,7 +237,6 @@ def build_ui_meta(
                     "description": s.get("description") or s.get("plain_label") or "",
                     "doctor_count": s.get("doctor_count"),
                     "recommended": True,
-                    "select_message": f"I need a {s.get('name')} doctor",
                 }
                 for s in suggested[:4]
             ]
@@ -286,7 +288,13 @@ def build_ui_meta(
 
         elif handler == "services_offered" and rows:
             filter_mode = getattr(nlu, "service_filter_mode", None) if nlu else None
-            limit = 1 if filter_mode == "named" else min(5, len(rows))
+            # Handler already bounds the query ([:20], sql_tool/handlers/
+            # services.py) — this is a ceiling, not a re-truncation, same
+            # pattern as insurance/doctors. A browse ("what services do you
+            # offer") used to cut off at 5 regardless of how many the
+            # clinic actually has; a resolved single service ("how much is
+            # X") still returns exactly that one.
+            limit = 1 if filter_mode == "named" else min(20, len(rows))
             services = [_map_service(r) for r in rows[:limit]]
             if services:
                 meta["recommended"] = {
@@ -606,12 +614,14 @@ def _map_doctor(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _map_specialty(row: dict[str, Any]) -> dict[str, Any]:
+    # No select_message -- the frontend dispatches a structured
+    # select_specialty action carrying this id (specialty-card.tsx), not a
+    # synthesized chat message.
     return {
         "id": row.get("id"),
         "name": row.get("name"),
         "description": row.get("description", ""),
         "doctor_count": row.get("doctor_count", 0),
-        "select_message": f"I need a {row.get('name')} doctor",
     }
 
 
