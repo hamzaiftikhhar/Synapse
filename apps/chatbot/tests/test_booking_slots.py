@@ -20,6 +20,7 @@ from apps.chatbot.models import ChatSession, ChatSessionStatus
 from apps.clinics.models import Clinic
 from apps.doctors.models import Doctor, DoctorLeave, DoctorSchedule
 from apps.patients.models import Patient
+from apps.services.models import Service
 
 
 def _next_weekday(weekday: int, *, from_days_ahead: int = 3) -> date:
@@ -358,3 +359,135 @@ class ActiveHoldsForDateTests(TestCase):
         )
         held = active_holds_for_date(clinic, timezone.localdate())
         self.assertEqual(held, set())
+
+    def test_a_real_hold_is_not_lost_among_many_dormant_sessions(self):
+        """Live-confirmed at a real clinic with 400+ ACTIVE ChatSessions:
+        the scan behind active_holds_for_date used to be capped at 200
+        rows with no ordering, so the DB was free to return any 200 of
+        them -- a genuinely live hold could be silently excluded, letting
+        that "held" slot be double-booked out from under the patient
+        holding it. A hold can only exist on a session touched within the
+        hold window, so ordering by most-recently-active first must
+        always surface it regardless of how many older, dormant sessions
+        exist."""
+        clinic = Clinic.objects.create(
+            slug="holds-scale-clinic",
+            name="Holds Scale Clinic",
+            email="holds-scale@clinic.com",
+            phone="+12125550005",
+            timezone="America/New_York",
+        )
+        target_date = timezone.localdate() + timedelta(days=3)
+        held_start = timezone.make_aware(
+            datetime.combine(target_date, time(9, 0)), _TZ
+        )
+
+        # 250 old, dormant sessions with no hold at all -- more than the
+        # scan's [:200] cap, and all with an older last_active_at than the
+        # one real hold below.
+        old = timezone.now() - timedelta(days=1)
+        ChatSession.objects.bulk_create(
+            [
+                ChatSession(
+                    clinic=clinic,
+                    session_token=f"dormant-{i}",
+                    status=ChatSessionStatus.ACTIVE,
+                    conversation_context={},
+                    last_active_at=old,
+                )
+                for i in range(250)
+            ]
+        )
+
+        ChatSession.objects.create(
+            clinic=clinic,
+            session_token="the-real-hold",
+            status=ChatSessionStatus.ACTIVE,
+            conversation_context={
+                "booking": {
+                    "doctor_id": "doc-1",
+                    "slot_start": held_start.isoformat(),
+                    "hold_expires_at": (timezone.now() + timedelta(minutes=10)).isoformat(),
+                }
+            },
+            last_active_at=timezone.now(),
+        )
+
+        held = active_holds_for_date(clinic, target_date)
+        self.assertIn(
+            f"doc-1|{held_start.replace(second=0, microsecond=0).isoformat()}", held
+        )
+
+
+class BackFromDetailsReleasesHoldTests(TestCase):
+    """Live-confirmed: picking a time held it (correctly), but clicking
+    Back off of the DETAILS screen never released that hold -- so the time
+    list Back returned to still excluded the just-abandoned slot as if
+    someone else were holding it, until a *different* slot was picked and
+    overwrote the stale hold. The patient going Back is explicitly
+    un-picking that time."""
+
+    def setUp(self):
+        self.clinic = Clinic.objects.create(
+            slug="back-hold-clinic",
+            name="Back Hold Clinic",
+            email="back-hold@clinic.com",
+            phone="+12125550006",
+            timezone="America/New_York",
+        )
+        self.doctor = Doctor.objects.create(
+            clinic=self.clinic, full_name="Dr. Back Hold", is_active=True
+        )
+        self.service = Service.objects.create(
+            clinic=self.clinic, name="Checkup", duration_min=30, price_cents=10000
+        )
+        self.target_date = _next_weekday(0)
+        DoctorSchedule.objects.create(
+            clinic=self.clinic,
+            doctor=self.doctor,
+            day_of_week=self.target_date.weekday(),
+            start_time=time(9, 0),
+            end_time=time(11, 0),
+            slot_duration_min=30,
+        )
+        self.chat_session = ChatSession.objects.create(
+            clinic=self.clinic, session_token="tok-back-hold", status=ChatSessionStatus.ACTIVE
+        )
+
+    def test_back_from_details_clears_the_slot_and_hold(self):
+        start = BookingService.start(
+            clinic=self.clinic, chat_session=self.chat_session,
+            doctor_id=str(self.doctor.id), doctor_name=self.doctor.full_name,
+            service_id=str(self.service.id), service_name=self.service.name,
+        )
+        booking_id = start["booking_id"]
+        self.chat_session.refresh_from_db()
+        step1 = BookingService.apply_step(
+            clinic=self.clinic, chat_session=self.chat_session, booking_id=booking_id,
+            action="select_date", value={"date": self.target_date.isoformat()},
+        )
+        slots = step1["options"]["slots"]
+        target = slots[0]
+
+        step2 = BookingService.apply_step(
+            clinic=self.clinic, chat_session=self.chat_session, booking_id=booking_id,
+            action="select_time",
+            value={"start": target["start"], "end": target["end"], "doctor_id": str(self.doctor.id)},
+        )
+        self.assertEqual(step2["step"], BookingStep.DETAILS.value)
+
+        held_while_on_details = active_holds_for_date(self.clinic, self.target_date)
+        self.assertTrue(held_while_on_details, "the picked slot should be held")
+
+        step3 = BookingService.apply_step(
+            clinic=self.clinic, chat_session=self.chat_session, booking_id=booking_id,
+            action="back", value={},
+        )
+        self.assertEqual(step3["step"], BookingStep.TIME.value)
+
+        held_after_back = active_holds_for_date(self.clinic, self.target_date)
+        self.assertEqual(
+            held_after_back, set(), "Back must release the abandoned slot's hold"
+        )
+        times_after_back = [s["time"] for s in step3["options"]["slots"]]
+        self.assertIn(target["time"], times_after_back)

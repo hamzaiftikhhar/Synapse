@@ -418,9 +418,19 @@ def active_holds_for_range(
 
     held_by_date: dict[date, set[str]] = {}
     now = timezone.now()
-    sessions = ChatSession.objects.filter(
-        clinic=clinic, status=ChatSessionStatus.ACTIVE
-    ).only("conversation_context")[:200]
+    # Live-confirmed at a real clinic (409 ACTIVE sessions, most of them
+    # long-dormant test/abandoned conversations): without an ordering, the
+    # DB is free to return any 200 of those rows, so a genuinely live hold
+    # (necessarily on a session touched within the last slot_hold_minutes)
+    # could be silently excluded from the scan entirely, letting that
+    # "held" slot be booked out from under the patient holding it. A hold
+    # can only exist on a session active within the hold window, so the
+    # most-recently-active sessions are always the ones that matter.
+    sessions = (
+        ChatSession.objects.filter(clinic=clinic, status=ChatSessionStatus.ACTIVE)
+        .only("conversation_context")
+        .order_by("-last_active_at")[:200]
+    )
     for s in sessions:
         ctx = s.conversation_context or {}
         booking = ctx.get("booking") if isinstance(ctx, dict) else None
