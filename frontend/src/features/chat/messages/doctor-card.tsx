@@ -63,8 +63,10 @@ export function DoctorCard({
 }
 
 // Below this many cards, the list is already scannable at a glance — a
-// search box would just be one more thing to look at for no benefit.
-const SEARCH_THRESHOLD = 6;
+// search box would just be one more thing to look at for no benefit. A
+// typical small clinic's whole roster (4-6 doctors) is common enough that
+// this stays low rather than only kicking in for large rosters.
+const SEARCH_THRESHOLD = 4;
 
 export function DoctorCards({
   doctors,
@@ -114,20 +116,22 @@ export function DoctorCards({
           No doctors match &quot;{query}&quot;.
         </p>
       ) : (
-        filtered.map((d, i) => (
-          <DoctorCard
-            key={d.id || i}
-            doctor={d}
-            onAction={(action, data) => {
-              if (action === "select_doctor") {
-                setPicked(true);
-                onAction?.(action, { ...(data as object), messageId });
-                return;
-              }
-              onAction?.(action, data);
-            }}
-          />
-        ))
+        <div className="grid max-h-96 gap-2 overflow-y-auto pr-0.5">
+          {filtered.map((d, i) => (
+            <DoctorCard
+              key={d.id || i}
+              doctor={d}
+              onAction={(action, data) => {
+                if (action === "select_doctor") {
+                  setPicked(true);
+                  onAction?.(action, { ...(data as object), messageId });
+                  return;
+                }
+                onAction?.(action, data);
+              }}
+            />
+          ))}
+        </div>
       )}
     </ChatInlineCard>
   );
