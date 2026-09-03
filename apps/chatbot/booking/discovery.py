@@ -89,10 +89,13 @@ def suggest_specialties(
                 if spec not in matched:
                     matched.append(spec)
 
-    # Fall back to popular / first few clinic specialties
-    if not matched:
-        matched = clinic_specs[:limit]
-
+    # No keyword hint matched (or none of the hinted names exist at this
+    # clinic) -- leave `matched` empty rather than substituting whichever
+    # specialties happen to sort first. `_soft_medical_reply` (engine.py)
+    # already has an honest generic fallback for an empty `suggested`
+    # list; silently returning unrelated specialties here used to get
+    # framed as "these areas may help" regardless of whether they had
+    # anything to do with what was said.
     matched = matched[:limit]
     rows = [
         {
