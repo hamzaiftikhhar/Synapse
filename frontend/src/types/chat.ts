@@ -6,6 +6,7 @@ export type ChatMessageType =
   | "doctor_cards"
   | "insurance_cards"
   | "service_cards"
+  | "specialty_cards"
   | "calendar"
   | "date_picker"
   | "time_slots"
@@ -65,6 +66,13 @@ export type ServiceCardData = {
   price_cents?: number | null;
   category?: string;
   select_message?: string;
+};
+
+export type SpecialtyCardData = {
+  id?: string;
+  name: string;
+  description?: string;
+  doctor_count?: number;
 };
 
 export type TimeSlotData = {

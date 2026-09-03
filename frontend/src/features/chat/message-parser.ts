@@ -201,19 +201,15 @@ function appendMetaComponents(
     // Prefer inline wizard over duplicating specialty cards when embedding
     const booking = meta.booking as Record<string, unknown> | undefined;
     if (!(booking && booking.launch)) {
+      // Structured cards (own component, own "select_specialty" action) —
+      // not the generic "cards" type, which only carries a free-text
+      // select_message and would send it through NLU/LLM on click.
       messages.push({
         id: uid("spec"),
         role,
-        type: "cards",
+        type: "specialty_cards",
         createdAt: now,
-        payload: {
-          cards: (meta.specialties as Record<string, unknown>[]).map((s) => ({
-            title: s.name,
-            description: s.description || `${s.doctor_count ?? 0} doctors`,
-            action: s.select_message,
-            id: s.id,
-          })),
-        },
+        payload: { specialties: meta.specialties },
       });
     }
   }

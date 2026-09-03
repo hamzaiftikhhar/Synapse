@@ -14,6 +14,7 @@ import { MainMenuMessage } from "./main-menu";
 import { DoctorCards } from "./doctor-card";
 import { InsuranceCards } from "./insurance-card";
 import { ServiceCards } from "./service-card";
+import { SpecialtyCards } from "./specialty-card";
 import { CardsMessage } from "./cards-message";
 import { CalendarMessage } from "./calendar-message";
 import { DatePickerMessage } from "./date-picker-message";
@@ -106,6 +107,15 @@ export function MessageRenderer({
       body = (
         <ServiceCards
           services={(message.payload?.services as never[]) || []}
+          onAction={onAction}
+          messageId={message.id}
+        />
+      );
+      break;
+    case "specialty_cards":
+      body = (
+        <SpecialtyCards
+          specialties={(message.payload?.specialties as never[]) || []}
           onAction={onAction}
           messageId={message.id}
         />
