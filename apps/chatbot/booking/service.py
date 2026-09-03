@@ -271,6 +271,24 @@ class BookingService:
             )
         )
 
+        # Mirror of stale_service: a new service named in this call, with no
+        # doctor named alongside it, must not silently inherit whichever
+        # doctor a previous committed attempt (possibly for a *different*
+        # service) had pinned. Live-confirmed: picking "Scalling or Dental
+        # Cleaning" from a service card, with an abandoned earlier draft
+        # still holding a different doctor at DETAILS, resumed straight to
+        # "Choose a date" with that stale doctor already selected — the
+        # patient never chose a doctor for this service at all.
+        stale_doctor = (
+            bool(service_id)
+            and not doctor_id
+            and bool(session.doctor_id)
+            and (
+                bool(session.slot_start)
+                or session.step in cls._SLOT_COMMITTED_STEPS
+            )
+        )
+
         # A doctor/service named in this call, with no slot tapped alongside
         # it, must not inherit a previous attempt's held time — including
         # leftover REVIEW/DETAILS. An explicit slot_start is a tap and wins.
@@ -286,6 +304,10 @@ class BookingService:
         if stale_service:
             session.service_id = None
             session.service_name = None
+
+        if stale_doctor:
+            session.doctor_id = None
+            session.doctor_name = None
 
         if changed_service:
             session.service_id = str(service_id)
@@ -326,7 +348,12 @@ class BookingService:
                 session.step = BookingStep.PATH.value
             return
 
-        if (changed_doctor or stale_commitment) and session.step in {
+        # Only route straight to DATE if a doctor is actually still pinned
+        # after the staleness clearing above — stale_commitment alone used
+        # to send a just-cleared (now doctor-less) session to DATE anyway,
+        # which is the "Choose a date / With Dr {stale name}" bug: the
+        # elif below already handles the doctor-less case correctly.
+        if (changed_doctor or (stale_commitment and session.doctor_id)) and session.step in {
             BookingStep.PATH.value,
             BookingStep.SERVICE.value,
             BookingStep.SPECIALTY.value,
@@ -493,6 +520,18 @@ class BookingService:
                     # Keep specialty only as soft chip if they picked one mid-flow
                 if prev == BookingStep.TIME:
                     session.show_all_times = False
+                    # Live-confirmed bug: select_time sets slot_start/
+                    # slot_end/hold_expires_at, but Back off of DETAILS
+                    # never cleared them — so the time list Back returns
+                    # to still counted the just-abandoned slot as "held"
+                    # (active_holds_for_range reads every active session's
+                    # own hold fields, this session's included), making it
+                    # vanish from its own re-render until a *different*
+                    # slot was picked and overwrote it. The patient is
+                    # explicitly un-picking this time by going back.
+                    session.slot_start = None
+                    session.slot_end = None
+                    session.hold_expires_at = None
             cls._touch(session)
             cls._save(chat_session, session)
             return serialize_step(clinic, session)

@@ -144,6 +144,51 @@ class BookingResumeTests(TestCase):
         self.assertFalse(second["resumed"])
         self.assertNotEqual(first["booking_id"], second["booking_id"])
 
+    def test_new_service_pick_does_not_inherit_stale_doctor(self):
+        """Live-confirmed bug: an abandoned earlier draft pinned Dr. A and
+        reached DETAILS (a _SLOT_COMMITTED_STEPS step). Picking a *different*
+        service from a fresh service card (service_id, no doctor_id) — the
+        exact call shape select_service in chat-widget.tsx sends — must ask
+        the patient to choose a doctor for the new service, not silently
+        resume straight to "Choose a date" with the old, unrelated doctor
+        still attached."""
+        service_x = Service.objects.create(
+            clinic=self.clinic, name="Service X", duration_min=30, price_cents=10000
+        )
+        service_y = Service.objects.create(
+            clinic=self.clinic, name="Service Y", duration_min=30, price_cents=10000
+        )
+        first = BookingService.start(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            doctor_id=str(self.doctor_a.id),
+            doctor_name="Dr. A",
+            service_id=str(service_x.id),
+            service_name="Service X",
+        )
+        self.chat_session.refresh_from_db()
+        booking = self.chat_session.conversation_context["booking"]
+        booking["step"] = BookingStep.DETAILS.value
+        self.chat_session.conversation_context["booking"] = booking
+        self.chat_session.save(update_fields=["conversation_context"])
+
+        second = BookingService.start(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            message="I would like to book Service Y",
+            reason="I would like to book Service Y",
+            service_id=str(service_y.id),
+            service_name="Service Y",
+        )
+
+        self.assertEqual(first["booking_id"], second["booking_id"])
+        self.assertEqual(second["step"], BookingStep.DOCTOR.value)
+        self.chat_session.refresh_from_db()
+        updated = self.chat_session.conversation_context["booking"]
+        self.assertIsNone(updated["doctor_id"])
+        self.assertIsNone(updated["doctor_name"])
+        self.assertEqual(updated["service_id"], str(service_y.id))
+
 
 class BookingSlotFillingIntegrationTests(TestCase):
     """End-to-end: "Book Botox Friday after 5" seeds service/date/time_hint
