@@ -428,6 +428,35 @@ export const widgetService = {
   },
 };
 
+/** Deterministic UI actions — the frontend already knows the intent (a
+ * card or a frontend-authored menu button was clicked, not typed free
+ * text), so these bypass /chat/guest and its NLU/LLM classification
+ * entirely. Same ChatMessageResponse shape as chatService so the result
+ * renders through the existing parseChatResponse path unchanged. */
+export const widgetUiActionService = {
+  async searchSpecialty(input: { clinic_slug: string; specialty_id: string }) {
+    const { data } = await widgetApi.post<ChatMessageResponse>(
+      "/widget/specialty/search",
+      input
+    );
+    return data;
+  },
+  async browseDoctors(input: { clinic_slug: string }) {
+    const { data } = await widgetApi.post<ChatMessageResponse>(
+      "/widget/doctors/browse",
+      input
+    );
+    return data;
+  },
+  async clinicHours(input: { clinic_slug: string }) {
+    const { data } = await widgetApi.post<ChatMessageResponse>(
+      "/widget/clinic/hours",
+      input
+    );
+    return data;
+  },
+};
+
 /* ─── Appointments (widget, OTP-verified session) ──────────── */
 
 export const widgetAppointmentsService = {

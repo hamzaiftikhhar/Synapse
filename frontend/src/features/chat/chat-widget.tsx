@@ -42,7 +42,12 @@ import {
 } from "@/hooks/api";
 import { readSelectedInsurance } from "@/hooks/use-selected-insurance";
 import { getActiveTenant, getApiErrorMessage } from "@/lib/api/client";
-import { chatService, widgetAppointmentsService, widgetService } from "@/services";
+import {
+  chatService,
+  widgetAppointmentsService,
+  widgetService,
+  widgetUiActionService,
+} from "@/services";
 import { useAuth } from "@/providers/auth-provider";
 import { useWidget, type AssistantMode } from "@/providers/widget-provider";
 import type { AppointmentCardData, ChatMessage, TimeSlotData } from "@/types/chat";
@@ -916,6 +921,34 @@ export function ChatWidget({
     }
   }
 
+  /** Runs a deterministic UI action (no NLU/LLM — see widgetUiActionService)
+   * and renders its result exactly like a normal chat turn, without ever
+   * sending one. Shared by every UI-action button/card so each call site
+   * doesn't reimplement the typing indicator / render / error handling. */
+  function runUiAction(
+    fetcher: () => Promise<import("@/types/api").ChatMessageResponse>,
+    messageId?: string
+  ) {
+    setMessages((prev) => markMessageCompleted(prev, messageId));
+    setTyping(true);
+    void (async () => {
+      try {
+        const res = await fetcher();
+        const parsed = parseChatResponse(res);
+        setMessages((prev) => [...prev, ...parsed.messages]);
+      } catch (err) {
+        setMessages((prev) => [
+          ...prev,
+          systemErrorMessage(
+            getApiErrorMessage(err, "Couldn't look that up — please try again.")
+          ),
+        ]);
+      } finally {
+        setTyping(false);
+      }
+    })();
+  }
+
   function handleAction(action: string, data?: unknown) {
     if (action === "suggested" || action === "quick_reply") {
       if (typeof data === "string") {
@@ -936,6 +969,17 @@ export function ChatWidget({
         specialty_id?: string;
         specialty_name?: string;
       };
+      // The "Find a Doctor" contextual chip (_smart_action, ui_meta.py) is
+      // a fixed follow-up the backend itself constructed — not the
+      // patient's own words — so it skips NLU/LLM the same way the
+      // welcome-screen starter does, instead of sendText's "Help me find
+      // a doctor".
+      if (btn.id === "doctors" && (btn.behavior ?? "message") === "message") {
+        runUiAction(() =>
+          widgetUiActionService.browseDoctors({ clinic_slug: bookingClinicSlug })
+        );
+        return;
+      }
       runBackendAction(
         {
           id: btn.id,
@@ -1079,6 +1123,24 @@ export function ChatWidget({
       return;
     }
 
+    if (action === "select_specialty") {
+      // Deterministic UI action: the card already carries the specialty
+      // id, so this goes straight to /widget/specialty/search — never a
+      // synthesized "I need a {name} doctor" chat message through NLU/LLM.
+      const specialty = data as { id?: string; name?: string; messageId?: string };
+      if (!specialty.id) return;
+      const specialtyId = specialty.id;
+      runUiAction(
+        () =>
+          widgetUiActionService.searchSpecialty({
+            clinic_slug: bookingClinicSlug,
+            specialty_id: specialtyId,
+          }),
+        specialty.messageId
+      );
+      return;
+    }
+
     if (action === "confirm_cancel_appointment") {
       const appt = data as { id?: string; doctor?: string };
       if (!appt.id) return;
@@ -1179,7 +1241,28 @@ export function ChatWidget({
     setExpanded(false);
   }
 
-  function handleStarter(msg: string) {
+  function handleStarter(msg: string, item?: { id: string }) {
+    // These three ids/labels are frontend-authored, not user language —
+    // clicking them already tells us exactly what's wanted, so "doctor"
+    // and "hours" skip NLU/LLM entirely via a deterministic UI action.
+    // "book" already skips it a different way: bookingWizardMessage()
+    // launches the wizard locally, same as a doctor/service card pick.
+    if (item?.id === "doctor") {
+      runUiAction(() =>
+        widgetUiActionService.browseDoctors({ clinic_slug: bookingClinicSlug })
+      );
+      return;
+    }
+    if (item?.id === "hours") {
+      runUiAction(() =>
+        widgetUiActionService.clinicHours({ clinic_slug: bookingClinicSlug })
+      );
+      return;
+    }
+    if (item?.id === "book") {
+      setMessages((prev) => [...prev, bookingWizardMessage({})]);
+      return;
+    }
     void sendText(msg);
   }
 
@@ -1234,7 +1317,7 @@ export function ChatWidget({
       </div>
       <StarterChips
         items={starters}
-        onSelect={(msg) => handleStarter(msg)}
+        onSelect={(msg, item) => handleStarter(msg, item)}
       />
     </div>
   );
