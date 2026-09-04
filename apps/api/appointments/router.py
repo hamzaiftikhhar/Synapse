@@ -109,6 +109,46 @@ def _resolve_fk(clinic_id: UUID, payload: dict) -> dict:
     return payload
 
 
+# Statuses that occupy a doctor's calendar for overlap purposes — matches
+# apps.chatbot.booking.slots.compute_slots_for_day's own "booked" status
+# list, so the dashboard's manual form and the patient-facing booking flow
+# agree on what counts as taken.
+_OVERLAP_BLOCKING_STATUSES = [
+    AppointmentStatus.PENDING,
+    AppointmentStatus.CONFIRMED,
+    AppointmentStatus.COMPLETED,
+    AppointmentStatus.NO_SHOW,
+]
+
+
+def _check_no_overlap(
+    clinic_id: UUID,
+    *,
+    doctor_id,
+    start_time,
+    end_time,
+    exclude_appointment_id: UUID | None = None,
+) -> None:
+    """Defense in depth: the manual-booking dialog now shows real
+    available slots (see apps/api/doctors/router.py::
+    get_doctor_available_slots), but a stale frontend or a direct API call
+    must not be able to create a real double-booking either. Confirmed
+    live: before this, the only DB constraint was end_time > start_time --
+    no uniqueness/overlap constraint existed at all, so two patients could
+    be booked with the same doctor at the same time with no error."""
+    qs = Appointment.objects.filter(
+        clinic_id=clinic_id,
+        doctor_id=doctor_id,
+        status__in=_OVERLAP_BLOCKING_STATUSES,
+        start_time__lt=end_time,
+        end_time__gt=start_time,
+    )
+    if exclude_appointment_id:
+        qs = qs.exclude(id=exclude_appointment_id)
+    if qs.exists():
+        raise HttpError(409, "This doctor already has an appointment at that time.")
+
+
 @router.get("", response=PaginatedOut[AppointmentOut], auth=jwt_auth)
 def list_appointments(
     request,
@@ -148,13 +188,22 @@ def create_appointment(request, payload: AppointmentIn):
     if not data.get("confirmation_code"):
         data["confirmation_code"] = _confirmation_code()
     _resolve_fk(clinic.id, data)
+    if data.get("status", AppointmentStatus.PENDING) in _OVERLAP_BLOCKING_STATUSES:
+        _check_no_overlap(
+            clinic.id,
+            doctor_id=data["doctor_id"],
+            start_time=data["start_time"],
+            end_time=data["end_time"],
+        )
     try:
         with transaction.atomic():
             appt = Appointment.objects.create(clinic=clinic, **data)
     except IntegrityError as exc:
+        # Real double-bookings are now caught proactively above
+        # (_check_no_overlap, HTTP 409) -- this can only realistically
+        # fire from the random confirmation_code colliding.
         raise HttpError(
-            400,
-            "Could not create appointment — double booking or duplicate confirmation code",
+            400, "Could not create appointment — duplicate confirmation code"
         ) from exc
     appt = _get_appointment(clinic.id, appt.id)
     return 201, _serialize(appt)
@@ -181,6 +230,14 @@ def update_appointment(request, appointment_id: UUID, payload: AppointmentUpdate
         "source": data.get("source", appt.source),
     }
     _resolve_fk(clinic_id, merged)
+    if merged["status"] in _OVERLAP_BLOCKING_STATUSES:
+        _check_no_overlap(
+            clinic_id,
+            doctor_id=merged["doctor_id"],
+            start_time=merged["start_time"],
+            end_time=merged["end_time"],
+            exclude_appointment_id=appt.id,
+        )
     for field, value in data.items():
         setattr(appt, field, value)
     try:
