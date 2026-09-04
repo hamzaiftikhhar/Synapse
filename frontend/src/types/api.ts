@@ -93,6 +93,13 @@ export type DoctorScheduleInput = {
   is_active?: boolean;
 };
 
+export type AvailableSlot = {
+  id: string;
+  start: string;
+  end: string;
+  label: string;
+};
+
 export type WidgetSettingsConfig = {
   widget?: {
     primary_color?: string;
@@ -156,6 +163,7 @@ export type Specialty = {
   name: string;
   slug: string;
   description: string;
+  category: string;
   is_active: boolean;
   is_deleted: boolean;
   created_at: string;
@@ -166,6 +174,7 @@ export type SpecialtyInput = {
   name: string;
   slug?: string;
   description?: string;
+  category?: string;
   is_active?: boolean;
 };
 

@@ -14,6 +14,44 @@ export const STORAGE_KEYS = {
 
 export const APP_NAME = "Synapse";
 
+// Canonical, curated specialty categories -- mirrors core.care_categories.
+// CareCategory in the backend exactly (same values, same order). A small
+// controlled vocabulary normalizing each clinic's own free-text specialty
+// name, the same way FHIR binds PractitionerRole.specialty to the NUCC
+// taxonomy rather than leaving it arbitrary text -- kept in sync by hand
+// across the language boundary since there's no shared codegen here.
+export const CARE_CATEGORIES = [
+  "Primary Care",
+  "Cardiology",
+  "Dermatology",
+  "Gastroenterology",
+  "Neurology",
+  "Psychiatry / Mental Health",
+  "OB-GYN",
+  "Orthopedics",
+  "ENT",
+  "Ophthalmology",
+  "Dentistry",
+  "Pediatrics",
+  "Endocrinology",
+  "Pulmonology",
+  "Urology",
+  "Nephrology",
+  "Oncology",
+  "Sleep Medicine",
+  "Pain Management",
+  "Rheumatology",
+  "Allergy & Immunology",
+  "Podiatry",
+  "Surgery",
+  "Aesthetics / Cosmetic",
+  "Physical Therapy",
+  "Laboratory / Diagnostics",
+  "Other",
+] as const;
+
+export type CareCategory = (typeof CARE_CATEGORIES)[number];
+
 export const NAV_MARKETING = [
   { href: "/features", label: "Features" },
   { href: "/solutions", label: "Solutions" },

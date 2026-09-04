@@ -4,6 +4,7 @@ import type {
   Appointment,
   AppointmentInput,
   AppointmentUpdateInput,
+  AvailableSlot,
   BusinessHour,
   BusinessHourInput,
   ChatMessageInput,
@@ -650,6 +651,17 @@ export const doctorsService = {
     const { data } = await api.put<DoctorScheduleSlot[]>(
       `/doctors/${id}/schedule`,
       input
+    );
+    return data;
+  },
+  async getAvailableSlots(
+    id: string,
+    date: string,
+    excludeAppointmentId?: string
+  ) {
+    const { data } = await api.get<AvailableSlot[]>(
+      `/doctors/${id}/available-slots`,
+      { params: { date, exclude_appointment_id: excludeAppointmentId } }
     );
     return data;
   },
