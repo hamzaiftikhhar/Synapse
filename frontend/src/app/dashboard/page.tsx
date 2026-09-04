@@ -29,6 +29,11 @@ import {
   SynapseInsightCard,
   TodayScheduleCard,
 } from "@/components/dashboard/insights";
+import {
+  ListCardSkeleton,
+  MetricCardSkeleton,
+  PanelSkeleton,
+} from "@/components/dashboard/skeletons";
 import { useAnalyticsOverview, useConversations } from "@/hooks/api";
 import { useAuth } from "@/providers/auth-provider";
 import { cn } from "@/lib/utils";
@@ -132,7 +137,7 @@ export default function DashboardHomePage() {
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {overview.isLoading || !data ? (
           Array.from({ length: 4 }).map((_, i) => (
-            <div key={i} className="h-[104px] animate-pulse rounded-[10px] bg-muted/70" />
+            <MetricCardSkeleton key={i} />
           ))
         ) : (
           <>
@@ -170,7 +175,7 @@ export default function DashboardHomePage() {
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {overview.isLoading || !summary ? (
           Array.from({ length: 4 }).map((_, i) => (
-            <div key={i} className="h-[104px] animate-pulse rounded-[10px] bg-muted/70" />
+            <MetricCardSkeleton key={i} lines={3} />
           ))
         ) : (
           <>
@@ -212,71 +217,76 @@ export default function DashboardHomePage() {
         <NeedsAttentionCard
           escalatedConversations={escalatedConversations}
           pendingAppointments={pendingAppointments}
+          isLoading={overview.isLoading}
         />
       </div>
 
       <div className="mt-4 flex flex-col gap-4 lg:flex-row">
-        <ChartPanel
-          title="Conversations & Appointments"
-          description="Daily volume in the clinic timezone"
-          action={
-            <AnalyticsLegend
-              items={[
-                { label: "Conversations", color: CHART.purple },
-                { label: "Appointments", color: CHART.green },
+        {overview.isLoading ? (
+          <PanelSkeleton className="lg:w-[60%]" chartHeight={260} />
+        ) : (
+          <ChartPanel
+            title="Conversations & Appointments"
+            description="Daily volume in the clinic timezone"
+            action={
+              <AnalyticsLegend
+                items={[
+                  { label: "Conversations", color: CHART.purple },
+                  { label: "Appointments", color: CHART.green },
+                ]}
+              />
+            }
+            metrics={
+              summary ? (
+                <div className="flex flex-wrap gap-x-8 gap-y-3">
+                  <div>
+                    <p className="text-[1.4rem] font-semibold leading-none tracking-tight text-navy tabular-nums">
+                      {summary.conversations.toLocaleString()}
+                    </p>
+                    <p className="mt-1.5 flex items-center gap-1.5 text-[12px] text-muted-foreground">
+                      conversations
+                      <MetricChange value={summary.conversations_change_pct} />
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-[1.4rem] font-semibold leading-none tracking-tight text-navy tabular-nums">
+                      {summary.appointments.toLocaleString()}
+                    </p>
+                    <p className="mt-1.5 flex items-center gap-1.5 text-[12px] text-muted-foreground">
+                      appointments
+                      <MetricChange value={summary.appointments_change_pct} />
+                    </p>
+                  </div>
+                </div>
+              ) : null
+            }
+            footer={
+              <Link
+                href="/dashboard/analytics"
+                className="inline-flex items-center gap-1 text-[12.5px] font-medium text-primary hover:underline"
+              >
+                View analytics
+                <ArrowRight className="size-3" />
+              </Link>
+            }
+            isLoading={false}
+            isError={overview.isError}
+            onRetry={() => void overview.refetch()}
+            hasData={seriesHasValues(trend, ["conversations", "appointments"])}
+            emptyTitle="No activity yet"
+            emptyDescription="Conversations and bookings in this window will appear here."
+            className="lg:w-[60%]"
+          >
+            <AnalyticsLineChart
+              data={trend}
+              series={[
+                { key: "conversations", label: "Conversations", color: CHART.purple },
+                { key: "appointments", label: "Appointments", color: CHART.green },
               ]}
+              height={260}
             />
-          }
-          metrics={
-            summary ? (
-              <div className="flex flex-wrap gap-x-8 gap-y-3">
-                <div>
-                  <p className="text-[1.4rem] font-semibold leading-none tracking-tight text-navy tabular-nums">
-                    {summary.conversations.toLocaleString()}
-                  </p>
-                  <p className="mt-1.5 flex items-center gap-1.5 text-[12px] text-muted-foreground">
-                    conversations
-                    <MetricChange value={summary.conversations_change_pct} />
-                  </p>
-                </div>
-                <div>
-                  <p className="text-[1.4rem] font-semibold leading-none tracking-tight text-navy tabular-nums">
-                    {summary.appointments.toLocaleString()}
-                  </p>
-                  <p className="mt-1.5 flex items-center gap-1.5 text-[12px] text-muted-foreground">
-                    appointments
-                    <MetricChange value={summary.appointments_change_pct} />
-                  </p>
-                </div>
-              </div>
-            ) : null
-          }
-          footer={
-            <Link
-              href="/dashboard/analytics"
-              className="inline-flex items-center gap-1 text-[12.5px] font-medium text-primary hover:underline"
-            >
-              View analytics
-              <ArrowRight className="size-3" />
-            </Link>
-          }
-          isLoading={overview.isLoading}
-          isError={overview.isError}
-          onRetry={() => void overview.refetch()}
-          hasData={seriesHasValues(trend, ["conversations", "appointments"])}
-          emptyTitle="No activity yet"
-          emptyDescription="Conversations and bookings in this window will appear here."
-          className="lg:w-[60%]"
-        >
-          <AnalyticsLineChart
-            data={trend}
-            series={[
-              { key: "conversations", label: "Conversations", color: CHART.purple },
-              { key: "appointments", label: "Appointments", color: CHART.green },
-            ]}
-            height={260}
-          />
-        </ChartPanel>
+          </ChartPanel>
+        )}
         <AppointmentSourceRadarCard
           data={data?.appointment_source_radar ?? []}
           isLoading={overview.isLoading}
@@ -294,62 +304,65 @@ export default function DashboardHomePage() {
           timeZone={timeZone}
           patientsUpcoming={data?.ops.patients_upcoming}
           doctorsWithUpcoming={data?.ops.doctors_with_upcoming}
+          isLoading={overview.isLoading}
           className="lg:w-[58%]"
         />
 
-        <InsightCard overflow="hidden" className="min-w-0 flex-1 lg:w-[42%]">
-          <div className="flex items-center justify-between gap-3 border-b border-border px-5 py-3">
-            <p className="text-sm font-medium text-navy">Recent conversations</p>
-            <Link
-              href="/dashboard/conversations"
-              className="inline-flex items-center gap-1 text-[12.5px] font-medium text-primary hover:underline"
-            >
-              View all
-              <ArrowRight className="size-3" />
-            </Link>
-          </div>
-          {conversations.isLoading ? (
-            <div className="h-48 animate-pulse bg-muted/50" />
-          ) : !recentChats.length ? (
-            <EmptyState
-              icon={MessageSquare}
-              title="No conversations yet"
-              description="Patient chats from the widget will show up here."
-            />
-          ) : (
-            <ul>
-              {recentChats.map((c) => (
-                <li key={c.id} className="border-b border-border/70 last:border-0">
-                  <Link
-                    href="/dashboard/conversations"
-                    className="block px-5 py-3 transition-colors hover:bg-muted/50"
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="flex min-w-0 items-center gap-2">
-                        <span
-                          className={cn(
-                            "size-1.5 shrink-0 rounded-full",
-                            CONVERSATION_STATUS_DOT[c.status] ?? "bg-muted-foreground/40"
-                          )}
-                          aria-hidden
-                        />
-                        <span className="truncate text-sm font-medium text-navy">
-                          {c.display_name}
+        {conversations.isLoading ? (
+          <ListCardSkeleton className="min-w-0 flex-1 lg:w-[42%]" rows={5} />
+        ) : (
+          <InsightCard overflow="hidden" className="min-w-0 flex-1 lg:w-[42%]">
+            <div className="flex items-center justify-between gap-3 border-b border-border px-5 py-3">
+              <p className="text-sm font-medium text-navy">Recent conversations</p>
+              <Link
+                href="/dashboard/conversations"
+                className="inline-flex items-center gap-1 text-[12.5px] font-medium text-primary hover:underline"
+              >
+                View all
+                <ArrowRight className="size-3" />
+              </Link>
+            </div>
+            {!recentChats.length ? (
+              <EmptyState
+                icon={MessageSquare}
+                title="No conversations yet"
+                description="Patient chats from the widget will show up here."
+              />
+            ) : (
+              <ul>
+                {recentChats.map((c) => (
+                  <li key={c.id} className="border-b border-border/70 last:border-0">
+                    <Link
+                      href="/dashboard/conversations"
+                      className="block px-5 py-3 transition-colors hover:bg-muted/50"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="flex min-w-0 items-center gap-2">
+                          <span
+                            className={cn(
+                              "size-1.5 shrink-0 rounded-full",
+                              CONVERSATION_STATUS_DOT[c.status] ?? "bg-muted-foreground/40"
+                            )}
+                            aria-hidden
+                          />
+                          <span className="truncate text-sm font-medium text-navy">
+                            {c.display_name}
+                          </span>
                         </span>
-                      </span>
-                      <span className="shrink-0 text-[11px] text-muted-foreground">
-                        {formatDistanceToNow(new Date(c.last_active_at), { addSuffix: true })}
-                      </span>
-                    </div>
-                    <p className="mt-0.5 truncate pl-3.5 text-[12px] text-muted-foreground">
-                      {c.last_message_preview || "No messages yet"}
-                    </p>
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          )}
-        </InsightCard>
+                        <span className="shrink-0 text-[11px] text-muted-foreground">
+                          {formatDistanceToNow(new Date(c.last_active_at), { addSuffix: true })}
+                        </span>
+                      </div>
+                      <p className="mt-0.5 truncate pl-3.5 text-[12px] text-muted-foreground">
+                        {c.last_message_preview || "No messages yet"}
+                      </p>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </InsightCard>
+        )}
       </div>
 
       <div className="mt-4 grid gap-4 lg:grid-cols-2">

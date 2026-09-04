@@ -52,6 +52,7 @@ export function TodayScheduleCard({
   timeZone,
   patientsUpcoming,
   doctorsWithUpcoming,
+  isLoading,
   className,
 }: {
   todaySchedule: AnalyticsCalendarUpcoming[] | undefined;
@@ -61,8 +62,35 @@ export function TodayScheduleCard({
    * visible here rather than as their own top-level tiles. */
   patientsUpcoming?: number;
   doctorsWithUpcoming?: number;
+  isLoading?: boolean;
   className?: string;
 }) {
+  if (isLoading) {
+    return (
+      <InsightCard overflow="hidden" className={cn("p-5", className)}>
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <div className="h-3.5 w-36 animate-pulse rounded bg-muted" />
+            <div className="mt-2 h-2.5 w-48 animate-pulse rounded bg-muted" />
+          </div>
+          <div className="h-3 w-24 animate-pulse rounded bg-muted" />
+        </div>
+        <div className="mt-4 space-y-3">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="flex items-center gap-3 py-1">
+              <div className="h-3 w-14 shrink-0 animate-pulse rounded bg-muted" />
+              <div className="min-w-0 flex-1 space-y-1.5">
+                <div className="h-3 w-[46%] animate-pulse rounded bg-muted" />
+                <div className="h-2.5 w-[62%] animate-pulse rounded bg-muted" />
+              </div>
+              <div className="h-5 w-16 animate-pulse rounded-full bg-muted" />
+            </div>
+          ))}
+        </div>
+      </InsightCard>
+    );
+  }
+
   const rows = todaySchedule ?? [];
   const today = new Intl.DateTimeFormat("en-US", {
     timeZone,

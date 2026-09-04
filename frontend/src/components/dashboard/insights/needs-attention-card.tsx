@@ -39,12 +39,26 @@ function AttentionRow({
 export function NeedsAttentionCard({
   escalatedConversations,
   pendingAppointments,
+  isLoading,
   className,
 }: {
   escalatedConversations: number;
   pendingAppointments: number;
+  isLoading?: boolean;
   className?: string;
 }) {
+  if (isLoading) {
+    return (
+      <InsightCard overflow="hidden" className={cn("p-5", className)}>
+        <div className="h-3.5 w-32 animate-pulse rounded bg-muted" />
+        <div className="mt-4 space-y-3">
+          <div className="h-3 w-[78%] animate-pulse rounded bg-muted" />
+          <div className="h-3 w-[64%] animate-pulse rounded bg-muted" />
+        </div>
+      </InsightCard>
+    );
+  }
+
   const items: Array<{ severity: Severity; label: string; href: string }> = [];
   if (escalatedConversations > 0) {
     items.push({

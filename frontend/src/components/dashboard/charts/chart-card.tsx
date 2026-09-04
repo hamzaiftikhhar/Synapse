@@ -60,10 +60,22 @@ export function ChartEmptyState({
 
 export function ChartSkeleton({ className }: { className?: string }) {
   return (
-    <div
-      className={cn("h-[240px] animate-pulse rounded-[10px] bg-muted/70", className)}
-      aria-hidden
-    />
+    <div className={cn("space-y-3", className)} aria-hidden>
+      <div className="flex items-end gap-2" style={{ height: 200 }}>
+        {Array.from({ length: 12 }).map((_, i) => (
+          <div
+            key={i}
+            className="flex-1 animate-pulse rounded-sm bg-muted/80"
+            style={{ height: `${35 + ((i * 17) % 55)}%` }}
+          />
+        ))}
+      </div>
+      <div className="flex justify-between">
+        <div className="h-2 w-10 animate-pulse rounded bg-muted" />
+        <div className="h-2 w-10 animate-pulse rounded bg-muted" />
+        <div className="h-2 w-10 animate-pulse rounded bg-muted" />
+      </div>
+    </div>
   );
 }
 
