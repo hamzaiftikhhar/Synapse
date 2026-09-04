@@ -25,7 +25,9 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  useAvailableSlots,
   useCreateAppointment,
+  useCreatePatient,
   useDoctors,
   useDoctorSchedule,
   useInsurancePlans,
@@ -33,7 +35,9 @@ import {
   useServices,
   useUpdateAppointment,
 } from "@/hooks/api";
+import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { getApiErrorMessage } from "@/lib/api/client";
+import { cn } from "@/lib/utils";
 import {
   addMinutesIso,
   clinicLocalToIso,
@@ -121,13 +125,26 @@ export function AppointmentFormDialog({
   editing: Appointment | null;
   timeZone: string;
 }) {
-  const { data: patientsData } = usePatients({ limit: 100 });
+  const [patientQuery, setPatientQuery] = useState("");
+  const debouncedPatientQuery = useDebouncedValue(patientQuery, 300);
+  const { data: patientsData, isFetching: patientsLoading } = usePatients({
+    search: debouncedPatientQuery || undefined,
+    limit: 20,
+  });
   const { data: doctorsData } = useDoctors({ limit: 100 });
   const { data: servicesData } = useServices({ is_active: true, limit: 100 });
   const { data: insuranceData } = useInsurancePlans({ limit: 100 });
   const create = useCreateAppointment();
   const update = useUpdateAppointment();
-  const [patientQuery, setPatientQuery] = useState("");
+  const createPatient = useCreatePatient();
+  const [addingPatient, setAddingPatient] = useState(false);
+  const [newPatient, setNewPatient] = useState({
+    first_name: "",
+    last_name: "",
+    phone: "",
+    email: "",
+  });
+  const [newPatientErrors, setNewPatientErrors] = useState<Record<string, string>>({});
 
   const patients = useMemo(() => patientsData?.results ?? [], [patientsData]);
   const doctors = useMemo(() => doctorsData?.results ?? [], [doctorsData]);
@@ -153,6 +170,9 @@ export function AppointmentFormDialog({
   useEffect(() => {
     if (!open) return;
     setPatientQuery("");
+    setAddingPatient(false);
+    setNewPatient({ first_name: "", last_name: "", phone: "", email: "" });
+    setNewPatientErrors({});
     if (editing) {
       const parts = isoToClinicParts(editing.start_time, timeZone);
       form.reset({
@@ -189,6 +209,11 @@ export function AppointmentFormDialog({
   const selectedPatientId = useWatch({ control: form.control, name: "patient_id" });
 
   const { data: schedule } = useDoctorSchedule(doctorId || null);
+  const { data: availableSlots, isFetching: slotsLoading } = useAvailableSlots(
+    doctorId || null,
+    date || null,
+    editing?.id
+  );
 
   const eligibleDoctors = useMemo(() => {
     const active = doctors.filter((d) => {
@@ -231,23 +256,65 @@ export function AppointmentFormDialog({
     return slot ? `Hours: ${range} · ${slot} min slots` : `Hours: ${range}`;
   }, [date, schedule]);
 
+  // Real availability (schedule minus leave minus already-booked
+  // appointments) -- previously the dialog only showed the doctor's
+  // recurring weekly hours as text (hoursHint above), with no check
+  // against actual bookings, so staff could double-book a doctor or pick
+  // a time outside their hours with zero warning (see ROADMAP.md).
+  const slotTimes = useMemo(() => {
+    if (!availableSlots?.length) return [];
+    return availableSlots.map((slot) => ({
+      time: isoToClinicParts(slot.start, timeZone).time,
+      label: slot.label,
+    }));
+  }, [availableSlots, timeZone]);
+
+  const currentTime = useWatch({ control: form.control, name: "time" });
+
   const patientItems: SelectOption[] = useMemo(() => {
-    const q = patientQuery.trim().toLowerCase();
-    return patients
-      .filter((p) => {
-        if (p.id === selectedPatientId) return true;
-        if (!q) return true;
-        return (
-          p.full_name.toLowerCase().includes(q) ||
-          p.phone.toLowerCase().includes(q) ||
-          p.email.toLowerCase().includes(q)
-        );
-      })
-      .map((p) => ({
-        value: p.id,
-        label: p.phone ? `${p.full_name} · ${p.phone}` : p.full_name,
-      }));
-  }, [patients, patientQuery, selectedPatientId]);
+    // Search is server-side now (usePatients({ search }), debounced) --
+    // this just shapes the results, plus keeps the currently-selected
+    // patient visible even if a new search query no longer matches them
+    // (e.g. editing an existing appointment, or just picked someone and
+    // kept typing).
+    const items = patients.map((p) => ({
+      value: p.id,
+      label: p.phone ? `${p.full_name} · ${p.phone}` : p.full_name,
+    }));
+    if (selectedPatientId && !items.some((i) => i.value === selectedPatientId)) {
+      const pinnedName =
+        editing && editing.patient_id === selectedPatientId ? editing.patient_name : null;
+      if (pinnedName) items.unshift({ value: selectedPatientId, label: pinnedName });
+    }
+    return items;
+  }, [patients, selectedPatientId, editing]);
+
+  async function submitNewPatient() {
+    const errors: Record<string, string> = {};
+    if (!newPatient.first_name.trim()) errors.first_name = "First name is required.";
+    if (!newPatient.last_name.trim()) errors.last_name = "Last name is required.";
+    if (newPatient.phone.trim().length < 5) errors.phone = "A valid phone number is required.";
+    if (newPatient.email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(newPatient.email.trim())) {
+      errors.email = "Enter a valid email, or leave it blank.";
+    }
+    setNewPatientErrors(errors);
+    if (Object.keys(errors).length > 0) return;
+    try {
+      const created = await createPatient.mutateAsync({
+        first_name: newPatient.first_name.trim(),
+        last_name: newPatient.last_name.trim(),
+        phone: newPatient.phone.trim(),
+        email: newPatient.email.trim() || undefined,
+      });
+      form.setValue("patient_id", created.id);
+      setAddingPatient(false);
+      setNewPatient({ first_name: "", last_name: "", phone: "", email: "" });
+      setNewPatientErrors({});
+      toast.success("Patient added");
+    } catch (err) {
+      toast.error(getApiErrorMessage(err, "Could not add patient"));
+    }
+  }
 
   const serviceItems: SelectOption[] = [
     { value: NONE, label: "No service" },
@@ -328,13 +395,11 @@ export function AppointmentFormDialog({
         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-3">
           <div className="space-y-1.5">
             <Label>Patient</Label>
-            {patients.length > 8 ? (
-              <Input
-                placeholder="Filter patients…"
-                value={patientQuery}
-                onChange={(e) => setPatientQuery(e.target.value)}
-              />
-            ) : null}
+            <Input
+              placeholder="Search by name, phone, or email…"
+              value={patientQuery}
+              onChange={(e) => setPatientQuery(e.target.value)}
+            />
             <Controller
               control={form.control}
               name="patient_id"
@@ -343,17 +408,103 @@ export function AppointmentFormDialog({
                   value={field.value}
                   onChange={field.onChange}
                   items={patientItems}
-                  placeholder="Select patient"
+                  placeholder={patientsLoading ? "Searching…" : "Select patient"}
                 />
               )}
             />
             {errors.patient_id ? (
               <p className="text-xs text-destructive">{errors.patient_id.message}</p>
-            ) : !patients.length ? (
-              <p className="text-xs text-muted-foreground">
-                No patients yet — add one from the Patients page first.
-              </p>
             ) : null}
+
+            {!addingPatient ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setAddingPatient(true);
+                  // A name typed to search is almost always this new
+                  // patient's own name -- carry it over as a first name
+                  // guess rather than making them retype it.
+                  if (patientQuery.trim() && !newPatient.first_name) {
+                    setNewPatient((p) => ({ ...p, first_name: patientQuery.trim() }));
+                  }
+                }}
+              >
+                + Add new patient
+              </Button>
+            ) : (
+              <div className="space-y-2 rounded-lg border border-border p-3">
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="space-y-1">
+                    <Label className="text-xs">First name</Label>
+                    <Input
+                      value={newPatient.first_name}
+                      onChange={(e) =>
+                        setNewPatient((p) => ({ ...p, first_name: e.target.value }))
+                      }
+                      aria-invalid={Boolean(newPatientErrors.first_name)}
+                    />
+                    {newPatientErrors.first_name ? (
+                      <p className="text-xs text-destructive">{newPatientErrors.first_name}</p>
+                    ) : null}
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">Last name</Label>
+                    <Input
+                      value={newPatient.last_name}
+                      onChange={(e) =>
+                        setNewPatient((p) => ({ ...p, last_name: e.target.value }))
+                      }
+                      aria-invalid={Boolean(newPatientErrors.last_name)}
+                    />
+                    {newPatientErrors.last_name ? (
+                      <p className="text-xs text-destructive">{newPatientErrors.last_name}</p>
+                    ) : null}
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="space-y-1">
+                    <Label className="text-xs">Phone</Label>
+                    <Input
+                      value={newPatient.phone}
+                      onChange={(e) => setNewPatient((p) => ({ ...p, phone: e.target.value }))}
+                      placeholder="+1 555 123 4567"
+                      aria-invalid={Boolean(newPatientErrors.phone)}
+                    />
+                    {newPatientErrors.phone ? (
+                      <p className="text-xs text-destructive">{newPatientErrors.phone}</p>
+                    ) : null}
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">
+                      Email <span className="font-normal text-muted-foreground">(optional)</span>
+                    </Label>
+                    <Input
+                      value={newPatient.email}
+                      onChange={(e) => setNewPatient((p) => ({ ...p, email: e.target.value }))}
+                      aria-invalid={Boolean(newPatientErrors.email)}
+                    />
+                    {newPatientErrors.email ? (
+                      <p className="text-xs text-destructive">{newPatientErrors.email}</p>
+                    ) : null}
+                  </div>
+                </div>
+                <div className="flex justify-end gap-2">
+                  <Button type="button" variant="outline" size="sm" onClick={() => setAddingPatient(false)}>
+                    Cancel
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={createPatient.isPending}
+                    onClick={() => void submitNewPatient()}
+                  >
+                    {createPatient.isPending ? "Adding…" : "Add patient"}
+                  </Button>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2">
@@ -409,7 +560,43 @@ export function AppointmentFormDialog({
               <Input type="number" min={5} step={5} {...form.register("duration_min")} />
             </div>
           </div>
-          {hoursHint ? (
+          {doctorId && date ? (
+            <div className="space-y-1.5">
+              {slotsLoading ? (
+                <p className="text-xs text-muted-foreground">Checking availability…</p>
+              ) : slotTimes.length > 0 ? (
+                <>
+                  <Label className="text-xs text-muted-foreground">
+                    Available times — or type a time above to override
+                  </Label>
+                  <div className="flex flex-wrap gap-1.5">
+                    {slotTimes.map((slot) => (
+                      <button
+                        key={slot.time}
+                        type="button"
+                        onClick={() => form.setValue("time", slot.time)}
+                        className={cn(
+                          "rounded-full border px-2.5 py-1 text-xs transition-colors",
+                          currentTime === slot.time
+                            ? "border-primary bg-primary/10 text-primary"
+                            : "border-border text-muted-foreground hover:border-primary/40 hover:text-foreground"
+                        )}
+                      >
+                        {slot.label}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <p className="text-xs text-destructive">
+                  {hoursHint === "This doctor has no hours on that day."
+                    ? hoursHint
+                    : "This doctor is fully booked that day."}{" "}
+                  You can still enter a time above, but double-check with the doctor first.
+                </p>
+              )}
+            </div>
+          ) : hoursHint ? (
             <p className="text-xs text-muted-foreground">{hoursHint}</p>
           ) : null}
 
