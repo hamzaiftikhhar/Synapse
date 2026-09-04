@@ -137,12 +137,20 @@ def synthesize_clinic_reply(
 
 
 def empty_rag_reply(clinic: Any) -> str:
-    """User-facing copy when vector retrieval has nothing useful."""
+    """User-facing copy when vector retrieval has nothing useful.
+
+    Deliberately doesn't say "in our documents"/"our records" or otherwise
+    name how the answer was looked up — a patient doesn't need or want to
+    hear about internal retrieval mechanics (live-confirmed complaint: this
+    read as evasive/confusing, especially when it fired for a symptom
+    mention rather than a genuine missing-FAQ case). Says what's actually
+    true (no clinic-specific info on that) and gives a real next step.
+    """
     phone = getattr(clinic, "phone", "") or ""
     phone_bit = f" or call us at {phone}" if phone else ""
     return (
-        f"I couldn't find clinic-specific information on that in our documents. "
-        f"Please check with our care team through the patient portal{phone_bit}."
+        f"I don't have clinic-specific information on that. Our care team can "
+        f"help directly — please reach out through the patient portal{phone_bit}."
     )
 
 

@@ -475,19 +475,42 @@ def _dedupe_doctors(doctors: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-# UIPriority -> which cross-sell chips are allowed this turn. Emergency/booking
-# turns already have their own dedicated UI (911 buttons / the wizard) and
-# never need the generic smart-action or Book Appointment chip on top of it.
-# NONE/INLINE (informational answers, clarify turns) get no cross-sell chips —
-# this is the actual card-spam fix; it does not touch the handler's own
-# direct-answer card (e.g. the insurance card still renders for NONE).
+# UIPriority -> which cross-sell chips are allowed this turn.
+#
+# `book` (Book Appointment) is deliberately always True, every priority, no
+# exceptions — explicit user decision: the booking chip should be a
+# constant, always-available action regardless of what else is on screen
+# (including an emergency reply, where it shows alongside the Emergency
+# Call button — declining to book is still the patient's call, not this
+# UI's to make for them). The one place it's still omitted is structural,
+# not policy-driven: `_contextual_actions(omit_book=True)` at the active
+# booking-card call site (this file, ~line 249) — a generic "start
+# booking" chip on top of the booking wizard that's already on screen
+# would be redundant with, not additive to, the UI already shown.
+#
+# `smart` (the one situational contextual chip in meta["actions"] — Maps,
+# etc.) stays gated per priority: NONE/INLINE (informational answers,
+# clarify turns) get no smart chip — this is the actual card-spam fix; it
+# does not touch the handler's own direct-answer card (e.g. the insurance
+# card still renders for NONE). At most one smart chip is ever returned
+# (`_smart_action` returns a single dict or None) — never stacked.
+#
+# `emergency` keeps `smart: False`: `_smart_action` can also produce an
+# "Emergency Call" chip, but a completely separate mechanism (this file,
+# the `if is_emergency:` block a little below `_contextual_actions`'s call
+# site) already populates `meta["buttons"]` with the real 911/clinic-call
+# buttons for every emergency response, unconditionally. Turning `smart`
+# on here would render two differently-shaped "call emergency" affordances
+# at once (`meta["actions"]` AND `meta["buttons"]`) for the same event —
+# exactly the double-UI problem `book`'s always-on change above is meant
+# to avoid, not reintroduce elsewhere.
 _CHIP_POLICY: dict[str, dict[str, bool]] = {
-    "emergency": {"smart": False, "book": False},
-    "booking": {"smart": False, "book": False},
+    "emergency": {"smart": False, "book": True},
+    "booking": {"smart": False, "book": True},
     "primary": {"smart": True, "book": True},
     "optional": {"smart": True, "book": True},
-    "inline": {"smart": False, "book": False},
-    "none": {"smart": False, "book": False},
+    "inline": {"smart": False, "book": True},
+    "none": {"smart": False, "book": True},
 }
 
 

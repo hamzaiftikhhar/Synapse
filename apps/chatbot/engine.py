@@ -59,6 +59,13 @@ class EngineResult:
         }
 
 
+def _first_entity_value(value: Any) -> str:
+    """Unwrap a multi-value NLU entity (list | str | None) to one string."""
+    if isinstance(value, list):
+        value = value[0] if value else None
+    return str(value) if value else ""
+
+
 class ChatEngine:
     """Process one user message end-to-end and return an EngineResult."""
 
@@ -577,10 +584,16 @@ class ChatEngine:
             elif exec_plan.doctor_followup and last_doctor:
                 response_text = self._doctor_followup_reply(last_doctor)
             elif exec_plan.soft_medical or exec_plan.direct_mode == "soft_medical":
-                response_text = self._soft_medical_reply(clinic, message)
+                symptom_hint = _first_entity_value(nlu_result.entities.symptom)
+                category_hint = _first_entity_value(
+                    getattr(nlu_result.entities, "specialty_category_hint", None)
+                )
+                response_text = self._soft_medical_reply(
+                    clinic, message, symptom_hint, category_hint
+                )
                 if not self._looks_like_aesthetic_request(message):
                     suggested, guidance = self._maybe_suggest_specialties(
-                        clinic, message, timings
+                        clinic, message, timings, symptom_hint, category_hint
                     )
             else:
                 response_text = self._fast_path_from_plan(
@@ -676,7 +689,13 @@ class ChatEngine:
             if exec_plan.booking:
                 if not self._looks_like_aesthetic_request(message):
                     suggested, guidance = self._maybe_suggest_specialties(
-                        clinic, message, timings
+                        clinic,
+                        message,
+                        timings,
+                        _first_entity_value(nlu_result.entities.symptom),
+                        _first_entity_value(
+                            getattr(nlu_result.entities, "specialty_category_hint", None)
+                        ),
                     )
                 if booking_commit:
                     resolved = self._resolve_doctor_from_message(clinic, message)
@@ -1020,22 +1039,26 @@ class ChatEngine:
         )
         trace.emit()
 
-    def _soft_medical_reply(self, clinic: Any, message: str) -> str:
+    def _soft_medical_reply(
+        self, clinic: Any, message: str, symptom_hint: str = "", category_hint: str = ""
+    ) -> str:
         from apps.chatbot.booking.config import get_booking_config
         from apps.chatbot.booking.discovery import suggest_specialties
 
         cfg = get_booking_config(clinic)
         if cfg.get("ai_discovery"):
-            suggested, guidance = suggest_specialties(clinic, message=message)
+            suggested, guidance = suggest_specialties(
+                clinic, message=message, reason=symptom_hint, category_hint=category_hint
+            )
             if suggested:
-                names = ", ".join(
-                    (s.get("plain_label") or s.get("name") or "") for s in suggested[:3]
-                )
-                return (
-                    (guidance + " " if guidance else "")
-                    + f"I'm not able to diagnose, but these areas may help: {names}. "
-                    "Would you like me to find a doctor or start booking?"
-                )
+                # `guidance` (suggest_specialties) already names the
+                # specialty and says "not a diagnosis" -- live-confirmed
+                # this used to repeat itself, naming the same specialty
+                # twice with two different disclaimers stacked back to
+                # back ("...you may want to start with Urology Center...
+                # I'm not able to diagnose, but these areas may help:
+                # Urology Center. Would you like...").
+                return f"{guidance} Would you like me to find a doctor or start booking?"
         return (
             "I'm sorry you're dealing with that. I can't diagnose symptoms, "
             "but I can help you find a doctor or start booking an appointment."
@@ -1098,6 +1121,23 @@ class ChatEngine:
             return False
         return any(bool(block.get("found")) or bool(block.get("rows")) for block in sql_rows)
 
+    def _has_authoritative_summary(self, sql_rows: list[dict[str, Any]]) -> bool:
+        """True when a SQL handler already composed a deliberate, specific
+        answer for an empty result (e.g. search_doctors'/doctor_availability's
+        "we don't have a specialist for that" -- see their `meta.
+        authoritative_summary`) rather than leaving `summary` as a generic
+        placeholder. Live-confirmed regression this guards against: the
+        soft_medical fallback below used to unconditionally replace ANY
+        not-found SQL summary with a generic "I can't diagnose symptoms"
+        disclaimer, silently discarding a strictly better, already-honest
+        answer the moment search_doctors started actually returning
+        found=False instead of a silent full-roster browse."""
+        for block in sql_rows or []:
+            meta = block.get("meta") or {}
+            if meta.get("authoritative_summary") and (block.get("summary") or "").strip():
+                return True
+        return False
+
     def _run_sql(
         self,
         clinic: Any,
@@ -1140,6 +1180,8 @@ class ChatEngine:
         clinic: Any,
         message: str,
         timings: dict[str, Any],
+        symptom_hint: str = "",
+        category_hint: str = "",
     ) -> tuple[list[dict[str, Any]], str]:
         from apps.chatbot.booking.config import get_booking_config
         from apps.chatbot.booking.discovery import suggest_specialties
@@ -1148,7 +1190,9 @@ class ChatEngine:
         if not cfg.get("ai_discovery"):
             return [], ""
         t0 = time.perf_counter()
-        suggested, guidance = suggest_specialties(clinic, message=message)
+        suggested, guidance = suggest_specialties(
+            clinic, message=message, reason=symptom_hint, category_hint=category_hint
+        )
         timings["discovery_ms"] = (time.perf_counter() - t0) * 1000
         return suggested or [], guidance or ""
 
@@ -1260,10 +1304,32 @@ class ChatEngine:
                     timings["degraded_reason"] = "empty_vector_sql_fallback"
                     return f"{sql_text}\n\n{booking_text}" if booking_text else sql_text
 
-                from apps.chatbot.response_llm import empty_rag_reply
+                # Live-confirmed bug: a bare symptom mention ("i have kidney
+                # stones") gets classified MEDICAL_QUESTION, which sets
+                # doc_match=True whenever the clinic has ANY document
+                # uploaded (planner.py), routing here even though soft_medical
+                # is also true and the clinic's actual documents (typically a
+                # membership/policy contract, not a symptom glossary) were
+                # never going to mention it. Falling straight to the generic
+                # empty_rag_reply threw away the deterministic+category
+                # symptom->specialty resolution chain entirely -- this clinic
+                # HAS doctors and may well have a matching specialty, but the
+                # patient was told to go read "our documents" instead.
+                if soft_medical:
+                    entities = getattr(nlu, "entities", None)
+                    symptom_hint = _first_entity_value(getattr(entities, "symptom", None))
+                    category_hint = _first_entity_value(
+                        getattr(entities, "specialty_category_hint", None)
+                    )
+                    grounded = self._soft_medical_reply(
+                        clinic, message, symptom_hint, category_hint
+                    )
+                    timings["degraded_reason"] = "empty_vector_soft_medical_fallback"
+                else:
+                    from apps.chatbot.response_llm import empty_rag_reply
 
-                grounded = empty_rag_reply(clinic)
-                timings["degraded_reason"] = "empty_vector"
+                    grounded = empty_rag_reply(clinic)
+                    timings["degraded_reason"] = "empty_vector"
                 if booking_text:
                     return f"{grounded}\n\n{booking_text}"
                 return grounded
@@ -1304,8 +1370,19 @@ class ChatEngine:
 
         if exec_plan.sql_tasks:
             sql_text = format_sql_results(sql_rows)
-            if soft_medical and not self._sql_found(sql_rows):
-                sql_text = self._soft_medical_reply(clinic, message)
+            if (
+                soft_medical
+                and not self._sql_found(sql_rows)
+                and not self._has_authoritative_summary(sql_rows)
+            ):
+                entities = getattr(nlu, "entities", None)
+                symptom_hint = _first_entity_value(getattr(entities, "symptom", None))
+                category_hint = _first_entity_value(
+                    getattr(entities, "specialty_category_hint", None)
+                )
+                sql_text = self._soft_medical_reply(
+                    clinic, message, symptom_hint, category_hint
+                )
             if booking_text:
                 return f"{sql_text}\n\n{booking_text}" if sql_text else booking_text
             return sql_text

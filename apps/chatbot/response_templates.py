@@ -43,35 +43,37 @@ _TEMPLATES: dict[str, str] = {
     "THANKS": (
         "Happy to help! Is there anything else I can assist you with?"
     ),
-    # Off-topic — gentle redirect
+    # Off-topic — gentle redirect. Deliberately does NOT assert the topic
+    # is unrelated to the clinic (low-confidence off_topic classifications
+    # include garbled clinical terms, e.g. "boone fracture" — a likely typo
+    # for "bone fracture" — that ARE clinic-relevant but didn't parse; a
+    # flat "that's not something I handle" is simply wrong there). Instead:
+    # own the miss, invite a rephrase toward what's actually supported.
     "OFF_TOPIC": (
-        "I'm here to assist with clinic-related questions — things like "
-        "appointments, doctors, services, or insurance. "
-        "Is there something along those lines I can help you with?"
+        "I couldn't quite match that to something I can help with. Could "
+        "you rephrase it, or ask about appointments, doctors, services, "
+        "or insurance?"
     ),
     "OFF_TOPIC_PHONE": (
-        "Sounds like that's a phone issue — I'm only able to help with "
-        "clinic matters. Would you like help booking an appointment or "
-        "finding a doctor?"
+        "That sounds like a phone or tech question — I can only help with "
+        "clinic matters like appointments or finding a doctor. Want help "
+        "with either of those?"
     ),
     "OFF_TOPIC_SPORTS": (
-        "That's a fun topic, but I'm only able to help with clinic-related "
-        "questions. Is there anything I can help you with regarding your "
-        "health or an appointment?"
+        "I can't help with sports, but I can with your care — booking an "
+        "appointment, finding a doctor, or clinic info. Need any of those?"
     ),
     "OFF_TOPIC_FOOD": (
-        "Ha — I'm not a food expert! I can, however, help you find a "
-        "doctor or book an appointment. Would you like help with that?"
+        "I'm not able to help with food questions, but I can help you "
+        "find a doctor or book an appointment. Want help with either?"
     ),
     "OFF_TOPIC_TRAVEL": (
-        "Sounds like a great trip idea! I'm only able to help with "
-        "clinic-related things, though — like appointments, doctors, or "
-        "insurance. Need anything along those lines?"
+        "I can't help with travel plans, but I can with appointments, "
+        "doctors, or insurance here at the clinic. Need any of those?"
     ),
     "OFF_TOPIC_ENTERTAINMENT": (
-        "Nice taste! Unfortunately I can only help with clinic-related "
-        "questions. Would you like to book an appointment or look up "
-        "a doctor?"
+        "I can't help with that, but I can with clinic things — booking "
+        "an appointment or finding a doctor. Would either help?"
     ),
     # Abusive / aggressive language
     "ABUSIVE_LANGUAGE": (
@@ -95,10 +97,15 @@ _TEMPLATES: dict[str, str] = {
         "I'm not able to provide emergency mental-health support — please "
         "reach out to a professional right away."
     ),
-    # Clarify — uses LLM-generated question as fallback
+    # Clarify — uses LLM-generated question as fallback. Fires when the
+    # classifier's confidence is too low to trust a guessed intent (see
+    # routing/confidence.py's VERY_LOW band) — the system genuinely doesn't
+    # know what was asked, so "tell me more" is honest here, not a dodge.
+    # Give concrete categories rather than a bare "more about what you're
+    # looking for" — something to complete the thought with.
     "CLARIFY_GENERIC": (
-        "I want to make sure I help you correctly — could you tell me a bit "
-        "more about what you're looking for?"
+        "I want to point you the right way — could you tell me if this is "
+        "about booking, a doctor, a service, or clinic info?"
     ),
     # Booking — acknowledge intent; the wizard is the next step (never claim
     # times/slots are "below" unless availability SQL actually returned them).
