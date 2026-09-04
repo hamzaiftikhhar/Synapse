@@ -32,6 +32,47 @@ export type ParsedChatResponse = {
   bookingUpdate?: BookingUpdate | null;
 };
 
+function normalizeNotice(text: string): string {
+  return text.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+/** Skip yellow system banner when it just repeats the assistant reply (emergency). */
+function shouldAppendSafetyBanner(
+  safetyMessage: string | null | undefined,
+  responseText: string | null | undefined,
+  existingMessages: ChatMessage[]
+): boolean {
+  const safety = (safetyMessage || "").trim();
+  if (!safety) return false;
+  const normalizedSafety = normalizeNotice(safety);
+  const response = (responseText || "").trim();
+  if (response && normalizeNotice(response) === normalizedSafety) {
+    return false;
+  }
+  return !existingMessages.some(
+    (m) =>
+      (m.type === "text" || m.type === "system") &&
+      typeof m.content === "string" &&
+      normalizeNotice(m.content) === normalizedSafety
+  );
+}
+
+function appendSafetyBanner(
+  messages: ChatMessage[],
+  safetyMessage: string | null | undefined,
+  responseText: string | null | undefined,
+  now: string
+) {
+  if (!shouldAppendSafetyBanner(safetyMessage, responseText, messages)) return;
+  messages.push({
+    id: uid("safe"),
+    role: "system",
+    type: "system",
+    content: safetyMessage!.trim(),
+    createdAt: now,
+  });
+}
+
 function mapMetaMessage(
   m: Record<string, unknown>,
   index: number,
@@ -292,15 +333,7 @@ export function parseChatResponse(
       mapMetaMessage(m, i, role)
     );
     attachActionsToLastAssistantMessage(messages, contextualActions);
-    if (res.safety_message) {
-      messages.push({
-        id: uid("safe"),
-        role: "system",
-        type: "system",
-        content: res.safety_message,
-        createdAt: now,
-      });
-    }
+    appendSafetyBanner(messages, res.safety_message, res.response, now);
     return { messages, contextualActions };
   }
 
@@ -323,16 +356,7 @@ export function parseChatResponse(
 
   const bookingUpdate = appendMetaComponents(messages, meta, role, now);
   attachActionsToLastAssistantMessage(messages, contextualActions);
-
-  if (res.safety_message) {
-    messages.push({
-      id: uid("safe"),
-      role: "system",
-      type: "system",
-      content: res.safety_message,
-      createdAt: now,
-    });
-  }
+  appendSafetyBanner(messages, res.safety_message, res.response, now);
 
   return { messages, contextualActions, bookingUpdate };
 }

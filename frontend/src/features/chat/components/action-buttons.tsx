@@ -28,7 +28,7 @@ const ICONS: Record<string, LucideIcon> = {
 };
 
 const chipBase =
-  "synapse-chat-chip inline-flex items-center gap-2 rounded-full border border-border bg-card px-3.5 py-2.5 text-sm font-medium";
+  "synapse-chat-chip inline-flex items-center gap-2 rounded-full border border-border bg-card px-4 py-2.5 text-sm font-medium";
 
 function ActionChipButton({
   action,
@@ -50,7 +50,7 @@ function ActionChipButton({
       onClick={onClick}
       className={cn(
         chipBase,
-        size === "sm" && "px-3 py-2 text-xs gap-1.5",
+        size === "sm" && "px-3.5 py-2 text-xs gap-1.5",
         isEmergency
           ? "border-red-300 text-red-700 hover:bg-red-50"
           : filled
@@ -178,7 +178,7 @@ export function ButtonChips({
 }) {
   if (!buttons.length) return null;
   return (
-    <div className="flex flex-wrap gap-2">
+    <div className="mt-2.5 flex flex-wrap gap-2 pl-9">
       {buttons.map((b) => (
         <ActionChipButton
           key={b.id}

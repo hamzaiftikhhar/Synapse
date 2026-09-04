@@ -21,8 +21,8 @@ export function TextMessage({
 
   if (isSystem) {
     return (
-      <div className="synapse-chat-msg flex justify-center py-1">
-        <p className="max-w-[95%] rounded-xl border border-amber-200/80 bg-amber-50 px-3 py-2 text-center text-xs text-amber-900">
+      <div className="synapse-chat-msg flex justify-start py-1 pl-9">
+        <p className="max-w-[min(100%,28rem)] rounded-xl border border-amber-200/80 bg-amber-50 px-3.5 py-2.5 text-left text-xs leading-relaxed text-amber-900">
           {message.content}
         </p>
       </div>
