@@ -69,3 +69,39 @@ class SpecialtyCrudTests(TestCase):
             f"/api/v1/specialties/{created['id']}", headers=other_headers
         )
         self.assertEqual(resp.status_code, 404)
+
+    def test_valid_category_is_saved(self):
+        resp = self.client.post(
+            "/api/v1/specialties",
+            data={"name": "General Dentistry", "category": "Dentistry"},
+            content_type="application/json",
+            headers=self.headers,
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        self.assertEqual(resp.json()["category"], "Dentistry")
+
+    def test_invalid_category_rejected(self):
+        resp = self.client.post(
+            "/api/v1/specialties",
+            data={"name": "Something", "category": "Not A Real Category"},
+            content_type="application/json",
+            headers=self.headers,
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_category_can_be_updated(self):
+        created = self.client.post(
+            "/api/v1/specialties",
+            data={"name": "Heart Clinic"},
+            content_type="application/json",
+            headers=self.headers,
+        ).json()
+        self.assertEqual(created["category"], "")
+        resp = self.client.patch(
+            f"/api/v1/specialties/{created['id']}",
+            data={"category": "Cardiology"},
+            content_type="application/json",
+            headers=self.headers,
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()["category"], "Cardiology")

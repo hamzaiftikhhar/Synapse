@@ -32,6 +32,7 @@ def create_specialty(
     name: str,
     slug: str = "",
     description: str = "",
+    category: str = "",
     is_active: bool = True,
 ) -> Specialty:
     if not name.strip():
@@ -41,5 +42,6 @@ def create_specialty(
         name=name.strip(),
         slug=unique_slug(clinic.id, slug or name),
         description=description,
+        category=category,
         is_active=is_active,
     )
