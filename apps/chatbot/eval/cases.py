@@ -544,6 +544,57 @@ def build_eval_cases(*, target: int = 520) -> list[EvalCase]:
         tags=("adversarial", "compound"),
         limit=4,
     )
+    # Phase 2 (multi-intent coverage): the NLU prompt's compound rule names
+    # insurance+booking (above), doctor+availability, pricing+service, and
+    # hours+location as example categories that must never "silently answer
+    # only one half." Each category below is split into an _explicit case
+    # (an "and is/are/do" connector _COMPOUND_RE already recognizes) and an
+    # _comma case (a natural comma-joined phrasing with no such connector) --
+    # verified via direct execution before writing expected_lane, not
+    # guessed. Where a case fails today, that is the documented finding,
+    # not a mistake in the test: see ROADMAP.md for the two root causes.
+    add(
+        "adversarial_compound_doctor_availability",
+        "clarify",
+        ["tell me about Dr Lee and is he available friday"],
+        tags=("adversarial", "compound"),
+        limit=4,
+    )
+    add(
+        "adversarial_compound_doctor_bio",
+        "clarify",
+        ["who is your best dentist and are they free tomorrow"],
+        tags=("adversarial", "compound"),
+        limit=4,
+    )
+    add(
+        "adversarial_compound_pricing_explicit",
+        "clarify",
+        ["how much is a cleaning and do you also do whitening"],
+        tags=("adversarial", "compound"),
+        limit=4,
+    )
+    add(
+        "adversarial_compound_pricing_comma",
+        "clarify",
+        ["whats the cost of a filling, do you offer root canals too"],
+        tags=("adversarial", "compound"),
+        limit=4,
+    )
+    add(
+        "adversarial_compound_hours_explicit",
+        "clarify",
+        ["what time do you open and where are you located"],
+        tags=("adversarial", "compound"),
+        limit=4,
+    )
+    add(
+        "adversarial_compound_hours_comma",
+        "clarify",
+        ["are you open sunday and whats your address"],
+        tags=("adversarial", "compound"),
+        limit=4,
+    )
 
     # Pad to target with systematic paraphrases of core SQL intents
     if len(cases) < target:
