@@ -7,6 +7,7 @@ from django.utils import timezone
 from ninja import Query, Router
 from ninja.errors import HttpError
 
+from core.care_categories import CareCategory
 from apps.api.auth.deps import clinic_from, jwt_auth
 from apps.api.common.schemas import MessageOut, PaginatedOut
 from apps.api.specialties.schemas import SpecialtyIn, SpecialtyOut, SpecialtyUpdateIn
@@ -18,6 +19,15 @@ from apps.specialties.services.specialty_service import unique_slug as _unique_s
 
 router = Router(tags=["Specialties"])
 
+_VALID_CATEGORIES = {c.value for c in CareCategory}
+
+
+def _validate_category(category: str | None) -> None:
+    if category and category not in _VALID_CATEGORIES:
+        raise HttpError(
+            400, f"Invalid category. Choose from: {sorted(_VALID_CATEGORIES)}"
+        )
+
 
 def _serialize(specialty: Specialty) -> SpecialtyOut:
     return SpecialtyOut(
@@ -25,6 +35,7 @@ def _serialize(specialty: Specialty) -> SpecialtyOut:
         name=specialty.name,
         slug=specialty.slug,
         description=specialty.description,
+        category=specialty.category,
         is_active=specialty.is_active,
         is_deleted=specialty.is_deleted,
         created_at=specialty.created_at,
@@ -69,11 +80,13 @@ def create_specialty(request, payload: SpecialtyIn):
     clinic = clinic_from(request)
     if not payload.name.strip():
         raise HttpError(400, "Specialty name is required")
+    _validate_category(payload.category)
     specialty = create_specialty_row(
         clinic=clinic,
         name=payload.name,
         slug=payload.slug,
         description=payload.description,
+        category=payload.category,
         is_active=payload.is_active,
     )
     return 201, _serialize(specialty)
@@ -89,6 +102,8 @@ def update_specialty(request, specialty_id: UUID, payload: SpecialtyUpdateIn):
     clinic = clinic_from(request)
     specialty = _get_specialty(clinic.id, specialty_id)
     data = payload.dict(exclude_unset=True)
+    if "category" in data:
+        _validate_category(data["category"])
     if "slug" in data and data["slug"]:
         data["slug"] = _unique_slug(clinic.id, data["slug"], exclude_id=specialty.id)
     elif "name" in data and not specialty.slug:

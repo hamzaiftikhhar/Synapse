@@ -7,6 +7,7 @@ from django.utils import timezone
 from ninja import Query, Router
 from ninja.errors import HttpError
 
+from core.care_categories import CareCategory
 from apps.api.auth.deps import clinic_from, jwt_auth
 from apps.api.common.schemas import MessageOut, PaginatedOut
 from apps.api.services.schemas import ServiceIn, ServiceOut, ServiceUpdateIn
@@ -14,6 +15,15 @@ from apps.services.models import Service
 from apps.services.services.service_service import create_service as create_service_row
 
 router = Router(tags=["Services"])
+
+_VALID_CATEGORIES = {c.value for c in CareCategory}
+
+
+def _validate_category(category: str | None) -> None:
+    if category and category not in _VALID_CATEGORIES:
+        raise HttpError(
+            400, f"Invalid category. Choose from: {sorted(_VALID_CATEGORIES)}"
+        )
 
 
 def _serialize(service: Service) -> ServiceOut:
@@ -72,6 +82,7 @@ def list_services(
 
 @router.post("", response={201: ServiceOut}, auth=jwt_auth)
 def create_service(request, payload: ServiceIn):
+    _validate_category(payload.category)
     data = payload.dict()
     data["metadata"] = data.get("metadata") or {}
     service = create_service_row(clinic=clinic_from(request), **data)
@@ -86,7 +97,10 @@ def get_service(request, service_id: UUID):
 @router.patch("/{service_id}", response=ServiceOut, auth=jwt_auth)
 def update_service(request, service_id: UUID, payload: ServiceUpdateIn):
     service = _get_service(clinic_from(request).id, service_id)
-    for field, value in payload.dict(exclude_unset=True).items():
+    data = payload.dict(exclude_unset=True)
+    if "category" in data:
+        _validate_category(data["category"])
+    for field, value in data.items():
         setattr(service, field, value)
     service.save()
     return _serialize(service)
