@@ -16,7 +16,7 @@ from typing import Any
 
 from apps.chatbot.nlu.schemas import Intent, NLUResult, Route
 from apps.chatbot.routing.lanes import Lane
-from apps.chatbot.routing.signals import is_view_appointments_request
+from apps.chatbot.routing.signals import is_unresolved_compound, is_view_appointments_request
 
 # ── Capability tables (Python source of truth) ───────────────────────────────
 
@@ -901,13 +901,25 @@ def build_execution_plan(*, nlu: NLUResult, facts: PlannerFacts) -> ExecutionPla
         if intent in _VECTOR_INTENTS:
             add_vector(_vector_task_for_intent(intent, message, topic))
 
-    if facts.doctor_availability_query:
+    # Live-confirmed (Phase 2 eval slice): none of these four sensors are
+    # gated by NLU's own confidence, so without this guard each would
+    # confidently force a single SQL task onto a message NLU itself
+    # couldn't resolve into one intent -- silently dropping whichever half
+    # of a genuinely compound question the sensor didn't happen to match.
+    # See routing/signals.py::is_unresolved_compound's docstring.
+    unresolved_compound = is_unresolved_compound(nlu, message)
+
+    if facts.doctor_availability_query and not unresolved_compound:
         add_sql("availability")
         sql_tasks = [t for t in sql_tasks if t != "hours"]
         if "doctors" in sql_tasks and "availability" in sql_tasks:
             sql_tasks = [t for t in sql_tasks if t != "doctors"]
 
-    if facts.urgent_availability and "availability" not in sql_tasks:
+    if (
+        facts.urgent_availability
+        and "availability" not in sql_tasks
+        and not unresolved_compound
+    ):
         add_sql("availability")
 
     # A booking-intent turn that names a day/time must always have
@@ -929,7 +941,7 @@ def build_execution_plan(*, nlu: NLUResult, facts: PlannerFacts) -> ExecutionPla
         if date_v not in (None, "", [], ()) or time_v not in (None, "", [], ()):
             add_sql("availability")
 
-    if facts.specialty_list:
+    if facts.specialty_list and not unresolved_compound:
         add_sql("specialties")
         # Prefer specialties over services dump for specialty browse
         if "services" in sql_tasks and nlu.intent in {
@@ -941,7 +953,7 @@ def build_execution_plan(*, nlu: NLUResult, facts: PlannerFacts) -> ExecutionPla
             if "specialties" not in sql_tasks:
                 sql_tasks.insert(0, "specialties")
 
-    if facts.service_list and not facts.specialty_list:
+    if facts.service_list and not facts.specialty_list and not unresolved_compound:
         add_sql("services")
 
     # Policy / membership / cancel-fee / billing → vector (not catalog pricing)

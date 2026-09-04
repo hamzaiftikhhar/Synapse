@@ -17,6 +17,7 @@ from apps.chatbot.routing.signals import (
     is_specialty_list_query,
     is_transactional_booking,
     is_typo_book_request,
+    is_unresolved_compound,
     looks_like_about_service,
     looks_like_knowledge_question,
     match_services_in_message,
@@ -275,8 +276,11 @@ def apply_routing_heuristics(
             needs_llm = True
             needs_sql = False
             clarification_needed = False
-        elif filter_mode == "named" and matched_services and (
-            is_price_or_duration_query(message) or looks_like_about_service(message)
+        elif (
+            filter_mode == "named"
+            and matched_services
+            and (is_price_or_duration_query(message) or looks_like_about_service(message))
+            and not is_unresolved_compound(nlu, message)
         ):
             intent = (
                 Intent.PRICING

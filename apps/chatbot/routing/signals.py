@@ -6,6 +6,8 @@ import re
 from typing import Any
 
 from apps.chatbot.nlu.emergency_patterns import SYMPTOM_CUE_RE as _SYMPTOM_CUE_RE
+from apps.chatbot.nlu.entity_extract import looks_like_compound
+from apps.chatbot.nlu.schemas import Intent, NLUResult
 
 # Question / info-seeking frames (any clinic)
 _INFORMATIONAL_RE = re.compile(
@@ -516,6 +518,25 @@ def is_doctor_availability_query(message: str) -> bool:
 
 def is_urgent_availability_request(message: str) -> bool:
     return bool(_URGENT_AVAILABILITY_RE.search(message or ""))
+
+
+def is_unresolved_compound(nlu: NLUResult, message: str) -> bool:
+    """True when NLU never settled on a single intent AND the message
+    structurally asks two+ different things.
+
+    The shared guard for every deterministic sensor/heuristic that would
+    otherwise confidently force a single-intent SQL task onto a message
+    NLU itself couldn't resolve -- live-confirmed (Phase 2 eval slice) that
+    without it, `is_doctor_availability_query`/`specialty_list`/
+    `service_list`/the named-service+price heuristic each silently answer
+    only one half of a compound question instead of falling back to
+    clarify, precisely the failure `nlu/prompts.py`'s own compound rule
+    warns against. Deliberately narrow: a single-topic, low-confidence
+    message (still `UNKNOWN` but NOT compound) is untouched by this check,
+    so today's legitimate low-confidence rescue behavior for those keeps
+    working exactly as before.
+    """
+    return nlu.intent == Intent.UNKNOWN and looks_like_compound(message)
 
 
 def mentions_doctor_with_temporal(message: str) -> bool:
