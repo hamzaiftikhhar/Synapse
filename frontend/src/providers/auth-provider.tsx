@@ -178,6 +178,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [qc]
   );
 
+  /** Drop every cached tenant-scoped response and re-seed `/auth/me`.
+   *
+   * Tenant-scoped queries (doctors, appointments, analytics, …) are keyed
+   * without a clinic dimension — they rely on the `X-Tenant-ID` header alone.
+   * `invalidateQueries()` keeps showing the *previous* clinic's data as a
+   * placeholder until the refetch lands, which is exactly the "switch didn't
+   * take until I clicked something else" bug. Cancel in-flight fetches for
+   * the old tenant, clear the cache, then put the fresh me payload back so
+   * remounted pages fetch against the new header with an empty slate.
+   */
+  const resetTenantScopedCache = useCallback(
+    async (me: {
+      user: User;
+      clinic: Clinic | null;
+      tenant: string | null;
+      tenants: Tenant[];
+      can_exit_clinic: boolean;
+    }) => {
+      await qc.cancelQueries();
+      qc.clear();
+      qc.setQueryData(queryKeys.me, me);
+    },
+    [qc]
+  );
+
   const selectTenant = useCallback(async (slug: string) => {
     const data = await authService.selectTenant(slug);
     applyTokenResponse(data, {
@@ -187,15 +212,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setTenants,
       setCanExitClinic,
     });
-    // Every tenant-scoped query (doctors, appointments, services, widget
-    // settings, ...) is keyed without a clinic/tenant dimension — it relies
-    // entirely on the X-Tenant-ID header sent per-request. Switching tenant
-    // changes that header but leaves any already-cached response in place,
-    // so without this the dashboard keeps showing the *previous* tenant's
-    // data until something else happens to trigger a refetch.
-    void qc.invalidateQueries();
+    await resetTenantScopedCache({
+      user: data.user,
+      clinic: data.clinic,
+      tenant: data.tenant ?? data.clinic?.slug ?? slug,
+      tenants: data.tenants ?? [],
+      can_exit_clinic: data.user.role === "SUPER_ADMIN" && Boolean(data.clinic),
+    });
     return data;
-  }, [qc]);
+  }, [resetTenantScopedCache]);
 
   const enterClinic = useCallback(async (slug: string) => {
     const data = await authService.enterClinic(slug);
@@ -206,16 +231,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setTenants,
       setCanExitClinic,
     });
-    qc.setQueryData(queryKeys.me, {
+    await resetTenantScopedCache({
       user: data.user,
       clinic: data.clinic,
-      tenant: data.tenant,
+      tenant: data.tenant ?? data.clinic?.slug ?? slug,
       tenants: data.tenants ?? [],
       can_exit_clinic: true,
     });
-    void qc.invalidateQueries();
     return data;
-  }, [qc]);
+  }, [resetTenantScopedCache]);
 
   const exitClinic = useCallback(async () => {
     const data = await authService.exitClinic();
@@ -226,15 +250,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setTenants,
       setCanExitClinic,
     });
-    qc.setQueryData(queryKeys.me, {
+    await resetTenantScopedCache({
       user: data.user,
       clinic: null,
       tenant: null,
       tenants: data.tenants ?? [],
       can_exit_clinic: false,
     });
-    void qc.invalidateQueries();
-  }, [qc]);
+  }, [resetTenantScopedCache]);
 
   const logout = useCallback(() => {
     markExplicitLogout();
