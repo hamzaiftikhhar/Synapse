@@ -13,6 +13,14 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { CARE_CATEGORIES } from "@/constants";
 import { ImportTriggerButton } from "@/features/importer/import-trigger-button";
 import { ensureDoctorCatalogLinks } from "@/features/onboarding/doctor-catalog-links";
 import { ProviderAssignmentChips } from "@/features/onboarding/provider-assignment";
@@ -40,6 +48,8 @@ function formatPrice(cents: number | null) {
   if (cents == null) return null;
   return `$${(cents / 100).toFixed(2)}`;
 }
+
+const NO_CATEGORY = "none";
 
 type ServiceForm = {
   name: string;
@@ -350,12 +360,28 @@ export function ServicesStep({ onNext }: OnboardingStepProps) {
               <Label htmlFor="service-category">
                 Category <span className="font-normal text-muted-foreground">(optional)</span>
               </Label>
-              <Input
-                id="service-category"
-                value={form.category}
-                onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))}
-                placeholder="e.g. Cosmetic Dermatology"
-              />
+              <Select
+                value={form.category || NO_CATEGORY}
+                onValueChange={(next) =>
+                  setForm((f) => ({ ...f, category: next && next !== NO_CATEGORY ? next : "" }))
+                }
+                items={[
+                  { value: NO_CATEGORY, label: "No category" },
+                  ...CARE_CATEGORIES.map((c) => ({ value: c, label: c })),
+                ]}
+              >
+                <SelectTrigger id="service-category" className="w-full">
+                  <SelectValue placeholder="No category" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NO_CATEGORY}>No category</SelectItem>
+                  {CARE_CATEGORIES.map((c) => (
+                    <SelectItem key={c} value={c}>
+                      {c}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setOpen(false)}>

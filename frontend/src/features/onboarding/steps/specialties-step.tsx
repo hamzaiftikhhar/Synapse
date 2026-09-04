@@ -13,7 +13,15 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { CARE_CATEGORIES } from "@/constants";
 import { ensureDoctorCatalogLinks } from "@/features/onboarding/doctor-catalog-links";
 import { ImportTriggerButton } from "@/features/importer/import-trigger-button";
 import { ProviderAssignmentChips } from "@/features/onboarding/provider-assignment";
@@ -33,12 +41,15 @@ import { useAuth } from "@/providers/auth-provider";
 import type { Specialty } from "@/types/api";
 import { ONBOARDING_FORM_ID, type OnboardingStepProps } from "../steps";
 
+const NO_CATEGORY = "none";
+
 type SpecialtyForm = {
   name: string;
   description: string;
+  category: string;
 };
 
-const EMPTY_FORM: SpecialtyForm = { name: "", description: "" };
+const EMPTY_FORM: SpecialtyForm = { name: "", description: "", category: "" };
 
 export function SpecialtiesStep({ onNext, onDataPresenceChange }: OnboardingStepProps) {
   const { clinic } = useAuth();
@@ -74,14 +85,18 @@ export function SpecialtiesStep({ onNext, onDataPresenceChange }: OnboardingStep
 
   function openCreate(name = "") {
     setEditing(null);
-    setForm({ name, description: "" });
+    setForm({ name, description: "", category: "" });
     setNameError("");
     setOpen(true);
   }
 
   function openEdit(specialty: Specialty) {
     setEditing(specialty);
-    setForm({ name: specialty.name, description: specialty.description ?? "" });
+    setForm({
+      name: specialty.name,
+      description: specialty.description ?? "",
+      category: specialty.category ?? "",
+    });
     setNameError("");
     setOpen(true);
   }
@@ -107,6 +122,7 @@ export function SpecialtiesStep({ onNext, onDataPresenceChange }: OnboardingStep
     const payload = {
       name: form.name.trim(),
       description: form.description.trim(),
+      category: form.category,
     };
     try {
       if (editing) {
@@ -314,6 +330,34 @@ export function SpecialtiesStep({ onNext, onDataPresenceChange }: OnboardingStep
                 onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
                 placeholder="A short note patients might see — you can leave this blank."
               />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="specialty-category">
+                Category{" "}
+                <span className="font-normal text-muted-foreground">(optional)</span>
+              </Label>
+              <Select
+                value={form.category || NO_CATEGORY}
+                onValueChange={(next) =>
+                  setForm((f) => ({ ...f, category: next && next !== NO_CATEGORY ? next : "" }))
+                }
+                items={[
+                  { value: NO_CATEGORY, label: "No category" },
+                  ...CARE_CATEGORIES.map((c) => ({ value: c, label: c })),
+                ]}
+              >
+                <SelectTrigger id="specialty-category" className="w-full">
+                  <SelectValue placeholder="No category" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NO_CATEGORY}>No category</SelectItem>
+                  {CARE_CATEGORIES.map((c) => (
+                    <SelectItem key={c} value={c}>
+                      {c}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setOpen(false)}>
