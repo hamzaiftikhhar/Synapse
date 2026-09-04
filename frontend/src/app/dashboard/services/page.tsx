@@ -24,6 +24,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Table,
   TableBody,
   TableCell,
@@ -31,6 +38,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { CARE_CATEGORIES } from "@/constants";
 import {
   useCreateService,
   useDeleteService,
@@ -40,11 +48,14 @@ import {
 import { getApiErrorMessage } from "@/lib/api/client";
 import type { Service } from "@/types/api";
 
+const NO_CATEGORY = "none";
+
 const schema = z.object({
   name: z.string().min(1),
   description: z.string().optional(),
   duration_min: z.coerce.number().min(5),
   price_dollars: z.string().optional(),
+  category: z.string().optional(),
   is_active: z.boolean(),
 });
 
@@ -70,13 +81,21 @@ export default function ServicesPage() {
       description: "",
       duration_min: 30,
       price_dollars: "",
+      category: "",
       is_active: true,
     },
   });
 
   function openCreate() {
     setEditing(null);
-    form.reset({ name: "", description: "", duration_min: 30, price_dollars: "", is_active: true });
+    form.reset({
+      name: "",
+      description: "",
+      duration_min: 30,
+      price_dollars: "",
+      category: "",
+      is_active: true,
+    });
     setOpen(true);
   }
 
@@ -87,6 +106,7 @@ export default function ServicesPage() {
       description: s.description,
       duration_min: s.duration_min,
       price_dollars: s.price_cents != null ? (s.price_cents / 100).toFixed(2) : "",
+      category: s.category ?? "",
       is_active: s.is_active,
     });
     setOpen(true);
@@ -100,6 +120,7 @@ export default function ServicesPage() {
       description: values.description ?? "",
       duration_min: values.duration_min,
       price_cents,
+      category: values.category ?? "",
       is_active: values.is_active,
     };
     try {
@@ -170,6 +191,7 @@ export default function ServicesPage() {
             <TableHeader>
               <TableRow>
                 <TableHead>Name</TableHead>
+                <TableHead>Category</TableHead>
                 <TableHead>Duration</TableHead>
                 <TableHead>Price</TableHead>
                 <TableHead>Status</TableHead>
@@ -180,6 +202,9 @@ export default function ServicesPage() {
               {rows.map((s) => (
                 <TableRow key={s.id}>
                   <TableCell className="font-medium">{s.name}</TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {s.category || "—"}
+                  </TableCell>
                   <TableCell>{s.duration_min} min</TableCell>
                   <TableCell>{formatPrice(s.price_cents)}</TableCell>
                   <TableCell>
@@ -227,6 +252,38 @@ export default function ServicesPage() {
                 <Label>Price (USD)</Label>
                 <Input {...form.register("price_dollars")} placeholder="150.00" />
               </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label>
+                Category <span className="font-normal text-muted-foreground">(optional)</span>
+              </Label>
+              <Select
+                value={form.watch("category") || NO_CATEGORY}
+                onValueChange={(next) =>
+                  form.setValue("category", next && next !== NO_CATEGORY ? next : "")
+                }
+                items={[
+                  { value: NO_CATEGORY, label: "No category" },
+                  ...CARE_CATEGORIES.map((c) => ({ value: c, label: c })),
+                ]}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="No category" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NO_CATEGORY}>No category</SelectItem>
+                  {CARE_CATEGORIES.map((c) => (
+                    <SelectItem key={c} value={c}>
+                      {c}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Standardizes this service against a shared list — helps the
+                chatbot match patient concerns even when your own naming
+                doesn&apos;t.
+              </p>
             </div>
             <label className="flex items-center gap-2 text-sm">
               <Checkbox

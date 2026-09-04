@@ -21,6 +21,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Table,
   TableBody,
   TableCell,
@@ -28,6 +35,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { CARE_CATEGORIES } from "@/constants";
 import {
   useCreateSpecialty,
   useDeleteSpecialty,
@@ -37,13 +45,21 @@ import {
 import { getApiErrorMessage } from "@/lib/api/client";
 import type { Specialty } from "@/types/api";
 
+const NO_CATEGORY = "none";
+
 type FormState = {
   name: string;
   description: string;
+  category: string;
   is_active: boolean;
 };
 
-const EMPTY_FORM: FormState = { name: "", description: "", is_active: true };
+const EMPTY_FORM: FormState = {
+  name: "",
+  description: "",
+  category: "",
+  is_active: true,
+};
 
 export default function SpecialtiesPage() {
   const [search, setSearch] = useState("");
@@ -68,7 +84,12 @@ export default function SpecialtiesPage() {
 
   function openEdit(s: Specialty) {
     setEditing(s);
-    setForm({ name: s.name, description: s.description, is_active: s.is_active });
+    setForm({
+      name: s.name,
+      description: s.description,
+      category: s.category,
+      is_active: s.is_active,
+    });
     setNameError("");
     setOpen(true);
   }
@@ -154,6 +175,7 @@ export default function SpecialtiesPage() {
             <TableHeader>
               <TableRow>
                 <TableHead>Name</TableHead>
+                <TableHead>Category</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="w-24" />
               </TableRow>
@@ -162,6 +184,9 @@ export default function SpecialtiesPage() {
               {rows.map((s) => (
                 <TableRow key={s.id}>
                   <TableCell className="font-medium">{s.name}</TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {s.category || "—"}
+                  </TableCell>
                   <TableCell>
                     <Badge variant="secondary">{s.is_active ? "Active" : "Inactive"}</Badge>
                   </TableCell>
@@ -204,6 +229,36 @@ export default function SpecialtiesPage() {
                 value={form.description}
                 onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
               />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Category</Label>
+              <Select
+                value={form.category || NO_CATEGORY}
+                onValueChange={(next) =>
+                  setForm((f) => ({ ...f, category: next && next !== NO_CATEGORY ? next : "" }))
+                }
+                items={[
+                  { value: NO_CATEGORY, label: "No category" },
+                  ...CARE_CATEGORIES.map((c) => ({ value: c, label: c })),
+                ]}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="No category" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NO_CATEGORY}>No category</SelectItem>
+                  {CARE_CATEGORIES.map((c) => (
+                    <SelectItem key={c} value={c}>
+                      {c}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Standardizes this specialty against a shared list — helps the
+                chatbot match patient concerns even when your own naming
+                doesn&apos;t.
+              </p>
             </div>
             <label className="flex items-center gap-2 text-sm">
               <Checkbox
