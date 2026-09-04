@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Plus } from "lucide-react";
 import { PageHeader } from "@/components/dashboard/page-header";
@@ -28,6 +27,7 @@ import { usePlatformClinics } from "@/hooks/api";
 import { platformService } from "@/services";
 import { getApiErrorMessage } from "@/lib/api/client";
 import { useAuth } from "@/providers/auth-provider";
+import { useWorkspaceHandoff } from "@/providers/workspace-handoff-provider";
 import { useRequireSuperAdmin } from "@/features/platform/use-require-super-admin";
 import { formatWhen } from "@/features/platform/format";
 import { StatusPill } from "@/features/platform/status-pill";
@@ -37,7 +37,7 @@ import { queryKeys } from "@/hooks/api";
 export default function PlatformClinicsPage() {
   const { allowed, ready } = useRequireSuperAdmin();
   const { clinic, tenant, enterClinic, exitClinic, canExitClinic } = useAuth();
-  const router = useRouter();
+  const { beginHandoff } = useWorkspaceHandoff();
   const qc = useQueryClient();
   const [search, setSearch] = useState("");
   const [q, setQ] = useState("");
@@ -60,12 +60,24 @@ export default function PlatformClinicsPage() {
   async function enter(slug: string, status: string) {
     setBusySlug(slug);
     try {
-      const data = await enterClinic(slug);
-      toast.success(`Entered ${data.clinic?.name ?? slug}`);
-      router.push(status === "onboarding" ? "/onboarding" : "/dashboard");
+      await beginHandoff({
+        label: "Opening clinic workspace",
+        href: status === "onboarding" ? "/onboarding" : "/dashboard",
+        navigation: "soft",
+        run: async () => {
+          const data = await enterClinic(slug);
+          const dest =
+            (data.clinic?.status ?? status) === "onboarding"
+              ? "/onboarding"
+              : "/dashboard";
+          return {
+            href: dest,
+            successToast: `Entered ${data.clinic?.name ?? slug}`,
+          };
+        },
+      });
     } catch (err) {
       toast.error(getApiErrorMessage(err));
-    } finally {
       setBusySlug(null);
     }
   }
@@ -73,12 +85,15 @@ export default function PlatformClinicsPage() {
   async function exit() {
     setBusySlug(activeSlug);
     try {
-      await exitClinic();
-      toast.success("Back on the platform");
-      await reload();
+      await beginHandoff({
+        label: "Returning to platform",
+        href: "/dashboard/platform",
+        successToast: "Back on the platform",
+        navigation: "soft",
+        run: () => exitClinic(),
+      });
     } catch (err) {
       toast.error(getApiErrorMessage(err));
-    } finally {
       setBusySlug(null);
     }
   }
