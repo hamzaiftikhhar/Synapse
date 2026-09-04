@@ -4,31 +4,34 @@ import { useEffect, type ReactNode } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "@/providers/auth-provider";
 import { isExplicitLogout } from "@/lib/auth-redirect";
+import { peekHandoffActive } from "@/lib/workspace-handoff";
+import { WorkspaceLoader } from "@/components/auth/workspace-loader";
+import { useWorkspaceHandoffOptional } from "@/providers/workspace-handoff-provider";
 
 export function ProtectedRoute({ children }: { children: ReactNode }) {
   const { isAuthenticated, isLoading } = useAuth();
+  const handoff = useWorkspaceHandoffOptional();
   const router = useRouter();
   const pathname = usePathname();
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
+      // Hard handoff (logout / switch) owns navigation — don't soft-replace under it.
+      if (handoff?.active || peekHandoffActive()) return;
       if (isExplicitLogout()) {
         router.replace("/login");
         return;
       }
       router.replace(`/login?next=${encodeURIComponent(pathname)}`);
     }
-  }, [isAuthenticated, isLoading, pathname, router]);
+  }, [isAuthenticated, isLoading, pathname, router, handoff?.active]);
 
-  if (isLoading) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-muted/40">
-        <div className="flex flex-col items-center gap-3">
-          <div className="size-8 animate-spin rounded-[6px] border-2 border-primary border-t-transparent" />
-          <p className="text-sm text-muted-foreground">Loading workspace…</p>
-        </div>
-      </div>
-    );
+  if (isLoading || handoff?.active || peekHandoffActive()) {
+    // Handoff provider already paints the cover — never stack a second loader.
+    if (handoff?.active || peekHandoffActive()) {
+      return null;
+    }
+    return <WorkspaceLoader label="Preparing your workspace" />;
   }
 
   if (!isAuthenticated) return null;
