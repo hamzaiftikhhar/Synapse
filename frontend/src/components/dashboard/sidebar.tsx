@@ -183,8 +183,9 @@ export function DashboardSidebar({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
   const { clinic, user } = useAuth();
   const isSuper = user?.role === "SUPER_ADMIN";
-  const onPlatformRoute = pathname.startsWith("/dashboard/platform");
-  const showPlatformNav = isSuper && (!clinic || onPlatformRoute);
+  // Platform nav only when not entered into a clinic. `onPlatformRoute &&
+  // clinic` used to keep super-admin chrome after Enter — wrong.
+  const showPlatformNav = isSuper && !clinic;
   const nav = showPlatformNav ? PLATFORM_NAV : DASHBOARD_NAV;
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
 

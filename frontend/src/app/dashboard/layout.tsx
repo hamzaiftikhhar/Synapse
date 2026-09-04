@@ -26,6 +26,15 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
       return;
     }
 
+    // Entered into a clinic → leave platform chrome for the clinic workspace.
+    // Staying on /dashboard/platform/* while clinic is set left the
+    // workspace switcher showing the clinic but the sidebar still on
+    // super-admin nav (Enter looked like a no-op).
+    if (isSuper && clinic && onPlatform) {
+      router.replace(clinic.status === "onboarding" ? "/onboarding" : "/dashboard");
+      return;
+    }
+
     // Clinic staff must pick a tenant before any /dashboard route — login
     // without clinic_slug issues a JWT with no clinic, so landing here
     // via ?next=/dashboard would 400 every tenant-scoped API.
@@ -34,19 +43,22 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    // Unfinished clinic setup → resume onboarding. Super Admin impersonating
-    // an onboarding clinic follows the same path so they can test setup
-    // without the owner's credentials. Platform routes stay reachable so
-    // they can still switch or exit.
-    if (clinic && clinic.status !== "active" && !onPlatform && !onProfile) {
+    // Unfinished clinic setup → resume onboarding.
+    if (clinic && clinic.status !== "active" && !onProfile) {
       router.replace("/onboarding");
     }
   }, [user, clinic, isLoading, pathname, router]);
 
+  // Remount the whole clinic chrome when the active tenant changes. Soft
+  // navigations to the same `/dashboard` route are a no-op in the App Router,
+  // so without this key the previous clinic's pages keep their local state
+  // (and any residual query observers) until the user clicks elsewhere.
+  const workspaceKey = clinic?.slug ?? (user?.role === "SUPER_ADMIN" ? "platform" : "none");
+
   return (
     <DashboardThemeProvider>
       <DashboardWidgetProvider>
-        <div className="flex min-h-screen">
+        <div key={workspaceKey} className="flex min-h-screen">
           <div className="hidden lg:block">
             <div className="sticky top-0 h-screen">
               <DashboardSidebar />
