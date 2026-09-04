@@ -65,6 +65,30 @@ def services_offered(ctx: SQLContext) -> SQLResult:
             matched_ids = ctx.resolved_service_ids or _match_services_strict(ctx)
             if matched_ids:
                 qs = qs.filter(id__in=matched_ids)
+            elif ctx.nlu.entities.symptom:
+                # Neither a hardcoded category phrase nor the strict
+                # name-token fallback found anything -- try the same
+                # symptom-to-canonical-category resolution chain
+                # doctors.py already uses (_SYMPTOM_MAP keyword -> category
+                # -> exact match, falling back to the NLU's constrained
+                # specialty_category_hint only when no keyword hit at all).
+                # Without this, a category-mode question that's actually a
+                # bare symptom ("what service would help with my tooth
+                # pain") fell through to "no filter" above -- every active
+                # service, not services related to the concern.
+                from apps.chatbot.booking.discovery import (
+                    resolve_symptom_service_ids,
+                    symptom_no_match_result,
+                )
+
+                resolution = resolve_symptom_service_ids(ctx.clinic, ctx.nlu, ctx.message)
+                if resolution is not None:
+                    if resolution.matched_ids:
+                        qs = qs.filter(id__in=resolution.matched_ids)
+                    else:
+                        return symptom_no_match_result(
+                            "services_offered", resolution, kind="service"
+                        )
     elif ctx.nlu.resolved_ids.service_id:
         qs = qs.filter(id=ctx.nlu.resolved_ids.service_id)
     elif ctx.nlu.entities.service and mode != "none":
@@ -110,8 +134,15 @@ def services_offered(ctx: SQLContext) -> SQLResult:
         summary = f"{s['name']} is {s['price']}{dur}."
     elif rows:
         summary = f"Services offered: {', '.join(r['name'] for r in rows[:5])}."
+    elif mode == "none":
+        # A filterless browse returned nothing — the clinic has no active
+        # services configured at all, not "your search missed."
+        summary = "This clinic hasn't listed any bookable services yet. Please contact the clinic directly."
     else:
-        summary = "No services found."
+        # A named/category search came up empty against a real catalog —
+        # say that specifically rather than the blunt, undifferentiated
+        # "No services found." this used to say for every empty case alike.
+        summary = "I couldn't find a service matching that. Ask me to list all our services if you'd like to see what's available."
     return SQLResult(
         handler="services_offered",
         found=bool(rows),

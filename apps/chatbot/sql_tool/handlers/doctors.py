@@ -97,6 +97,12 @@ def search_doctors(ctx: SQLContext) -> SQLResult:
         if names:
             qs = qs.filter(build_name_filter("full_name", names))
 
+    # A doctor was explicitly named ("does Dr Lee treat cardiac issues") —
+    # keep filtering by that doctor regardless of whether their symptom
+    # also maps to a specialty; only a bare, doctor-less symptom mention
+    # should trigger the honest "we don't have that" path below.
+    doctor_named = bool(doctor_ids) or bool(entity_list(nlu.entities.doctor_name))
+
     specialty_ids = entity_ids(nlu.resolved_ids.specialty_id)
     if specialty_ids:
         qs = qs.filter(doctor_specialties__specialty_id__in=specialty_ids).distinct()
@@ -105,6 +111,20 @@ def search_doctors(ctx: SQLContext) -> SQLResult:
         if specs:
             q = build_name_filter("specialties__name", specs)
             qs = qs.filter(q).distinct()
+        elif not doctor_named:
+            from apps.chatbot.booking.discovery import (
+                resolve_symptom_specialty_ids,
+                symptom_no_match_result,
+            )
+
+            resolution = resolve_symptom_specialty_ids(clinic, nlu, ctx.message)
+            if resolution is not None:
+                if resolution.matched_ids:
+                    qs = qs.filter(
+                        doctor_specialties__specialty_id__in=resolution.matched_ids
+                    ).distinct()
+                else:
+                    return symptom_no_match_result("search_doctors", resolution, kind="doctor")
 
     # Same principle for a service named only to anchor a pricing/services
     # clause elsewhere in the message — live-confirmed without this guard:
@@ -230,16 +250,46 @@ def doctor_availability(ctx: SQLContext) -> SQLResult:
         if names:
             doctor_qs = doctor_qs.filter(build_name_filter("full_name", names))
 
+    doctor_named = bool(doctor_ids) or bool(entity_list(nlu.entities.doctor_name))
+
     specialty_ids = entity_ids(nlu.resolved_ids.specialty_id)
+    symptom_resolution = None
     if specialty_ids:
         doctor_qs = doctor_qs.filter(doctor_specialties__specialty_id__in=specialty_ids).distinct()
     else:
         specs = entity_list(nlu.entities.specialty)
         if specs:
             doctor_qs = doctor_qs.filter(build_name_filter("specialties__name", specs)).distinct()
+        elif not doctor_named:
+            # Same fix as search_doctors: a bare symptom ("cardiac doctor
+            # available tomorrow") must not silently check availability
+            # for every doctor at the clinic regardless of specialty.
+            from apps.chatbot.booking.discovery import (
+                resolve_symptom_specialty_ids,
+                symptom_no_match_result,
+            )
 
-    doctors = list(doctor_qs[:5])
+            resolution = resolve_symptom_specialty_ids(clinic, nlu, ctx.message)
+            if resolution is not None:
+                if resolution.matched_ids:
+                    doctor_qs = doctor_qs.filter(
+                        doctor_specialties__specialty_id__in=resolution.matched_ids
+                    ).distinct()
+                else:
+                    symptom_resolution = resolution
+
+    doctors = [] if symptom_resolution else list(doctor_qs[:5])
     if not doctors:
+        if symptom_resolution is not None:
+            no_match = symptom_no_match_result(
+                "doctor_availability", symptom_resolution, kind="doctor"
+            )
+            return SQLResult(
+                handler="doctor_availability",
+                found=False,
+                summary=no_match.summary,
+                meta={**scope.as_meta(), "target_date": scope.start.isoformat(), **no_match.meta},
+            )
         return SQLResult(
             handler="doctor_availability",
             found=False,

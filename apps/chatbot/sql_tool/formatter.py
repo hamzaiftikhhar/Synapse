@@ -142,7 +142,19 @@ def format_sql_results(results: list[dict[str, Any]]) -> str:
 
         if handler == "search_doctors":
             if not found or not rows:
-                parts.append(EMPTY_DOCTORS)
+                # Same rule as doctor_availability just above: when the
+                # handler resolved the request and has something specific to
+                # say (e.g. "we don't have a specialist for that here"),
+                # that wins over the generic placeholder -- live-confirmed
+                # regression once search_doctors started actually returning
+                # found=False for an unmatched symptom instead of silently
+                # browsing every doctor: this unconditional substitution was
+                # discarding that honest answer for a vaguer one.
+                meta = block.get("meta") or {}
+                if summary and meta.get("authoritative_summary"):
+                    parts.append(summary)
+                else:
+                    parts.append(EMPTY_DOCTORS)
                 continue
             # Text stays a short preview regardless of how many cards render
             # below (cards are the actual browse surface) — but when there
@@ -174,9 +186,14 @@ def format_sql_results(results: list[dict[str, Any]]) -> str:
                     or "I couldn't find matching insurance plans in our records for that."
                 )
                 continue
-            # Named miss / mixed results already have an honest Yes/No summary.
-            # Browse (accepted-only) still uses the searchable card list intro.
-            if any(not row.get("is_accepted", True) for row in rows):
+            # Named miss / mixed results already have an honest Yes/No summary
+            # from the handler. A single accepted row is also a specific
+            # answer worth stating directly ("Yes — we accept Aetna."), not
+            # just a card nudge — only a genuine multi-provider browse (no
+            # specific ask, several accepted rows) keeps the searchable
+            # card-list intro instead of repeating names already about to
+            # render as cards.
+            if len(rows) == 1 or any(not row.get("is_accepted", True) for row in rows):
                 parts.append(summary or "We currently don't accept that plan.")
             else:
                 parts.append("Search your plan below.")
@@ -184,10 +201,17 @@ def format_sql_results(results: list[dict[str, Any]]) -> str:
 
         if handler == "services_offered":
             if not rows:
-                parts.append(summary or "I couldn't find services for that request.")
+                parts.append(summary or "I couldn't find services matching that.")
                 continue
-            # Cards render the list — keep prose minimal for patients
-            parts.append("Pick a service below.")
+            # A single specific match is a direct answer worth stating (the
+            # handler's own summary already names it, with price/duration)
+            # — only a genuine multi-service browse keeps prose minimal and
+            # lets the cards do the work, since repeating every name in text
+            # right above the same names as cards is pure redundancy.
+            if len(rows) == 1 and summary:
+                parts.append(summary)
+            else:
+                parts.append("Pick a service below.")
             continue
 
         if handler == "patient_appointments":
