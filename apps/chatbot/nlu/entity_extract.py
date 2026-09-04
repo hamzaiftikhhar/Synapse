@@ -155,8 +155,16 @@ _NEGATION_RE = re.compile(
 )
 
 _COMPOUND_RE = re.compile(
-    r"\b(and also|also tell|plus|in addition|as well as|and can|and do|"
-    r"and (?:what|where|when|who|how|which|why|is|are))\b",
+    r"\b(?:and also|also tell|plus|in addition|as well as|and can|and do)\b"
+    # "and is/are/what/..." plus a bare "s" (no apostrophe) for casual
+    # contractions -- "and whats your address" doesn't match a plain
+    # \bwhat\b (no boundary before the attached "s"), live-confirmed to
+    # silently defeat compound detection for real patient phrasing.
+    r"|\band (?:what|where|when|who|how|which|why|is|are)'?s?\b"
+    # Comma-joined second question with no "and" at all -- "...cost of a
+    # filling, do you offer root canals too" -- also live-confirmed to
+    # slip through as a single, confidently-matched intent.
+    r"|,\s*(?:do|does|is|are|can|will|whats|wheres|whens|what's|where's|when's)\b",
     re.IGNORECASE,
 )
 

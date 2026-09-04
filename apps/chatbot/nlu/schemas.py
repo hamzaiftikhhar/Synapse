@@ -7,7 +7,10 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any
 
+from core.care_categories import CareCategory
 from apps.chatbot.nlu.timings import NLUTimings
+
+VALID_CARE_CATEGORIES = frozenset(c.value for c in CareCategory)
 
 
 class Intent(str, Enum):
@@ -81,6 +84,7 @@ ENTITY_KEYS = (
     "location",
     "symptom",
     "language",
+    "specialty_category_hint",
 )
 
 # Fields that may be a single string or a list of strings
@@ -112,6 +116,14 @@ class ExtractedEntities:
     # "Spanish", "Punjabi") — resolved against ISO 639-1 codes in
     # nlu/languages.py, never a per-language routing rule (see search_doctors).
     language: list[str] | str | None = None
+    # Fallback-only semantic guess at which core.care_categories.CareCategory
+    # a described symptom/concern maps to, used by
+    # booking/discovery.py::resolve_symptom_specialty_ids ONLY when the
+    # deterministic _SYMPTOM_MAP has no keyword hint at all for the message
+    # (see that function's docstring for the full resolution order).
+    # Constrained to the canonical category list -- parse_nlu_payload nulls
+    # out anything that isn't an exact match, never trusting free text here.
+    specialty_category_hint: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -226,6 +238,13 @@ def parse_nlu_payload(
             for key in ENTITY_KEYS
         }
     )
+    # Defensive, not just prompt discipline: never trust the model to have
+    # actually stayed inside the canonical category list -- anything else
+    # (typo, invented category, stray free text) is nulled out here rather
+    # than silently reaching an exact-match comparison downstream that
+    # would just never match and mask the mistake.
+    if entities.specialty_category_hint not in VALID_CARE_CATEGORIES:
+        entities.specialty_category_hint = None
 
     confidence = data.get("confidence", 0.0)
     try:
