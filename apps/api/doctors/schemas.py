@@ -61,3 +61,10 @@ class DoctorScheduleIn(Schema):
     end_time: time
     slot_duration_min: int = 30
     is_active: bool = True
+
+
+class AvailableSlotOut(Schema):
+    id: str
+    start: str
+    end: str
+    label: str

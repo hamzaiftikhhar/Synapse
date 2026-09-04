@@ -13,6 +13,7 @@ from ninja.errors import HttpError
 from apps.api.auth.deps import clinic_from, jwt_auth
 from apps.api.common.schemas import MessageOut, PaginatedOut
 from apps.api.doctors.schemas import (
+    AvailableSlotOut,
     DoctorIn,
     DoctorOut,
     DoctorScheduleIn,
@@ -219,3 +220,42 @@ def update_doctor_schedule(request, doctor_id: UUID, payload: list[DoctorSchedul
         clinic=clinic, doctor=doctor
     ).order_by("day_of_week", "start_time")
     return [_serialize_schedule(r) for r in rows]
+
+
+@router.get(
+    "/{doctor_id}/available-slots", response=list[AvailableSlotOut], auth=jwt_auth
+)
+def get_doctor_available_slots(
+    request,
+    doctor_id: UUID,
+    date: str = Query(...),
+    exclude_appointment_id: UUID | None = Query(None),
+):
+    """Real bookable slots for one doctor on one day — schedule minus leave,
+    minus already-booked appointments. Powers the staff dashboard's manual
+    "New appointment" dialog, which previously only showed a doctor's
+    recurring weekly hours as text with no actual availability/conflict
+    check at all (a real, confirmed double-booking gap — see ROADMAP.md).
+    Reuses the same slot-computation core the patient-facing chatbot
+    booking flow already relies on, rather than a second implementation.
+    """
+    from datetime import date as date_cls
+
+    from apps.chatbot.booking.slots import compute_slots_for_day
+
+    clinic = clinic_from(request)
+    doctor = _get_doctor(clinic.id, doctor_id)
+    try:
+        target_date = date_cls.fromisoformat(date)
+    except ValueError:
+        raise HttpError(400, "date must be YYYY-MM-DD") from None
+    slots = compute_slots_for_day(
+        clinic,
+        target_date=target_date,
+        doctors=[doctor],
+        exclude_appointment_id=exclude_appointment_id,
+    )
+    return [
+        AvailableSlotOut(id=s["id"], start=s["start"], end=s["end"], label=s["label"])
+        for s in slots
+    ]
