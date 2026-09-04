@@ -86,11 +86,16 @@ def compute_slots_for_day(
     doctors: Iterable[Any],
     max_slots: int = 40,
     excluded_keys: set[str] | None = None,
+    exclude_appointment_id: Any | None = None,
 ) -> list[dict[str, Any]]:
     """Expand one day's DoctorSchedule into bookable slots, excluding leave,
     already-booked appointments, and any `excluded_keys` (e.g. active holds).
 
     `excluded_keys` entries are `f"{doctor_id}|{slot_start_isoformat}"`.
+    `exclude_appointment_id`: when editing an existing appointment in place,
+    that appointment's own row must not make its own current slot look
+    "booked" -- callers editing an appointment pass its id here so its slot
+    still appears selectable.
     """
     from apps.appointments.models import Appointment, AppointmentStatus
     from apps.doctors.models import DoctorLeave, DoctorSchedule
@@ -114,20 +119,23 @@ def compute_slots_for_day(
         if on_leave:
             continue
 
+        booked_qs = Appointment.objects.filter(
+            clinic=clinic,
+            doctor=doctor,
+            start_time__gte=day_start,
+            start_time__lte=day_end,
+            status__in=[
+                AppointmentStatus.PENDING,
+                AppointmentStatus.CONFIRMED,
+                AppointmentStatus.COMPLETED,
+                AppointmentStatus.NO_SHOW,
+            ],
+        )
+        if exclude_appointment_id:
+            booked_qs = booked_qs.exclude(id=exclude_appointment_id)
         booked = {
             appt.astimezone(tz).replace(second=0, microsecond=0)
-            for appt in Appointment.objects.filter(
-                clinic=clinic,
-                doctor=doctor,
-                start_time__gte=day_start,
-                start_time__lte=day_end,
-                status__in=[
-                    AppointmentStatus.PENDING,
-                    AppointmentStatus.CONFIRMED,
-                    AppointmentStatus.COMPLETED,
-                    AppointmentStatus.NO_SHOW,
-                ],
-            ).values_list("start_time", flat=True)
+            for appt in booked_qs.values_list("start_time", flat=True)
         }
 
         schedule_rows = [
