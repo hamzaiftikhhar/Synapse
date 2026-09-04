@@ -13,6 +13,7 @@ import {
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { useAuth } from "@/providers/auth-provider";
+import { useWorkspaceHandoff } from "@/providers/workspace-handoff-provider";
 import { roleLabel } from "@/features/platform/format";
 
 function displayName(first?: string | null, last?: string | null, email?: string | null) {
@@ -31,14 +32,24 @@ function initials(first?: string | null, last?: string | null, email?: string | 
 
 export function AccountMenu() {
   const { user, clinic, canExitClinic, logout } = useAuth();
+  const { beginHandoff } = useWorkspaceHandoff();
   const router = useRouter();
   const isSuper = user?.role === "SUPER_ADMIN";
   const inClinicAsSuper = isSuper && Boolean(clinic) && canExitClinic;
   const name = displayName(user?.first_name, user?.last_name, user?.email);
 
   function handleLogout() {
-    logout();
-    router.replace("/login");
+    void beginHandoff({
+      label: "Signing you out",
+      href: "/login",
+      run: async () => {
+        logout();
+      },
+    }).catch(() => {
+      // beginHandoff only throws if run throws; logout is sync.
+      logout();
+      window.location.assign("/login");
+    });
   }
 
   const workspaceLine = inClinicAsSuper
