@@ -13,6 +13,7 @@ from apps.chatbot.nlu.schemas import ExtractedEntities, Intent, NLUResult, Resol
 from apps.chatbot.sql_tool import SQLContext, SQLTool, format_sql_results
 from apps.chatbot.sql_tool.handlers import (
     clinic_hours,
+    doctor_availability,
     insurance_accepted,
     list_specialties,
     patient_appointments,
@@ -165,6 +166,49 @@ class SearchDoctorsTests(SQLToolTestBase):
         self.assertTrue(result.found)
         self.assertIn("Cardiology", result.rows[0]["specialties"])
 
+    def test_bare_symptom_resolves_to_matching_specialty(self):
+        """Live-confirmed bug: a bare symptom mention (no named specialty/
+        doctor) used to apply no filter at all, silently returning every
+        active doctor at the clinic regardless of relevance. entities.symptom
+        should resolve through the same concern->specialty matching
+        suggest_specialties() already uses, same as the real NLU output for
+        "am asking about the doctor related to cardiac"."""
+        ctx = SQLContext(
+            clinic=self.clinic,
+            nlu=_nlu(Intent.DOCTOR_SEARCH, entities=ExtractedEntities(symptom="cardiac")),
+        )
+        result = search_doctors(ctx)
+        self.assertTrue(result.found)
+        self.assertEqual(result.rows[0]["full_name"], "Dr. Hamza Ali")
+
+    def test_bare_symptom_with_no_matching_specialty_is_honest_not_a_full_browse(self):
+        """The clinic fixture has no eye/vision specialty -- must say so,
+        not silently return the Cardiology/General Practice doctor as if
+        vision were a good fit."""
+        ctx = SQLContext(
+            clinic=self.clinic,
+            nlu=_nlu(Intent.DOCTOR_SEARCH, entities=ExtractedEntities(symptom="blurry vision")),
+        )
+        result = search_doctors(ctx)
+        self.assertFalse(result.found)
+        self.assertEqual(result.rows, [])
+        self.assertIn("don't have a specialist", result.summary)
+
+    def test_named_doctor_with_unrelated_symptom_still_searches_that_doctor(self):
+        """A doctor named alongside a symptom ("does Dr Hamza treat vision
+        issues") must keep searching that doctor -- the symptom mismatch
+        should not silently zero out an explicit doctor-name search."""
+        ctx = SQLContext(
+            clinic=self.clinic,
+            nlu=_nlu(
+                Intent.DOCTOR_SEARCH,
+                entities=ExtractedEntities(doctor_name="Hamza", symptom="blurry vision"),
+            ),
+        )
+        result = search_doctors(ctx)
+        self.assertTrue(result.found)
+        self.assertEqual(result.rows[0]["full_name"], "Dr. Hamza Ali")
+
 
 class SearchDoctorsLanguageTests(SQLToolTestBase):
     """Doctor.languages is catalog data (ISO 639-1 codes) — search_doctors
@@ -241,6 +285,54 @@ class SearchDoctorsLanguageTests(SQLToolTestBase):
         )
         result = search_doctors(ctx)
         self.assertFalse(result.found)
+
+
+class DoctorAvailabilityBareSymptomTests(SQLToolTestBase):
+    """Same fix as SearchDoctorsTests, applied to doctor_availability --
+    "is there a cardiac doctor available tomorrow" must not silently check
+    every doctor's availability regardless of specialty."""
+
+    def test_bare_symptom_resolves_to_matching_specialty(self):
+        ctx = SQLContext(
+            clinic=self.clinic,
+            nlu=_nlu(
+                Intent.DOCTOR_AVAILABILITY,
+                entities=ExtractedEntities(symptom="cardiac"),
+            ),
+            message="is there a cardiac doctor available tomorrow",
+        )
+        result = doctor_availability(ctx)
+        self.assertNotIn("don't have a specialist", result.summary)
+
+    def test_bare_symptom_with_no_matching_specialty_is_honest(self):
+        ctx = SQLContext(
+            clinic=self.clinic,
+            nlu=_nlu(
+                Intent.DOCTOR_AVAILABILITY,
+                entities=ExtractedEntities(symptom="blurry vision"),
+            ),
+            message="is there an eye doctor available tomorrow",
+        )
+        result = doctor_availability(ctx)
+        self.assertFalse(result.found)
+        self.assertIn("don't have a specialist", result.summary)
+
+    def test_unclassifiable_symptom_asks_targeted_clarification_not_decline(self):
+        """Not in _SYMPTOM_MAP and no NLU category-hint fallback -- must
+        ask what kind of specialist this is, not assert one isn't offered
+        (which would presume a category we never actually identified)."""
+        ctx = SQLContext(
+            clinic=self.clinic,
+            nlu=_nlu(
+                Intent.DOCTOR_AVAILABILITY,
+                entities=ExtractedEntities(symptom="a weird thing"),
+            ),
+            message="is there a doctor for a weird thing tomorrow",
+        )
+        result = doctor_availability(ctx)
+        self.assertFalse(result.found)
+        self.assertIn("not sure which kind of specialist", result.summary)
+        self.assertNotIn("don't have a specialist", result.summary)
 
 
 class ListSpecialtiesTests(SQLToolTestBase):
@@ -350,6 +442,35 @@ class ServicesTests(SQLToolTestBase):
         result = services_offered(ctx)
         self.assertTrue(result.found)
         self.assertEqual(result.rows[0]["name"], "Consultation")
+
+    def test_named_search_with_no_match_says_so_specifically(self):
+        """A specific ask that comes up empty against a real, non-empty
+        catalog gets copy naming that — not the old undifferentiated
+        "No services found." used for every empty case alike."""
+        nlu = NLUResult(
+            intent=Intent.SERVICES_OFFERED,
+            confidence=0.9,
+            entities=ExtractedEntities(service="Botox Injections"),
+            resolved_ids=ResolvedIds(),
+            needs_sql=True,
+            service_filter_mode="named",
+        )
+        ctx = SQLContext(clinic=self.clinic, nlu=nlu)
+        result = services_offered(ctx)
+        self.assertFalse(result.found)
+        self.assertIn("couldn't find a service matching that", result.summary)
+
+    def test_browse_with_no_services_at_all_says_not_configured(self):
+        """A filterless browse at a clinic with zero active services says
+        the clinic hasn't listed any yet, not that the search missed."""
+        empty_clinic = Clinic.objects.create(
+            slug="no-services-clinic", name="No Services Clinic",
+            email="none@clinic.com", phone="+12125550099", timezone="America/New_York",
+        )
+        ctx = SQLContext(clinic=empty_clinic, nlu=_nlu(Intent.SERVICES_OFFERED))
+        result = services_offered(ctx)
+        self.assertFalse(result.found)
+        self.assertIn("hasn't listed any bookable services yet", result.summary)
 
 
 class PatientAppointmentsTests(SQLToolTestBase):

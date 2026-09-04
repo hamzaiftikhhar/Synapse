@@ -102,6 +102,69 @@ class PlannerLayerTests(SimpleTestCase):
         self.assertEqual(plan.direct_mode, "prompt_injection_refusal")
 
 
+class CompoundRoutingGuardTests(SimpleTestCase):
+    """Phase 2 eval slice: is_unresolved_compound() (routing/signals.py)
+    guards four sensor-driven add_sql sites in build_execution_plan plus
+    one heuristics.py reclassification -- live-confirmed that without it,
+    a compound message NLU itself couldn't resolve (intent=unknown) still
+    got silently routed to a single-topic SQL answer, dropping whichever
+    half the sensor didn't happen to match. These tests lock in both
+    halves of that fix: compound+unknown must clarify, and a genuinely
+    single-topic unknown message must keep today's rescue behavior."""
+
+    def _plan(self, message: str, **overrides):
+        nlu = parse_nlu_payload({"intent": "unknown", "confidence": 0.5})
+        kwargs = dict(
+            nlu=nlu,
+            is_booking_intent=False,
+            soft_medical=False,
+            needs_vector=False,
+            doc_match=False,
+            has_catalog=True,
+            prefer_vector=False,
+            prefer_clarify=False,
+            degraded=False,
+            doctor_ranking_request=False,
+            instruction_injection=False,
+            unknown_doctor_requested=False,
+            message=message,
+        )
+        kwargs.update(overrides)
+        return choose_plan(**kwargs)
+
+    def test_compound_unresolved_message_does_not_force_doctor_availability_sql(self):
+        plan = self._plan(
+            "tell me about Dr Lee and is he available friday",
+            doctor_availability_query=True,
+        )
+        self.assertEqual(plan.execution_plan.sql_tasks, [])
+        self.assertEqual(plan.lane, Lane.CLARIFY)
+
+    def test_noncompound_unresolved_message_still_gets_availability_rescue(self):
+        plan = self._plan(
+            "is anyone free tmrw",
+            doctor_availability_query=True,
+        )
+        self.assertIn("availability", plan.execution_plan.sql_tasks)
+        self.assertEqual(plan.lane, Lane.SQL_FAST)
+
+    def test_compound_unresolved_message_does_not_force_specialty_list_sql(self):
+        plan = self._plan(
+            "what specialties do you have and is there parking",
+            specialty_list=True,
+        )
+        self.assertEqual(plan.execution_plan.sql_tasks, [])
+        self.assertEqual(plan.lane, Lane.CLARIFY)
+
+    def test_noncompound_unresolved_message_still_gets_specialty_list_rescue(self):
+        plan = self._plan(
+            "what specialties do you have",
+            specialty_list=True,
+        )
+        self.assertIn("specialties", plan.execution_plan.sql_tasks)
+        self.assertEqual(plan.lane, Lane.SQL_FAST)
+
+
 class FallbackOutTests(SimpleTestCase):
     def test_chat_api_fallback_is_degraded_clarify(self):
         out = _fallback_out()

@@ -8,6 +8,7 @@ from apps.chatbot.nlu.entity_extract import (
     extract_emergency_symptoms,
     extract_entities,
     has_symptom_cues,
+    looks_like_compound,
 )
 from apps.chatbot.nlu.intent_entity import IntentEntityService, _apply_confidence_threshold
 from apps.chatbot.nlu.json_utils import parse_json_response
@@ -708,3 +709,49 @@ class NLUTotalBudgetTests(SimpleTestCase):
         self.assertEqual(len(chain[1].timeouts), 5)
         self.assertEqual(len(chain[2].timeouts), 5)
         self.assertEqual(clock.now, clock_before, "no provider was actually called")
+
+
+class LooksLikeCompoundCoverageTests(SimpleTestCase):
+    """Phase 2 eval slice: _COMPOUND_RE missed real casual patient phrasing
+    -- an apostrophe-less contraction ("whats") right after "and" doesn't
+    match a plain \\bwhat\\b boundary, and a comma-joined second question
+    with no "and" at all wasn't covered by any alternative. Both were
+    live-confirmed to let a genuinely compound message get silently
+    resolved to a single intent (see routing/signals.py::
+    is_unresolved_compound and its callers). These lock in recognition
+    itself, independent of the downstream lane outcome, so a future
+    rewiring of the guard can't silently regress the detector while still
+    passing at the lane-eval level for the wrong reason."""
+
+    def test_and_contraction_without_apostrophe_is_recognized(self):
+        for msg in (
+            "are you open sunday and whats your address",
+            "tell me about Dr Lee and is he available friday",
+            "who is your best dentist and are they free tomorrow",
+        ):
+            with self.subTest(msg=msg):
+                self.assertTrue(looks_like_compound(msg))
+
+    def test_comma_joined_second_question_is_recognized(self):
+        self.assertTrue(
+            looks_like_compound("whats the cost of a filling, do you offer root canals too")
+        )
+
+    def test_same_category_conjunction_is_not_falsely_flagged(self):
+        for msg in ("Do you accept Aetna and Cigna?", "Do you accept Aetna or Blue Cross?"):
+            with self.subTest(msg=msg):
+                self.assertFalse(looks_like_compound(msg))
+
+    def test_dental_symptom_compound_queries_are_recognized(self):
+        """From ROADMAP.md's dental-vocabulary 30-query set (group F):
+        confirms the Phase 2 compound guard and the dental keyword fix
+        compose correctly -- a message that's both dental-symptom-shaped
+        AND compound must still be recognized as compound, so it clarifies
+        instead of the sensor-driven paths (specialty_list/service_list/
+        doctor_availability_query) silently locking onto just one half."""
+        for msg in (
+            "do you do whitening and is anyone free tomorrow",
+            "I have a cavity and also want to know your hours",
+        ):
+            with self.subTest(msg=msg):
+                self.assertTrue(looks_like_compound(msg))
