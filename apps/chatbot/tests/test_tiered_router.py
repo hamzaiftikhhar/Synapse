@@ -417,7 +417,12 @@ class SqlHonestyTests(SimpleTestCase):
         )
         self.assertEqual(text, EMPTY_AVAILABILITY)
 
-    def test_services_cards_use_minimal_prose(self):
+    def test_single_service_match_uses_specific_summary(self):
+        """A single, specific match (e.g. "do you have scaling") is a direct
+        answer worth stating — not just a content-free card nudge. Real
+        production complaint: "do you have scalling" got "Pick a service
+        below." with zero acknowledgment of the actual yes/price answer the
+        handler had already computed."""
         text = format_sql_results(
             [
                 {
@@ -430,7 +435,27 @@ class SqlHonestyTests(SimpleTestCase):
                             "duration_min": 60,
                         }
                     ],
-                    "summary": "ok",
+                    "summary": "Surgical Tooth Extraction is $350.00, about 60 minutes.",
+                }
+            ]
+        )
+        self.assertIn("Surgical Tooth Extraction is $350.00", text)
+        self.assertNotIn("Pick a service below.", text)
+
+    def test_multi_service_browse_still_uses_minimal_prose(self):
+        """Several results with no specific ask (a genuine browse) keeps
+        prose minimal — cards render the list; repeating every name in text
+        immediately above the same names as cards is pure redundancy."""
+        text = format_sql_results(
+            [
+                {
+                    "handler": "services_offered",
+                    "found": True,
+                    "rows": [
+                        {"name": "Monthly Examination", "price": "$80.00", "duration_min": 30},
+                        {"name": "Teeth Whitening", "price": "$200.00", "duration_min": 120},
+                    ],
+                    "summary": "Services offered: Monthly Examination, Teeth Whitening.",
                 }
             ]
         )

@@ -70,6 +70,26 @@ class StructuredRepliesTests(SimpleTestCase):
         self.assertIn("We currently don't accept Aetna (HMO)", text)
         self.assertNotIn("Search your plan below", text)
 
+    def test_single_accepted_insurance_match_uses_summary_not_search_prompt(self):
+        """A single named-provider match that IS accepted is a direct "Yes"
+        answer worth stating, not a content-free search prompt — distinct
+        from the genuine multi-provider browse case just below, which
+        deliberately keeps the search prompt (test_accepted_insurance_
+        browse_keeps_search_prompt)."""
+        text = format_sql_results(
+            [
+                {
+                    "handler": "insurance_accepted",
+                    "found": True,
+                    "summary": "Yes — we accept Aetna.",
+                    "rows": [
+                        {"provider_name": "Aetna", "is_accepted": True},
+                    ],
+                }
+            ]
+        )
+        self.assertEqual(text, "Yes — we accept Aetna.")
+
     def test_accepted_insurance_browse_keeps_search_prompt(self):
         text = format_sql_results(
             [
@@ -106,3 +126,38 @@ class StructuredRepliesTests(SimpleTestCase):
         self.assertIn("Fri 14 Aug, 12:00 AM", text)
         self.assertNotIn("T19:00:00", text)
         self.assertNotIn("+00:00", text)
+
+    def test_search_doctors_authoritative_not_found_summary_survives_formatting(self):
+        """Live-confirmed regression: search_doctors' honest "we don't have
+        a specialist for that" (meta.authoritative_summary, added when a
+        symptom matches no clinic specialty) used to be unconditionally
+        replaced by the generic EMPTY_DOCTORS constant here -- the same
+        rule doctor_availability already followed just above in this same
+        formatter function, search_doctors simply never had it."""
+        text = format_sql_results(
+            [
+                {
+                    "handler": "search_doctors",
+                    "found": False,
+                    "rows": [],
+                    "summary": "We don't have a specialist for that here.",
+                    "meta": {"authoritative_summary": True},
+                }
+            ]
+        )
+        self.assertEqual(text, "We don't have a specialist for that here.")
+
+    def test_search_doctors_non_authoritative_not_found_keeps_generic_copy(self):
+        """Without the flag, existing behavior (e.g. a name/language filter
+        that matched nothing) is unchanged -- generic EMPTY_DOCTORS copy."""
+        text = format_sql_results(
+            [
+                {
+                    "handler": "search_doctors",
+                    "found": False,
+                    "rows": [],
+                    "summary": "No matching doctors found.",
+                }
+            ]
+        )
+        self.assertIn("I couldn't find matching doctors for that", text)

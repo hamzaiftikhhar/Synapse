@@ -207,3 +207,46 @@ class BuildUiMetaSecondaryBookingIntegrationTests(SimpleTestCase):
         )
         ids = [a.get("id") for a in meta["actions"]]
         self.assertNotIn("book_secondary", ids)
+
+
+class BookingChipAlwaysPresentTests(SimpleTestCase):
+    """Explicit user decision: the Book Appointment chip is a constant,
+    always-available action regardless of ui_priority — previously
+    suppressed on informational answers, clarify turns, and emergency/
+    booking-flow turns (the "card-spam fix"), which meant most responses
+    showed no booking button at all. `book` in _CHIP_POLICY is now True
+    for every priority; the situational `smart` chip (Maps, etc.) stays
+    gated as before — this only changes the always-on Book chip."""
+
+    def _meta(self, *, ui_priority: str, is_emergency: bool = False):
+        nlu = _nlu(intent=Intent.FAQ, secondary_intents=[])
+        return build_ui_meta(
+            clinic=None,
+            intent=Intent.FAQ.value,
+            route="sql_only",
+            sql_results=[],
+            nlu=nlu,
+            ui_priority=ui_priority,
+            exec_plan_booking=False,
+            is_emergency=is_emergency,
+        )
+
+    def test_book_chip_present_on_informational_answer(self):
+        ids = [a.get("id") for a in self._meta(ui_priority="none")["actions"]]
+        self.assertIn("book", ids)
+
+    def test_book_chip_present_on_inline_answer(self):
+        ids = [a.get("id") for a in self._meta(ui_priority="inline")["actions"]]
+        self.assertIn("book", ids)
+
+    def test_book_chip_present_during_emergency(self):
+        """Book Appointment shows even on an emergency response — explicit
+        user decision, "no exceptions at all" — but must not duplicate the
+        dedicated 911/clinic-call buttons already in meta["buttons"]."""
+        meta = self._meta(ui_priority="emergency", is_emergency=True)
+        action_ids = [a.get("id") for a in meta["actions"]]
+        self.assertIn("book", action_ids)
+        self.assertNotIn("emergency", action_ids)
+        button_ids = [b.get("id") for b in meta.get("buttons", [])]
+        self.assertIn("emergency_call", button_ids)
+        self.assertEqual(button_ids.count("emergency_call"), 1)

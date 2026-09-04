@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from django.test import SimpleTestCase
 
-from apps.chatbot.response_templates import resolve_direct_template
+from apps.chatbot.response_templates import get_response, resolve_direct_template
 
 
 class OffTopicSubtypeTests(SimpleTestCase):
@@ -45,3 +45,29 @@ class OffTopicSubtypeTests(SimpleTestCase):
             "off_topic", "where should I eat tonight"
         )
         self.assertEqual(template_id, "OFF_TOPIC_FOOD")
+
+
+class OffTopicAndClarifyWordingTests(SimpleTestCase):
+    """Real production complaint: a garbled-but-clinic-relevant message
+    ("i want to book and boone fracture thing" — a likely typo for "bone
+    fracture") classified off_topic (correctly, given the confidence band —
+    this is NOT a routing bug) got a flat "I'm here to assist with
+    clinic-related questions" — asserting the topic itself is unrelated,
+    which is simply false for a garbled clinical term. The fix is wording
+    only: never claim the topic is unrelated, always invite a rephrase
+    toward what's actually supported."""
+
+    def test_off_topic_does_not_assert_the_topic_is_unrelated(self):
+        text = get_response("OFF_TOPIC")
+        for phrase in ("clinic-related questions", "only able to help", "I can only help"):
+            self.assertNotIn(phrase, text)
+
+    def test_off_topic_invites_a_rephrase(self):
+        text = get_response("OFF_TOPIC").lower()
+        self.assertIn("rephrase", text)
+
+    def test_clarify_generic_gives_concrete_categories_not_bare_tell_me_more(self):
+        text = get_response("CLARIFY_GENERIC")
+        self.assertNotIn("a bit more about what you're looking for", text)
+        for word in ("booking", "doctor", "service", "clinic"):
+            self.assertIn(word, text.lower())

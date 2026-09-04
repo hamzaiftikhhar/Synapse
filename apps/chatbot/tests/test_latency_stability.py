@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from unittest.mock import patch
 
-from django.test import SimpleTestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 
 from apps.chatbot.nlu.schemas import parse_nlu_payload
 from apps.chatbot.planner import ExecutionPlan, build_execution_plan, build_planner_facts
@@ -19,6 +19,7 @@ from apps.chatbot.routing.signals import (
     is_typo_book_request,
     is_view_appointments_request,
 )
+from apps.clinics.models import Clinic
 
 
 class CircuitBreakerTests(SimpleTestCase):
@@ -269,3 +270,70 @@ class ComposeFromPlanFallbackTests(SimpleTestCase):
             min_llm_remaining=2.0,
         )
         self.assertNotIn("couldn't find clinic-specific information", text)
+
+
+class ComposeFromPlanSoftMedicalFallbackTests(TestCase):
+    """Live-confirmed bug: "i have kidney stones" classifies as
+    MEDICAL_QUESTION, and planner.py's doc_match sets True whenever the
+    clinic has ANY document uploaded — routing to vector_rag even though
+    soft_medical is also true for this message. When vector search finds
+    nothing (the clinic's actual documents are typically a membership/
+    policy contract, not a symptom glossary), _compose_from_plan used to
+    always fall to the generic empty_rag_reply() "check our documents"
+    apology, completely bypassing the deterministic symptom->specialty
+    resolution chain three prior phases built — the clinic may well have a
+    matching specialty, but the patient was told to go read documents
+    instead. Must prefer the soft_medical reply here, the same fallback the
+    sibling sql_tasks branch a few lines below already gets right."""
+
+    def setUp(self):
+        self.clinic = Clinic.objects.create(
+            slug="soft-medical-fallback-clinic",
+            name="Soft Medical Fallback Clinic",
+            email="softmedicalfallback@clinic.com",
+            phone="+12125550013",
+            timezone="America/New_York",
+        )
+
+    def _compose(self, **overrides):
+        from apps.chatbot.engine import ChatEngine
+
+        nlu = parse_nlu_payload(
+            {"intent": "medical_question", "entities": {"symptom": "kidney stones"}}
+        )
+        kwargs = dict(
+            clinic=self.clinic,
+            message="i have kidney stones",
+            nlu=nlu,
+            exec_plan=ExecutionPlan(vector_tasks=["general_faq"], use_response_llm=True),
+            sql_rows=[],
+            vector_rows=[],
+            session=None,
+            booking_commit=False,
+            suggested=[],
+            guidance="",
+            soft_medical=True,
+            timings={},
+        )
+        kwargs.update(overrides)
+        return ChatEngine()._compose_from_plan(**kwargs)
+
+    def test_empty_vector_with_soft_medical_does_not_mention_documents(self):
+        text = self._compose()
+        self.assertNotIn("documents", text.lower())
+        self.assertNotIn("couldn't find clinic-specific information", text)
+
+    def test_empty_vector_with_soft_medical_offers_to_find_a_doctor(self):
+        text = self._compose()
+        self.assertIn("find a doctor", text.lower())
+
+    def test_empty_vector_without_soft_medical_still_uses_generic_apology(self):
+        """Non-symptom knowledge misses (e.g. a genuine FAQ with no matching
+        document) must keep the existing generic fallback — this fix is
+        scoped to soft_medical cases only, not every empty-vector result."""
+        text = self._compose(
+            message="what is your cancellation policy",
+            nlu=parse_nlu_payload({"intent": "faq", "entities": {}}),
+            soft_medical=False,
+        )
+        self.assertIn("clinic-specific information", text)
