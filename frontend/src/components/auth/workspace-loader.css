@@ -1,0 +1,147 @@
+/* Calm clinical SaaS boot — single visual for every transition. */
+
+.synapse-boot {
+  color: #0b0e2e;
+  background: #f5f6f8;
+}
+
+.synapse-boot[data-theme="dark"] {
+  color: #eef0f5;
+  background: #090b10;
+}
+
+.synapse-boot__wash {
+  background:
+    radial-gradient(ellipse 70% 50% at 50% 42%, rgba(91, 33, 182, 0.06), transparent 70%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.55) 0%, transparent 42%);
+}
+
+.synapse-boot[data-theme="dark"] .synapse-boot__wash {
+  background:
+    radial-gradient(ellipse 70% 50% at 50% 42%, rgba(167, 139, 250, 0.08), transparent 70%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03) 0%, transparent 42%);
+}
+
+/* No enter delay — cover must feel instant, not like a timed gate. */
+.synapse-boot__content {
+  opacity: 1;
+}
+
+.synapse-boot__glyph {
+  background: #ffffff;
+  border: 1px solid rgba(11, 14, 46, 0.08);
+  box-shadow:
+    0 1px 2px rgba(11, 14, 46, 0.04),
+    0 8px 24px -12px rgba(11, 14, 46, 0.18);
+}
+
+.synapse-boot[data-theme="dark"] .synapse-boot__glyph {
+  background: #12151e;
+  border-color: rgba(238, 240, 245, 0.08);
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.35),
+    0 10px 28px -14px rgba(0, 0, 0, 0.7);
+}
+
+.synapse-boot__letter {
+  color: #5b21b6;
+}
+
+.synapse-boot[data-theme="dark"] .synapse-boot__letter {
+  color: #c4b5fd;
+}
+
+.synapse-boot__ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  border: 1px solid rgba(91, 33, 182, 0.22);
+  pointer-events: none;
+}
+
+.synapse-boot[data-theme="dark"] .synapse-boot__ring {
+  border-color: rgba(196, 181, 253, 0.22);
+}
+
+.synapse-boot__ring--outer {
+  inset: -10px;
+  animation: synapse-boot-ring 2.4s ease-in-out infinite;
+}
+
+.synapse-boot__ring--inner {
+  inset: -5px;
+  opacity: 0.55;
+  animation: synapse-boot-ring 2.4s ease-in-out 0.35s infinite;
+}
+
+.synapse-boot__brand {
+  color: #0b0e2e;
+}
+
+.synapse-boot[data-theme="dark"] .synapse-boot__brand {
+  color: #f3f4f8;
+}
+
+.synapse-boot__label {
+  color: #6b6f8a;
+}
+
+.synapse-boot[data-theme="dark"] .synapse-boot__label {
+  color: #9aa0b5;
+}
+
+.synapse-boot__track {
+  background: rgba(91, 33, 182, 0.1);
+}
+
+.synapse-boot[data-theme="dark"] .synapse-boot__track {
+  background: rgba(196, 181, 253, 0.12);
+}
+
+.synapse-boot__bar {
+  background: #5b21b6;
+  animation: synapse-boot-bar 1.45s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+.synapse-boot[data-theme="dark"] .synapse-boot__bar {
+  background: #a78bfa;
+}
+
+@keyframes synapse-boot-ring {
+  0%,
+  100% {
+    transform: scale(0.92);
+    opacity: 0.35;
+  }
+  50% {
+    transform: scale(1.05);
+    opacity: 0.12;
+  }
+}
+
+@keyframes synapse-boot-bar {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(340%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .synapse-boot__ring--outer,
+  .synapse-boot__ring--inner,
+  .synapse-boot__bar {
+    animation: none !important;
+  }
+
+  .synapse-boot__ring {
+    opacity: 0.25;
+  }
+
+  .synapse-boot__bar {
+    width: 40%;
+    transform: none;
+    opacity: 0.55;
+  }
+}
