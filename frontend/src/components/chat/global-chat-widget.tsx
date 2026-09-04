@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { ChatWidget } from "@/features/chat/chat-widget";
 import { getActiveTenant } from "@/lib/api/client";
 import { useAuth } from "@/providers/auth-provider";
+import { useWorkspaceHandoff } from "@/providers/workspace-handoff-provider";
 import { WidgetProvider } from "@/providers/widget-provider";
 
 /**
@@ -19,6 +20,7 @@ import { WidgetProvider } from "@/providers/widget-provider";
 export function GlobalChatWidget() {
   const pathname = usePathname();
   const { clinic, isAuthenticated } = useAuth();
+  const { active: handoffActive } = useWorkspaceHandoff();
   // Re-read tenant when clinic context changes (super-admin "enter clinic").
   const [tenantSlug, setTenantSlug] = useState<string | null>(null);
 
@@ -29,7 +31,7 @@ export function GlobalChatWidget() {
   const isDashboard = pathname?.startsWith("/dashboard");
   const isEmbed = pathname?.startsWith("/embed/");
 
-  if (isEmbed) return null;
+  if (isEmbed || handoffActive) return null;
 
   const assistantMode = isDashboard && isAuthenticated ? "staff" : "marketing";
   const clinicSlug =
