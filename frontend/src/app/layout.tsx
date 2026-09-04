@@ -35,7 +35,15 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        {/* Paint handoff/boot bg before React hydrates so dark mode doesn't flash white. */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(function(){try{var h=sessionStorage.getItem("synapse_handoff_active");var t=localStorage.getItem("synapse-dashboard-theme");if(h||t==="dark"){document.documentElement.style.background=t==="dark"?"#0c0e14":"#f4f5fa";document.documentElement.style.colorScheme=t==="dark"?"dark":"light";}}catch(e){}})();`,
+          }}
+        />
+      </head>
       <body
         className={`${geistSans.variable} ${geistMono.variable} ${instrumentSerif.variable} font-sans antialiased`}
       >
