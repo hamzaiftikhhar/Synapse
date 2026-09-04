@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { useState, useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useAuth } from "@/providers/auth-provider";
+import { useWorkspaceHandoff } from "@/providers/workspace-handoff-provider";
 import { getApiErrorMessage } from "@/lib/api/client";
 import { pathAfterLogin, consumeExplicitLogout } from "@/lib/auth-redirect";
 import { APP_NAME } from "@/constants";
@@ -27,7 +28,7 @@ type FormValues = z.infer<typeof schema>;
 
 export function LoginForm() {
   const { login } = useAuth();
-  const router = useRouter();
+  const { beginHandoff } = useWorkspaceHandoff();
   const search = useSearchParams();
   const [submitting, setSubmitting] = useState(false);
 
@@ -49,19 +50,24 @@ export function LoginForm() {
     setSubmitting(true);
     try {
       const slug = values.clinic_slug?.trim() || undefined;
-      const data = await login(
-        {
-          email: values.email,
-          password: values.password,
-          clinic_slug: slug,
+      await beginHandoff({
+        label: "Signing you in",
+        href: "/dashboard",
+        successToast: "Welcome back",
+        run: async () => {
+          const data = await login(
+            {
+              email: values.email,
+              password: values.password,
+              clinic_slug: slug,
+            },
+            values.remember
+          );
+          return { href: pathAfterLogin(data, search.get("next")) };
         },
-        values.remember
-      );
-      toast.success("Welcome back");
-      router.replace(pathAfterLogin(data, search.get("next")));
+      });
     } catch (err) {
       toast.error(getApiErrorMessage(err));
-    } finally {
       setSubmitting(false);
     }
   }
