@@ -165,7 +165,11 @@ AUTH_USER_MODEL = "accounts.User"
 from corsheaders.defaults import default_headers
 
 CORS_ALLOW_CREDENTIALS = True
-CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[])
+# .strip(): env.list() does not trim whitespace around commas, and
+# django-cors-headers matches origins by exact string equality — a stray
+# space in the env var (easy to introduce, e.g. "a, b" vs "a,b") silently
+# makes that one origin never match, with no error anywhere.
+CORS_ALLOWED_ORIGINS = [o.strip() for o in env.list("CORS_ALLOWED_ORIGINS", default=[])]
 CORS_ALLOW_HEADERS = list(default_headers) + ["x-tenant-id", "x-synapse-visitor-id"]
 # Public widget + patient chat get a per-clinic dynamic origin allowlist
 # instead (see core.middleware.WidgetCorsMiddleware) — corsheaders has no

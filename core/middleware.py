@@ -53,8 +53,16 @@ class WidgetCorsMiddleware:
             response["Vary"] = "Origin"
             if request.method == "OPTIONS":
                 response["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+                # x-tenant-id: added so the dashboard's staff-token origin
+                # bypass (apps.api.auth.deps._authenticated_staff_for_clinic)
+                # can actually reach the view — the browser's own CORS
+                # preflight silently drops the real request if a header it
+                # sends isn't listed here, regardless of what the view/
+                # origin-allowlist logic would have allowed. This is exactly
+                # why "Something went wrong" showed no backend error at all:
+                # the request never left the browser.
                 response["Access-Control-Allow-Headers"] = (
-                    "content-type, authorization, x-synapse-visitor-id"
+                    "content-type, authorization, x-synapse-visitor-id, x-tenant-id"
                 )
 
         return response
