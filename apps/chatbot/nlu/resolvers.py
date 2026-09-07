@@ -10,7 +10,7 @@ from django.db.models import Q
 
 from apps.clinics.models import Clinic
 from apps.chatbot.nlu.schemas import ExtractedEntities, ResolvedIds
-from apps.chatbot.routing.signals import STOPWORDS
+from apps.chatbot.routing.signals import DOCTOR_ROLE_ALIASES, STOPWORDS
 
 # Confidence bands for doctor matching
 HIGH_CONFIDENCE = 0.85
@@ -425,19 +425,10 @@ def _match_specialty(clinic: Clinic, name: str | None) -> str | None:
     from apps.specialties.models import Specialty
 
     needle = _normalize(name)
-    # Map common role nouns → specialty roots
-    aliases = {
-        "dermatologist": "dermatology",
-        "cardiologist": "cardiology",
-        "pediatrician": "pediatrics",
-        "neurologist": "neurology",
-        "psychiatrist": "psychiatry",
-        "ophthalmologist": "ophthalmology",
-        "gynecologist": "gynecology",
-        "urologist": "urology",
-        "oncologist": "oncology",
-    }
-    needle = aliases.get(needle, needle)
+    # Map common role nouns → specialty roots (shared with
+    # routing/signals.py::mentions_specific_doctor_role so the two never
+    # drift apart on which role words are "specific").
+    needle = DOCTOR_ROLE_ALIASES.get(needle, needle)
 
     qs = Specialty.objects.filter(clinic_id=_clinic_id(clinic), is_deleted=False, is_active=True)
     hit = (
@@ -447,6 +438,20 @@ def _match_specialty(clinic: Clinic, name: str | None) -> str | None:
     )
     if hit:
         return str(hit.id)
+
+    # Canonical category match (core.care_categories.CareCategory) --
+    # live-confirmed gap: a clinic's specialty is often named something
+    # that doesn't literally contain the category word ("Heart Center"
+    # tagged category="Cardiology"), so a direct category mention (e.g.
+    # tapping the quick-reply chip apps/chatbot/booking/discovery.py::
+    # ambiguous_category_chips produces, "I think it's related to
+    # Cardiology") fell through to the fuzzy name-similarity guess below
+    # and often missed entirely. Exact match only, never fuzzy -- same
+    # rule discovery.py's own category matching already follows.
+    category_hit = qs.filter(category__iexact=needle).order_by("name").first()
+    if category_hit:
+        return str(category_hit.id)
+
     best_id = None
     best_score = 0.0
     for row in qs.only("id", "name", "slug")[:100]:
