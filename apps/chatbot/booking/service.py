@@ -9,6 +9,7 @@ from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, OperationalError, transaction
 from django.utils import timezone
 
@@ -22,6 +23,7 @@ from apps.chatbot.booking.modes import (
 )
 from apps.chatbot.booking.serializers import serialize_step
 from apps.chatbot.booking.state import BookingSession, BookingStep
+from apps.patients.dob import validate_date_of_birth
 
 logger = logging.getLogger(__name__)
 
@@ -732,9 +734,11 @@ class BookingService:
                 dob = date.fromisoformat(dob_raw)
             except ValueError:
                 raise BookingError("Enter a valid date of birth") from None
-            today = timezone.now().date()
-            if dob > today or dob.year < today.year - 120:
-                raise BookingError("Enter a valid date of birth")
+            try:
+                validate_date_of_birth(dob, required=True)
+            except DjangoValidationError as exc:
+                msg = exc.messages[0] if getattr(exc, "messages", None) else str(exc)
+                raise BookingError(msg) from None
 
             # Normalize: if a single contact was mis-filed, classify by @
             if phone and "@" in phone and not email:
