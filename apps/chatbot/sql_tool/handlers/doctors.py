@@ -8,6 +8,7 @@ from typing import Any
 from django.utils import timezone
 
 from apps.chatbot.nlu.languages import resolve_language_codes
+from apps.chatbot.routing.signals import mentions_specific_doctor_role
 from apps.chatbot.sql_tool.base import SQLContext, SQLResult
 from apps.chatbot.sql_tool.utils import (
     DOCTOR_LIST_CEILING,
@@ -104,6 +105,18 @@ def search_doctors(ctx: SQLContext) -> SQLResult:
     doctor_named = bool(doctor_ids) or bool(entity_list(nlu.entities.doctor_name))
 
     specialty_ids = entity_ids(nlu.resolved_ids.specialty_id)
+    # Set only when the message itself gave *nothing at all* to go on --
+    # no specialty entity, no symptom entity either. Deliberately NOT
+    # keyed on resolve_symptom_specialty_ids returning None by itself:
+    # that also returns None when the clinic has zero Specialty rows
+    # configured at all (a data-completeness gap, not a message-ambiguity
+    # one -- its own docstring's stated principle is that a clinic with no
+    # specialty catalog is no evidence it lacks the relevant one, so that
+    # case must keep falling through to an unfiltered browse, not a
+    # clarification). Used after the service/language checks further down
+    # to distinguish a genuinely unfiltered request from an explicit
+    # "who are your doctors" browse.
+    nothing_to_filter_on = False
     if specialty_ids:
         qs = qs.filter(doctor_specialties__specialty_id__in=specialty_ids).distinct()
     else:
@@ -125,6 +138,8 @@ def search_doctors(ctx: SQLContext) -> SQLResult:
                     ).distinct()
                 else:
                     return symptom_no_match_result("search_doctors", resolution, kind="doctor")
+            elif not entity_list(nlu.entities.symptom):
+                nothing_to_filter_on = True
 
     # Same principle for a service named only to anchor a pricing/services
     # clause elsewhere in the message — live-confirmed without this guard:
@@ -132,6 +147,7 @@ def search_doctors(ctx: SQLContext) -> SQLResult:
     # 3 of 6 real doctors from the browse-all-doctors answer.
     service_blocked = "service_id" in ctx.blocked_entity_fields.get("doctors", frozenset())
     service_id = None if service_blocked else nlu.resolved_ids.service_id
+    service_named = bool(service_id) or (not service_blocked and bool(nlu.entities.service))
     if service_id:
         qs = qs.filter(services__id=service_id).distinct()
     elif not service_blocked and nlu.entities.service:
@@ -144,6 +160,40 @@ def search_doctors(ctx: SQLContext) -> SQLResult:
         # to no rows rather than silently ignoring the request and returning
         # every doctor as if the question had never been asked.
         qs = qs.filter(languages__overlap=lang_codes) if lang_codes else qs.none()
+
+    # Live-confirmed gap: a doctor_search message the NLU extracted
+    # *nothing at all* from — no specialty, no symptom, no service, no
+    # doctor name, no language ("is there an eye doctor here" at a clinic
+    # with none; the LLM sometimes returns every entity null instead of
+    # naming the unavailable specialty, confirmed non-deterministic across
+    # runs) — silently fell through to browsing every active doctor,
+    # indistinguishable from a deliberate "who are your doctors" browse
+    # request. Gated on the positive signal instead of trying to
+    # negatively infer "not a browse request": mentions_specific_doctor_role
+    # only fires when the message actually names a specific role/specialty
+    # word ("dentist," "eye doctor") — a phrasing this curated vocabulary
+    # doesn't recognize (e.g. "list your doctors," which the narrower
+    # is_doctor_browse_query regex was tried against first and
+    # live-confirmed to miss) safely falls through to the existing browse
+    # behavior instead of risking a false decline.
+    if (
+        nothing_to_filter_on
+        and not doctor_named
+        and not service_named
+        and not language_values
+        and mentions_specific_doctor_role(ctx.message)
+    ):
+        return SQLResult(
+            handler="search_doctors",
+            found=False,
+            rows=[],
+            summary=(
+                "I'm not sure which kind of specialist that calls for — could "
+                "you say a bit more about what you're looking for, or name a "
+                "doctor or specialty directly?"
+            ),
+            meta={"authoritative_summary": True},
+        )
 
     doctors = list(qs[:DOCTOR_LIST_CEILING])
     rows = [doctor_to_dict(d) for d in doctors]
@@ -254,6 +304,15 @@ def doctor_availability(ctx: SQLContext) -> SQLResult:
 
     specialty_ids = entity_ids(nlu.resolved_ids.specialty_id)
     symptom_resolution = None
+    # Same gap as search_doctors, same fix: a message naming a specific,
+    # unresolved doctor role ("is there an eye doctor available tomorrow"
+    # at a clinic with none) with no specialty/symptom entity at all must
+    # not silently check availability for every doctor at the clinic --
+    # see mentions_specific_doctor_role's docstring for why this is gated
+    # on a positive role-noun match rather than a negative "not a browse"
+    # inference (an "any doctor available tomorrow" query, which names no
+    # specific role, must keep working exactly as before).
+    unresolved_role_mentioned = False
     if specialty_ids:
         doctor_qs = doctor_qs.filter(doctor_specialties__specialty_id__in=specialty_ids).distinct()
     else:
@@ -277,8 +336,12 @@ def doctor_availability(ctx: SQLContext) -> SQLResult:
                     ).distinct()
                 else:
                     symptom_resolution = resolution
+            elif not entity_list(nlu.entities.symptom) and mentions_specific_doctor_role(
+                ctx.message
+            ):
+                unresolved_role_mentioned = True
 
-    doctors = [] if symptom_resolution else list(doctor_qs[:5])
+    doctors = [] if (symptom_resolution or unresolved_role_mentioned) else list(doctor_qs[:5])
     if not doctors:
         if symptom_resolution is not None:
             no_match = symptom_no_match_result(
@@ -289,6 +352,21 @@ def doctor_availability(ctx: SQLContext) -> SQLResult:
                 found=False,
                 summary=no_match.summary,
                 meta={**scope.as_meta(), "target_date": scope.start.isoformat(), **no_match.meta},
+            )
+        if unresolved_role_mentioned:
+            return SQLResult(
+                handler="doctor_availability",
+                found=False,
+                summary=(
+                    "I'm not sure which kind of specialist that calls for — could "
+                    "you say a bit more about what you're looking for, or name a "
+                    "doctor or specialty directly?"
+                ),
+                meta={
+                    **scope.as_meta(),
+                    "target_date": scope.start.isoformat(),
+                    "authoritative_summary": True,
+                },
             )
         return SQLResult(
             handler="doctor_availability",
