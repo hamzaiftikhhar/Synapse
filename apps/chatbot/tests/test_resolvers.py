@@ -7,9 +7,11 @@ from django.test import TestCase
 from apps.chatbot.nlu.resolvers import (
     resolve_doctor_candidates,
     resolve_doctor_from_text,
+    resolve_entities,
     resolve_pediatric_service_fallback,
     resolve_specialty_for_service,
 )
+from apps.chatbot.nlu.schemas import ExtractedEntities
 from apps.chatbot.routing import build_doctor_catalog
 from apps.clinics.models import Clinic
 from apps.doctors.models import Doctor, DoctorService, DoctorSpecialty
@@ -155,6 +157,70 @@ class ResolveSpecialtyForServiceTests(TestCase):
 
     def test_none_service_id_returns_none(self):
         self.assertIsNone(resolve_specialty_for_service(self.clinic, None))
+
+
+class MatchSpecialtyByCategoryTests(TestCase):
+    """Live-confirmed gap, found while verifying the care-concern
+    quick-reply chips end to end: _match_specialty only ever checked
+    Specialty.name/slug (icontains, then fuzzy) -- never the canonical
+    core.care_categories.CareCategory tag. A clinic naming its specialty
+    something that doesn't literally contain the category word ("Heart
+    Center" tagged category="Cardiology") meant a direct category mention
+    ("I think it's related to Cardiology" -- exactly what
+    apps/chatbot/booking/discovery.py::ambiguous_category_chips's tapped
+    chip sends) resolved to no specialty at all, even though the clinic
+    plainly has one."""
+
+    def setUp(self):
+        self.clinic = Clinic.objects.create(
+            slug="category-specialty-match-clinic",
+            name="Category Specialty Match Clinic",
+            email="categoryspecialtymatch@clinic.com",
+            phone="+12125550018",
+            timezone="America/New_York",
+        )
+        self.heart_center = Specialty.objects.create(
+            clinic=self.clinic, name="Heart Center", slug="heart-center",
+            category="Cardiology",
+        )
+
+    def test_category_name_resolves_via_category_tag(self):
+        resolved = resolve_entities(self.clinic, ExtractedEntities(specialty="Cardiology"))
+        self.assertEqual(resolved.specialty_id, str(self.heart_center.id))
+
+    def test_role_noun_alias_still_resolves_via_category(self):
+        resolved = resolve_entities(self.clinic, ExtractedEntities(specialty="cardiologist"))
+        self.assertEqual(resolved.specialty_id, str(self.heart_center.id))
+
+    def test_name_match_still_takes_priority_over_category(self):
+        """When a specialty's own name already matches, that must win --
+        the category check is only a fallback for when name/slug matching
+        finds nothing."""
+        Specialty.objects.create(
+            clinic=self.clinic, name="Cardiology Wing", slug="cardiology-wing",
+            category="Other",
+        )
+        resolved = resolve_entities(self.clinic, ExtractedEntities(specialty="Cardiology"))
+        specialty = Specialty.objects.get(id=resolved.specialty_id)
+        self.assertEqual(specialty.name, "Cardiology Wing")
+
+    def test_unrelated_category_does_not_match(self):
+        resolved = resolve_entities(self.clinic, ExtractedEntities(specialty="Dermatology"))
+        self.assertIsNone(resolved.specialty_id)
+
+    def test_dentist_role_noun_resolves_via_shared_alias(self):
+        """DOCTOR_ROLE_ALIASES (routing/signals.py) is shared between this
+        resolver and mentions_specific_doctor_role -- "dentist" was added
+        alongside the "is there an eye doctor" fix (found while chasing
+        the same class of unresolved-role gap) so a clinic whose specialty
+        isn't literally named "Dentistry" still resolves a direct
+        "dentist" mention."""
+        dentistry = Specialty.objects.create(
+            clinic=self.clinic, name="Smile Studio", slug="smile-studio",
+            category="Dentistry",
+        )
+        resolved = resolve_entities(self.clinic, ExtractedEntities(specialty="dentist"))
+        self.assertEqual(resolved.specialty_id, str(dentistry.id))
 
 
 class DoctorCatalogTests(TestCase):

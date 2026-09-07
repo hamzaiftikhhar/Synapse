@@ -201,6 +201,53 @@ class SoftMedicalReplyHonestFallbackTests(TestCase):
         self.assertIn("find a doctor", reply.lower())
 
 
+class SoftMedicalAmbiguityBlockTests(TestCase):
+    """Live-confirmed gap: a bare concern description ("chest and stomach
+    pain") is classified medical_question -> the soft_medical direct-reply
+    lane (ChatEngine._soft_medical_reply) far more often than doctor_search
+    -- confirmed via a live ChatEngine.process() run against a real seeded
+    clinic during this phase's own verification. Without
+    _soft_medical_ambiguity_block wired into that lane, the MEDIUM-tier
+    quick-reply clarification built into resolve_symptom_specialty_ids
+    would almost never actually be reached in practice, since
+    suggest_specialties (which _soft_medical_reply calls) silently combines
+    multiple ambiguous categories into one guidance sentence instead of
+    asking."""
+
+    def setUp(self):
+        self.clinic = Clinic.objects.create(
+            slug="soft-medical-ambiguity-clinic",
+            name="Soft Medical Ambiguity Clinic",
+            email="softmedicalambiguity@clinic.com",
+            phone="+12125550019",
+            address={"street": "19 Main St", "city": "Boston", "state": "MA", "zip": "02101"},
+            timezone="America/New_York",
+        )
+        Specialty.objects.create(
+            clinic=self.clinic, name="Heart Center", slug="heart-center", category="Cardiology",
+        )
+        Specialty.objects.create(
+            clinic=self.clinic, name="Digestive Health", slug="digestive-health",
+            category="Gastroenterology",
+        )
+
+    def test_ambiguous_concern_returns_a_clarify_block_with_chips(self):
+        block = ChatEngine()._soft_medical_ambiguity_block(self.clinic, "chest and stomach pain")
+        self.assertIsNotNone(block)
+        self.assertEqual(block["found"], False)
+        chips = block["meta"]["clarify_chips"]
+        self.assertEqual({c["label"] for c in chips}, {"Cardiology", "Gastroenterology"})
+        self.assertIn("Which one fits best", block["summary"])
+
+    def test_unambiguous_concern_returns_none(self):
+        block = ChatEngine()._soft_medical_ambiguity_block(self.clinic, "my chest hurts")
+        self.assertIsNone(block)
+
+    def test_bare_pain_returns_none(self):
+        block = ChatEngine()._soft_medical_ambiguity_block(self.clinic, "I have pain")
+        self.assertIsNone(block)
+
+
 class SpecialtyHintWordBoundaryTests(TestCase):
     """Live-confirmed bug, second class: the specialty-hint side of
     suggest_specialties() also matched via naive substring containment
@@ -648,24 +695,21 @@ class ServicesOfferedSymptomMessagingTests(TestCase):
 
 
 class GenericPainKeywordPrecedenceTests(TestCase):
-    """Pinning tests for a known, deliberately-deferred tuning item (see
-    ROADMAP.md's "Extend the symptom-resolution chain to services" phase):
-    the checkup/general group in `_SYMPTOM_MAP` includes the bare word
-    "pain" as a keyword, mapped to Primary Care. Because keyword matching
-    is substring containment (`k in text`), ANY message containing "pain"
-    as a substring -- including a specific multi-word phrase from an
-    unrelated group, like "tooth pain" or "chest pain" -- also hints
-    Primary Care, on top of whatever specific specialty/category that
-    phrase's own group already resolves.
+    """Regression tests for a bug that was pinned (not fixed) for two
+    phases: the generic catch-all concern (bare "pain", mapped to Primary
+    Care) matched via plain substring containment, so ANY message
+    containing "pain" as a substring -- including a specific multi-word
+    phrase from an unrelated concern, like "tooth pain" or "chest pain" --
+    also hinted Primary Care, on top of whatever specific specialty/
+    category that phrase's own concern already resolved.
 
-    This is confirmed, current behavior, not a bug being fixed here --
-    reviewed and explicitly left as-is by design decision: a specific
-    multi-word phrase should eventually take precedence over a generic
-    single-word token if this is revisited, but doing so now would be
-    unscoped _SYMPTOM_MAP tuning, not part of the resolution-chain
-    architecture this phase and the two before it were about. These tests
-    exist so a future phase has a concrete, already-written regression
-    baseline instead of re-deriving this from scratch.
+    Fixed via word-boundary phrase matching (`_phrase_matches`) plus
+    excluding `specific=False` (generic) entries from the category set
+    entirely (`_hint_names_and_categories`) -- a specific phrase now always
+    wins outright, and the generic catch-all never resolves a category on
+    its own. These tests now assert the fixed behavior; see
+    `PainWordBoundaryAndCrossCategoryTests` below for the broader
+    cross-category negative-assertion suite added alongside this fix.
     """
 
     def setUp(self):
@@ -692,32 +736,27 @@ class GenericPainKeywordPrecedenceTests(TestCase):
             clinic=self.clinic, name="Annual Physical", category="Primary Care",
         )
 
-    def test_specialty_phrase_with_bare_pain_substring_also_hints_primary_care(self):
-        """"Tooth pain" contains "pain" as a bare substring -- currently
-        surfaces both Dentistry (the correct, specific match) AND Primary
-        Care (an artifact of the generic keyword), not Dentistry alone."""
+    def test_specialty_phrase_with_bare_pain_substring_no_longer_leaks_primary_care(self):
+        """"Tooth pain" contains "pain" as a bare substring -- must resolve
+        to Dentistry alone now, not also Primary Care."""
         suggested, _ = suggest_specialties(self.clinic, message="I have tooth pain")
         names = {s["name"] for s in suggested}
-        self.assertEqual(names, {"General Dentistry", "Primary Care Clinic"})
+        self.assertEqual(names, {"General Dentistry"})
 
     def test_same_specialty_symptom_without_bare_pain_substring_is_precise(self):
         """"Toothache" -- no bare "pain" substring -- resolves to Dentistry
-        alone, proving the extra Primary Care hint above comes from the
-        substring, not from the dental group itself."""
+        alone; unaffected by this fix, kept as a control."""
         suggested, _ = suggest_specialties(self.clinic, message="I have a toothache")
         names = {s["name"] for s in suggested}
         self.assertEqual(names, {"General Dentistry"})
 
-    def test_service_phrase_with_bare_pain_substring_also_hints_primary_care(self):
+    def test_service_phrase_with_bare_pain_substring_no_longer_leaks_primary_care(self):
         nlu = parse_nlu_payload(
             {"intent": "services_offered", "entities": {"symptom": "tooth pain"}}
         )
         result = resolve_symptom_service_ids(self.clinic, nlu, "I have tooth pain")
         self.assertTrue(result.understood)
-        self.assertEqual(
-            set(result.matched_ids),
-            {str(self.root_canal.id), str(self.annual_physical.id)},
-        )
+        self.assertEqual(result.matched_ids, [str(self.root_canal.id)])
 
     def test_same_service_symptom_without_bare_pain_substring_is_precise(self):
         nlu = parse_nlu_payload(
@@ -726,3 +765,180 @@ class GenericPainKeywordPrecedenceTests(TestCase):
         result = resolve_symptom_service_ids(self.clinic, nlu, "I have a toothache")
         self.assertTrue(result.understood)
         self.assertEqual(result.matched_ids, [str(self.root_canal.id)])
+
+    def test_bare_pain_alone_no_longer_resolves_primary_care(self):
+        """The actual mechanism behind the fix: a message with *only* the
+        generic catch-all matching must not resolve a category at all,
+        even though this clinic has a real Primary Care specialty that
+        would previously have absorbed it."""
+        suggested, _ = suggest_specialties(self.clinic, message="I have pain")
+        self.assertEqual(suggested, [])
+
+
+class PainWordBoundaryAndCrossCategoryTests(TestCase):
+    """Broader regression suite added alongside the "pain" precedence fix
+    (round-three review request): proves the fix holds across several
+    unrelated categories, not just dental, and that the underlying
+    mechanism is a real word-boundary regex -- not merely "specific wins
+    when something else also matches"."""
+
+    def setUp(self):
+        self.clinic = Clinic.objects.create(
+            slug="pain-boundary-clinic",
+            name="Pain Boundary Clinic",
+            email="painboundary@clinic.com",
+            phone="+12125550015",
+            address={"street": "15 Main St", "city": "Boston", "state": "MA", "zip": "02101"},
+            timezone="America/New_York",
+        )
+        self.cardiology = Specialty.objects.create(
+            clinic=self.clinic, name="Heart Center", slug="heart-center", category="Cardiology",
+        )
+        self.dentistry = Specialty.objects.create(
+            clinic=self.clinic, name="General Dentistry", slug="general-dentistry", category="Dentistry",
+        )
+        self.orthopedics = Specialty.objects.create(
+            clinic=self.clinic, name="Bone & Joint Clinic", slug="bone-joint", category="Orthopedics",
+        )
+        self.primary_care = Specialty.objects.create(
+            clinic=self.clinic, name="Primary Care Clinic", slug="primary-care-clinic", category="Primary Care",
+        )
+
+    def test_chest_pain_resolves_cardiology_and_intentional_primary_care_hint(self):
+        """The cardiac concern's own hints tuple deliberately includes
+        "primary care" as a secondary route (same as headache/stomach/
+        orthopedic/ENT) -- that's existing, intentional design, not the
+        "pain" leak. What must NOT happen is an unrelated third category
+        (e.g. Dentistry/Orthopedics) appearing."""
+        suggested, _ = suggest_specialties(self.clinic, message="I have chest pain")
+        names = {s["name"] for s in suggested}
+        self.assertEqual(names, {"Heart Center", "Primary Care Clinic"})
+
+    def test_tooth_pain_resolves_dentistry_only(self):
+        """Dentistry's hints tuple does NOT include primary care, so this is
+        the clean case proving the generic "pain" catch-all contributes
+        nothing extra -- unlike chest/back pain above."""
+        suggested, _ = suggest_specialties(self.clinic, message="I have tooth pain")
+        names = {s["name"] for s in suggested}
+        self.assertEqual(names, {"General Dentistry"})
+        self.assertNotIn("Primary Care Clinic", names)
+
+    def test_back_pain_resolves_orthopedics_and_intentional_primary_care_hint(self):
+        suggested, _ = suggest_specialties(self.clinic, message="I have back pain")
+        names = {s["name"] for s in suggested}
+        self.assertEqual(names, {"Bone & Joint Clinic", "Primary Care Clinic"})
+
+    def test_painting_does_not_trigger_the_generic_pain_entry(self):
+        """Word-boundary proof, not just specificity precedence: "painting"
+        contains "pain" as a substring but must not match the bare-word
+        phrase at all."""
+        suggested, _ = suggest_specialties(self.clinic, message="I am painting my house")
+        self.assertEqual(suggested, [])
+
+    def test_painful_does_not_trigger_the_generic_pain_entry(self):
+        suggested, _ = suggest_specialties(self.clinic, message="this is painful")
+        self.assertEqual(suggested, [])
+
+
+class ConcernCategoryAmbiguityTests(TestCase):
+    """The new MEDIUM-confidence tier: 2+ distinct categories genuinely
+    ambiguous only when (a) the message lexically implies 2+ categories
+    and (b) the clinic actually offers 2+ of them. Otherwise resolves
+    normally (HIGH) or falls through to the existing understood/not-
+    understood path (LOW), matching round-two and round-three's review
+    corrections respectively."""
+
+    def setUp(self):
+        self.clinic = Clinic.objects.create(
+            slug="concern-ambiguity-clinic",
+            name="Concern Ambiguity Clinic",
+            email="concernambiguity@clinic.com",
+            phone="+12125550016",
+            address={"street": "16 Main St", "city": "Boston", "state": "MA", "zip": "02101"},
+            timezone="America/New_York",
+        )
+        self.dentistry = Specialty.objects.create(
+            clinic=self.clinic, name="General Dentistry", slug="general-dentistry", category="Dentistry",
+        )
+        self.cardiology = Specialty.objects.create(
+            clinic=self.clinic, name="Heart Center", slug="heart-center", category="Cardiology",
+        )
+        self.gastro = Specialty.objects.create(
+            clinic=self.clinic, name="Digestive Health Center", slug="digestive-health",
+            category="Gastroenterology",
+        )
+
+    def _nlu(self, symptom):
+        return parse_nlu_payload(
+            {"intent": "doctor_search", "entities": {"symptom": symptom}}
+        )
+
+    def test_tooth_and_jaw_hurt_is_high_not_medium(self):
+        """Two matched entries (tooth, jaw), same category (Dentistry) --
+        no ambiguity, must not trigger a clarification. This is the exact
+        case the second review round caught as a flaw in the original
+        "2+ entries matched" MEDIUM rule."""
+        result = resolve_symptom_specialty_ids(
+            self.clinic, self._nlu("my tooth and jaw hurt"), "my tooth and jaw hurt"
+        )
+        self.assertTrue(result.understood)
+        self.assertEqual(result.ambiguous_categories, [])
+        self.assertEqual(result.matched_ids, [str(self.dentistry.id)])
+
+    def test_chest_and_stomach_pain_is_medium_when_clinic_offers_both(self):
+        result = resolve_symptom_specialty_ids(
+            self.clinic, self._nlu("chest and stomach pain"), "chest and stomach pain"
+        )
+        self.assertTrue(result.understood)
+        self.assertEqual(result.matched_ids, [])
+        self.assertEqual(
+            set(result.ambiguous_categories), {"Cardiology", "Gastroenterology"}
+        )
+
+    def test_bare_pain_is_low_not_medium(self):
+        result = resolve_symptom_specialty_ids(
+            self.clinic, self._nlu("I have pain"), "I have pain"
+        )
+        self.assertFalse(result.understood)
+        self.assertEqual(result.ambiguous_categories, [])
+        self.assertEqual(result.matched_ids, [])
+
+    def test_ambiguous_categories_produce_quick_reply_chips(self):
+        from apps.chatbot.booking.discovery import symptom_no_match_result
+
+        result = resolve_symptom_specialty_ids(
+            self.clinic, self._nlu("chest and stomach pain"), "chest and stomach pain"
+        )
+        sql_result = symptom_no_match_result("search_doctors", result, kind="doctor")
+        chips = sql_result.meta["clarify_chips"]
+        self.assertEqual(len(chips), 2)
+        labels = {c["label"] for c in chips}
+        self.assertEqual(labels, {"Cardiology", "Gastroenterology"})
+        for chip in chips:
+            self.assertEqual(chip["behavior"], "message")
+
+    def test_tooth_and_stomach_collapses_to_high_when_clinic_lacks_gastro(self):
+        """Clinic-aware filtering (round-three review): a second lexically-
+        implied category that the clinic doesn't actually offer must not
+        surface as a dead-end chip -- it should collapse to the one real
+        option instead."""
+        dentistry_only_clinic = Clinic.objects.create(
+            slug="dentistry-only-clinic",
+            name="Dentistry Only Clinic",
+            email="dentistryonly@clinic.com",
+            phone="+12125550017",
+            address={"street": "17 Main St", "city": "Boston", "state": "MA", "zip": "02101"},
+            timezone="America/New_York",
+        )
+        dentistry = Specialty.objects.create(
+            clinic=dentistry_only_clinic, name="General Dentistry", slug="general-dentistry",
+            category="Dentistry",
+        )
+        result = resolve_symptom_specialty_ids(
+            dentistry_only_clinic,
+            self._nlu("my tooth and stomach hurt"),
+            "my tooth and stomach hurt",
+        )
+        self.assertTrue(result.understood)
+        self.assertEqual(result.ambiguous_categories, [])
+        self.assertEqual(result.matched_ids, [str(dentistry.id)])

@@ -10,7 +10,7 @@ from apps.chatbot.nlu.entity_guard import entity_grounded_in_message, sanitize_e
 from apps.chatbot.nlu.resolvers import resolve_entities
 from apps.chatbot.nlu.schemas import ExtractedEntities, Intent, NLUResult, ResolvedIds
 from apps.chatbot.routing.heuristics import apply_routing_heuristics
-from apps.chatbot.routing.signals import is_doctor_browse_query
+from apps.chatbot.routing.signals import is_doctor_browse_query, mentions_specific_doctor_role
 from apps.chatbot.sql_tool import SQLContext
 from apps.chatbot.sql_tool.handlers import search_doctors
 from apps.clinics.models import Clinic
@@ -112,6 +112,37 @@ class DoctorBrowseSignalTests(SimpleTestCase):
         self.assertFalse(is_doctor_browse_query("do you have a cardiologist?"))
         self.assertFalse(is_doctor_browse_query("which doctors offer heart surgery?"))
         self.assertFalse(is_doctor_browse_query("do you have Dr Hamza?"))
+
+
+class MentionsSpecificDoctorRoleTests(SimpleTestCase):
+    """The positive signal used by search_doctors/doctor_availability to
+    decide whether an unresolved doctor_search message deserves an honest
+    clarification (a specific role was named) versus falling through to
+    the existing browse-all behavior (nothing specific was named) --
+    deliberately not the inverse of is_doctor_browse_query, since that
+    regex is narrowly tuned for a different purpose and doesn't recognize
+    every legitimate browse phrasing (see test_generic_phrasing_is_not_a_
+    role_mention below for the exact case that proved it)."""
+
+    def test_named_roles_are_detected(self):
+        for msg in (
+            "is there an eye doctor here",
+            "I need a dentist",
+            "do you have a cardiologist",
+            "is there a heart doctor available",
+            "who treats kids doctor stuff",
+        ):
+            self.assertTrue(mentions_specific_doctor_role(msg), msg)
+
+    def test_generic_phrasing_is_not_a_role_mention(self):
+        for msg in (
+            "who are your doctors",
+            "list your doctors",
+            "is any doctor available tomorrow",
+            "is anyone free tomorrow",
+            "",
+        ):
+            self.assertFalse(mentions_specific_doctor_role(msg), msg)
 
 
 class DoctorBrowseIntegrationTests(TestCase):

@@ -335,6 +335,105 @@ class DoctorAvailabilityBareSymptomTests(SQLToolTestBase):
         self.assertNotIn("don't have a specialist", result.summary)
 
 
+class SearchDoctorsUnresolvedRoleTests(SQLToolTestBase):
+    """Live-confirmed gap: a doctor_search message naming a specific role
+    ("is there an eye doctor here") that the NLU extracted *no* entity for
+    at all -- no specialty, no symptom (unlike DoctorAvailabilityBareSymptomTests
+    above, where entities.symptom is always populated) -- silently browsed
+    every active doctor instead of an honest clarification. Confirmed live
+    via ChatEngine.process() that the NLU's entity extraction for an
+    out-of-catalog role request is non-deterministic (sometimes grounds to
+    a real category name, sometimes returns every entity null), so this
+    must be handled deterministically downstream regardless of which the
+    LLM does this time."""
+
+    def test_unresolved_specific_role_gets_honest_clarification(self):
+        ctx = SQLContext(
+            clinic=self.clinic,
+            nlu=_nlu(Intent.DOCTOR_SEARCH, entities=ExtractedEntities()),
+            message="is there an eye doctor here",
+        )
+        result = search_doctors(ctx)
+        self.assertFalse(result.found)
+        self.assertEqual(result.rows, [])
+        self.assertIn("not sure which kind of specialist", result.summary)
+
+    def test_generic_browse_phrasing_not_covered_by_the_role_vocabulary_still_browses(self):
+        """"list your doctors" isn't in _DOCTOR_BROWSE_RE (no "which/what/
+        who are/do you have" phrasing) and names no specific role either --
+        must still fall through to the full roster, not a false decline."""
+        ctx = SQLContext(
+            clinic=self.clinic,
+            nlu=_nlu(Intent.DOCTOR_SEARCH, entities=ExtractedEntities()),
+            message="list your doctors",
+        )
+        result = search_doctors(ctx)
+        names = {r["full_name"] for r in result.rows}
+        self.assertIn("Dr. Hamza Ali", names)
+
+    def test_role_noun_that_does_resolve_is_unaffected(self):
+        """When the NLU *does* extract the specialty (e.g. "cardiologist"
+        aliasing to the real Cardiology specialty), this is an ordinary
+        resolved search, not the unresolved-role path -- must not decline.
+        resolved_ids.specialty_id is set explicitly here to simulate what
+        nlu/resolvers.py::resolve_entities (via _match_specialty's role-
+        alias fallback) would already have populated by the time a real
+        request reaches this handler -- search_doctors's own raw
+        entities.specialty fallback branch is plain name substring
+        matching and doesn't itself understand role-noun aliases."""
+        ctx = SQLContext(
+            clinic=self.clinic,
+            nlu=_nlu(
+                Intent.DOCTOR_SEARCH,
+                entities=ExtractedEntities(specialty="cardiologist"),
+                resolved=ResolvedIds(specialty_id=str(self.cardio.id)),
+            ),
+            message="do you have a cardiologist",
+        )
+        result = search_doctors(ctx)
+        names = {r["full_name"] for r in result.rows}
+        self.assertEqual(names, {"Dr. Hamza Ali"})
+
+    def test_empty_message_ui_action_still_browses(self):
+        """browse_doctors (the "Find a Doctor" button) calls search_doctors
+        with no real message text at all and deliberately wants the full
+        roster -- there's no patient wording to be ambiguous about."""
+        ctx = SQLContext(
+            clinic=self.clinic,
+            nlu=_nlu(Intent.DOCTOR_SEARCH, entities=ExtractedEntities()),
+        )
+        result = search_doctors(ctx)
+        names = {r["full_name"] for r in result.rows}
+        self.assertIn("Dr. Hamza Ali", names)
+
+
+class DoctorAvailabilityUnresolvedRoleTests(SQLToolTestBase):
+    """Same fix as SearchDoctorsUnresolvedRoleTests, applied to
+    doctor_availability -- "is there an eye doctor available tomorrow"
+    must not silently check every doctor's availability."""
+
+    def test_unresolved_specific_role_gets_honest_clarification(self):
+        ctx = SQLContext(
+            clinic=self.clinic,
+            nlu=_nlu(Intent.DOCTOR_AVAILABILITY, entities=ExtractedEntities()),
+            message="is there an eye doctor available tomorrow",
+        )
+        result = doctor_availability(ctx)
+        self.assertFalse(result.found)
+        self.assertIn("not sure which kind of specialist", result.summary)
+
+    def test_any_doctor_available_query_is_unaffected(self):
+        """No specific role named -- must keep checking every doctor's
+        availability exactly as before."""
+        ctx = SQLContext(
+            clinic=self.clinic,
+            nlu=_nlu(Intent.DOCTOR_AVAILABILITY, entities=ExtractedEntities()),
+            message="is any doctor available tomorrow",
+        )
+        result = doctor_availability(ctx)
+        self.assertNotIn("not sure which kind of specialist", result.summary)
+
+
 class ListSpecialtiesTests(SQLToolTestBase):
     def test_lists_all_specialties(self):
         ctx = SQLContext(clinic=self.clinic, nlu=_nlu(Intent.DOCTOR_SEARCH))
