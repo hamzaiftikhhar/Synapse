@@ -252,9 +252,14 @@ def build_ui_meta(
         return orchestrate_ui_meta(meta, intent=intent, ui_priority=ui_priority)
 
     has_doctors = False
+    clarify_chips: list[dict[str, Any]] = []
     for block in sql_results:
         handler = block.get("handler", "")
         rows = block.get("rows") or []
+
+        block_chips = (block.get("meta") or {}).get("clarify_chips")
+        if block_chips:
+            clarify_chips.extend(block_chips)
 
         if handler == "search_doctors" and rows:
             # Handler already bounds the query (DOCTOR_LIST_CEILING) --
@@ -366,6 +371,13 @@ def build_ui_meta(
         booking_commit=booking_commit,
         ui_priority=ui_priority,
     )
+    if clarify_chips:
+        # A concern lexically implied 2+ categories the clinic genuinely
+        # offers (apps/chatbot/booking/discovery.py::symptom_no_match_result)
+        # -- one chip per category, reusing this exact action-chip shape,
+        # placed ahead of the standard actions since resolving the
+        # ambiguity is the primary thing to do next.
+        meta["actions"] = clarify_chips + meta["actions"]
 
     # A compound message's secondary intent asked to book (e.g. "who are
     # your doctors and can i book with dr vance") — the primary intent's
