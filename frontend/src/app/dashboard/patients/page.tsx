@@ -42,13 +42,16 @@ import {
   seriesHasValues,
 } from "@/components/dashboard/charts";
 import { getApiErrorMessage } from "@/lib/api/client";
+import { normalizePhone, phoneIssueMessage, validatePhone } from "@/lib/phone";
 import type { Patient } from "@/types/api";
 
 const schema = z.object({
-  phone: z.string().min(5),
-  first_name: z.string().min(1),
-  last_name: z.string().min(1),
-  email: z.string().email().optional().or(z.literal("")),
+  phone: z.string().refine((v) => !validatePhone(v, { required: true }), (v) => ({
+    message: phoneIssueMessage(validatePhone(v, { required: true }) ?? "invalid"),
+  })),
+  first_name: z.string().min(1, "First name is required"),
+  last_name: z.string().min(1, "Last name is required"),
+  email: z.string().email("Enter a valid email").optional().or(z.literal("")),
 });
 
 type FormValues = z.infer<typeof schema>;
@@ -87,7 +90,7 @@ export default function PatientsPage() {
 
   async function onSubmit(values: FormValues) {
     const payload = {
-      phone: values.phone,
+      phone: normalizePhone(values.phone),
       first_name: values.first_name,
       last_name: values.last_name,
       email: values.email || "",
@@ -226,20 +229,55 @@ export default function PatientsPage() {
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <Label>First name</Label>
-                <Input {...form.register("first_name")} />
+                <Input
+                  {...form.register("first_name")}
+                  aria-invalid={Boolean(form.formState.errors.first_name)}
+                />
+                {form.formState.errors.first_name ? (
+                  <p className="text-xs text-destructive">
+                    {form.formState.errors.first_name.message}
+                  </p>
+                ) : null}
               </div>
               <div className="space-y-1.5">
                 <Label>Last name</Label>
-                <Input {...form.register("last_name")} />
+                <Input
+                  {...form.register("last_name")}
+                  aria-invalid={Boolean(form.formState.errors.last_name)}
+                />
+                {form.formState.errors.last_name ? (
+                  <p className="text-xs text-destructive">
+                    {form.formState.errors.last_name.message}
+                  </p>
+                ) : null}
               </div>
             </div>
             <div className="space-y-1.5">
               <Label>Phone</Label>
-              <Input {...form.register("phone")} placeholder="+12125550999" />
+              <Input
+                {...form.register("phone")}
+                placeholder="+1 415 555 0123"
+                aria-invalid={Boolean(form.formState.errors.phone)}
+              />
+              {form.formState.errors.phone ? (
+                <p className="text-xs text-destructive">
+                  {form.formState.errors.phone.message}
+                </p>
+              ) : null}
             </div>
             <div className="space-y-1.5">
-              <Label>Email</Label>
-              <Input {...form.register("email")} />
+              <Label>
+                Email <span className="font-normal text-muted-foreground">(optional)</span>
+              </Label>
+              <Input
+                {...form.register("email")}
+                aria-invalid={Boolean(form.formState.errors.email)}
+              />
+              {form.formState.errors.email ? (
+                <p className="text-xs text-destructive">
+                  {form.formState.errors.email.message}
+                </p>
+              ) : null}
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setOpen(false)}>
