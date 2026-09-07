@@ -2,6 +2,7 @@
 
 from uuid import UUID
 
+from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.db.models import Q
 from ninja import Query, Router
@@ -10,6 +11,7 @@ from ninja.errors import HttpError
 from apps.api.auth.deps import clinic_from, jwt_auth
 from apps.api.common.schemas import MessageOut, PaginatedOut
 from apps.api.patients.schemas import PatientIn, PatientOut, PatientUpdateIn
+from apps.patients.dob import validate_date_of_birth
 from apps.patients.models import Patient
 
 router = Router(tags=["Patients"])
@@ -38,6 +40,11 @@ def _get_patient(clinic_id: UUID, patient_id: UUID) -> Patient:
         raise HttpError(404, "Patient not found") from None
 
 
+def _dob_http_error(exc: ValidationError) -> HttpError:
+    msg = exc.messages[0] if getattr(exc, "messages", None) else str(exc)
+    return HttpError(400, msg)
+
+
 @router.get("", response=PaginatedOut[PatientOut], auth=jwt_auth)
 def list_patients(
     request,
@@ -48,12 +55,15 @@ def list_patients(
     clinic = clinic_from(request)
     qs = Patient.objects.filter(clinic=clinic).order_by("last_name", "first_name")
     if search:
-        qs = qs.filter(
-            Q(first_name__icontains=search)
-            | Q(last_name__icontains=search)
-            | Q(phone__icontains=search)
-            | Q(email__icontains=search)
-        )
+        # Tokenize so "Ali Hamza" matches first+last; a single blob never
+        # matches either name field alone.
+        for token in search.split():
+            qs = qs.filter(
+                Q(first_name__icontains=token)
+                | Q(last_name__icontains=token)
+                | Q(phone__icontains=token)
+                | Q(email__icontains=token)
+            )
     count = qs.count()
     results = [_serialize(p) for p in qs[offset : offset + limit]]
     return PaginatedOut(count=count, results=results)
@@ -63,7 +73,10 @@ def list_patients(
 def create_patient(request, payload: PatientIn):
     clinic = clinic_from(request)
     try:
+        validate_date_of_birth(payload.date_of_birth)
         patient = Patient.objects.create(clinic=clinic, **payload.dict())
+    except ValidationError as exc:
+        raise _dob_http_error(exc) from exc
     except IntegrityError as exc:
         raise HttpError(400, "Phone or email already exists for this clinic") from exc
     return 201, _serialize(patient)
@@ -78,10 +91,18 @@ def get_patient(request, patient_id: UUID):
 def update_patient(request, patient_id: UUID, payload: PatientUpdateIn):
     clinic_id = clinic_from(request).id
     patient = _get_patient(clinic_id, patient_id)
-    for field, value in payload.dict(exclude_unset=True).items():
+    data = payload.dict(exclude_unset=True)
+    if "date_of_birth" in data:
+        try:
+            validate_date_of_birth(data["date_of_birth"])
+        except ValidationError as exc:
+            raise _dob_http_error(exc) from exc
+    for field, value in data.items():
         setattr(patient, field, value)
     try:
         patient.save()
+    except ValidationError as exc:
+        raise _dob_http_error(exc) from exc
     except IntegrityError as exc:
         raise HttpError(400, "Phone or email already exists for this clinic") from exc
     return _serialize(patient)
