@@ -291,7 +291,7 @@ class ChatEngine:
             compute_message_sensors,
             resolve_plan_after_sql,
         )
-        from apps.chatbot.nlu.decision import EMERGENCY_SAFETY_MESSAGE
+        from apps.chatbot.nlu.decision import emergency_safety_message
 
         # Shared, I/O-free sensor formulas — same function eval/runner.py
         # calls, so production and evaluation can never independently drift
@@ -553,11 +553,33 @@ class ChatEngine:
         timings["planner_reason"] = exec_plan.reason
 
         # ── 3. Executor — run tasks from ExecutionPlan ──────────────────────
-        safety_message = (
-            EMERGENCY_SAFETY_MESSAGE
-            if exec_plan.emergency or exec_plan.direct_mode == "emergency"
-            else None
-        )
+        # Live-confirmed P0 bug: this used to be EMERGENCY_SAFETY_MESSAGE
+        # unconditionally, which made response_templates.py's
+        # EMERGENCY_MENTAL_HEALTH template (988 Suicide & Crisis Lifeline)
+        # structurally unreachable dead code — every emergency, including
+        # an explicit suicide disclosure, got the generic 911/physical-
+        # emergency message instead. emergency_safety_message() is the one
+        # shared place (nlu/decision.py) both this live path and the
+        # offline eval battery's DecisionEngine now call.
+        if exec_plan.emergency or exec_plan.direct_mode == "emergency":
+            safety_message = emergency_safety_message(
+                message, _first_entity_value(nlu_result.entities.symptom)
+            )
+            if "988" in safety_message:
+                # Live-confirmed gap: once this turn's crisis message is
+                # shown, a follow-up like "can you help me find a doctor"
+                # or "help me" has no self-harm keyword of its own, so
+                # nothing carried the concern forward — a transcript
+                # showed the bot fully reverting to ordinary clinic FAQ/
+                # marketing copy 2-3 turns after a suicide disclosure,
+                # with zero further safety net. `medical_flags` already
+                # existed on ConversationTimeline for exactly this kind of
+                # session-scoped signal but had no writer anywhere in this
+                # file. See the reminder appended near the end of this
+                # method for the read side.
+                timeline = merge_turn_context(timeline, medical_flags=["self_harm"])
+        else:
+            safety_message = None
 
         if exec_plan.direct or exec_plan.emergency:
             t0 = time.perf_counter()
@@ -588,13 +610,30 @@ class ChatEngine:
                 category_hint = _first_entity_value(
                     getattr(nlu_result.entities, "specialty_category_hint", None)
                 )
-                response_text = self._soft_medical_reply(
-                    clinic, message, symptom_hint, category_hint
+                # Live-verified via ChatEngine.process() that a bare concern
+                # description ("chest and stomach pain") is classified
+                # medical_question -> this soft_medical lane far more often
+                # than doctor_search/services_offered -- without this check,
+                # the MEDIUM-confidence quick-reply clarification built into
+                # resolve_symptom_specialty_ids/resolve_symptom_service_ids
+                # (apps/chatbot/booking/discovery.py) would almost never
+                # actually be reached in practice, since suggest_specialties
+                # below silently combines multiple ambiguous categories into
+                # one guidance sentence instead of asking.
+                ambiguity_block = self._soft_medical_ambiguity_block(
+                    clinic, message, symptom_hint
                 )
-                if not self._looks_like_aesthetic_request(message):
-                    suggested, guidance = self._maybe_suggest_specialties(
-                        clinic, message, timings, symptom_hint, category_hint
+                if ambiguity_block:
+                    response_text = ambiguity_block["summary"]
+                    sql_rows.append(ambiguity_block)
+                else:
+                    response_text = self._soft_medical_reply(
+                        clinic, message, symptom_hint, category_hint
                     )
+                    if not self._looks_like_aesthetic_request(message):
+                        suggested, guidance = self._maybe_suggest_specialties(
+                            clinic, message, timings, symptom_hint, category_hint
+                        )
             else:
                 response_text = self._fast_path_from_plan(
                     exec_plan, nlu_result, message, clinic, safety_message
@@ -837,6 +876,27 @@ class ChatEngine:
             elif not response_text:
                 response_text = clarify_text
 
+        # Live-confirmed gap: a self-harm disclosure earlier in this same
+        # session must not go completely unacknowledged just because a
+        # later turn's own message/intent isn't itself emergency-shaped
+        # ("what are your specialties", "help me") — a real transcript
+        # showed the bot fully reverting to unrelated clinic-FAQ/marketing
+        # copy 2-3 turns after a suicide disclosure with zero further
+        # safety net. `"988" not in response_text` skips this turn's own
+        # emergency reply (already has the crisis line) and any other
+        # reply that already mentions it (e.g. the response LLM including
+        # it on its own, as observed live) — never doubles up.
+        if (
+            response_text
+            and "self_harm" in timeline.medical_flags
+            and "988" not in response_text
+        ):
+            response_text = (
+                f"{response_text}\n\n"
+                "(If things ever feel like too much, the 988 Suicide & "
+                "Crisis Lifeline is available anytime, day or night.)"
+            )
+
         if session is not None:
             offer = pending_offer_from_turn(
                 sql_rows=sql_rows,
@@ -1038,6 +1098,42 @@ class ChatEngine:
             },
         )
         trace.emit()
+
+    def _soft_medical_ambiguity_block(
+        self, clinic: Any, message: str, symptom_hint: str = ""
+    ) -> dict[str, Any] | None:
+        """A synthetic, SQLResult-shaped dict carrying a quick-reply
+        clarification when the concern lexically implies 2+ categories the
+        clinic genuinely offers (see `ambiguous_categories_for`), or `None`
+        otherwise. Appended directly into `sql_rows` at the soft_medical
+        call site so `build_ui_meta`'s existing `clarify_chips` threading
+        (originally built for the SQL-handler path) picks it up unchanged
+        -- no separate UI mechanism needed for this lane.
+        """
+        from apps.chatbot.booking.discovery import (
+            ambiguous_categories_for,
+            ambiguous_category_chips,
+        )
+
+        concern_text = f"{message} {symptom_hint or ''}".lower().strip()
+        ambiguous = ambiguous_categories_for(clinic, concern_text)
+        if not ambiguous:
+            return None
+        names = " or ".join(ambiguous)
+        summary = (
+            f"That could point to a couple of different things — {names}. "
+            "Which one fits best?"
+        )
+        return {
+            "handler": "soft_medical_concern",
+            "found": False,
+            "rows": [],
+            "summary": summary,
+            "meta": {
+                "authoritative_summary": True,
+                "clarify_chips": ambiguous_category_chips(ambiguous),
+            },
+        }
 
     def _soft_medical_reply(
         self, clinic: Any, message: str, symptom_hint: str = "", category_hint: str = ""
@@ -1477,9 +1573,14 @@ class ChatEngine:
         from apps.chatbot.sql_tool import format_sql_results
 
         # process() already loaded the last 6 turns for NLU context
-        # (recent_turns) — reuse its tail instead of a second ChatMessage
-        # query for the same session's same rows, just at a smaller limit.
-        history = recent_turns[-2:] if recent_turns else self._load_history(session, limit=2)
+        # (recent_turns) — reuse them as-is instead of a second ChatMessage
+        # query for the same session's same rows. Previously re-truncated
+        # to the last 2 here ("at most last 1-2 turns for latency"),
+        # live-confirmed to make a fact the patient stated 2+ exchanges ago
+        # invisible to the response LLM (response_llm.py's own
+        # _MAX_HISTORY_TURNS applies the same, now-shared cap as a second
+        # line of defense for callers that pass a longer history directly).
+        history = recent_turns if recent_turns else self._load_history(session, limit=6)
         try:
             return synthesize_clinic_reply(
                 clinic=clinic,
