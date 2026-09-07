@@ -7538,3 +7538,887 @@ category-hint accuracy for less-common conditions (kidney stones,
 migraines, etc.) turns out to matter in practice, that's a
 `nlu/prompts.py` prompt-quality question verifiable only against the live
 model, not a code architecture gap.
+
+## ✅ P0 pre-production safety fix — suicide/self-harm crisis handling
+
+User asked for a thorough pre-deployment review and pasted a real,
+live-captured transcript: a self-harm disclosure ("i want to do sucide",
+"i want to kill myself") followed by ordinary follow-ups. This surfaced
+the single most severe finding of the entire session.
+
+**Bug 1 (P0) — the deterministic fail-closed safety net did not match the
+word "suicide".** `nlu/emergency_patterns.py`'s `EMERGENCY_RE` — documented
+as the layer that should "never wait for the Small LLM," because "a missed
+genuine self-harm... disclosure is far worse than one unnecessary 911
+nudge" — only matched the adjective "suicidal" and "kill myself", never
+the plain noun "suicide" itself, arguably the single most common way
+someone discloses suicidal intent. Worse, `SYMPTOM_CUE_RE`/
+`SYMPTOM_NARRATIVE_RE`'s "suicid" stem had never matched anything at all:
+confirmed empirically that `\bsuicid\b` requires a word boundary
+immediately after "suicid", but "suicide"/"suicidal" both continue with
+another letter right there, so there is no boundary. A real typo
+("sucide") doesn't contain "suicid" as a substring either. **Live-
+reproduced under real failure conditions**: during this same review, a
+genuine OpenAI API timeout on this exact message caused it to fall through
+every rule tier to a generic, non-emergency rules-fallback clarification —
+i.e., the one scenario this deterministic layer exists for (the LLM being
+unavailable) is exactly when a real suicide disclosure could have been
+missed entirely.
+
+**Bug 2 (P0) — 988 Suicide & Crisis Lifeline was structurally unreachable
+dead code.** `response_templates.py` already had a correct
+`EMERGENCY_MENTAL_HEALTH` template with the 988 line, selected via
+`resolve_direct_template`'s mental-health-keyword check. But `engine.py`'s
+two fast-path emergency branches (`_fast_path`, `_fast_path_from_plan`)
+both returned `decision.safety_message or get_response("EMERGENCY")` —
+and `safety_message` was unconditionally set to the generic
+`EMERGENCY_SAFETY_MESSAGE` constant whenever `exec_plan.emergency` was
+true, always winning before `resolve_direct_template` was ever called.
+Confirmed by reading both call sites, not assumed: every emergency,
+including an explicit "I want to kill myself," got the generic
+911/physical-emergency message. This is the same root architecture
+pattern already found and fixed several times this session (two
+independently-evolving mechanisms, one silently shadowing the other) — in
+this case, arguably the most consequential instance of it possible.
+
+**Bug 3 (P1, found while fixing 1-2) — crisis context vanished after 2-3
+turns.** A live transcript showed the bot fully reverting to unrelated
+clinic-FAQ/marketing copy ("Our priority is to provide continuous,
+personalized primary care...") within 2-3 turns of a suicide disclosure,
+with zero further safety net — because nothing tracked that the session
+had recently disclosed a crisis. `ConversationTimeline.medical_flags`
+already existed for exactly this kind of session-scoped signal but had no
+writer anywhere in `engine.py`.
+
+**Fix:**
+- `nlu/emergency_patterns.py` — consolidated a single `_SELF_HARM_FRAGMENT`
+  (fixing the "suicid" word-boundary bug via `suicid\w*`, adding "suicide"
+  itself, plus `end my life`, `harm myself`, `self-harm`, `don't want to
+  live`, `want to die`, `take my own life`, `hurt myself`, `can't go on`,
+  `better off dead`, `no reason to live`, `cut myself`, `shoot myself`,
+  `overdose`, and common misspellings `sucide`/`suicde`/`suiside`/
+  `suicidle`) interpolated into `EMERGENCY_RE`, `EMERGENCY_NARRATIVE_RE`,
+  `SYMPTOM_CUE_RE`, and `SYMPTOM_NARRATIVE_RE` — one definition, not four
+  independently-drifting copies (which is exactly how bug 1 happened).
+  Deliberately excludes "jump" and "slit" from the older, broader,
+  now-removed `response_templates.py` list — both are dangerous
+  false-positive traps in a clinical context ("slit lamp" is a real
+  ophthalmology exam; "jump the queue" is common scheduling language) —
+  verified empirically neither triggers, alongside verifying every
+  intended phrase does.
+- New `is_self_harm_mention()` and `SELF_HARM_RE`, exported for message
+  selection (never for deciding *whether* something is an emergency —
+  that stays `EMERGENCY_RE`'s job alone).
+- `nlu/decision.py` — new shared `emergency_safety_message(message,
+  symptom_hint)`, the one place both `engine.py`'s live path and the
+  offline eval battery's `DecisionEngine` (which only had `entities.
+  symptom`, not the raw message, so `DecisionEngine.decide()` gained an
+  optional `message` parameter) pick between the 988 and 911 messages.
+- `response_templates.py` — removed the third, independently-maintained
+  `_MENTAL_HEALTH_KEYWORDS` list (plain substring containment, no word
+  boundaries at all); `resolve_direct_template` now calls the same
+  canonical `is_self_harm_mention()`.
+- `engine.py` — `safety_message` computation now actually branches
+  instead of hardcoding the generic message; sets `timeline.medical_flags
+  = ["self_harm"]` via the already-existing (but previously unused)
+  `merge_turn_context` parameter whenever a turn's safety message is the
+  988 one; a later turn in the same session whose own response doesn't
+  already mention 988 gets a short reminder appended ("If things ever feel
+  like too much, the 988 Suicide & Crisis Lifeline is available anytime,
+  day or night."). Never doubles up on a turn the live LLM itself
+  re-classifies as emergency again given recent crisis context (observed
+  live — the model's own judgment call, not something this fix overrides).
+
+**Tests:** new `test_emergency_safety.py`, 28 tests: regex coverage
+(plain "suicide", typos, additional phrases, `EMERGENCY_RE`/
+`SELF_HARM_RE` false-positive guards for "slit lamp"/"jump the queue"),
+message-selection unit tests, `resolve_direct_template`/`DecisionEngine`
+tests, and — critically — 5 true end-to-end `ChatEngine.process()` tests
+requiring no LLM mocking at all (a genuine self-harm message is caught by
+the pre-LLM deterministic rules tier, which never calls the network),
+including the exact live-reproduced multi-turn scenario. `apps.chatbot.
+tests apps.knowledge.tests --keepdb`: **875/876**, same pre-existing date
+flake. `run_chat_eval --target 520`: **698/706 (98.9%)**, unchanged.
+
+**Verified live** against the real LLM: re-ran the exact reported
+transcript ("i want to do sucide" → "can you help em find a doctor" →
+"help me") — now gets the 988 line immediately, a compassionate
+context-aware follow-up instead of a repeated canned block, and continued
+crisis-line availability rather than silent reversion. Re-ran the full
+80-case Phase 51 adversarial suite: **zero non-safety cases mention 988**
+(no false-positive over-triggering from the expanded regex) and **zero
+degraded turns** — all 3 genuine physical emergencies and 1
+indirect-distress-breathing case still correctly get the generic 911
+message, not 988, confirming the self-harm/physical distinction holds
+under real model variance, not just the hand-picked P0 test cases.
+
+**Known limitation:** the live LLM's own semantic judgment about whether a
+*later*, non-self-harm-worded turn ("what are your priorities in treating
+patients") is *itself* still an emergency is inconsistent run-to-run
+(observed directly: identical follow-up text classified emergency in one
+run, non-emergency in another) — this is model non-determinism, not a
+code bug, and the crisis-reminder fix (bug 3) exists precisely so the
+safety net doesn't depend on that classification going the "right" way
+every time.
+
+**Recommended next phase:** none required to unblock deployment. If
+still wanted, a natural follow-on would be extending
+`apps/chatbot/eval/adversarial/corpus.py`'s safety category with explicit
+self-harm/typo cases (it currently only covers physical emergencies), so
+this specific class of regression gets caught by the adversarial suite
+itself next time, not only by a live incident report.
+
+**Update, same day:** added `safety-11..14` to the adversarial corpus for
+exactly this — see the next phase below, which was the direct follow-on.
+
+## ✅ Second production transcript review — hallucination root cause + 2 deterministic routing gaps
+
+User pasted a much longer real transcript (two different clinics) asking
+"why does it hallucinate" and "why does it feel rigid/over-engineered."
+~10 distinct issues were visible in the transcript. Investigated each by
+attempting live reproduction before touching any code (per this repo's
+"reproduce first" rule) — most did **not** reproduce on retry with
+similar phrasing, which is itself the honest answer to the second
+question: this is inherent non-determinism in the underlying LLM
+(gpt-4.1-nano classification, gpt-4.1-mini response generation), not a
+deterministic code bug with a discrete fix. Of the roughly ten things
+flagged, three were root-caused to genuine, deterministic, always-
+reproducible bugs and fixed; the rest are documented below as confirmed-
+live-but-not-reliably-reproducible, consistent with this session's
+existing "confirmed findings deliberately not fixed" discipline — not
+chased into speculative fixes for something that couldn't be pinned down.
+
+### Fix 1 — the actual root cause of the "hallucination" complaint
+
+**Root cause, confirmed against real data, not assumed.** "What are your
+priorities in treating patients" retrieved one real, low-relevance
+document chunk (a membership-fee clause — confirmed by reading the
+clinic's actual indexed chunks, none of which mention anything like
+"priorities" or "patient-centered care"). The response LLM then
+generalized that chunk into confident, specific-sounding, entirely
+invented language: "Our priority is to provide continuous, personalized
+primary care... through our licensed physicians and midlevel providers...
+attentive, patient-centered care..." — none of that is in the source
+text. The constitution's existing rule ("if knowledge is missing, say you
+could not find clinic-specific information") only covered *zero*
+retrieval hits, which the code already handles correctly
+(`empty_rag_reply`/the soft_medical fallback from earlier this session).
+It said nothing about a hit that doesn't actually answer the question —
+exactly the gap here, and a generalizable LLM failure mode (elaborating
+plausibly from weak context instead of admitting the excerpt doesn't
+address the question), not a one-off prompt-wording glitch.
+
+**Fix:** `apps/chatbot/prompts/receptionist_constitution.md` — new
+explicit rule: excerpts may be only loosely related to the question, not
+an actual answer to it; generalizing/inferring a plausible-sounding answer
+from a loosely-related excerpt is fabrication even when no single
+sub-fact is technically false, and the model must decline the same as if
+nothing had been retrieved. Prompt-only change — can't be regression-
+locked by asserting model output deterministically, so
+`test_hallucination_prevention.py`'s new test only confirms the
+instruction text reaches the model; the real verification is live.
+
+**Verified live**, repeated: the exact reported message now gets "I don't
+have specific information about the clinic's priorities in treating
+patients..." instead of invented content, consistently across reruns.
+Confirmed no over-correction — genuinely answerable questions grounded in
+real document text (e.g. "do you accept medicare", "how do I message the
+clinic about a non-urgent question") still get accurate, real-document-
+grounded answers, not a blanket new refusal. Re-ran the full 84-case
+adversarial suite: zero degraded turns, all hallucination-category cases
+still pass, all safety-category cases including the 4 self-harm cases
+added in the previous phase still pass.
+
+### Fix 2 — "what are your specialties" silently dead-ended for common phrasings
+
+**Root cause:** `routing/signals.py::_SPECIALTY_LIST_RE` required "what"/
+"which" to sit immediately next to "special..." with zero words allowed
+between them, and had no verb-first alternative at all — so "what are you
+specialities" (filler words) and "do you have any specility" (verb-first
+word order, plus a typo dropping the "a") both missed the regex entirely
+and fell through to the vector-search FAQ lane, which has no document
+listing specialties and always dead-ended in the generic "couldn't find
+clinic-specific information" apology. **Confirmed via direct regex
+testing** (deterministic, always reproducible — unlike most of this
+transcript's other issues) both before and after the fix.
+
+**Fix:** broadened the regex to tolerate filler words ("what are you/your
+specialities"), added a verb-first alternative ("do you have any
+specialty"), and added the one specific typo observed live
+("specility"). Deliberately scoped — still requires the "special..." stem
+so it doesn't fire on "special offers"/"special needs"/"specialist"
+(verified none of those false-positive).
+
+**Tests:** new `test_specialty_and_handoff_routing.py` —
+`SpecialtyListQueryPhrasingTests` (5 tests: both live-reported failures,
+original phrasings still match, 3 false-positive guards) and
+`SpecialtyListEndToEndTests` (confirms the typo phrasing reaches real
+`list_specialties` SQL rows, not just the regex in isolation).
+
+### Fix 3 — "are you a real person" / "talk to a human" always missed
+
+**Root cause:** `Intent.HANDOFF_HUMAN` existed end-to-end in the code —
+schema value, a correct `HANDOFF_HUMAN` response template ("Of course —
+let me connect you with a team member..."), and a planner gate that
+treats it as a direct response — but the NLU prompt never once mentioned
+`handoff_human` or explained when to use it. The model had no way to know
+this intent existed for this purpose, so "are you a real person"/"I want
+to talk to a real person" always fell through to the generic clarify
+fallback ("I couldn't quite match that...") instead of the friendly
+template that was built for exactly this.
+
+**Fix:** `nlu/prompts.py` — one new instruction line teaching the model
+when to use `handoff_human`. `planner.py` — also moved `Intent.
+HANDOFF_HUMAN` into the unconditional `_DIRECT_INTENTS` set (same
+treatment `Intent.EMERGENCY` already gets), rather than leaving it
+dependent on the model separately setting `can_respond_directly=True`
+for an instruction it had never been taught before — that dependency
+alone could have silently kept this fragile even after the prompt fix.
+
+**Tests:** `HandoffHumanRoutingTests` — prompt contains the instruction,
+`resolve_direct_template` maps to `HANDOFF_HUMAN`, and (the specific
+fragility removed) the planner treats it as direct even when
+`can_respond_directly=False`.
+
+### Confirmed live, not reliably reproducible — inherent LLM non-determinism, not fixed
+
+Each of these was directly attempted live, more than once, with the same
+or closely matching phrasing, and did **not** reproduce consistently —
+the honest, verified conclusion is that these are the underlying model's
+own per-call classification variance (temperature > 0 sampling, and in
+one case sensitivity to recent-turn context), not a deterministic code
+defect with a specific line to fix:
+- **"is dr rajat primary care doctor" failing to match a real, existing
+  doctor** — retried the same shape (name + "a [specialty] doctor",
+  missing article, no period after "dr") 6 times against a real seeded
+  doctor; every attempt resolved correctly. Not reproduced.
+- **An insurance-search card ("Selected insurance: Oscar Health · Oscar
+  Gold") appearing in response to "do you have a primary care doctor"** —
+  attempted the same 3-turn sequence (insurance question → insurance
+  question → doctor question); the doctor question was classified
+  correctly. The live transcript's repeat of the *identical* wrong answer
+  for the same question twice in a row suggests real session-specific
+  context drift (the model over-weighting recent insurance-heavy
+  conversation history) rather than a permanent bug — same category of
+  issue as the emergency-reclassification drift already noted as a known
+  limitation two phases ago, not newly discovered.
+- **"my child has thrown me out of my house" getting a "can't diagnose
+  symptoms" reply** — the concrete example offered for "feels rigid" —
+  did not reproduce; classified as off_topic/clarify on retry, which is
+  the more correct behavior. If this recurs, the fix would be narrowing
+  `looks_like_symptom()`'s cues, but there's nothing to narrow without a
+  reproducible case in hand.
+- **"which provides that sap" (typo for "spa") follow-up reference**
+  inconsistency (once returned an unrelated "Annual physical" result,
+  once the full service list) — a real reference-resolution edge case
+  (resolving a typo'd noun back to a specific service named 1-2 turns
+  earlier), not attempted for a code fix this phase; flagged for a
+  focused phase if it recurs, since "resolve a typo'd back-reference to a
+  specific prior entity" is a real, nontrivial NLU capability gap, not a
+  one-line regex fix.
+- **Duplicate identical messages sent back-to-back** (e.g. "is there any
+  doctor availabel on Monday afternoon" appearing twice at the same
+  timestamp with identical failed responses) — this pattern looks like a
+  frontend double-submission (e.g. a double-tap or missing debounce on
+  send), not a backend NLU/routing issue; out of scope for this backend-
+  focused phase, flagged for a frontend investigation if it recurs.
+
+**Why this matters for "I want my LLM to understand everything" and
+"why does it feel over-engineered":** this codebase's core architecture
+(established over dozens of prior phases) deliberately keeps Python, not
+the LLM, in charge of routing decisions wherever a *deterministic* signal
+exists (regexes, keyword tables, entity resolution) — the LLM is used
+where genuine language understanding is needed (intent classification,
+response generation), never for re-deciding what Python already decided.
+The "rigid" feeling comes from the deterministic layer's coverage being
+necessarily finite and hand-written — every fix in this session's history
+(and the two in this phase) is closing one more specific gap in that
+coverage, not a sign the approach is wrong. The alternative — trusting
+the LLM to re-derive routing decisions from scratch each turn — is
+exactly what produces the *other* complaint (inconsistent, sometimes-
+wrong answers to the same question asked twice), which is what's actually
+showing up in the "not reliably reproducible" bullets above. There is a
+real tradeoff here, not a bug to eliminate: more deterministic coverage
+= more consistent but requires ongoing maintenance as new phrasings
+surface; more LLM discretion = more "understanding" but reintroduces the
+non-determinism this session has spent many phases removing from
+higher-stakes paths (booking, emergencies, pricing).
+
+**Files changed:** `apps/chatbot/prompts/receptionist_constitution.md`,
+`apps/chatbot/routing/signals.py`, `apps/chatbot/nlu/prompts.py`,
+`apps/chatbot/planner.py`.
+
+**Tests:** new `test_specialty_and_handoff_routing.py` (8 tests), 1 new
+test in `test_hallucination_prevention.py`. `apps.chatbot.tests apps.
+knowledge.tests --keepdb`: **884/885**, same pre-existing date flake.
+`run_chat_eval --target 520`: **698/706 (98.9%)**, unchanged. Full 84-case
+live adversarial suite re-run: zero degraded turns, zero regressions.
+
+**Recommended next phase:** the "typo'd back-reference to a specific
+prior entity" gap (the "sap"/spa case) if it recurs — a real, scoped NLU
+capability question, not a quick fix. Otherwise none required by this
+ask; the remaining "not reliably reproducible" items should be revisited
+only if a live case can actually be pinned down consistently, per this
+session's standing rule against chasing unreproducible reports.
+
+## ✅ Front-desk New appointment dialog (elite booking UX)
+
+**Objective.** Replace the awkward New appointment modal (search+select
+patient, free-typed time) with a front-desk flow that matches world-class
+clinic booking: existing vs new patient in-dialog, doctor↔service either
+order, availability chip grid as primary time picker.
+
+**What changed.**
+- `frontend/src/features/appointments/appointment-form-dialog.tsx` —
+  numbered sections (Patient → Care → When → Details): live search list
+  + selected-patient card; inline new patient requiring first/last/DOB/
+  phone; Care lead toggle (service-first or doctor-first) with mutual
+  filtering; date/duration gated on doctor; available-slot chip grid
+  primary, custom time secondary.
+- `apps/api/patients/router.py` — tokenize `search` so `"Ali Hamza"`
+  matches first+last (previously a single blob never hit either field).
+- `apps/api/patients/tests.py` — regression for full-name + single-token
+  search.
+
+**Verified in browser (Horizon clinic):** select existing Ali Hamza →
+James Whitaker → slot grid 08:00–16:30 → pick 10:00 AM; New patient empty
+submit shows Required / Valid phone required on the four must-fields
+(email stays optional). Screenshots captured during the pass.
+
+**Tests:** `apps.api.patients.tests --keepdb`: **2/2**.
+
+**Known limitations / deferred:** short tokens still use `icontains`
+(so `"Ali"` also hits `"Aisha"`); optional: rank/filter client-side for
+relevance. Did not force-book a live appointment in this pass (stopped
+after slot selection to avoid polluting clinic data).
+
+**Recommended next phase:** none required; optional client-side ranking
+on patient search results if short-token noise becomes a front-desk
+complaint.
+
+## ✅ Appointment DOB guards + lighter dialog
+
+**What changed.** Future / >120y DOBs rejected end-to-end; DOB entry is
+month/day/year (better for birth dates than a month calendar); dialog
+visual weight reduced (no stacked section cards, quieter Care toggle).
+
+**Files:** `apps/patients/dob.py`, `models.py` + migration
+`0005_patient_dob_not_future` (DB check + clear any future DOBs),
+`apps/api/patients/router.py`, booking service reuse of validator,
+`frontend/src/lib/dob.ts`, `components/dob-picker.tsx`,
+`appointment-form-dialog.tsx`.
+
+**Tests:** `apps.api.patients.tests apps.patients.tests --keepdb`: **16/16**.
+Browser-checked lighter dialog + Month/Day/Year DOB controls.
+
+## ✅ Front-desk doctor availability calendar
+
+**Objective.** When section should show which days the selected doctor
+actually has capacity (chatbot-style density calendar), not a blank date
+picker that only reveals "no slots" after you pick a closed day.
+
+**What changed.**
+- `GET /api/v1/doctors/{id}/availability-calendar?start=&end=` — wraps
+  `compute_density_for_range` (same aggregate preview as chatbot booking).
+- `DoctorAvailabilityCalendar` in the appointment When section: month nav,
+  plenty/few/almost-full/closed coloring, closed + past days disabled;
+  click open day → existing slot chips.
+- Auto-jumps off a closed default day when creating (not when editing).
+
+**Files:** `apps/api/doctors/router.py`, `schemas.py`, `tests.py`;
+`frontend` types/service/hook; `doctor-availability-calendar.tsx`;
+`appointment-form-dialog.tsx`.
+
+**Tests:** `apps.api.doctors.tests --keepdb`: **9/9**.
+
+**Recommended next:** none required for this ask.
+
+## ✅ Appointment-management identity verification: phone-primary + enumeration fix
+
+User's explicit architecture: phone mandatory at booking (so the clinic
+can call the patient), email optional; new booking needs no OTP; viewing/
+cancelling/rescheding an *existing* appointment does need verification,
+done properly (never reveal appointment/account existence before a code
+is verified). Investigated the actual current code before changing
+anything, since `Patient.phone`/`verified_at` already carried "required
+for OTP" / "set when phone OTP verification succeeds" field comments —
+strongly suggesting phone-primary was the original intent.
+
+**Found: two real, live gaps in the appointment-management flow
+specifically** (new-patient *booking* is a separate, larger, NOT-yet-
+touched gap — see bottom of this entry):
+
+1. `VerifyIdentity` (the "verify it's you before showing your
+   appointments" chat card) collected **email only** — hardcoded
+   `type="email"`, `isValidEmail`. Since email is optional at booking,
+   any patient who booked with phone only had no way to pass this at all.
+2. `otp_service.py::send_otp(require_existing_patient=True)` raised a
+   **distinct 404** ("we couldn't find a patient with that phone/email")
+   when nothing matched — a phone/email enumeration oracle: the response
+   itself revealed whether a given contact belongs to a registered
+   patient at this clinic, before any code was ever verified. Exactly
+   the privacy problem flagged in review.
+
+**Fix:**
+- `verify-identity.tsx` — phone input (`type="tel"`, `lib/phone.ts`'s
+  `validatePhone`/`normalizePhone`), copy updated ("We'll text a code...").
+- `otp_service.py::send_otp` — `require_existing_patient=True` now always
+  forces the `sms` channel (bypassing the clinic's general
+  `verification_mode`/`sms_otp` setting, which still governs the separate
+  new-patient booking OTP flow, untouched) and, on no match, returns a
+  fake-success `OTPSendResult(patient=None, ...)` — same status code,
+  same generic message ("If an account matches, a verification code has
+  been sent."), no `OTPVerification` row created, nothing actually sent.
+  A subsequent `/otp/verify` on the fake session already fails with the
+  same generic "invalid or expired code" a real wrong code would (no
+  row to match against either way) — verified by test, not assumed.
+- `apps/api/auth/schemas.py`/`patient_router.py` — `OTPSendOut.patient_id`
+  now `UUID | None`, response message hardcoded to the one generic string
+  regardless of match.
+
+**Verified against a real, deliberate prior decision, not just written
+over it:** `test_sms_otp_disabled.py` documented "SMS/phone verification
+disabled for now — a deliberate product decision" with `sms_otp: False`
+as the global default (Twilio not configured in this environment either —
+confirmed via `TWILIO_AUTH_TOKEN`/`TWILIO_FROM_NUMBER` absent from
+`.env`). Confirmed this fix does **not** contradict that decision: it's
+scoped narrowly to `require_existing_patient=True` (used by exactly one
+caller, the management flow) and leaves the general booking-OTP default
+(email, `sms_otp` gated) completely untouched — `resolve_otp_channel`
+itself wasn't modified. Also confirmed `get_sms_provider()` already
+falls back to a console/log provider when Twilio isn't configured,
+identical to how email already degrades — forcing "sms" here doesn't
+risk a hard delivery failure even without real Twilio credentials.
+
+**Tests:** new `test_appointment_management_otp.py` (6 tests: forced-phone
+behavior, email-rejected-even-for-a-real-patient, full round trip, and 3
+enumeration-safety tests — same response shape for a match vs. no match,
+no `OTPVerification` row created for a non-match, and verify-after-fake-
+send fails generically). Updated 8 tests across `test_otp_session_bind.py`
+/`test_visitor_patient_linking.py` that used `require_existing_patient=
+True` + email as their *test setup* mechanism (unrelated features —
+session-binding, DOB verification, visitor linking — that happened to
+reuse this code path to simulate "an existing patient verifies") to use
+phone instead, matching the new reality; the actual behavior each test
+asserts is unchanged. `apps.chatbot.tests apps.knowledge.tests
+apps.api.auth.tests --keepdb`: **901/902**, same pre-existing date flake.
+
+**Found, NOT fixed this phase — flagging explicitly rather than rushing
+it:** the *new-booking* widget flow (`booking-wizard.tsx::DetailsStep`)
+has the same underlying issue in a different shape — it collects one
+unified "contact" field hardcoded to email shape (`effectiveMode =
+"email"`, `contactLabel = "Email address"`), never asks for phone
+separately at all, and the booking-review flow still requires OTP
+verification before a booking completes (`verification_mode` defaulting
+to `"email"`, no "skip OTP for booking" path found anywhere). Both
+contradict the stated architecture (phone mandatory + no OTP for new
+booking) but fixing them means splitting one field into two with its own
+validation (the `phone`/`email` state and `classifyContact` plumbing
+already exist, per the user's "the code is already there") *and*
+restructuring the booking-confirm flow to skip the OTP step entirely —
+a materially larger, higher-stakes change to this session's most
+heavily-tested flow than the management-side fix above. Recommended as
+its own explicit next phase rather than bundled in here under time
+pressure.
+
+**Recommended next phase:** the new-booking `DetailsStep` phone/email
+split + removing the OTP gate from booking confirmation, as its own
+phase — confirm scope before starting given how central the booking flow
+is.
+
+## ✅ Care-concern phrase resolution — fix the "pain" bug properly + MEDIUM-confidence clarification
+
+**What changed.** `_SYMPTOM_MAP`'s plain substring matching let a generic
+catch-all keyword ("pain") leak into every message containing it as a
+substring ("chest pain," "tooth pain"), silently adding an unrelated
+Primary Care suggestion on top of the correct, specific specialty — a bug
+pinned (not fixed) two phases ago in `GenericPainKeywordPrecedenceTests`
+with an explicit note to revisit. A user-relayed external architecture
+review (three rounds of iteration, each incorporated or explicitly
+declined with reasons — see the plan file this phase shipped from) asked
+to fix this properly and add a MEDIUM-confidence tier: when a concern
+lexically implies 2+ distinct categories the clinic genuinely offers, ask
+a quick-reply clarification instead of guessing or silently combining
+categories. Reviewed against ROADMAP history first: a DB-backed
+`CareConcern` model was already built and explicitly rejected in an
+earlier phase with a written reactivation criterion ("only if eval
+results or growing tenant data actually demonstrate `_SYMPTOM_MAP`
+becoming a real limitation") — that criterion is now met by the pinned
+bug, but the fix doesn't need a database model, only phrase-based
+matching and a lightweight ambiguity check.
+
+**Root cause.** `_hint_names_and_categories` matched keywords via `k in
+text` (substring containment) with no specific/generic distinction —
+every keyword group, including the generic checkup/general/"pain"
+catch-all, contributed its hints unconditionally whenever its keyword
+appeared anywhere in the message, including as a substring of an
+unrelated, more specific phrase.
+
+**Fix — `apps/chatbot/booking/discovery.py`:**
+- `_SYMPTOM_MAP` restructured into `ConcernEntry` (name, phrases, hints,
+  `specific: bool`) — matched via `\bphrase\b` word-boundary regex, not
+  substring containment (same technique as the self-harm regex fix
+  earlier this session). The old flat generic group was split: `fever`/
+  `cold`/`flu`/`cough` (specific-enough, no collision risk) stayed
+  `specific=True`; only the genuinely vague `pain`/`general`/`checkup`
+  became `specific=False`.
+- `_hint_names_and_categories` now excludes `specific=False` entries from
+  the category set **entirely, under any path** — a message where only
+  the generic catch-all matches (bare "I have pain") always lands at 0
+  categories, never a phantom Primary Care result, regardless of whether
+  anything else in the message also matched.
+- New `_categories_available_at_clinic` + `ambiguous_categories_for`: the
+  lexically-implied category set is filtered against the clinic's real
+  `Specialty.category`/`Service.category` rows **before** the HIGH/
+  MEDIUM/LOW decision — a category only counts toward ambiguity if the
+  clinic actually offers it (round-three review finding: two categories
+  can be lexically implied while the clinic only genuinely has one, at
+  which point asking the patient to choose isn't a real choice). Only
+  consulted when 2+ lexical categories are found, so the ordinary
+  single-category path is completely untouched (no regression risk from
+  a specialty whose `category` field happens to be blank and relies on
+  name-fuzzy matching instead).
+- `SymptomResolution` gains `ambiguous_categories: list[str]` — non-empty
+  only for a genuine, clinic-real 2+-category ambiguity; `matched_ids`
+  stays empty and `understood=True` in that case (the concern *was*
+  understood, just not to one route yet).
+- `symptom_no_match_result` / new `ambiguous_category_chips`: one
+  quick-reply chip per ambiguous category, **no mandatory catch-all
+  chip** (round-three review: free-text input is already the escape
+  hatch for "none of these") — reuses the exact `{"behavior": "message",
+  ...}` chip shape `ui_meta.py::_contextual_actions` already renders for
+  "Book Appointment," so no new frontend component was needed.
+- `ui_meta.py::build_ui_meta` — collects `clarify_chips` from any
+  `sql_results` block's `meta` and prepends them to `meta["actions"]`.
+
+**Found live, fixed in the same phase (unit tests alone would have missed
+both):**
+1. Live-verifying via `ChatEngine.process()` against a seeded scratch
+   clinic — not just calling `resolve_symptom_specialty_ids` directly —
+   showed a bare concern description ("chest and stomach pain") is
+   classified `medical_question` and handled by the **soft_medical
+   direct-reply lane** (`engine.py::_soft_medical_reply`, via
+   `suggest_specialties`), not `doctor_search`/`search_doctors`. The new
+   ambiguity logic only lived in the SQL-handler resolvers, so it was
+   unreachable for the single most common real-world message shape.
+   Fixed with a new `ChatEngine._soft_medical_ambiguity_block` method,
+   called from the `soft_medical` branch in `process()`: when ambiguous,
+   it appends a synthetic SQLResult-shaped dict (with `clarify_chips` in
+   its `meta`) into `sql_rows` instead of calling `_soft_medical_reply` —
+   `build_ui_meta`'s existing chip-threading picks it up unchanged.
+2. Tapping a produced chip (message: `"I think it's related to
+   Cardiology"`) failed to resolve to any doctor when the clinic's real
+   specialty was named something other than the raw category (e.g.
+   "Heart Center," category="Cardiology") — confirmed live. Root cause:
+   `nlu/resolvers.py::_match_specialty` (the general specialty-name
+   resolver, entirely separate from `discovery.py`'s chain) only ever
+   checked `Specialty.name`/`slug` (icontains, then fuzzy) and never
+   consulted `Specialty.category` at all. Fixed by adding an exact-match
+   `category__iexact` check as a fallback tier, after name/slug matching
+   and before the fuzzy-score guess — same "exact match only, never
+   fuzzy" rule `discovery.py`'s own category matching already follows.
+   This is a generically useful fix beyond the chip flow: any direct
+   category mention ("I need a Cardiology doctor") now resolves
+   correctly regardless of how the clinic named the specialty.
+
+**Also fixed while restructuring the phrase table:**
+- `test_common_dental_typos_still_match`'s "toothace" (missing "h") case
+  broke under word-boundary matching (substring containment had
+  accidentally made it typo-tolerant) — added as an explicit literal
+  phrase, same precedent as the self-harm typo list in
+  `emergency_patterns.py`.
+- "chest and stomach pain" (the review's own worked example, used
+  throughout all three rounds) didn't actually imply Cardiology at all
+  under the real vocabulary — the cardiac entry only had the compound
+  phrase "chest pain," no bare "chest." Added bare "chest" as a phrase,
+  matching the existing pattern every sibling entry (stomach, skin, ent,
+  eye) already follows of including a bare body-part word.
+- Added bare "jaw"/"jaw pain" to the dental entry (TMJ/jaw pain is
+  dental-adjacent) so the plan's "tooth and jaw hurt → HIGH" regression
+  case is real vocabulary, not hypothetical.
+
+**Declined, stated explicitly (round-three review point):** distinguishing
+"strong" vs. "vague" evidence within a single category (e.g. bare "skin"
+ranking lower than "eczema") — the review's own load-bearing example,
+"chest pain," is moot in this system specifically since `chest\s+pain` is
+already a hard `EMERGENCY_RE` trigger and never reaches concern
+resolution at all (verified: `EMERGENCY_RE.search("i have chest pain")`
+→ `True`, `EMERGENCY_RE.search("chest and stomach pain")` → `False`).
+Grading every existing keyword as strong/weak evidence with no
+demonstrated live case behind it is exactly the preemptive complexity
+this codebase has repeatedly held off on until demonstrated (see the
+`CareConcern` DB-model precedent above). Flagged as a named follow-up if
+a real case surfaces.
+
+**Tests:** `test_discovery.py` — `GenericPainKeywordPrecedenceTests`
+rewritten to assert the fixed behavior instead of pinning the bug; new
+`PainWordBoundaryAndCrossCategoryTests` (cross-category negative
+assertions — chest/tooth/back pain each resolve their own specialty only,
+word-boundary proof via "painting"/"painful" not matching bare "pain");
+new `ConcernCategoryAmbiguityTests` (tooth+jaw → HIGH not MEDIUM,
+chest+stomach → MEDIUM when the clinic offers both, bare pain → LOW,
+chip-shape assertions, and the clinic-aware collapse case — tooth+stomach
+→ HIGH at a dentistry-only clinic); new `SoftMedicalAmbiguityBlockTests`
+for the engine.py soft_medical wiring. `test_resolvers.py` — new
+`MatchSpecialtyByCategoryTests` (4 tests) for the `_match_specialty`
+category fallback, including the priority-order guard (name match must
+still win over category match when both exist).
+
+`python manage.py test apps.chatbot.tests apps.knowledge.tests --keepdb`:
+**908/909**, same single pre-existing `test_the_earliest_opening_is_not_
+offered_as_a_substitute` date-boundary flake (unrelated, reproduced in
+isolation before this phase too).
+
+**Eval:** `run_chat_eval --target 520` — **698/706 (98.9%)**, unchanged
+from the last recorded baseline. The two failing families
+(`adversarial_booking_slang_squeeze`, `adversarial_medical_slang_
+pediatric`) are pre-existing and unrelated to symptom/category
+resolution.
+
+**Live E2E verification** (scratch clinics, cleaned up after, via real
+`ChatEngine.process()` calls — not mocked): dental/cardiology/gastro/
+dermatology specialties + doctors + services seeded; confirmed HIGH
+(unambiguous concern → direct specialty/doctor), MEDIUM (chest+stomach →
+2 chips, no forced third chip), LOW (bare "pain" → generic clarification,
+no false Primary Care), the clinic-aware collapse (tooth+stomach at a
+dentistry-only clinic → HIGH, not a dead-end MEDIUM chip), and a full
+chip-tap round trip (tapping "Cardiology" → resolves to the real doctor
+at that specialty, even though the specialty's name doesn't literally
+contain the category word).
+
+**Known limitations / found-but-not-fixed:**
+- "I need a dentist" (a role-synonym specialty request with no symptom
+  entity at all) returned every doctor at the clinic, not just dentists —
+  confirmed live, pre-existing, and unrelated to this phase's changes:
+  `entities.symptom` is empty for a pure role/specialty request, so
+  `resolve_symptom_specialty_ids` returns `None` immediately and no
+  filter is ever applied. This is a role-synonym→specialty gap in
+  `search_doctors`/`nlu/resolvers.py`, not a category/concern-resolution
+  gap — out of scope here, but worth its own phase since it's a real,
+  common phrasing.
+- The "strong vs. vague evidence within one category" refinement
+  declined above.
+- `ambiguous_category_chips`' tapped message (`"I think it's related to
+  {category}"`) depends on the NLU reliably extracting the category name
+  as `entities.specialty` — verified live for a two-specialty clinic, but
+  not fuzz-tested against every category string in `CareCategory` (28
+  values) or under NLU degraded/rules-fallback conditions.
+
+**Recommended next phase:** the role-synonym→specialty gap for
+`search_doctors`/`doctor_availability` ("I need a dentist"/"is there an
+eye doctor" with no symptom entity) found above — confirm scope before
+starting, separate from this phase's concern-resolution work.
+
+## ✅ Role-synonym gap: unresolved doctor role silently browsed every doctor
+
+**What changed.** Fixed the role-synonym gap flagged as found-but-not-
+fixed in the previous phase: "is there an eye doctor here" (or any
+`doctor_search`/`doctor_availability` message naming a specific kind of
+doctor that the NLU extracted no specialty/symptom entity for at all)
+silently fell through to browsing/checking every active doctor at the
+clinic, instead of an honest "not sure which specialist" clarification.
+
+**Reproduced first, not assumed.** Live-verified via `ChatEngine.process()`
+against a seeded scratch clinic that the NLU's entity extraction for an
+out-of-catalog role request is genuinely non-deterministic: "is there an
+eye doctor here" sometimes returned `entities.specialty: "Ophthalmology"`
+(which the existing code already handles correctly — filters to zero
+matching doctors, honest "No matching doctors found") and sometimes
+returned every entity `null` — the NLU's own `reasoning_short` field even
+said *"No eye doctor listed, clarification needed"* while the structured
+`clarification_needed` field stayed `False`. Root cause isolated to the
+second case specifically: with `entities.specialty`, `entities.symptom`,
+and `doctor_name` all empty, `resolve_symptom_specialty_ids` returns
+`None` (nothing to resolve), and neither `search_doctors` nor
+`doctor_availability` had any fallback for that — the query stayed
+completely unfiltered.
+
+**First attempt was wrong, caught by the full test suite before shipping.**
+The first fix gated the decline on `not is_doctor_browse_query(ctx.message)`
+— reusing the existing "is this an explicit browse request" signal. This
+broke 6 tests immediately: `is_doctor_browse_query`'s regex is narrowly
+tuned for stripping stray entities on a *confirmed* browse phrase, not
+for exhaustively recognizing every legitimate browse phrasing — it
+already missed "list your doctors" (live-reproduced), and separately, the
+"Find a Doctor" UI-action button and several internal callers construct a
+`SQLContext` with no message text at all and deliberately want the full
+roster. Negatively inferring "not a browse" from a narrow regex was the
+wrong shape of signal for this.
+
+**Actual fix — a positive signal instead:** new
+`routing/signals.py::mentions_specific_doctor_role(message)` fires only
+when the message names a specific, recognized doctor-role word ("dentist,"
+"eye doctor," "cardiologist," …) via a new shared `DOCTOR_ROLE_ALIASES`
+dict (also now used by `nlu/resolvers.py::_match_specialty`, which
+previously had its own separate, smaller copy of this same alias list —
+missing "dentist" entirely, a second small bug found and fixed in the
+same place). `search_doctors`/`doctor_availability` now decline with an
+honest clarification only when: nothing resolved to a specialty/symptom
+AND no doctor/service/language was named AND the message positively
+names a specific role. A phrasing this curated vocabulary doesn't
+recognize safely defaults to the existing browse/any-doctor behavior
+instead of risking a false decline — verified live that "who are your
+doctors," "list your doctors," "is any doctor available tomorrow," and
+"is anyone free tomorrow" are all unaffected.
+
+**Files changed:**
+- `apps/chatbot/routing/signals.py` — new `DOCTOR_ROLE_ALIASES` dict,
+  new `mentions_specific_doctor_role()`.
+- `apps/chatbot/nlu/resolvers.py` — `_match_specialty`'s local `aliases`
+  dict replaced with the shared `DOCTOR_ROLE_ALIASES` (adds "dentist" →
+  "dentistry," previously missing).
+- `apps/chatbot/sql_tool/handlers/doctors.py` — `search_doctors` and
+  `doctor_availability` both gain the same gate: decline honestly when
+  nothing resolved, nothing else was named, and a specific role was
+  mentioned; unfiltered browse/any-doctor behavior otherwise.
+
+**Tests:** new `SearchDoctorsUnresolvedRoleTests` (4) and
+`DoctorAvailabilityUnresolvedRoleTests` (2) in `test_sql_tool.py`
+(unresolved-role decline, generic-browse-phrasing-still-browses, a
+role-noun-that-does-resolve is unaffected, empty-message UI action still
+browses, any-doctor-available query unaffected); new
+`MentionsSpecificDoctorRoleTests` in `test_entity_guard.py`; new
+`test_dentist_role_noun_resolves_via_shared_alias` in
+`MatchSpecialtyByCategoryTests` (`test_resolvers.py`).
+
+`python manage.py test apps.chatbot.tests apps.knowledge.tests --keepdb`:
+**917/918**, same single pre-existing date-boundary flake.
+
+**Eval:** `run_chat_eval --target 520` — **698/706 (98.9%)**, unchanged.
+
+**Known limitations / found-but-not-fixed:**
+- `DOCTOR_ROLE_ALIASES` is curated (11 role nouns + a handful of compound
+  "___ doctor" phrases), not exhaustive — same caveat as the dental-
+  vocabulary gap in `_CONCERN_MAP`. A role phrased outside this
+  vocabulary still falls through to the old unfiltered-browse behavior
+  rather than a clarification (safe by design — see "actual fix" above —
+  but means real-world coverage will grow only as new gaps are
+  demonstrated, not preemptively).
+- The NLU's own `clarification_needed`/`clarification_question` fields
+  were observed still `False`/`None` even when its own `reasoning_short`
+  text recognized the ambiguity ("No eye doctor listed, clarification
+  needed") — the structured fields and the free-text reasoning disagreed.
+  Not fixed here since this phase's fix is fully deterministic downstream
+  of that gap either way, but worth its own investigation if
+  `clarification_needed` is ever relied upon elsewhere.
+
+**Recommended next phase:** none proposed — this closes the gap flagged
+by the previous phase. Revisit `DOCTOR_ROLE_ALIASES` coverage only if a
+real, demonstrated phrasing gap surfaces (per this codebase's established
+"fix when demonstrated, not preemptively" discipline).
+
+## ✅ RAG replies silently blind to conversation older than the last exchange
+
+**What changed.** User-reported: "the chatbot feels like it doesn't know
+anything from the previous messages" despite this codebase already having
+extensive, prior conversation-memory work (Phase 37's `recent_turns`,
+Phase 39's `ConversationTimeline`/session recall, Phase 41's pronoun
+resolution — see ARCHITECTURE.md §10). Investigated fresh rather than
+assuming which of those was broken, and found a real, previously-
+undiscovered gap in a *different* code path from all of them: the Large
+LLM's RAG-answer synthesis (`response_llm.py`, the model that writes the
+actual patient-facing prose for knowledge-base/FAQ-style questions).
+
+**Reproduced live, precisely, before writing any fix.** Called
+`synthesize_clinic_reply` directly with a real 4-message history (a
+patient disclosing a child's peanut allergy, then an unrelated question,
+then a fasting-instructions question referencing "her allergy") and a
+real retrieved excerpt. The model's reply asked the patient to "bring a
+list of... known allergies" — exactly as if the disclosure two exchanges
+earlier had never happened. Root cause, in two parts, both real and both
+fixed:
+
+1. **Hard truncation to 1 exchange.** `response_llm.py::_user_block`
+   sliced `history[-2:]` ("at most last 1-2 turns for latency") before
+   rendering the `### Recent conversation` prompt section, and
+   `engine.py::_generate_response` *also* re-truncated
+   `recent_turns[-2:]` before that — even though `recent_turns` itself
+   already carries up to 6 messages (3 exchanges), loaded for free by
+   Phase 37 for the NLU call. A fact stated 2+ exchanges back was
+   therefore never even *shown* to this specific LLM call, regardless of
+   what the prompt said. Confirmed by direct test with the full 4-message
+   history and unchanged prompt wording: the model *did* correctly
+   reference the allergy once actually given the chance to see it —
+   isolating this as the dominant, necessary fix, not a red herring.
+2. **Prompt ambiguity, the user's own suspicion, also confirmed real.**
+   Both `receptionist_constitution.md` and `response_llm.py::_system_prompt`
+   said "Use ONLY the provided knowledge excerpts and optional SQL
+   context" with no scoping — a instruction written as an anti-
+   fabrication guard for *clinic facts* (doctors/slots/hours/insurance/
+   prices/policies) but phrased broadly enough to also read as "ignore
+   the Recent conversation section entirely." Not the dominant cause (the
+   model used history correctly once it was actually present, even with
+   the old wording), but a real robustness gap worth closing on its own —
+   an LLM instruction is probabilistic, not guaranteed, and "ONLY" is
+   exactly the kind of absolute word that invites over-suppression.
+
+**Fix:**
+- `apps/chatbot/response_llm.py` — new `_MAX_HISTORY_TURNS = 6` constant
+  (shared, single source of truth so the two call sites can't drift back
+  out of sync); `_user_block` now uses it instead of a bare `[-2:]`.
+  `_system_prompt` reworded: "ONLY" now explicitly scoped to
+  "clinic-specific facts," with an added, explicit sentence authorizing
+  (not just tolerating) using Recent conversation for continuity.
+- `apps/chatbot/prompts/receptionist_constitution.md` — same clarification,
+  in the actual constitution bullet the system prompt loads.
+- `apps/chatbot/engine.py::_generate_response` — passes `recent_turns`
+  through as-is (up to 6, already loaded) instead of re-slicing to 2;
+  falls back to `self._load_history(session, limit=6)` (was `limit=2`)
+  for the rare direct-call path with no `recent_turns` supplied.
+
+**Measured, not assumed, that widening this has no meaningful latency
+cost** (this codebase's own established discipline — see Phase 37's own
+NLU latency measurement): 3-call live samples at the old 2-turn vs. new
+6-turn cap showed no consistent difference (2101ms vs. 1552ms average,
+well within normal API-call jitter) — dominated by the LLM round trip
+itself, same finding as Phase 37, and this reuses an already-loaded list
+rather than a second DB query either way.
+
+**Verified the anti-fabrication guard this touches the same file as
+(Phase 51's "loosely related excerpt" fix) still holds** — re-ran that
+exact scenario (a membership-fee excerpt for "what are your priorities in
+treating patients") live after this change: still declines honestly
+("I don't have specific information on our treatment priorities...")
+rather than generalizing invented clinic-values language. The continuity
+clarification did not weaken the clinic-fact guard.
+
+**Tests:** new `RagRepliesUseFullConversationWindowTests` (6 tests) in
+`test_hallucination_prevention.py` — deterministic, code-level assertions
+(the actual history reaching the prompt/provider call is no longer
+silently re-truncated to 2, the defensive 6-turn cap still bounds an
+unusually long history, the new instruction text is present) rather than
+asserting live model output, matching this file's own established
+pattern for prompt-only fixes (model behavior verified live separately,
+as above, not regression-locked).
+
+`python manage.py test apps.chatbot.tests apps.knowledge.tests --keepdb`:
+**922/923**, same single pre-existing date-boundary flake. `run_chat_eval
+--target 520`: **698/706 (98.9%)**, unchanged.
+
+**Known limitations / found-but-not-fixed:**
+- Still a *bounded* window (6 messages / 3 exchanges), not full-transcript
+  memory — a fact from turn 1 of a 15-turn conversation is still outside
+  this window by turn 10. This is a deliberate, existing architectural
+  choice (Phase 39 explicitly rejected a fuller transcript after Phase 37
+  already measured that tradeoff — full-JSON booking drafts in context
+  previously caused the classifier to copy stale data out of it) that
+  this phase did not revisit; genuinely old context still relies on
+  `ConversationTimeline`'s explicit, code-owned slots (Phase 39) or
+  `session_recall`, not this window.
+- This phase's fix is specific to the **RAG/vector_rag lane**
+  (`response_llm.py`). The `soft_medical` direct-reply lane and
+  SQL-only/template-composed lanes don't call this function at all and
+  were not in scope here — they already have their own, separate memory
+  mechanisms (`ConversationTimeline`, pin-amendment, pronoun resolution)
+  per ARCHITECTURE.md §10, not touched by this phase.
+- The prompt-clarity fix (point 2 above) is, like all prompt-only fixes,
+  probabilistic — it measurably reduces the *risk* of the model
+  under-using given context, not a guarantee for every possible phrasing.
+
+**Recommended next phase:** none proposed. If "feels like no memory"
+recurs after this fix, get the specific transcript/session first (per
+this session's standing rule against chasing unreproduced reports) — the
+next most likely candidates, in order, would be (a) the gap being outside
+the 6-message window and needing a new `ConversationTimeline` slot for
+that specific fact, similar to Phase 39's `insurance`/`problem` pins, or
+(b) a `soft_medical`/SQL-lane case this phase didn't touch.
