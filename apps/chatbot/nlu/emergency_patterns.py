@@ -15,6 +15,82 @@ from __future__ import annotations
 
 import re
 
+# Live-confirmed P0 bug (pre-production safety review): the plain word
+# "suicide" -- arguably the single most common way someone discloses
+# suicidal intent -- matched NEITHER this file's old EMERGENCY_RE (which
+# only had the adjective "suicidal" and "kill myself") NOR its SYMPTOM_CUE_RE/
+# SYMPTOM_NARRATIVE_RE's bare "suicid" stem, which turns out to have never
+# matched anything at all: `\bsuicid\b` requires a word boundary immediately
+# after "suicid", but "suicide" and "suicidal" both continue with another
+# letter right there (d->e, d->a) -- there IS no boundary there, confirmed
+# empirically, not assumed. This file's own fail-closed philosophy ("a
+# missed genuine self-harm... disclosure is far worse than one unnecessary
+# 911 nudge") was being violated by its own regex bug: a real disclosure
+# using the plain word "suicide" depended entirely on a live LLM call
+# correctly classifying it -- exactly what this file's docstring says the
+# deterministic layer should never have to rely on. Live-reproduced: with
+# the real chatbot, an actual OpenAI API hiccup on one turn caused a
+# suicide disclosure to fall through to a generic rules-fallback
+# clarification instead of the emergency response, precisely because nothing
+# deterministic caught it first.
+#
+# _SELF_HARM_FRAGMENT is now the single canonical self-harm/suicide pattern
+# fragment, interpolated into EMERGENCY_RE/EMERGENCY_NARRATIVE_RE (the hard
+# trigger) and SYMPTOM_CUE_RE/SYMPTOM_NARRATIVE_RE (the softer gate) below,
+# and exported as SELF_HARM_RE for response_templates.py/engine.py to pick
+# the mental-health-specific safety message (988 Suicide & Crisis Lifeline)
+# instead of the generic physical-emergency one (911) -- one definition,
+# not four independently-drifting copies (this file already had two;
+# response_templates.py had a third, broader one maintained separately with
+# no word-boundary anchoring at all, i.e. plain substring containment,
+# never actually wired into the live response path at all — see
+# engine.py's safety_message fix in the same change).
+#
+# Includes a handful of common misspellings ("sucide", "suicde", "suiside",
+# "suicidle") found via live testing — none of these contain "suicid" as a
+# substring (letters transposed or dropped), so `suicid\w*` alone does not
+# catch them; a real user typed "i want to do sucide" during this review.
+# Not a general fuzzy-typo engine (that would be over-engineering for one
+# word) — a short, explicit list of the misspellings actually observed or
+# obviously plausible, same scope as this session's other typo-tolerance
+# fixes (e.g. common dental-term typos in booking/discovery.py).
+#
+# Deliberately excludes two words from the older, superseded
+# response_templates.py list that are dangerous false-positive traps in a
+# clinical/administrative context: "jump" (jump rope, jump the queue,
+# jump-start) and "slit" ("slit lamp" is a real, common ophthalmology exam
+# device/procedure -- a patient asking about one would otherwise get a
+# suicide-crisis response). "overdose" is kept: an overdose is time-critical
+# regardless of intent, so it stays fail-closed like every other term here.
+_SELF_HARM_FRAGMENT = (
+    r"suicid\w*|sucide|suicde|suiside|suicidle|kill{SP}myself|"
+    r"end{SP}(?:my|his|her|their|this){SP}life|"
+    r"harm{SP}myself|self[\s-]harm|"
+    r"don'?t{SP}want{SP}to{SP}live|want{SP}to{SP}die|"
+    r"wish{SP}i{SP}(?:was|were){SP}dead|"
+    r"take{SP}my{SP}(?:own{SP})?life|hurt{SP}myself|"
+    r"can'?t{SP}go{SP}on|better{SP}off{SP}dead|no{SP}reason{SP}to{SP}live|"
+    r"cut{SP}myself|shoot{SP}myself|overdose"
+)
+# Two renderings of the fragment: `\s+` for the \s+-spaced regexes below,
+# plain " " for the single-space-spaced ones -- same word list either way.
+SELF_HARM_RE = re.compile(
+    r"\b(" + _SELF_HARM_FRAGMENT.format(SP=r"\s+") + r")\b", re.IGNORECASE
+)
+_SELF_HARM_SINGLE_SPACE = _SELF_HARM_FRAGMENT.format(SP=" ")
+_SELF_HARM_MULTI_SPACE = _SELF_HARM_FRAGMENT.format(SP=r"\s+")
+
+
+def is_self_harm_mention(text: str) -> bool:
+    """True when `text` names suicide/self-harm specifically (not just any
+    emergency) -- used to choose the 988-crisis-line safety message over
+    the generic 911-physical-emergency one. Never used to decide *whether*
+    something is an emergency (that stays EMERGENCY_RE's job) -- only which
+    of the two safety messages to show once it already is one.
+    """
+    return bool(SELF_HARM_RE.search(text or ""))
+
+
 EMERGENCY_RE = re.compile(
     r"\b("
     r"chest\s+pain|chest\s+(?:pressure|tightness|tight)|"
@@ -31,7 +107,9 @@ EMERGENCY_RE = re.compile(
     r"lips?\s+(?:are\s+)?tingling|"
     r"dizzy\s+and\s+faint|faint\s+and\s+dizzy|"
     r"heart\s+attack|stroke|"
-    r"suicidal|kill\s+myself|severe\s+bleeding|unconscious|"
+    + _SELF_HARM_MULTI_SPACE
+    + r"|"
+    r"severe\s+bleeding|unconscious|"
     r"choking|left\s+arm\s+numbness"
     r")\b",
     re.IGNORECASE,
@@ -44,7 +122,7 @@ EMERGENCY_RE = re.compile(
 # 4 causes of a stroke?" and, in a larger follow-up sample, "What is
 # shortness of breath symptom of?". EXCEPTION_TERMS_RE below is exactly
 # those proven terms — deliberately NOT generalized to every narrative
-# phrase (chest pain, arm numbness, choking, suicidal/kill myself, severe
+# phrase (chest pain, arm numbness, choking, self-harm terms, severe
 # bleeding, unconscious all stay unconditionally fail-closed; the cost of a
 # missed genuine self-harm or cardiac-arrest disclosure is far worse than
 # one unnecessary "call 911" nudge, and none of these has been proven prone
@@ -72,7 +150,8 @@ EMERGENCY_NARRATIVE_RE = re.compile(
     r"tongue\s+(?:feels\s+huge|swelling|swollen)|"
     r"lips?\s+(?:are\s+)?tingling|"
     r"dizzy\s+and\s+faint|faint\s+and\s+dizzy|"
-    r"suicidal|kill\s+myself|severe\s+bleeding|unconscious|"
+    + _SELF_HARM_MULTI_SPACE
+    + r"|severe\s+bleeding|unconscious|"
     r"choking|left\s+arm\s+numbness"
     r")\b",
     re.IGNORECASE,
@@ -93,8 +172,7 @@ EMERGENCY_EXPERIENTIAL_OVERRIDE_RE = re.compile(
     re.IGNORECASE,
 )
 # SYMPTOM_CUE_RE's narrative-phrase list, minus EXCEPTION_TERMS_RE's terms —
-# same relationship as EMERGENCY_NARRATIVE_RE above, for the "suicid" stem
-# and "numbness in arm" variants SYMPTOM_CUE_RE adds.
+# same relationship as EMERGENCY_NARRATIVE_RE above.
 SYMPTOM_NARRATIVE_RE = re.compile(
     r"\b("
     r"chest (?:pain|hurt|hurts|pressure|tight(?:ness)?)|"
@@ -108,7 +186,8 @@ SYMPTOM_NARRATIVE_RE = re.compile(
     r"tongue (?:feels huge|swelling|swollen)|"
     r"lips? (?:are )?tingling|"
     r"dizzy and faint|faint and dizzy|"
-    r"suicid|"
+    + _SELF_HARM_SINGLE_SPACE
+    + r"|"
     r"severe bleeding|unconscious|choking|"
     r"numb(?:ness)? (?:in )?(?:my |left )?arm|"
     r"left arm numb"
@@ -150,7 +229,9 @@ SYMPTOM_CUE_RE = re.compile(
     r"tongue (?:feels huge|swelling|swollen)|"
     r"lips? (?:are )?tingling|"
     r"dizzy and faint|faint and dizzy|"
-    r"heart attack|stroke|suicid|"
+    r"heart attack|stroke|"
+    + _SELF_HARM_SINGLE_SPACE
+    + r"|"
     r"severe bleeding|unconscious|choking|"
     r"numb(?:ness)? (?:in )?(?:my |left )?arm|"
     r"left arm numb"
