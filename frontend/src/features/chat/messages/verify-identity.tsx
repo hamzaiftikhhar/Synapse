@@ -6,7 +6,8 @@ import { Input } from "@/components/ui/input";
 import { ChatInlineCard } from "@/features/chat/components/chat-inline-card";
 import { OtpInput } from "@/features/chat/components/otp-input";
 import { getApiErrorMessage } from "@/lib/api/client";
-import { isValidEmail, isValidOtpCode } from "@/lib/contact-validation";
+import { isValidOtpCode } from "@/lib/contact-validation";
+import { normalizePhone, validatePhone } from "@/lib/phone";
 import { widgetAuthService } from "@/services";
 
 const RESEND_COOLDOWN_SECONDS = 30;
@@ -73,13 +74,13 @@ export function VerifyIdentity({
   }
 
   function contactIsValid(): boolean {
-    return isValidEmail(contact);
+    return validatePhone(contact, { required: true }) === null;
   }
 
   async function sendCode(isResend = false) {
     if (loading || resending) return;
     if (!contactIsValid()) {
-      setFieldError("Enter a valid email address.");
+      setFieldError("Enter a valid phone number.");
       return;
     }
     setFieldError(null);
@@ -90,7 +91,7 @@ export function VerifyIdentity({
       const result = await widgetAuthService.sendOtp({
         clinic_slug: clinicSlug,
         session_token: activeSessionToken,
-        email: contact,
+        phone: normalizePhone(contact),
       });
       rememberSessionToken(result.session_token);
       setDebugCode(result.debug_code ?? null);
@@ -118,7 +119,7 @@ export function VerifyIdentity({
       const result = await widgetAuthService.verifyOtp({
         clinic_slug: clinicSlug,
         session_token: activeSessionToken,
-        email: contact,
+        phone: normalizePhone(contact),
         code: code.trim(),
       });
       const token =
@@ -152,21 +153,21 @@ export function VerifyIdentity({
           <div>
             <p className="text-sm font-semibold text-foreground">Verify it&apos;s you</p>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              We&apos;ll email a code to confirm it&apos;s really you before
+              We&apos;ll text a code to confirm it&apos;s really you before
               showing your appointments.
             </p>
           </div>
           <Input
-            type="email"
-            inputMode="email"
-            autoComplete="email"
+            type="tel"
+            inputMode="tel"
+            autoComplete="tel"
             autoFocus
             value={contact}
             onChange={(e) => {
               setContact(e.target.value);
               setFieldError(null);
             }}
-            placeholder="Email address"
+            placeholder="Phone number used when booking"
             className="h-9 rounded-lg text-sm"
           />
           {fieldError ? <p className="text-xs text-destructive">{fieldError}</p> : null}
