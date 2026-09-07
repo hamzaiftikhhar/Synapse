@@ -20,6 +20,21 @@ from apps.chatbot.providers import circuit_breaker
 
 logger = logging.getLogger(__name__)
 
+# Live-confirmed hallucination-adjacent gap: a fact the patient stated 2+
+# exchanges ago (e.g. a child's allergy) was invisible to this prompt at
+# the old cap of 1 exchange (history[-2:], "at most last 1-2 turns for
+# latency") -- reproduced directly: the reply asked the patient to
+# disclose an allergy they had *already* stated one exchange earlier.
+# Measured, not assumed, that widening this has no meaningful latency
+# cost -- 3-call samples at the old vs. this cap showed no consistent
+# difference (dominated by the LLM API round trip itself, same finding as
+# Phase 37's NLU latency measurement) -- and this reuses engine.py's
+# already-loaded `recent_turns` (itself capped at 6 there), so it's not a
+# second DB query either. Kept as an explicit constant, not `history[-2:]`
+# inline, so the two call sites (here and engine.py::_generate_response)
+# can't drift out of sync again.
+_MAX_HISTORY_TURNS = 6
+
 _GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
     "{model}:generateContent?key={api_key}"
@@ -190,7 +205,13 @@ def _system_prompt(clinic: Any) -> str:
         f"You are the clinic assistant for {clinic.name}. "
         f"{constitution} "
         "You are answering from retrieved knowledge-base excerpts (RAG lane only). "
-        "Use ONLY the provided knowledge excerpts and optional SQL context. "
+        "For clinic-specific facts (doctors, hours, prices, insurance, policies, "
+        "slots), use ONLY the provided knowledge excerpts and SQL context — never "
+        "invent one. The Recent conversation section, when present, is a separate, "
+        "legitimate source: use it to remember what the patient already told you "
+        "and refer back to it naturally, the same as a human receptionist would — "
+        "it is never a source of new clinic facts, only of what's already been "
+        "said in this conversation. "
         + (f"Clinic phone (only if needed): {phone}. " if phone else "")
     )
     if overlay:
@@ -217,7 +238,7 @@ def _user_block(
 
     if history:
         lines = []
-        for turn in history[-2:]:  # at most last 1–2 turns for latency
+        for turn in history[-_MAX_HISTORY_TURNS:]:
             role = turn.get("role", "user")
             content = (turn.get("content") or "").strip()
             if content:
