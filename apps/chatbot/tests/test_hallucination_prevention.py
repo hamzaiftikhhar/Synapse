@@ -7,9 +7,11 @@ for the full live reproduction, root cause, and severity for each.
 from __future__ import annotations
 
 from dataclasses import replace
+from unittest.mock import patch
 
 from django.test import SimpleTestCase, TestCase
 
+from apps.chatbot.engine import ChatEngine
 from apps.chatbot.nlu.resolvers import _match_service, resolve_entities
 from apps.chatbot.nlu.schemas import Intent, parse_nlu_payload
 from apps.chatbot.routing.heuristics import apply_routing_heuristics
@@ -200,3 +202,133 @@ class SpecialtyListDoesNotDropServiceEntityTests(TestCase):
         )
         self.assertEqual(out.service_filter_mode, "none")
         self.assertIsNone(out.entities.service)
+
+
+class LooselyRelatedExcerptDoesNotBecomeFabricatedAnswerTests(SimpleTestCase):
+    """Live-confirmed, pre-production review: "what are your priorities in
+    treating patients" retrieved a real but only loosely-related knowledge
+    chunk (a membership-fee clause), and the response LLM generalized it
+    into confident-sounding, entirely invented "clinic priorities" language
+    ("continuous, personalized primary care... attentive, patient-centered
+    care...") that appeared nowhere in the actual retrieved text. The
+    constitution's existing "if knowledge is missing, say so" rule only
+    covered zero retrieval hits (already handled in code by
+    empty_rag_reply()) -- it said nothing about a hit that doesn't actually
+    answer the question. This is a prompt-only fix (receptionist_
+    constitution.md), so it can't be regression-locked by asserting model
+    output deterministically -- this just confirms the instruction text
+    the model receives actually contains the new rule. Live-verified
+    separately (see ROADMAP.md) that the exact reported case now declines
+    honestly instead of inventing content, and that genuinely answerable
+    questions grounded in real document text are unaffected."""
+
+    def test_constitution_instructs_against_generalizing_from_loose_excerpts(self):
+        from apps.chatbot.response_llm import _system_prompt
+
+        clinic = type("C", (), {"name": "Acme", "phone": "555"})()
+        prompt = _system_prompt(clinic)
+        lowered = prompt.lower()
+        self.assertIn("loosely related", lowered)
+        self.assertIn("fabrication", lowered)
+
+
+class RagRepliesUseFullConversationWindowTests(SimpleTestCase):
+    """Live-confirmed gap (found while investigating a "feels like it has
+    no memory" report): the Large LLM's RAG-answer prompt truncated
+    conversation history to the last exchange only (`history[-2:]`, "at
+    most last 1-2 turns for latency"), even though up to 6 turns
+    (recent_turns, Phase 37) were already loaded and available for free.
+    Reproduced directly: a patient who disclosed a child's peanut allergy,
+    then asked an unrelated question, then asked a fasting-instructions
+    question referencing "her allergy" two exchanges later, got a reply
+    that failed to acknowledge the already-disclosed allergy and read
+    exactly like the disclosure had never happened. Separately, the
+    constitution's "use ONLY provided knowledge excerpts and optional SQL
+    context" instruction said nothing about the Recent conversation
+    section also present in the same prompt -- clarified so the "ONLY"
+    scope is unambiguously about clinic facts, not conversational
+    continuity.
+
+    This is a prompt-and-plumbing fix -- deterministic assertions below
+    confirm the actual history that reaches the prompt/provider call is no
+    longer silently re-truncated to 2, and that the clarifying instruction
+    text is present. Live model behavior was verified separately (see
+    ROADMAP.md), not asserted here, per this file's own established
+    pattern for prompt-only fixes."""
+
+    def test_system_prompt_authorizes_using_recent_conversation_for_continuity(self):
+        from apps.chatbot.response_llm import _system_prompt
+
+        clinic = type("C", (), {"name": "Acme", "phone": "555"})()
+        prompt = _system_prompt(clinic)
+        lowered = prompt.lower()
+        self.assertIn("recent conversation", lowered)
+        self.assertIn("refer back to it naturally", lowered)
+
+    def test_system_prompt_scopes_the_only_instruction_to_clinic_facts(self):
+        """The "ONLY" instruction must still exist (anti-fabrication guard
+        for doctors/slots/hours/etc.) -- just no longer phrased broadly
+        enough to also suppress using conversation history."""
+        from apps.chatbot.response_llm import _system_prompt
+
+        clinic = type("C", (), {"name": "Acme", "phone": "555"})()
+        prompt = _system_prompt(clinic)
+        self.assertIn("clinic-specific facts", prompt.lower())
+
+    def test_user_block_includes_more_than_the_last_exchange(self):
+        from apps.chatbot.response_llm import build_response_prompts
+
+        clinic = type("C", (), {"name": "Acme", "phone": "555"})()
+        history = [
+            {"role": "user", "content": "My daughter has a peanut allergy."},
+            {"role": "assistant", "content": "Noted, thank you for letting us know."},
+            {"role": "user", "content": "Do you treat adults too?"},
+            {"role": "assistant", "content": "Yes, we see patients of all ages."},
+        ]
+        prompts = build_response_prompts(
+            clinic=clinic, message="Anything special given her allergy?", history=history
+        )
+        self.assertIn("peanut allergy", prompts["user_prompt"])
+
+    def test_user_block_still_bounds_a_much_longer_history(self):
+        """Not unbounded -- a defensive cap still applies even if a caller
+        passes an unusually long history, so prompt size/latency stay
+        predictable."""
+        from apps.chatbot.response_llm import _MAX_HISTORY_TURNS, build_response_prompts
+
+        clinic = type("C", (), {"name": "Acme", "phone": "555"})()
+        # Zero-padded, fixed-width markers -- a plain f"message-{i}" would
+        # false-positive on substring matches (e.g. "message-1" is a
+        # substring of "message-14"), which is exactly what happened the
+        # first time this test was written.
+        history = [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"MARKER-{i:03d}-END"}
+            for i in range(20)
+        ]
+        prompts = build_response_prompts(clinic=clinic, message="hi", history=history)
+        rendered = prompts["user_prompt"]
+        self.assertNotIn("MARKER-000-END", rendered)
+        kept = sum(1 for i in range(20) if f"MARKER-{i:03d}-END" in rendered)
+        self.assertEqual(kept, _MAX_HISTORY_TURNS)
+
+    @patch("apps.chatbot.response_llm.synthesize_clinic_reply")
+    def test_generate_response_passes_full_recent_turns_not_a_2_turn_slice(self, mock_synth):
+        """engine.py::_generate_response used to re-truncate to
+        recent_turns[-2:] before this fix -- must now forward the full
+        (already-bounded-at-6) recent_turns list through untouched."""
+        mock_synth.return_value = "ok"
+        recent_turns = [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"turn-{i}"}
+            for i in range(6)
+        ]
+        clinic = type("C", (), {"name": "Acme", "phone": "555"})()
+        ChatEngine()._generate_response(
+            clinic=clinic,
+            message="hi",
+            nlu=None,
+            sql_rows=[],
+            vector_rows=[{"score": 0.9, "heading": "x", "text": "y"}],
+            session=None,
+            recent_turns=recent_turns,
+        )
+        self.assertEqual(mock_synth.call_args.kwargs["history"], recent_turns)
