@@ -152,7 +152,11 @@ class OTPSendIn(Schema):
 class OTPSendOut(Schema):
     message: str
     session_token: str
-    patient_id: UUID
+    # None specifically for the appointment-management send when no
+    # patient matches — see otp_service.send_otp's require_existing_patient
+    # path. Never used to distinguish that case in the response otherwise;
+    # the message/status code are identical either way.
+    patient_id: UUID | None = None
     expires_in_minutes: int
     channel: str = "sms"
     debug_code: str | None = None
