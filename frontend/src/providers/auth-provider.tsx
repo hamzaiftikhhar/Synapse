@@ -105,11 +105,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setCanExitClinic(Boolean(data.can_exit_clinic));
       if (data.tenant) {
         setActiveTenant(data.tenant);
-      } else if (data.user.role === "SUPER_ADMIN" && !data.clinic) {
+      } else if (data.clinic?.slug) {
+        // Include SUPER_ADMIN after enter-clinic — header must stay aligned
+        // with /me clinic or clinic-scoped GETs 400 "Clinic context required".
+        setActiveTenant(data.clinic.slug);
+      } else if (data.user.role === "SUPER_ADMIN") {
         // Platform mode — clear stale tenant header
         setActiveTenant(null);
-      } else if (data.clinic?.slug && data.user.role !== "SUPER_ADMIN") {
-        setActiveTenant(data.clinic.slug);
       }
       qc.setQueryData(queryKeys.me, data);
       return true;
