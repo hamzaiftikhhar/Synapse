@@ -65,10 +65,20 @@ export function ChatComposer({
       className="shrink-0 bg-background px-3 pb-2 pt-2 sm:px-4"
     >
       <div
+        role="group"
         className={cn(
-          "synapse-chat-composer px-3.5 pb-2.5 pt-3",
+          "synapse-chat-composer cursor-text px-3.5 pb-2.5 pt-3",
           typing && !generating && "synapse-chat-composer--typing"
         )}
+        onMouseDown={(e) => {
+          // Whole shell focuses the field — not only the textarea hit box.
+          const target = e.target as HTMLElement;
+          if (target.closest("button, a, input, textarea, [role='button']")) {
+            return;
+          }
+          e.preventDefault();
+          taRef.current?.focus();
+        }}
       >
         <textarea
           ref={taRef}
@@ -79,7 +89,7 @@ export function ChatComposer({
           placeholder={placeholder}
           disabled={disabled && !generating}
           autoComplete="off"
-          className="max-h-[140px] min-h-[28px] w-full resize-none bg-transparent text-sm leading-relaxed text-foreground outline-none placeholder:text-muted-foreground/70 disabled:opacity-60"
+          className="max-h-[140px] min-h-[44px] w-full resize-none bg-transparent text-sm leading-relaxed text-foreground outline-none placeholder:text-muted-foreground/70 disabled:opacity-60"
         />
 
         <div className="mt-1.5 flex items-center justify-end">
