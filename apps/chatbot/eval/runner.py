@@ -112,7 +112,7 @@ def evaluate_routing_case(case: EvalCase) -> CaseResult:
     )
     nlu = sensors.nlu
     policy = sensors.policy
-    decision = DecisionEngine.decide(nlu)
+    decision = DecisionEngine.decide(nlu, message=case.message)
 
     plan = choose_plan(
         nlu=nlu,
