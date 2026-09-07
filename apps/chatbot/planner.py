@@ -182,6 +182,14 @@ _DIRECT_INTENTS = frozenset(
         Intent.FAREWELL,
         Intent.OFF_TOPIC,
         Intent.EMERGENCY,
+        # Unconditional like the three above, not gated on can_respond_directly
+        # (previously the only path in for this intent) -- the NLU prompt
+        # never taught the model when to use handoff_human at all until this
+        # phase, so nothing had verified it also reliably sets that flag for
+        # this intent. "Are you a real person" is common and low-stakes
+        # enough that it shouldn't silently miss the friendly HANDOFF_HUMAN
+        # template just because a secondary boolean wasn't set.
+        Intent.HANDOFF_HUMAN,
     }
 )
 
