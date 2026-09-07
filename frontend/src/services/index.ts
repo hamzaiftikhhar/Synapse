@@ -4,6 +4,7 @@ import type {
   Appointment,
   AppointmentInput,
   AppointmentUpdateInput,
+  AvailabilityDay,
   AvailableSlot,
   BusinessHour,
   BusinessHourInput,
@@ -662,6 +663,13 @@ export const doctorsService = {
     const { data } = await api.get<AvailableSlot[]>(
       `/doctors/${id}/available-slots`,
       { params: { date, exclude_appointment_id: excludeAppointmentId } }
+    );
+    return data;
+  },
+  async getAvailabilityCalendar(id: string, start: string, end: string) {
+    const { data } = await api.get<AvailabilityDay[]>(
+      `/doctors/${id}/availability-calendar`,
+      { params: { start, end } }
     );
     return data;
   },

@@ -100,6 +100,14 @@ export type AvailableSlot = {
   label: string;
 };
 
+export type AvailabilityDensity = "plenty" | "few" | "almost_full" | "closed";
+
+export type AvailabilityDay = {
+  date: string;
+  density: AvailabilityDensity;
+  reason: string;
+};
+
 export type WidgetSettingsConfig = {
   widget?: {
     primary_color?: string;

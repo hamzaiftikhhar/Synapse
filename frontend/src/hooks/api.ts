@@ -74,6 +74,8 @@ export const queryKeys = {
   doctorSchedule: (id: string) => ["doctors", id, "schedule"] as const,
   doctorAvailableSlots: (id: string, date: string, excludeAppointmentId?: string) =>
     ["doctors", id, "available-slots", date, excludeAppointmentId] as const,
+  doctorAvailabilityCalendar: (id: string, start: string, end: string) =>
+    ["doctors", id, "availability-calendar", start, end] as const,
   services: (p?: ListParams) => ["services", p] as const,
   service: (id: string) => ["services", id] as const,
   specialties: (p?: ListParams) => ["specialties", p] as const,
@@ -230,6 +232,23 @@ export function useAvailableSlots(
     queryKey: queryKeys.doctorAvailableSlots(doctorId ?? "", date ?? "", excludeAppointmentId),
     queryFn: () => doctorsService.getAvailableSlots(doctorId!, date!, excludeAppointmentId),
     enabled: Boolean(doctorId && date),
+  });
+}
+
+export function useDoctorAvailabilityCalendar(
+  doctorId: string | null,
+  start: string | null,
+  end: string | null
+) {
+  return useQuery({
+    queryKey: queryKeys.doctorAvailabilityCalendar(
+      doctorId ?? "",
+      start ?? "",
+      end ?? ""
+    ),
+    queryFn: () =>
+      doctorsService.getAvailabilityCalendar(doctorId!, start!, end!),
+    enabled: Boolean(doctorId && start && end),
   });
 }
 
