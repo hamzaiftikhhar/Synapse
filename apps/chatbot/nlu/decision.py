@@ -11,19 +11,49 @@ EMERGENCY_SAFETY_MESSAGE = (
 )
 
 
+def emergency_safety_message(message: str = "", symptom_hint: str = "") -> str:
+    """The right safety message for an already-confirmed emergency —
+    mental-health-specific (988 Suicide & Crisis Lifeline) if either the
+    raw message or the NLU's own symptom entity names self-harm/suicide,
+    otherwise the generic physical-emergency one (911).
+
+    Single call site for this decision — both engine.py's live path and
+    DecisionEngine.decide() (the offline eval battery) call this instead
+    of independently re-deriving it, which is exactly how this stayed
+    unreachable dead code before: response_templates.py had its own
+    EMERGENCY_MENTAL_HEALTH-selection copy that engine.py's fast path
+    never actually called.
+    """
+    from apps.chatbot.nlu.emergency_patterns import is_self_harm_mention
+    from apps.chatbot.response_templates import get_response
+
+    if is_self_harm_mention(message) or is_self_harm_mention(symptom_hint):
+        return get_response("EMERGENCY_MENTAL_HEALTH")
+    return EMERGENCY_SAFETY_MESSAGE
+
+
 class DecisionEngine:
     """Local Python routing — no LLM calls."""
 
     @classmethod
-    def decide(cls, nlu: NLUResult) -> RouteDecision:
+    def decide(cls, nlu: NLUResult, message: str = "") -> RouteDecision:
         if nlu.is_emergency or nlu.intent == Intent.EMERGENCY:
+            # `message` is the raw text when the caller has it (matches
+            # engine.py's live check); entities.symptom is the fallback
+            # for callers that only have the parsed NLU result.
+            symptom_value = nlu.entities.symptom
+            if isinstance(symptom_value, list):
+                symptom_text = " ".join(s for s in symptom_value if isinstance(s, str))
+            else:
+                symptom_text = str(symptom_value or "")
+            safety_message = emergency_safety_message(message, symptom_text)
             return RouteDecision(
                 route=Route.EMERGENCY,
                 needs_sql=False,
                 needs_vector=False,
                 needs_llm=False,
                 nlu=nlu,
-                safety_message=EMERGENCY_SAFETY_MESSAGE,
+                safety_message=safety_message,
             )
 
         if nlu.clarification_needed and not (
