@@ -96,3 +96,48 @@ class AvailableSlotsTests(TestCase):
     def test_unauthenticated_rejected(self):
         resp = self.client.get(self._url(self.world.doctor_a.id))
         self.assertEqual(resp.status_code, 401)
+
+
+class AvailabilityCalendarTests(TestCase):
+    def setUp(self):
+        self.world = AppointmentWorld(slug="cal-a", email="cal-a@test.com")
+        self.start = _next_weekday()
+        self.end = self.start + timedelta(days=13)
+
+    def _url(self, doctor_id, start=None, end=None):
+        start = (start or self.start).isoformat()
+        end = (end or self.end).isoformat()
+        return (
+            f"/api/v1/doctors/{doctor_id}/availability-calendar"
+            f"?start={start}&end={end}"
+        )
+
+    def test_returns_density_for_each_day(self):
+        resp = self.client.get(
+            self._url(self.world.doctor_a.id), headers=self.world.headers
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        days = resp.json()
+        self.assertEqual(len(days), 14)
+        self.assertEqual(days[0]["date"], self.start.isoformat())
+        self.assertIn(days[0]["density"], {"plenty", "few", "almost_full", "closed"})
+        # Mon–Fri should be open for AppointmentWorld doctors; weekend closed.
+        by_date = {d["date"]: d for d in days}
+        for offset in range(14):
+            d = self.start + timedelta(days=offset)
+            info = by_date[d.isoformat()]
+            if d.weekday() <= 4:
+                self.assertNotEqual(info["density"], "closed", d.isoformat())
+            else:
+                self.assertEqual(info["density"], "closed", d.isoformat())
+
+    def test_invalid_range_rejected(self):
+        resp = self.client.get(
+            self._url(self.world.doctor_a.id, end=self.start - timedelta(days=1)),
+            headers=self.world.headers,
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_unauthenticated_rejected(self):
+        resp = self.client.get(self._url(self.world.doctor_a.id))
+        self.assertEqual(resp.status_code, 401)

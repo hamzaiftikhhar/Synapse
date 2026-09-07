@@ -68,3 +68,9 @@ class AvailableSlotOut(Schema):
     start: str
     end: str
     label: str
+
+
+class AvailabilityDayOut(Schema):
+    date: str
+    density: str
+    reason: str = ""

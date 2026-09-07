@@ -13,6 +13,7 @@ from ninja.errors import HttpError
 from apps.api.auth.deps import clinic_from, jwt_auth
 from apps.api.common.schemas import MessageOut, PaginatedOut
 from apps.api.doctors.schemas import (
+    AvailabilityDayOut,
     AvailableSlotOut,
     DoctorIn,
     DoctorOut,
@@ -259,3 +260,57 @@ def get_doctor_available_slots(
         AvailableSlotOut(id=s["id"], start=s["start"], end=s["end"], label=s["label"])
         for s in slots
     ]
+
+
+@router.get(
+    "/{doctor_id}/availability-calendar",
+    response=list[AvailabilityDayOut],
+    auth=jwt_auth,
+)
+def get_doctor_availability_calendar(
+    request,
+    doctor_id: UUID,
+    start: str = Query(...),
+    end: str = Query(...),
+):
+    """Per-day density for a date range — same aggregate preview the chatbot
+    booking calendar uses. Powers the staff "New appointment" dialog so front
+    desk can see which days have open capacity before picking a date.
+    """
+    from datetime import date as date_cls
+    from datetime import timedelta
+
+    from apps.chatbot.booking.slots import compute_density_for_range
+
+    clinic = clinic_from(request)
+    doctor = _get_doctor(clinic.id, doctor_id)
+    try:
+        start_date = date_cls.fromisoformat(start)
+        end_date = date_cls.fromisoformat(end)
+    except ValueError:
+        raise HttpError(400, "start and end must be YYYY-MM-DD") from None
+    if end_date < start_date:
+        raise HttpError(400, "end must be on or after start")
+    if (end_date - start_date).days > 62:
+        raise HttpError(400, "range must be 62 days or fewer")
+
+    density = compute_density_for_range(
+        clinic,
+        doctors=[doctor],
+        start_date=start_date,
+        end_date=end_date,
+    )
+    days: list[AvailabilityDayOut] = []
+    d = start_date
+    while d <= end_date:
+        info = density.get(d) or {"density": "closed", "reason": "no_schedule"}
+        days.append(
+            AvailabilityDayOut(
+                date=d.isoformat(),
+                density=str(info.get("density") or "closed"),
+                reason=str(info.get("reason") or ""),
+            )
+        )
+        d += timedelta(days=1)
+    return days
+
