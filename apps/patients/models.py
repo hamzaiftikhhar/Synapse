@@ -1,8 +1,11 @@
 """Patients."""
 
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Q
+from django.db.models.functions import Now, TruncDate
 
+from apps.patients.dob import validate_date_of_birth
 from core.models import TenantModel, TimestampedModel
 
 
@@ -41,13 +44,32 @@ class Patient(TenantModel, TimestampedModel):
                 condition=~Q(email=""),
                 name="uq_patient_clinic_email",
             ),
+            models.CheckConstraint(
+                condition=Q(date_of_birth__isnull=True)
+                | Q(date_of_birth__lte=TruncDate(Now())),
+                name="chk_patient_dob_not_future",
+            ),
         ]
         indexes = [
             models.Index(fields=["clinic", "first_name"]),
             models.Index(fields=["clinic", "last_name"]),
         ]
 
-    @property #what it is called in Django @property? getter method
+    def clean(self) -> None:
+        super().clean()
+        try:
+            validate_date_of_birth(self.date_of_birth)
+        except ValidationError as exc:
+            raise ValidationError({"date_of_birth": exc}) from exc
+
+    def save(self, *args, **kwargs):
+        # Keep API/admin/ORM writers honest even when clean() isn't called.
+        update_fields = kwargs.get("update_fields")
+        if update_fields is None or "date_of_birth" in update_fields:
+            validate_date_of_birth(self.date_of_birth)
+        super().save(*args, **kwargs)
+
+    @property
     def full_name(self) -> str:
         return f"{self.first_name} {self.last_name}".strip()
 
