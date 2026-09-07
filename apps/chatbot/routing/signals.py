@@ -153,11 +153,26 @@ _SERVICE_LIST_RE = re.compile(
     re.I,
 )
 
+# Live-confirmed gap: this required "what"/"which" to sit immediately next
+# to "special..." with nothing in between, so real phrasings like "what
+# are you specialities" (filler words between "what" and "special...") or
+# "do you have any specility" (typo dropping the "a", and verb-first word
+# order this regex never covered at all) fell through to a generic
+# vector-search FAQ lane that has no document listing specialties, always
+# dead-ending in "I couldn't find clinic-specific information" — the same
+# failure shape already fixed once for symptom-driven specialty routing,
+# but this is the plain "what do you offer" browse case, unrelated to that
+# fix. Broadened to tolerate filler words and verb-first phrasing, plus
+# the one specific typo ("specility") observed live.
 _SPECIALTY_LIST_RE = re.compile(
     r"\b("
-    r"what special(?:t(?:y|ies)|ities)|which special(?:t(?:y|ies)|ities)|"
+    r"what (?:are |is )?(?:your |the |you )?special(?:t(?:y|ies)|ities)|"
+    r"which special(?:t(?:y|ies)|ities)|"
     r"special(?:t(?:y|ies)|ities) (?:do you )?(?:offer|provide|have)|"
-    r"list (?:of )?special(?:t(?:y|ies)|ities)"
+    r"(?:do you|does (?:the|this) clinic) have (?:any |a )?special(?:t(?:y|ies)|ities)|"
+    r"list (?:of )?special(?:t(?:y|ies)|ities)|"
+    r"any special(?:t(?:y|ies)|ities)|"
+    r"specility"
     r")\b",
     re.I,
 )
@@ -478,6 +493,58 @@ def is_doctor_browse_query(message: str) -> bool:
     if _DOCTOR_BROWSE_FILTER_CUE_RE.search(text):
         return False
     return True
+
+
+# Common patient-facing doctor-role nouns -> the specialty word they mean.
+# Curated, not exhaustive -- same caveat as _SYMPTOM_MAP's dental-vocabulary
+# gap (apps/chatbot/booking/discovery.py, core/care_categories.py): covers
+# roles seen in practice, not a medical taxonomy. Shared by
+# nlu/resolvers.py::_match_specialty (role noun -> specialty name/category
+# match) and mentions_specific_doctor_role below (role noun -> "this
+# message named something specific, not a generic browse").
+DOCTOR_ROLE_ALIASES: dict[str, str] = {
+    "dentist": "dentistry",
+    "dermatologist": "dermatology",
+    "cardiologist": "cardiology",
+    "pediatrician": "pediatrics",
+    "neurologist": "neurology",
+    "psychiatrist": "psychiatry",
+    "ophthalmologist": "ophthalmology",
+    "gynecologist": "gynecology",
+    "urologist": "urology",
+    "oncologist": "oncology",
+    "podiatrist": "podiatry",
+}
+
+_DOCTOR_ROLE_PHRASE_RE = re.compile(
+    r"\b("
+    + "|".join(re.escape(word) for word in DOCTOR_ROLE_ALIASES)
+    + r"|eye doctor|heart doctor|skin doctor|foot doctor|ear doctor|"
+    r"bone doctor|kids? doctor|children'?s? doctor"
+    r")\b",
+    re.I,
+)
+
+
+def mentions_specific_doctor_role(message: str) -> bool:
+    """True when the message names a specific kind of doctor/specialty
+    role ("dentist," "eye doctor") rather than a generic "doctor(s)"
+    mention alone.
+
+    Live-confirmed gap this backs: a doctor_search message the NLU
+    extracted no specialty/symptom entity from at all should get an honest
+    "not sure which specialist" clarification instead of silently
+    browsing every doctor -- but that can't safely be gated on "this
+    doesn't look like an explicit browse request" (is_doctor_browse_query
+    is tuned narrowly for stripping stray entities on a *confirmed*
+    browse phrase, not for exhaustively recognizing every legitimate
+    browse phrasing -- live-confirmed it misses "list your doctors").
+    Gating on the positive, narrower signal instead -- did the message
+    actually name a specific role -- means a phrasing this vocabulary
+    doesn't recognize safely defaults to the existing browse behavior
+    rather than risking a false decline.
+    """
+    return bool(_DOCTOR_ROLE_PHRASE_RE.search(message or ""))
 
 
 def service_filter_mode(
