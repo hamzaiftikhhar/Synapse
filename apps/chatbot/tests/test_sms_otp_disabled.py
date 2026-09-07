@@ -102,9 +102,12 @@ class SendOtpEmailOnlyTests(TestCase):
         )
 
     def test_phone_only_request_with_no_clinic_override_is_rejected(self):
-        """Nothing in the current UI can produce this (DetailsStep and
-        VerifyIdentity only ever collect email now), but the backend must
-        still fail closed rather than silently texting someone."""
+        """This is the general (require_existing_patient=False) new-patient
+        booking path, which still honors the clinic's configured
+        verification_mode/sms_otp flag and defaults to email — unaffected
+        by the appointment-management flow now always forcing phone (see
+        test_appointment_management_otp.py). DetailsStep (new booking)
+        still collects email for this path; nothing here changed."""
         with self.assertRaises(OTPError) as ctx:
             send_otp(
                 clinic=self.clinic, phone="+15559990000",

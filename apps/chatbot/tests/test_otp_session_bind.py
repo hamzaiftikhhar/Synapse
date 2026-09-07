@@ -34,8 +34,7 @@ class OtpSessionBindTests(TestCase):
     def test_verify_without_session_token_still_authenticates_otp_session(self):
         sent = send_otp(
             clinic=self.clinic,
-            email=self.patient.email,
-            channel="email",
+            phone=self.patient.phone,
             session_token=None,
             require_existing_patient=True,
         )
@@ -44,7 +43,7 @@ class OtpSessionBindTests(TestCase):
 
         verified = verify_otp(
             clinic=self.clinic,
-            email=self.patient.email,
+            phone=self.patient.phone,
             code=sent.debug_code,
             session_token=None,  # broken client path
         )
@@ -62,14 +61,13 @@ class OtpSessionBindTests(TestCase):
     def test_verify_with_matching_session_token_authenticates(self):
         sent = send_otp(
             clinic=self.clinic,
-            email=self.patient.email,
-            channel="email",
+            phone=self.patient.phone,
             session_token=None,
             require_existing_patient=True,
         )
         verified = verify_otp(
             clinic=self.clinic,
-            email=self.patient.email,
+            phone=self.patient.phone,
             code=sent.debug_code,
             session_token=sent.session_token,
         )
@@ -102,8 +100,7 @@ class OtpDobVerificationTests(TestCase):
     def _send(self):
         return send_otp(
             clinic=self.clinic,
-            email=self.patient.email,
-            channel="email",
+            phone=self.patient.phone,
             session_token=None,
             require_existing_patient=True,
         )
@@ -112,7 +109,7 @@ class OtpDobVerificationTests(TestCase):
         sent = self._send()
         result = verify_otp(
             clinic=self.clinic,
-            email=self.patient.email,
+            phone=self.patient.phone,
             code=sent.debug_code,
             session_token=None,
             date_of_birth=date(1990, 5, 1),
@@ -125,7 +122,7 @@ class OtpDobVerificationTests(TestCase):
         with self.assertRaises(OTPError) as ctx:
             verify_otp(
                 clinic=self.clinic,
-                email=self.patient.email,
+                phone=self.patient.phone,
                 code=sent.debug_code,
                 session_token=None,
                 date_of_birth=date(1985, 1, 1),
@@ -143,7 +140,7 @@ class OtpDobVerificationTests(TestCase):
         sent = self._send()
         result = verify_otp(
             clinic=self.clinic,
-            email=self.patient.email,
+            phone=self.patient.phone,
             code=sent.debug_code,
             session_token=None,
         )

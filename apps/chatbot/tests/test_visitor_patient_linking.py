@@ -109,11 +109,11 @@ class OTPVerificationLinksVisitorTests(TestCase):
             status=ChatSessionStatus.ACTIVE,
         )
         sent = send_otp(
-            clinic=self.clinic, email=self.patient.email, channel="email",
+            clinic=self.clinic, phone=self.patient.phone,
             session_token=session.session_token, require_existing_patient=True,
         )
         verify_otp(
-            clinic=self.clinic, email=self.patient.email, code=sent.debug_code,
+            clinic=self.clinic, phone=self.patient.phone, code=sent.debug_code,
             session_token=session.session_token,
         )
         self.visitor.refresh_from_db()
@@ -140,11 +140,11 @@ class OTPVerificationLinksVisitorTests(TestCase):
         older_id, older_token = older.id, older.session_token
 
         sent = send_otp(
-            clinic=self.clinic, email=self.patient.email, channel="email",
+            clinic=self.clinic, phone=self.patient.phone,
             session_token=current.session_token, require_existing_patient=True,
         )
         verify_otp(
-            clinic=self.clinic, email=self.patient.email, code=sent.debug_code,
+            clinic=self.clinic, phone=self.patient.phone, code=sent.debug_code,
             session_token=current.session_token,
         )
 
@@ -174,11 +174,11 @@ class OTPVerificationLinksVisitorTests(TestCase):
             clinic=self.clinic, session_token="tok-otp-no-visitor", status=ChatSessionStatus.ACTIVE,
         )
         sent = send_otp(
-            clinic=self.clinic, email=self.patient.email, channel="email",
+            clinic=self.clinic, phone=self.patient.phone,
             session_token=session.session_token, require_existing_patient=True,
         )
         verify_otp(
-            clinic=self.clinic, email=self.patient.email, code=sent.debug_code,
+            clinic=self.clinic, phone=self.patient.phone, code=sent.debug_code,
             session_token=session.session_token,
         )
         session.refresh_from_db()
