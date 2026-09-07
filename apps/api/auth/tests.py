@@ -110,3 +110,202 @@ class CreateClinicOnePerAccountTests(TestCase):
         )
         self.assertEqual(resp.status_code, 200, resp.content)
         self.assertTrue(Clinic.objects.filter(slug="fresh-start-clinic").exists())
+
+
+class SuperAdminBillingSuspendedClinicTests(TestCase):
+    """Regression: Lumina-style clinic (status=active, Paddle canceled →
+    access_status=suspended). enter-clinic succeeded, but StaffJWTAuth
+    applied `_billing_blocked` to SUPER_ADMIN and dropped clinic context,
+    so /me returned no clinic and analytics/conversations 400'd.
+    """
+
+    def setUp(self):
+        from apps.accounts.models import UserRole
+        from apps.api.auth.jwt import create_staff_access_token
+        from apps.billing.models import Plan, Subscription, SubscriptionStatus
+        from apps.clinics.models import ClinicStatus
+
+        self.admin = User.objects.create_user(
+            username="super-billing",
+            email="super-billing@example.com",
+            password="Sup3rSecret!",
+            role=UserRole.SUPER_ADMIN,
+            is_active=True,
+        )
+        self.clinic = Clinic.objects.create(
+            slug="billing-suspended-clinic",
+            name="Billing Suspended Clinic",
+            email="owner@billing-suspended.example.com",
+            status=ClinicStatus.ACTIVE,
+        )
+        plan = Plan.objects.create(slug="ent-test", name="Enterprise")
+        Subscription.objects.create(
+            clinic=self.clinic,
+            plan=plan,
+            paddle_customer_id="ctm_test",
+            status=SubscriptionStatus.CANCELED,
+        )
+        platform_token = create_staff_access_token(
+            user_id=self.admin.id, role=self.admin.role, tenant=None, clinic_id=None
+        )
+        self.platform_headers = {"Authorization": f"Bearer {platform_token}"}
+
+    def test_enter_clinic_then_me_keeps_clinic_despite_billing_suspend(self):
+        enter = self.client.post(
+            "/api/v1/auth/enter-clinic",
+            data={"tenant": self.clinic.slug},
+            content_type="application/json",
+            headers=self.platform_headers,
+        )
+        self.assertEqual(enter.status_code, 200, enter.content)
+        body = enter.json()
+        self.assertEqual(body.get("tenant"), self.clinic.slug)
+        self.assertIsNotNone(body.get("clinic"))
+
+        me = self.client.get(
+            "/api/v1/auth/me",
+            headers={
+                "Authorization": f"Bearer {body['access_token']}",
+                "X-Tenant-ID": self.clinic.slug,
+            },
+        )
+        self.assertEqual(me.status_code, 200, me.content)
+        me_body = me.json()
+        self.assertIsNotNone(me_body.get("clinic"))
+        self.assertEqual(me_body["clinic"]["slug"], self.clinic.slug)
+        self.assertTrue(me_body.get("can_exit_clinic"))
+
+    def test_clinic_staff_token_still_blocked_when_billing_suspended(self):
+        """Billing lockout still applies to clinic staff — only super admin
+        may keep context for support."""
+        from apps.api.auth.jwt import create_staff_access_token
+        from apps.accounts.models import ClinicStaff, UserRole
+
+        staff = User.objects.create_user(
+            username="staff-billing",
+            email="staff-billing@example.com",
+            password="Sup3rSecret!",
+            role=UserRole.CLINIC_ADMIN,
+            is_active=True,
+        )
+        ClinicStaff.objects.create(user=staff, clinic=self.clinic, is_active=True)
+        token = create_staff_access_token(
+            user_id=staff.id,
+            role=staff.role,
+            tenant=self.clinic.slug,
+            clinic_id=self.clinic.id,
+        )
+        resp = self.client.get(
+            "/api/v1/auth/me",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        # StaffJWTAuth returns None → 401 when billing-blocked for non-super.
+        self.assertEqual(resp.status_code, 401, resp.content)
+
+
+class StaffTokenBypassesOriginAllowlistTests(TestCase):
+    """Live-confirmed gap: the dashboard's embedded "test the bot" widget
+    (booking wizard) calls the same public /widget/booking/* endpoints the
+    real public embed uses, gated by an Origin-header allowlist
+    (CORS_ALLOWED_ORIGINS + Clinic.allowed_origins). That allowlist only
+    covers whatever origins are hardcoded for a given deployment — a real,
+    already-authenticated staff session shouldn't need the dashboard's
+    exact serving domain to also be on that list. A valid staff Bearer
+    token for this clinic (or super admin) is now an equally valid
+    bypass. Uses booking_start (auth=None, so this must work purely from
+    origin_allowed_for_clinic's own logic, not ninja's staff-auth layer).
+    """
+
+    def setUp(self):
+        from apps.accounts.models import UserRole
+
+        self.clinic = Clinic.objects.create(
+            slug="origin-bypass-clinic",
+            name="Origin Bypass Clinic",
+            email="owner@origin-bypass.example.com",
+            status=ClinicStatus.ACTIVE,
+            allowed_origins=[],
+        )
+        self.other_clinic = Clinic.objects.create(
+            slug="origin-bypass-other-clinic",
+            name="Other Clinic",
+            email="owner@origin-bypass-other.example.com",
+            status=ClinicStatus.ACTIVE,
+            allowed_origins=[],
+        )
+        self.staff = User.objects.create_user(
+            username="origin-bypass-staff",
+            email="origin-bypass-staff@example.com",
+            password="Sup3rSecret!",
+            role=UserRole.CLINIC_ADMIN,
+            is_active=True,
+        )
+        ClinicStaff.objects.create(user=self.staff, clinic=self.clinic, is_active=True)
+        self.super_admin = User.objects.create_user(
+            username="origin-bypass-super",
+            email="origin-bypass-super@example.com",
+            password="Sup3rSecret!",
+            role=UserRole.SUPER_ADMIN,
+            is_active=True,
+        )
+
+    def _start(self, headers):
+        return self.client.post(
+            "/api/v1/widget/booking/start",
+            data={"clinic_slug": self.clinic.slug},
+            content_type="application/json",
+            headers={"Origin": "https://not-a-registered-origin.example", **headers},
+        )
+
+    def test_unrecognized_origin_with_no_token_is_still_rejected(self):
+        resp = self._start({})
+        self.assertEqual(resp.status_code, 403, resp.content)
+
+    def test_clinic_staff_token_bypasses_unrecognized_origin(self):
+        from apps.api.auth.jwt import create_staff_access_token
+
+        token = create_staff_access_token(
+            user_id=self.staff.id,
+            role=self.staff.role,
+            tenant=self.clinic.slug,
+            clinic_id=self.clinic.id,
+        )
+        resp = self._start({"Authorization": f"Bearer {token}"})
+        self.assertEqual(resp.status_code, 200, resp.content)
+
+    def test_super_admin_token_bypasses_unrecognized_origin(self):
+        from apps.api.auth.jwt import create_staff_access_token
+
+        token = create_staff_access_token(
+            user_id=self.super_admin.id, role=self.super_admin.role, tenant=None, clinic_id=None
+        )
+        resp = self._start({"Authorization": f"Bearer {token}"})
+        self.assertEqual(resp.status_code, 200, resp.content)
+
+    def test_staff_token_for_a_different_clinic_does_not_bypass(self):
+        """The bypass is scoped to staff of THIS clinic -- a valid staff
+        token for an unrelated clinic must not grant access here."""
+        from apps.api.auth.jwt import create_staff_access_token
+
+        other_staff = User.objects.create_user(
+            username="origin-bypass-other-staff",
+            email="origin-bypass-other-staff@example.com",
+            password="Sup3rSecret!",
+            role="CLINIC_ADMIN",
+            is_active=True,
+        )
+        ClinicStaff.objects.create(
+            user=other_staff, clinic=self.other_clinic, is_active=True
+        )
+        token = create_staff_access_token(
+            user_id=other_staff.id,
+            role=other_staff.role,
+            tenant=self.other_clinic.slug,
+            clinic_id=self.other_clinic.id,
+        )
+        resp = self._start({"Authorization": f"Bearer {token}"})
+        self.assertEqual(resp.status_code, 403, resp.content)
+
+    def test_garbage_bearer_token_does_not_crash_falls_back_to_origin_check(self):
+        resp = self._start({"Authorization": "Bearer not-a-real-token"})
+        self.assertEqual(resp.status_code, 403, resp.content)

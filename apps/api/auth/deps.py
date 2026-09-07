@@ -86,6 +86,40 @@ def resolve_clinic_ref(ref: str) -> Clinic | None:
         return None
 
 
+def _authenticated_staff_for_clinic(request, clinic: Clinic) -> bool:
+    """True when the request carries a valid staff Bearer token for a role
+    that's actually allowed to use this clinic — super admin, or a
+    ClinicStaff member of exactly this clinic. Never raises: an absent,
+    malformed, expired, or patient-type token just means "no", so this
+    stays a pure bonus check, not a replacement for the origin allowlist
+    that public/embedded callers still rely on.
+
+    Live-confirmed gap this closes: the origin allowlist's platform bypass
+    (CORS_ALLOWED_ORIGINS below) only covers the exact origins hardcoded
+    into that env var for THIS deployment — a real dashboard session
+    already holds a staff JWT proving who it is, and stated product intent
+    is that dashboard-side testing should never need the embed-origin
+    check at all (that check exists to stop a clinic sharing embed code
+    with a different, unauthorized clinic's site -- not to gate the
+    clinic's own logged-in staff).
+    """
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.lower().startswith("bearer "):
+        return False
+    token = auth_header[7:].strip()
+    if not token:
+        return False
+    try:
+        payload = decode_staff_token(token, expected_type="staff_access")
+    except Exception:
+        return False
+    if payload.role == UserRole.SUPER_ADMIN:
+        return True
+    return ClinicStaff.objects.filter(
+        user_id=payload.user_id, clinic=clinic, is_active=True
+    ).exists()
+
+
 def origin_allowed_for_clinic(request, clinic: Clinic) -> bool:
     """Public-widget origin allowlist check (see Clinic.allowed_origins).
 
@@ -101,6 +135,10 @@ def origin_allowed_for_clinic(request, clinic: Clinic) -> bool:
     calls these same public endpoints directly for its own "test the bot"
     widget (see WidgetProvider/GlobalChatWidget), and that must keep working
     unconditionally, independent of what any given clinic has registered.
+    A valid staff Bearer token for this clinic (or super admin) is an
+    equally valid bypass, and a more robust one than an env-var origin
+    list — it doesn't need updating every time the dashboard is served
+    from a new domain (a preview deploy, a custom domain, etc.).
 
     An empty allowed_origins denies every non-platform origin — a clinic
     must explicitly register at least one origin before its widget is usable
@@ -112,7 +150,9 @@ def origin_allowed_for_clinic(request, clinic: Clinic) -> bool:
         return True
     if origin in settings.CORS_ALLOWED_ORIGINS:
         return True
-    return origin in (clinic.allowed_origins or [])
+    if origin in (clinic.allowed_origins or []):
+        return True
+    return _authenticated_staff_for_clinic(request, clinic)
 
 
 def resolve_public_clinic(request, slug: str) -> Clinic:
@@ -171,7 +211,12 @@ class StaffJWTAuth(HttpBearer):
 
         if user.role == UserRole.SUPER_ADMIN:
             # Prefer valid X-Tenant-ID override; else JWT tenant.
-            # Invalid/blocked refs must NOT 401 — fall back to platform mode.
+            # Invalid/admin-blocked refs must NOT 401 — fall back to platform mode.
+            # Billing suspension must NOT strip super-admin clinic context:
+            # enter-clinic already allows active clinics with suspended billing
+            # so support staff can open them; applying `_billing_blocked` here
+            # left /me clinic-less and every clinic API returning 400
+            # "Clinic context required" (Lumina skin regression).
             candidates: list[str] = []
             if header_tenant and str(header_tenant).strip():
                 candidates.append(str(header_tenant).strip())
@@ -181,13 +226,23 @@ class StaffJWTAuth(HttpBearer):
                     candidates.append(t)
             for ref in candidates:
                 resolved = resolve_clinic_ref(ref)
-                if resolved is not None and not _blocked_status(resolved):
-                    clinic = resolved
-                    tenant_slug = resolved.slug
-                    break
+                if resolved is None:
+                    continue
+                if resolved.status in {
+                    ClinicStatus.SUSPENDED,
+                    ClinicStatus.CANCELLED,
+                }:
+                    continue
+                clinic = resolved
+                tenant_slug = resolved.slug
+                break
             if clinic is None and payload.clinic_id is not None:
                 resolved = _clinic_from_token(payload)
-                if resolved is not None and not _blocked_status(resolved):
+                if (
+                    resolved is not None
+                    and resolved.status
+                    not in {ClinicStatus.SUSPENDED, ClinicStatus.CANCELLED}
+                ):
                     clinic = resolved
                     tenant_slug = resolved.slug
         else:
