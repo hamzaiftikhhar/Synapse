@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, CheckCircle2, Loader2, Search, X } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { BirthDatePicker } from "@/components/dob-picker";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -1013,15 +1014,10 @@ function DetailsStep({
       </div>
       <div className="space-y-1">
         <Label className="text-xs">Date of birth</Label>
-        <Input
-          type="date"
-          autoComplete="bday"
+        <BirthDatePicker
           value={details.date_of_birth}
-          max={new Date().toISOString().slice(0, 10)}
-          onChange={(e) =>
-            onChange({ ...details, date_of_birth: e.target.value })
-          }
-          className="h-9 rounded-xl"
+          onChange={(iso) => onChange({ ...details, date_of_birth: iso })}
+          className="rounded-xl"
         />
         <p className="text-[11px] text-muted-foreground">
           Used only to confirm your identity — never shared in chat.
