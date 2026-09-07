@@ -39,7 +39,10 @@ class OTPRateLimitError(OTPError):
 
 @dataclass
 class OTPSendResult:
-    patient: Patient
+    # None only for the require_existing_patient=True, no-match case (see
+    # send_otp) — a deliberately fake-success result so the response never
+    # reveals whether a phone/email belongs to a registered patient.
+    patient: Patient | None
     session: ChatSession
     session_token: str
     expires_in_minutes: int
@@ -139,35 +142,49 @@ def send_otp(
     — raises instead of silently creating a new Patient record for an
     unrecognized phone/email. The default (False) preserves the new-patient
     booking flow's behavior.
+
+    Product decision, not a per-clinic setting: appointment-management
+    identity checks (require_existing_patient=True) always verify by phone,
+    never email, regardless of the clinic's general verification_mode/
+    sms_otp configuration (which still governs the separate new-patient
+    booking OTP flow). Phone is the one field every patient record actually
+    has (required at booking, per Patient.phone's own "required for OTP"
+    field comment) — email is optional and frequently blank, so an
+    email-gated management flow would be unusable for any patient who
+    booked with phone only. get_sms_provider() already falls back to a
+    console/log provider when Twilio isn't configured (identical to how
+    email already falls back to a console provider), so forcing this
+    channel doesn't risk a hard delivery failure either way.
     """
     phone = (phone or "").strip()
     email = (email or "").strip().lower()
 
-    # Prefer explicit channel; otherwise infer from which contact was provided.
-    requested = (channel or "").lower().strip()
-    if not requested:
-        if email and not phone:
-            requested = "email"
-        elif phone and not email:
-            requested = "sms"
-        elif email and phone:
-            requested = "sms"
+    if require_existing_patient:
+        if not phone:
+            raise OTPError("Phone is required for SMS verification")
+        channel_resolved = "sms"
+    else:
+        # Prefer explicit channel; otherwise infer from which contact was provided.
+        requested = (channel or "").lower().strip()
+        if not requested:
+            if email and not phone:
+                requested = "email"
+            elif phone and not email:
+                requested = "sms"
+            elif email and phone:
+                requested = "sms"
 
-    channel_resolved = resolve_otp_channel(clinic, requested or None)
+        channel_resolved = resolve_otp_channel(clinic, requested or None)
 
-    if channel_resolved == "sms" and not phone:
-        raise OTPError("Phone is required for SMS verification")
-    if channel_resolved == "email" and not email:
-        raise OTPError("Email is required for email verification")
+        if channel_resolved == "sms" and not phone:
+            raise OTPError("Phone is required for SMS verification")
+        if channel_resolved == "email" and not email:
+            raise OTPError("Email is required for email verification")
 
+    patient: Patient | None
     if channel_resolved == "sms" and phone:
         if require_existing_patient:
             patient = patient_service.get_by_phone(clinic=clinic, phone=phone)
-            if patient is None:
-                raise OTPError(
-                    "We couldn't find a patient account with that phone number.",
-                    status_code=404,
-                )
         else:
             patient, _ = patient_service.get_or_create_by_phone(
                 clinic=clinic,
@@ -175,18 +192,13 @@ def send_otp(
                 first_name=first_name,
                 last_name=last_name,
             )
-        if email and not patient.email:
+        if patient is not None and email and not patient.email:
             patient.email = email
             patient.save(update_fields=["email", "updated_at"])
     else:
         # Email channel — look up / create by email
         patient = Patient.objects.filter(clinic=clinic, email=email).first()
-        if patient is None:
-            if require_existing_patient:
-                raise OTPError(
-                    "We couldn't find a patient account with that email address.",
-                    status_code=404,
-                )
+        if patient is None and not require_existing_patient:
             placeholder = patient_service.email_placeholder_phone(email)
             patient, _ = patient_service.get_or_create_by_phone(
                 clinic=clinic,
@@ -198,6 +210,27 @@ def send_otp(
             patient.save(update_fields=["email", "updated_at"])
 
     session = _get_or_create_session(clinic=clinic, session_token=session_token)
+
+    # Security: require_existing_patient + no match must not be
+    # distinguishable from a real send — same status code, same response
+    # shape, same generic wording — or the endpoint becomes a phone/email
+    # enumeration oracle for "is this person a patient here" (live-flagged
+    # concern, not hypothetical: this send/verify split exists specifically
+    # for the appointment-management flow, where that answer is private).
+    # No OTPVerification row is created and nothing is actually sent; the
+    # subsequent /otp/verify attempt already returns the same generic
+    # "invalid or expired code" for this as it does for a genuinely wrong
+    # code, since there's no row to match against either way.
+    if patient is None and require_existing_patient:
+        return OTPSendResult(
+            patient=None,
+            session=session,
+            session_token=session.session_token,
+            expires_in_minutes=settings.OTP_EXPIRE_MINUTES,
+            debug_code=None,
+            channel=channel_resolved,
+        )
+
     code = _generate_code()
     expires = timezone.now() + timedelta(minutes=settings.OTP_EXPIRE_MINUTES)
 
