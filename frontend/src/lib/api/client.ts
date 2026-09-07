@@ -190,9 +190,22 @@ export function getPatientToken(): string | null {
 }
 
 widgetApi.interceptors.request.use((config) => {
-  const token = getPatientToken();
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
+  const patientToken = getPatientToken();
+  if (patientToken) {
+    config.headers.Authorization = `Bearer ${patientToken}`;
+    return config;
+  }
+  // Dashboard-embedded "test the bot" widget: no patient session, but a
+  // staff one may exist. Attaching it lets the backend's origin-allowlist
+  // check (apps/api/auth/deps.py::origin_allowed_for_clinic) accept a
+  // verified staff session for this exact clinic as an alternative to an
+  // exact CORS_ALLOWED_ORIGINS match — staff testing shouldn't depend on
+  // this deployment's dashboard domain being hardcoded into that list.
+  const staffToken = getAccessToken();
+  if (staffToken) {
+    config.headers.Authorization = `Bearer ${staffToken}`;
+    const tenant = getActiveTenant();
+    if (tenant) config.headers["X-Tenant-ID"] = tenant;
   }
   return config;
 });
