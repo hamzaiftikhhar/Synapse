@@ -146,13 +146,6 @@ def get_response(template_id: str, **variables: Any) -> str:
     return template.format_map(safe_vars)
 
 
-_MENTAL_HEALTH_KEYWORDS = (
-    "suicid", "suicidal", "kill myself", "end my life", "harm myself",
-    "self harm", "self-harm", "don't want to live", "want to die",
-    "wish i was dead", "take my life", "hurt myself", "can't go on",
-    "better off dead", "no reason to live", "take my own life",
-    "jump", "overdose", "slit", "cut myself", "shoot myself",
-)
 
 _GREETING_INFORMAL_KEYWORDS = (
     "sup", "yo ", " yo", "wassup", "wazzup", "waddup", "whassup",
@@ -231,7 +224,9 @@ def resolve_direct_template(intent_value: str, message: str) -> str:
     msg = message.lower().strip()
 
     if intent_value == "emergency":
-        if any(p in msg for p in _MENTAL_HEALTH_KEYWORDS):
+        from apps.chatbot.nlu.emergency_patterns import is_self_harm_mention
+
+        if is_self_harm_mention(msg):
             return "EMERGENCY_MENTAL_HEALTH"
         return "EMERGENCY"
 
