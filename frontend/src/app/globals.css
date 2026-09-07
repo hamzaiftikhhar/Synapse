@@ -206,7 +206,7 @@
 .theme-instrument.theme-light {
   color-scheme: light;
 
-  --background: #eef1f6;
+  --background: #ffffff;
   --foreground: #1c1f26;
   --card: #ffffff;
   --card-foreground: #1c1f26;
@@ -214,11 +214,11 @@
   --popover-foreground: #1c1f26;
   --primary: #5c67f2;
   --primary-foreground: #ffffff;
-  --secondary: #e4e8f0;
+  --secondary: #f4f5f7;
   --secondary-foreground: #1c1f26;
-  --muted: #e4e8f0;
+  --muted: #f4f5f7;
   --muted-foreground: #6b7285;
-  --accent: #e8ebf5;
+  --accent: #f4f5f8;
   --accent-foreground: #1c1f26;
   --destructive: #c93a41;
   --border: rgb(28 31 38 / 8%);
