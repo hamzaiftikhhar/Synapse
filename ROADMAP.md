@@ -8422,3 +8422,923 @@ next most likely candidates, in order, would be (a) the gap being outside
 the 6-message window and needing a new `ConversationTimeline` slot for
 that specific fact, similar to Phase 39's `insurance`/`problem` pins, or
 (b) a `soft_medical`/SQL-lane case this phase didn't touch.
+
+## ✅ Chat widget UI pass — composer redesign, quick-actions menu, doctor-list de-duplication
+
+User-reported, screenshot-driven: contact form still email-first, a
+loading-indicator-behind-composer bug, a composer that felt "too thin,"
+and a chat-text reply that repeated every doctor's full name/specialties
+on top of the identical cards rendering right below it. Researched
+industry chat-UI patterns first (chip-based structured info over dense
+text, typing-indicator placement, contact-form friction) before touching
+code — see the in-conversation "Sources" citations.
+
+**Fixes, each verified live in a real dev-mode browser session (Playwright),
+not just code review:**
+- `chat-widget.tsx` — the typing/"understanding" bubble grew *after* it
+  was already on screen (a skeleton reveals ~500ms late, its status
+  phrase cycles every ~400ms), but auto-scroll-to-bottom only re-ran on
+  `messages`/`typing` changes, neither of which that internal growth
+  touches — the bubble silently ended up rendered behind the composer.
+  Added a `ResizeObserver` on the actual message-list content so
+  sticky-scroll reacts to any height change, not just message-count
+  changes.
+- `chat-composer.tsx` — rebuilt as a proper flex row (`items-end`,
+  `flex-1` textarea, `shrink-0` button) instead of block-flow + an
+  absolutely-positioned button. Root cause of the reported "bottom
+  padding looks bigger than top": a `<textarea>` defaults to
+  `display: inline-block`, which leaves phantom baseline/descender space
+  below itself in normal block flow — a classic CSS quirk, not an actual
+  padding asymmetry. Measured with real `getBoundingClientRect()` data
+  before and after (button gap went from 15px-top/5px-bottom to a
+  pixel-exact 11px/11px); multi-line growth still keeps the button
+  correctly anchored at the bottom (verified with a 3-line wrapped
+  screenshot).
+- New "···" quick-actions menu in the composer (`MoreHorizontal`,
+  reusing `action-buttons.tsx`'s now-exported `ICONS` map and the same
+  outside-click-to-close pattern already used by the header's own "···"
+  menu in `chat-chrome.tsx`) — Find a Doctor / Book Appointment / Clinic
+  Hours / Check Insurance, always reachable, not only as contextual chips
+  after a reply or the empty-state starters. Wording/icons copied
+  verbatim from `ui_meta.py::_smart_action`'s own "Check Insurance" chip
+  so tapping it behaves identically to the existing contextual one.
+- `sql_tool/formatter.py::search_doctors` branch — stopped repeating
+  every doctor's name and full specialty list in the text bubble; now
+  says "Found N doctors who may be a good fit — take a look below" for a
+  multi-result browse (still names the doctor for a genuinely
+  unambiguous single result), matching the pattern `insurance_accepted`
+  already used for its own multi-result browse ("Search your plan
+  below.").
+- `doctor-card.tsx` — the doctor-list search box already existed but was
+  gated on `doctors.length > SEARCH_THRESHOLD` (4); a clinic with exactly
+  4 doctors never saw it. Changed to `>=`.
+- `booking-wizard.tsx::DetailsStep` — replaced the single merged,
+  hardcoded-to-email "contact" field (`effectiveMode = "email"`,
+  `classifyContact`) with two real fields: phone (required, "So the
+  clinic can call to confirm your appointment") and email (clearly
+  labeled optional), one page — not a second step, since one extra
+  optional field isn't enough friction to justify another screen. This
+  closes half of the "Found, NOT fixed" item from the appointment-
+  management phase above (the phone/email split; OTP-gate removal for
+  new booking was explicitly out of scope there and remains a distinct,
+  separate decision — not touched by this phase either).
+
+**Necessary backend companion fix, found while implementing the above,
+not scope creep:** `otp_service.py::send_otp`'s general
+(`require_existing_patient=False`, new-booking) path could still resolve
+`channel_resolved == "email"` per the clinic's configured
+default/`sms_otp` gate even when a patient gave phone only — a dead end,
+since there was no email to send to, raising "Email is required for
+email verification" for the now-common phone-only case. Fixed narrowly:
+falls back to `sms` only when email is genuinely absent; a clinic's real
+preference is still honored whenever both contacts are actually given
+(covered by a new test proving both directions). `test_sms_otp_disabled
+.py`'s `test_phone_only_request_with_no_clinic_override_is_rejected`
+encoded the old behavior as intentional — rewritten (not just loosened)
+to assert the new, correct behavior, since the old assumption was the
+thing that changed, not a wrong test catching a real bug.
+
+**Live end-to-end verification, database-checked, not just screen text:**
+walked the full new-booking flow through a real dev server — specialty
+pick → date → slot → Details (phone-only, no email) → OTP send → OTP
+verify → Review → Confirm & book — and confirmed via direct DB query that
+a real `Appointment` row was created with `status="confirmed"`, the
+correct phone, and an empty email. (One false alarm during this same
+pass: an overly-broad Playwright button-matcher clicked the
+always-present "Book Appointment" chip instead of the wizard's own
+"Confirm & book" button, which surfaced a misleading "Booking closed"
+state — confirmed via `allInnerTexts()` and a second run with an exact
+button-name match that this was a test-script bug, not a product bug.)
+
+**Tests:** `test_search_doctors_text_does_not_repeat_card_data` +
+`test_search_doctors_text_single_result_still_names_the_doctor` in
+`test_sql_tool.py`; `test_recovery_override.py`'s
+`test_nah_fr_preserves_doctor_sql_response` updated (its "Hamza" marker
+no longer applies to a 2+-doctor browse by design — its actual purpose,
+proving the real SQL response wasn't discarded for generic recovery
+copy, is unaffected and now asserted via the new text pattern instead);
+`test_sms_otp_disabled.py`'s email-only-path tests rewritten per above.
+`tsc --noEmit`: clean throughout.
+
+**Recommended next phase:** the OTP-gate-removal half of the original
+"Found, NOT fixed" item, if still wanted — confirm scope first, same as
+before, since it's a real security/spam-prevention tradeoff (the current
+phone-OTP round trip is fast and already degrades safely to console in
+dev), not an obvious win either way.
+
+## ✅ Post-UI-work bug hunt — stale verification-mode text, hidden wall-clock dependency in date parsing
+
+User asked to find and fix any remaining bugs after the UI pass above.
+Live-tested the two most complex, highest-stakes flows this session
+touched (new-booking through to a real confirmed appointment; appointment
+management through to a real cancellation) end to end against a real dev
+server and database — not just unit tests — and found two real,
+previously-undiscovered bugs along the way.
+
+**Bug 1 — `patient_appointments`'s auth-prompt text contradicted the
+verification card shown directly beneath it.** Live-reproduced: a clinic
+configured for the platform's default `verification_mode="email"` (used
+by the *general new-patient booking* OTP flow) produced "To cancel or
+reschedule, please verify your **email address** first," immediately
+above a "Verify it's you" card that actually asked for a phone number and
+texted the code. Root cause: this summary read `get_verification_mode
+(ctx.clinic)` — the clinic's *general* setting — to word itself, but the
+appointment-management OTP endpoint
+(`apps/api/auth/patient_router.py::send_otp`) always forces phone
+(`require_existing_patient=True`) regardless of that setting, per the
+earlier appointment-management identity-verification phase. The general
+setting was never relevant to this specific flow at all. Fixed by
+removing the conditional entirely — this flow has exactly one contact
+method, not a clinic-configurable choice, so the text is no longer
+conditional on anything.
+
+**Bug 2 — a bare weekday ("tuesday") could resolve 3-4 weeks past the
+intended reference date instead of to the very next occurrence.** Found
+while investigating an unrelated, unexpectedly-failing test
+(`test_a_clock_time_after_a_weekday_is_not_a_day_of_month` in
+`test_temporal_authority.py`, which passes an explicit, hardcoded
+`today` specifically to stay deterministic regardless of when it runs —
+and started failing anyway once the real calendar moved far enough past
+that hardcoded date). Root cause, isolated via direct reproduction with
+hardcoded inputs (not a flake — 100% deterministic once found):
+`sql_tool/utils.py::parse_natural_date` recomputed "today" from
+`timezone.now()` internally on *every* call, completely ignoring
+whatever reference date its caller (`temporal.py::resolve_temporal_query`,
+via `_parse_entity`) had already established and was consistently using
+everywhere else. That caller's own code already had the fix for
+"yesterday"/"tomorrow"/"weekend" — special-cased above
+`parse_natural_date` specifically to avoid this, per that code's own
+existing comment ("tests freeze today, and a production call already
+computed clinic-local today before it got here") — but the fix was never
+extended to the weekday-name branch *inside* `parse_natural_date` itself,
+which every bare weekday ("monday" through "sunday") still falls through
+to. In live production traffic this is largely self-masking (the caller
+computes its `today` from `timezone.now()` moments before the call, so
+both values normally agree) — but it makes the function's behavior
+depend on hidden global state instead of only its explicit arguments,
+which is exactly what silently broke the test once the real calendar
+drifted far enough from its frozen reference date, and is a latent risk
+anywhere a caller's `today` and the real instant `parse_natural_date`
+runs could genuinely diverge (queued/retried processing, a midnight
+boundary, tests).
+
+**Fix:** `parse_natural_date` gained an optional `today: date | None`
+parameter — used when provided, falling back to the original
+`timezone.now()`-derived value only when omitted (fully backward
+compatible with every other existing caller/test that doesn't pass it).
+`temporal.py`'s one production call site now passes `today=today`
+through.
+
+**Tests:** new `ParseNaturalDateExplicitTodayTests` (3 tests) in
+`test_time_hints.py` — explicit `today` governs both weekday and
+relative-word (`tomorrow`/`today`) resolution, and omitting it still
+falls back to the real wall clock unchanged. `test_temporal_authority
+.py`: 42/43 (the pre-existing, unrelated `test_the_earliest_opening...`
+flake, confirmed still present and still unrelated — a different,
+already-understood date-coincidence issue, not this bug).
+
+`python manage.py test apps.chatbot.tests apps.knowledge.tests --keepdb`:
+**929/930**, same single pre-existing date-boundary flake. `run_chat_eval
+--target 520`: **698/706 (98.9%)**, unchanged.
+
+**Verified live, database-checked:** re-ran the full appointment-
+management flow (request → phone-worded verify prompt → OTP send → OTP
+verify via the real segmented 6-digit input → appointment list →
+Cancel → confirm) end to end; confirmed via direct DB query that the
+real `Appointment` row's status actually became `cancelled`, not just
+that the chat text claimed so.
+
+**Known limitations / found-but-not-fixed:**
+- The OTP-gate-removal-for-new-booking decision flagged in the phase
+  above remains open — a genuine product tradeoff, not a bug.
+- `parse_natural_date`'s hidden-wall-clock pattern was fixed at its one
+  call site; not audited for whether any *other* function in this
+  codebase has the same "recomputes its own `today` instead of accepting
+  one" shape — flagged as a class of bug worth being alert to, not
+  chased further this phase without a second concrete instance.
+
+**Recommended next phase:** none required by this ask. The OTP-gate
+question above remains the one real open decision if the user wants to
+pursue it.
+
+## ✅ No OTP for new booking, phone mandatory + optional email; privacy-safe management wording
+
+Explicit user decision, resolving the open question from the phase
+above: new-booking identity (name + mandatory phone + optional email) is
+sufficient to create an appointment — no OTP. Managing an *existing*
+appointment (view/cancel/reschedule) is a different problem
+(authentication, not identification) and keeps requiring phone OTP,
+unchanged from the earlier appointment-management phase. User also
+flagged two candidate wordings for the management-flow verification
+prompt as "incorrect" and asked for researched, respectful, privacy-safe
+copy.
+
+**The backend architecture for "no OTP" already existed, fully built and
+tested — this was a default flip, not new plumbing.** Investigated
+`BookingService` before writing anything: `BookingStep.REVIEW`,
+`session.otp_skipped`, and `submit_details`'s own `vmode == "none"`
+branch already implement exactly this path (skip DETAILS→OTP, land on
+REVIEW, require an explicit `confirm_review` action before a real
+`Appointment` is created — never a fully-silent auto-confirm). The only
+thing gating it was `verification_mode` defaulting to `"email"` in three
+places:
+- `apps/chatbot/booking/config.py::DEFAULT_BOOKING_CONFIG`
+- `apps/clinics/features.py::default_widget_configuration()` (the
+  template written for newly-onboarded clinics)
+- `apps/clinics/features.py::get_verification_mode()`'s fallback
+
+All three flipped to `"none"`. `apps/widget/migrations/0003_verification
+_mode_none_by_default.py` (reversible data migration) updates existing
+`WidgetSettings` rows still holding the old literal default so this
+takes effect uniformly, not just for future clinics — safe in this
+product's current stage since no clinic has ever had a UI surface to
+deliberately choose a different mode. Appointment management is
+untouched: its OTP endpoint (`patient_router.py::send_otp`,
+`require_existing_patient=True`) always forces phone regardless of this
+setting, a separate code path confirmed unaffected.
+
+**Frontend needed zero code changes for the flow itself** — `booking-
+wizard.tsx` already renders whatever step the backend returns
+(`payload.step`), already recalculates total step count dynamically, and
+already swaps the button label ("Continue to review" vs. "Continue to
+verification") off the same `verificationMode` prop. Live-verified this
+directly: Details → Review → Confirm & book, zero OTP screens, in a real
+browser session, then confirmed via direct DB query that a real
+`Appointment` was created with the phone stored and email empty.
+
+**Test suite ripple, traced and fixed rather than papered over:** three
+existing test files relied on the *implicit* old default to reach the
+OTP step at all — updated each to explicitly configure
+`verification_mode: "email"` in `setUp` (so the OTP *mechanism* stays
+fully tested for clinics that opt back in), not loosened:
+- `test_sms_otp_disabled.py` — rewritten more substantially since its own
+  premise ("off by default everywhere" for SMS specifically, "email" the
+  assumed default) needed restating for the new two-layer reality (no
+  OTP required by default at all; SMS specifically still off even when a
+  clinic does require OTP). `DefaultVerificationModeTests` now asserts
+  `"none"`; `SendOtpEmailOnlyTests` split into `SendOtpNoConfigTests`
+  (new default: raises "disabled") and `SendOtpEmailOptInTests` (a
+  clinic that explicitly opted in, same scenarios as before).
+- `test_booking_otp_review_flow.py` — both classes' `setUp` now
+  explicitly opt into `"email"` mode, since this file's whole purpose is
+  testing the standard OTP path, which needs a clinic actually configured
+  for it now.
+- `test_booking_auth_skip.py` — one test (`test_back_from_otp_itself
+  _still_lands_on_details_when_unauthenticated`) deliberately exercises
+  the real, unauthenticated OTP path and needed the same explicit
+  opt-in; its sibling tests (authenticated-session skip) were already
+  unaffected, since that skip fires on `is_authenticated`, not
+  `verification_mode`.
+
+New `NewBookingSkipsOtpByDefaultTests` (`test_booking_auth_skip.py`, 2
+tests) directly locks in the actual behavior change: a clinic with *no*
+`WidgetSettings` at all — never configured, not even a `"none"` set
+explicitly — lands on REVIEW straight from a phone-only DETAILS submit
+and produces a real, database-checked `Appointment` with the given phone
+and an empty email, no OTP ever sent.
+
+**Wording pass — researched, not guessed.** Read current UX-writing
+guidance on anti-enumeration messaging (password-reset flows are the
+canonical real-world instance of this exact problem) before rewriting
+anything: the established pattern is a single sentence that stays
+truthful whether or not a match exists ("If an account exists for this
+email, you will receive a reset link"), never a raw match count or a
+flat "we sent a code" that implicitly reveals a match. Applied that
+pattern with warmer, more natural phrasing than either the user's own
+flagged examples or the researched pattern's more clinical tone:
+- `verify-identity.tsx` — "Let's verify it's you" / "For your privacy,
+  we text a quick code before showing any appointment details — enter
+  the number you used when booking," then, after submission, "Check your
+  phone" / "If {number} has an appointment with us, a verification code
+  is on its way. Wrong number?" — privacy-safe by construction, not just
+  by wording: this sentence is true whether or not that number matches,
+  since the backend already sends an identical response either way
+  (`otp_service.py`), so a wrong number gets a wrong code with no signal
+  it was wrong.
+- `apps/api/auth/patient_router.py::OTPSendOut.message` — same pattern
+  applied for consistency, even though this specific field isn't
+  currently consumed by the frontend (confirmed via search) — API-
+  response hygiene, in case another client ever surfaces it directly.
+- `patient_appointments`'s pre-verification summary (fixed for a
+  different bug in the phase above) was already warm and non-leaking;
+  left as-is.
+
+Live-verified the new copy end to end against a phone number that does
+*not* match any patient — response text was identical in shape to what a
+real match would produce, confirming the privacy property holds in
+practice, not just in the source.
+
+**Tests:** `test_sql_tool.py`'s existing phone-wording regression test
+(from the phase above) still passes unchanged. No new test needed for
+the copy itself (prompt-only, matches this session's established pattern
+for UI-text-only changes) — verified live instead.
+
+`python manage.py test apps.chatbot.tests apps.knowledge.tests --keepdb`:
+**934/935**, same single pre-existing date-boundary flake. `run_chat_eval
+--target 520`: **698/706 (98.9%)**, unchanged. `tsc --noEmit`: clean.
+
+**Known limitations / found-but-not-fixed:**
+- The data migration's reverse operation restores `"email"` for every
+  row currently `"none"`, which would also un-flip any clinic that
+  happened to independently set `"none"` before this migration ran —
+  acceptable for a rarely-run rollback in this product's current stage,
+  not chased further.
+- No admin/dashboard UI surface currently lets a clinic actually change
+  its own `verification_mode` — both directions of this setting
+  (opting into booking OTP, or opting out of it again later) are
+  currently only reachable by directly editing `WidgetSettings.
+  configuration`, not through any staff-facing screen. Out of scope for
+  this ask, worth its own phase if a clinic ever needs this in practice.
+
+**Recommended next phase:** none required by this ask.
+
+## ✅ Pre-deploy bug hunt — NLU context-anchoring booking misroute, staff-resume "Booking closed" gap, fixed wizard height, insurance autocomplete
+
+**Objective.** User pasted a real production trace plus a full conversation
+transcript captured while sanity-checking the app before deploy, flagged it
+as containing "major blunders," and asked for a real root-cause
+investigation (not a guess) rather than another UI pass. Alongside that,
+two concrete UI asks: the booking wizard's card height changes size on
+every step ("should remain fixed... like an ideal length"), and the
+Review step's free-text insurance field should be searchable against the
+clinic's real accepted plans.
+
+**Bug 1 — root cause: NLU context-anchoring, not a routing table gap.**
+Live trace: the user's very first message to a fresh session, `"I would
+like to book an appointment"`, was classified `intent=insurance_
+verification` (`secondary_intents=[book_appointment]`, `confidence=0.85`,
+reasoning literally *"Verifying insurance and booking appointment"*) and
+answered "Search your plan below" — because the immediately preceding turn
+had been about insurance, and nano anchored on that stale topic despite
+the current message being lexically unambiguous. Traced the routing chain
+by hand: `resolve_lane` (`apps/chatbot/routing/lanes.py:71-72`) returns
+`Lane.BOOKING` before any SQL-intent check *only* when `is_booking_intent`
+is true, and `is_booking_intent` (`apps/chatbot/planner.py::compute_
+message_sensors`, prior to this phase lines 633-645) only ever trusted
+`nlu.intent` itself (plus one narrow rescue for garbled "book me"-style
+typos via `is_typo_book_request`) — there was no rescue for a *clean,
+well-formed* booking phrase when nano's primary-intent slot was wrong but
+`book_appointment` still showed up as a secondary guess. This is the same
+architectural violation CLAUDE.md's core rule names directly: Python was
+being too deferential to the small LLM's own ranking instead of using its
+own deterministic phrase evidence to decide.
+
+**Fix:** added a third branch to `is_booking_intent` — trust `Intent.
+BOOK_APPOINTMENT in nlu.secondary_intents` when the message itself matches
+`is_transactional_booking()` (the existing, already-tested "book/schedule/
+would like to book" regex), guarded by `not looks_like_compound(message)`
+(so a *genuinely* two-clause message, e.g. "do you accept Aetna and can I
+also book," still falls through to the existing — imperfect but
+conservative — compound handling instead of silently dropping the
+insurance half) and by excluding `CANCEL_APPOINTMENT`/`RESCHEDULE_
+APPOINTMENT`/`EMERGENCY` primaries (those need their own specific flows,
+never a generic wizard launch). `apps/chatbot/planner.py`.
+
+**Bug 2 — root cause: staff/QA chat resume has no `active_booking`
+equivalent.** The same trace showed, moments later, a wizard card
+rendering *"Sure — let's get you booked. Book Appointment"* immediately
+followed by *"Booking closed. Ask to book again anytime"* in the same
+card — a self-contradicting response. Traced this to `frontend/src/
+features/chat/message-parser.ts::hydrateHistoryRow`, which deliberately
+stamps every persisted, not-yet-confirmed `booking_wizard` row
+`completed:true` on rehydration (so a stale draft never re-fires its own
+`start()` just from scrolling into view) — correct on its own, but it
+requires a compensating step that re-adds a live wizard card when one is
+still genuinely open. The public widget's own resume path already does
+this (`apps/api/widget/router.py::resume_chat` →
+`BookingService.active_booking_payload`, consumed by `chat-widget.tsx`'s
+guest-resume effect) — but `GET /chat/message/staff/resume`
+(`apps/api/chat/router.py::resume_staff_chat`) never had the equivalent,
+so any staff/QA reload mid-booking permanently and silently killed
+interactivity on that wizard, with the only fix being to type the booking
+request over again (which is exactly what the pasted transcript shows the
+user doing). Mirrored the public widget's pattern: `StaffChatResumeOut`
+gained `active_booking` (`apps/api/chat/schemas.py`), `resume_staff_chat`
+now returns `BookingService.active_booking_payload(clinic, session)`
+(`apps/api/chat/router.py`), and the staff-mode resume effect in `chat-
+widget.tsx` now appends a fresh `bookingWizardMessage(res.active_booking)`
+after the (still-inert) history, identical to the guest-mode effect just
+above it. `frontend/src/types/api.ts` gained the matching field.
+
+**UI fix — fixed wizard height.** `min-h-[240px] max-h-[min(52dvh,420px)]`
+on the step body (`booking-wizard.tsx`) let each step render at whatever
+height its own content needed, so the card visibly grew/shrank on every
+`select_*`/`back` transition. Changed to a single fixed `h-[min(52dvh,
+420px)]` (content that needs more room scrolls internally via the
+existing `overflow-y-auto`; a short step like the 3-button path picker now
+just has blank space below it instead of a shorter card). The footer
+("Back" button row) had the same problem in miniature — present on every
+step except `path`, so the *whole card* still changed height crossing that
+one boundary. Changed it to always mount (for every step except
+`confirmed`), with the Button itself going `invisible` (space reserved,
+`tabIndex={-1}`, `aria-hidden`, `disabled`) rather than unmounting, so the
+footer's own height never changes either.
+
+**UI fix — insurance autocomplete in the Review step.** The Review step's
+"Insurance (optional)" field (`booking-wizard.tsx::ReviewStep`) was a bare
+`<Input>` with no connection to the clinic's real accepted-plans data at
+all — confirmed by reading the component: `insurance` state is free text,
+only ever resolved against real `InsurancePlan` rows *after* Save, via the
+existing `edit_details` → `_resolve_insurance` fuzzy match. There was no
+existing public endpoint exposing a clinic's plan list to an
+unauthenticated widget visitor (the only existing path, `insuranceService.
+list()`, is staff-JWT-scoped CRUD) — the standalone `InsuranceCards` chat
+card gets its data from a full NLU+SQL round trip, not a reusable
+endpoint. Added a small, read-only, tenant-scoped `GET /widget/insurance-
+plans?clinic_slug=...` (`apps/api/widget/router.py`) running the exact
+same "browse mode" query `sql_tool/handlers/insurance.py::insurance_
+accepted` already uses (`is_accepted=True, is_deleted=False`), so the list
+a patient searches while booking always matches what the chat itself would
+say is accepted. `ReviewStep` fetches this once, lazily, the first time
+editing opens (`widgetService.getInsurancePlans`, new in `services/
+index.ts`), then filters client-side per keystroke and renders a small
+dropdown of matches (name + plan, click to fill) — the same proven
+instant-filter approach `InsuranceCards` already uses elsewhere in this
+app. No debounce was added: with the whole list fetched once instead of
+searched per keystroke, there is no per-keystroke network cost for a
+debounce to protect against, so adding one would have been complexity
+with nothing to guard.
+
+**Files changed:**
+- `apps/chatbot/planner.py` — `is_booking_intent` gains the secondary-
+  intent rescue branch.
+- `apps/chatbot/tests/test_conversation_state.py` — new
+  `SecondaryBookingIntentRescueTests` (3 tests: the live-confirmed bug
+  case now resolves to `is_booking_intent=True`; a genuinely compound
+  message is still not force-routed; `CANCEL_APPOINTMENT` primary is never
+  overridden).
+- `apps/api/chat/schemas.py`, `apps/api/chat/router.py` — `StaffChat
+  ResumeOut.active_booking`, wired from `BookingService.active_booking_
+  payload`.
+- `apps/api/chat/tests_conversations.py` — new
+  `test_still_open_booking_wizard_survives_a_reload` on the existing
+  `StaffChatResumeTests` class.
+- `frontend/src/types/api.ts` — `StaffChatResumeOut.active_booking`,
+  new `WidgetInsurancePlansOut`.
+- `frontend/src/features/chat/chat-widget.tsx` — staff resume effect
+  mirrors the guest resume effect's `active_booking` handling.
+- `frontend/src/features/booking/booking-wizard.tsx` — fixed step-body
+  height, always-reserved footer, `ReviewStep` insurance autocomplete
+  (new `clinicSlug` prop threaded down from `BookingWizard`).
+- `apps/api/widget/router.py` — new `GET /insurance-plans` endpoint +
+  `InsurancePlanCardOut`/`InsurancePlansOut` schemas.
+- `frontend/src/services/index.ts` — `widgetService.getInsurancePlans`.
+
+**Root cause, in one line each:** Bug 1 — Python trusted nano's primary-
+intent ranking over its own deterministic phrase evidence when the two
+disagreed. Bug 2 — a resume-path fix from an earlier phase (Phase 42A)
+was only ever applied to the public widget's resume endpoint, never
+mirrored to the staff/QA one added around the same time.
+
+**Tests:** `python manage.py test apps.chatbot.tests apps.knowledge.tests
+apps.api --keepdb`: **1069/1070**, the same single pre-existing
+`test_temporal_authority.py` date-boundary flake as the last recorded
+baseline (confirmed still failing identically with this phase's changes
+stashed out — not caused by this work). `run_chat_eval --target 520`:
+**698/706 (98.9%)**, unchanged from the last recorded baseline, including
+the compound-message categories (`adversarial_compound_insurance_
+booking`, `adversarial_compound_doctor_availability`, etc. all still
+100%) — confirming the new rescue branch's `looks_like_compound` guard
+doesn't regress genuine compound routing. `tsc --noEmit`: clean.
+
+**Known limitations / found-but-not-fixed:**
+- The eval battery's two pre-existing failing categories (`adversarial_
+  booking_slang_squeeze`, `adversarial_medical_slang_pediatric`, 8 cases
+  total) are unrelated to this phase's changes and already reflected in
+  the 698/706 baseline — not investigated further here.
+- The secondary-intent booking rescue is deliberately narrow (requires an
+  explicit `is_transactional_booking` phrase match plus nano's own
+  secondary signal, not phrase-matching alone) — a booking phrase with
+  *no* secondary-intent support at all from nano still isn't rescued by
+  this branch. Not a demonstrated live failure; not chased preemptively.
+- The insurance autocomplete's suggestion dropdown is a simple `absolute`-
+  positioned list (same pattern as the composer's existing "···" menu) —
+  it does not reposition if the card's scroll container would clip it
+  near the bottom of the visible area. Not observed as a real problem
+  given the field's position in the form; flagged for completeness.
+
+**Recommended next phase:** none required by this ask. If the user wants
+it, a staff-facing settings screen for `verification_mode` (flagged as a
+limitation in the phase above) remains the most concretely-scoped
+follow-up in the backlog.
+
+## ✅ Appointment-card redundancy + insurance card never retiring itself
+
+**Objective.** User flagged the cancel/reschedule flow as showing "5
+things" for one action, and separately described a live repro where
+picking insurance, then repeatedly changing the plan and clicking
+"Continue to book," stacked a new booking wizard under the previous one
+each time — both symptoms of the same underlying pattern this codebase
+already has a name for ("Chat card collapse-on-supersede," Phase 22) not
+being applied consistently.
+
+**Bug 1 — root cause: `patient_appointments`'s formatter branch was never
+given the search_doctors/services_offered de-duplication treatment.**
+`sql_tool/formatter.py`'s `patient_appointments` branch built a full
+`"- {doctor} on {when} ({status})"` line per row and prefixed it "Your
+upcoming appointments:" — repeating doctor/date/time in prose immediately
+above the identical data in `AppointmentCards`. Fixed the same way
+`search_doctors` already was earlier this session: single result names
+the doctor only ("Here's your appointment with {doctor} — details
+below."), multiple results stay minimal ("You have N upcoming
+appointments — take a look below.").
+
+**Bug 1b — cancelling an appointment produced two separate "it's gone"
+signals.** `confirm_cancel_appointment` (chat-widget.tsx) filters the
+just-cancelled appointment out of its card's list *and* always appended a
+separate `systemNoticeMessage("Appointment cancelled...")`. When that was
+the only appointment on the card, the now-empty list fell through to the
+full "No upcoming appointments" empty state (title + subtitle + "Book a
+New Appointment" button) — a big, generic block sitting directly above a
+banner that already said the same thing, for a user action that was
+neither "you have zero appointments" (a server fact) nor "start a new
+booking" (a real intent), but "you just cancelled one." `AppointmentCards`
+gained a `cancelledMessage` prop: when the cancel empties the card, it
+now collapses to one line ("Appointment with {doctor} cancelled.") instead
+of the full empty-state block, and the separate banner is skipped in that
+case (kept only when other appointments remain on the card, since there's
+no card-local place left to say which one was cancelled once it's gone).
+
+**Bug 2 — root cause: `InsuranceCards` was deliberately excluded from the
+collapse-on-supersede convention.** Every other UI-card entry point into
+booking (`select_service`, `select_specialty`, the empty-appointments
+"Book a New Appointment" button) calls `markMessageCompleted` on its own
+source card before minting a wizard. `insurance-card.tsx`'s "Continue to
+book" button never passed a `messageId` at all — confirmed by reading
+`chat-widget.tsx`'s `book_appointment` handler, whose own comment named
+this as intentional ("insurance-card.tsx... untouched"). The practical
+effect, live-confirmed: since the card never retires, changing the
+selected plan and clicking "Continue to book" again mints a *second*
+wizard that only supersedes the *first wizard* (the existing sweep already
+covered `booking_wizard`/`appointments`/`verify_identity`) — the insurance
+card itself stayed live and clickable, so a third or fourth click keeps
+stacking wizards, each superseding only the last. Fixed by threading
+`messageId`/`completed` into `InsuranceCards` the same way every other
+card already receives them, collapsing to the same one-line "You started
+booking a new appointment ↓" treatment `AppointmentCards` already uses.
+No user data is lost by retiring the card: the selected plan lives in
+`useSelectedInsurance` (clinic-scoped, not message-scoped), and the
+now-live wizard's own Review step (previous phase) already lets the
+patient change insurance directly if needed. Also added `insurance_cards`
+to the two existing supersede sweeps in `chat-widget.tsx` (the ones that
+already retire `appointments`/`verify_identity` whenever any wizard
+launches via a real chat turn), for the same reason those types are
+there — a real message can also bundle a wizard launch alongside an
+insurance card in one turn.
+
+**A broader idea raised but not built this phase:** the user separately
+described a general principle — every transition from one UI to a
+replacement UI should look like a normal chat turn (a synthesized user
+message, then the new UI as the reply), for visual/mental-model clarity.
+Several existing entry points deliberately do *not* do this today
+(`select_service`, `select_specialty`, insurance's own "Continue to
+book") specifically to avoid an unnecessary NLU/LLM round trip for data
+the frontend already has in structured form — that's a real latency/cost
+trade-off, not an oversight, and redesigning it touches every one of
+those entry points, not just the two bugs actually demonstrated here. Not
+implemented without confirming that trade-off is what's wanted; flagged
+for the user rather than assumed.
+
+**Files changed:**
+- `apps/chatbot/sql_tool/formatter.py` — `patient_appointments` branch
+  minimized, matching `search_doctors`.
+- `apps/chatbot/tests/test_structured_replies.py` — rewrote
+  `test_patient_appointments_uses_when_not_iso` (its premise, a raw
+  `when` string appearing in the text, no longer holds) into
+  `test_patient_appointments_single_result_names_doctor_not_raw_time` +
+  new `test_patient_appointments_multiple_results_stays_minimal`.
+- `apps/chatbot/tests/test_sql_tool.py::PatientAppointmentsTests::
+  test_returns_upcoming` — updated its `format_sql_results` assertions to
+  match (names the doctor, no longer echoes the raw `when` value).
+- `frontend/src/features/chat/messages/appointment-card.tsx` —
+  `AppointmentCards` gains `cancelledMessage`.
+- `frontend/src/features/chat/chat-widget.tsx` — `confirm_cancel_appointment`
+  sets `cancelledMessage` on the emptied card instead of always appending
+  a separate system message; `insurance_cards` added to both
+  collapse-on-supersede sweeps; `book_appointment` handler now collapses
+  any source card that supplies `messageId` (previously only did so for
+  the one caller that also forced a `sendText` round trip — those two
+  concerns are now independent).
+- `frontend/src/features/chat/messages/insurance-card.tsx` —
+  `InsuranceCards` gains `messageId`/`completed`, collapses like
+  `AppointmentCards` when superseded; "Continue to book" now passes its
+  own `messageId`.
+- `frontend/src/features/chat/messages/message-renderer.tsx` — threads
+  `messageId`/`completed`/`cancelledMessage` into the two card types
+  above, matching the existing pattern for every other card type.
+
+**Tests:** `python manage.py test apps.chatbot.tests apps.knowledge.tests
+apps.api --keepdb`: **1070/1071**, same single pre-existing
+`test_temporal_authority.py` flake as every prior baseline in this
+document. `run_chat_eval --target 520`: **698/706 (98.9%)**, unchanged,
+compound-message categories still 100%. `tsc --noEmit`: clean.
+
+**Known limitations / found-but-not-fixed:**
+- The "every UI transition should read as a real chat turn" idea above is
+  a genuine design question, not resolved here — surfaced for the user
+  rather than built.
+- A cancel that leaves *other* appointments on the same card still uses
+  the separate system-message banner (unchanged from before this phase)
+  — only the fully-emptied case had the demonstrated duplication.
+- Did not chase the "Booking closed" text visible near a "↓ Latest" jump
+  pill in the user's first pasted screenshot (reschedule flow) — most
+  likely an old, correctly-superseded wizard card from earlier in that
+  same scrolled-up transcript (working as designed), not a new instance
+  of the staff-resume bug fixed in the phase above, but not independently
+  reproduced to confirm that explanation.
+
+**Recommended next phase:** ask the user whether the "synthesize a
+visible chat turn for every local UI transition" idea should actually be
+built, and if so, scope it as its own phase (it touches every local-mint
+entry point, not just the two fixed here).
+
+## ✅ Structured-response echo pattern, reschedule banner removed, calmer system-message styling
+
+**Objective.** User scoped down the previous phase's open question: not
+every UI-to-UI transition, only the ones that end at the booking wizard
+(insurance → book, reschedule "keep/change doctor" → book) — those should
+show as if the user sent a real chat message, and the card that triggered
+it should visibly retire. Separately: remove the reschedule flow's
+"Current appointment: ... stays booked until you confirm" banner
+entirely, and stop using its amber/red styling for any message like it,
+including emergency safety messages — described as "weird" and asked to
+be researched against real UI/UX practice before building anything.
+
+**Research done before implementing** (WebSearch, both cited in the
+session): the Carbon Design System's chatbot pattern documentation
+describes exactly the requested mechanism as a named, established
+pattern — clicking a structured response "changes its visual appearance
+and a user message will appear with the same content" before the next
+card renders, and the clicked card then retires. Separately, notification/
+alert color-semantics guidance (LogRocket, Carbon, Red Hat design system)
+is consistent: amber/warning is for "unintended but not dangerous"
+effects, not routine status confirmations or safety guidance — reserving
+red/amber for genuine errors and warnings, not this general "something
+happened" case, which is what made the reschedule banner and (rare-case)
+emergency banner read as alarming for content that wasn't.
+
+**Change 1 — structured-response echo, applied to every local (no NLU
+round-trip) transition that mints a booking wizard from a selection
+card.** New shared helper `launchWizardFromSelection` (chat-widget.tsx):
+collapses the source card (existing `markMessageCompleted` convention),
+pushes a real `userTextMessage` with the same natural-language `reason`
+string the wizard already uses internally as its own semantic context
+(one string, not a second phrasing to maintain), then mints the wizard.
+Applied to all six local-mint sites: `select_doctor`, `select_slot`,
+`book_appointment` (insurance and service-empty-state), `select_service`,
+`start_reschedule`, and the composer's "Book Appointment" quick-action
+starter. Scoped deliberately — `select_specialty`/"Find a Doctor"/"Clinic
+Hours" go through `runUiAction` (a real backend call returning doctor
+cards or hours text, never a wizard) and were already un-echoed by
+design; left untouched, since the user's rule was specifically about
+transitions that land on the booking wizard.
+
+**Bug found while researching scope, not by the user — a genuine "3rd UI"
+gap in the reschedule flow itself.** Re-reading `AppointmentCard`'s
+"Current provider" reschedule-options stage (`appt.messageId` was never
+passed to `start_reschedule` at all) confirmed this was the *exact same*
+collapse-on-supersede gap as the insurance card from the phase above,
+just not yet named by the user: clicking "Keep {doctor}" or "Change
+Doctor" left that whole sub-stage sitting there, live and re-clickable,
+after minting a wizard. Fixed with a *row-scoped* mechanism rather than
+the message-level `completed` flag used elsewhere: `AppointmentCards`
+gained `rescheduledIds` (an array of appointment ids a wizard has already
+launched from), and `AppointmentCard` gained an `inert` state rendering a
+one-line "Rescheduling {doctor} ↓" for just that row. Message-level
+collapse would have been wrong here — a patient can have more than one
+upcoming appointment listed in the same card, and rescheduling one must
+never hide the others.
+
+**Change 2 — the reschedule banner is gone, not just restyled.** The
+"Current appointment: {doctor} · {when}. Choose a new time below — your
+current appointment stays booked until you confirm." system message
+(chat-widget.tsx's `start_reschedule` handler) is deleted outright, per
+explicit instruction. It was also genuinely redundant chrome, not lost
+information: the wizard's own header already names the doctor/service
+being rescheduled, and the retired row directly above it (see above)
+still shows the original date/time.
+
+**Change 3 — calmer system-message styling, without dropping emergency
+safety content.** `TextMessage` (messages/text-message.tsx) used to
+render every `role: "system"` message — success notices, cancellation
+confirmations, *and* the emergency `safety_message` banner
+(`appendSafetyBanner`, message-parser.ts) — in an amber "warning" box
+regardless of what it actually said. Per the color-semantics research
+above, that box is now gone for the ordinary case: a system message
+renders exactly like a normal assistant reply (full avatar + bubble),
+which is what it now does for status notices *and* for emergency safety
+guidance (already deduplicated against the main response in the common
+case per `shouldAppendSafetyBanner` — this only changes the rare
+non-duplicate case's visual treatment, never its content, which was never
+touched or removed). A genuine failure (`systemErrorMessage`) is the one
+case that keeps a distinguishing look — the bubble now carries a subtle
+destructive tint (`border-destructive/25 bg-destructive/5`) instead of a
+separate colored box, so a real error still reads differently from a
+routine notice without going back to an alarming full-box treatment.
+`systemErrorMessage` gained `payload: { variant: "error" }` to drive this
+— the only new field; `systemNoticeMessage`/`appendSafetyBanner` needed
+no change since calm is now the default.
+
+**A real bug found and fixed during live testing, not by static
+analysis.** `tsc --noEmit` passed clean on every edit in this phase, but
+the very first live click-through (Playwright, `/embed/horizon-family-
+care` on the port-3001 dev server, per this session's established
+practice of never touching the port-3000 production server) crashed with
+React's "Rendered fewer hooks than expected" the moment "Continue to
+book" was clicked. Root cause: `InsuranceCards`' new `if (completed)
+return (...)` early-return (added in the phase above) had been inserted
+*before* the pre-existing `useMemo` for the filtered plan list — fine on
+the first render (`completed=false`, the early return is skipped, the
+`useMemo` still runs), but the moment a click flips `completed` to `true`
+on a re-render, React sees one fewer hook called than the previous render
+recorded, which is a hard error, not a warning. Fixed by moving the
+`useMemo` (and the comment explaining why) above the early return — a
+plain illustration of why CLAUDE.md's "test in a browser" requirement
+exists: TypeScript has no concept of React's Rules of Hooks.
+
+**Live-verified end to end** (Playwright, dev-mode debug OTP codes, a
+seeded test patient/appointment on horizon-family-care, cleaned up
+appointment-by-appointment as each flow consumed it):
+- Insurance → "Continue to book": card collapses to "You started booking
+  a new appointment ↓", a real green user bubble "I would like to book an
+  appointment with {insurance}" appears, then a fresh, fully interactive
+  wizard.
+- A *second* insurance selection later in the same session (changing the
+  plan and clicking "Continue to book" again): exactly one live wizard
+  on screen afterward (verified by counting live `PathStep` pickers vs.
+  collapsed "Booking closed" one-liners) — the duplicate-wizard-stacking
+  bug from the phase above stays fixed under a second real trigger, not
+  just the first.
+- Reschedule → verify identity → "Keep {doctor}": no "Current
+  appointment..." banner, a real user-bubble echo ("Reschedule with
+  {doctor}"), the specific appointment row retired to "Rescheduling
+  {doctor} ↓", and a fresh wizard landing directly on the Date step
+  (correctly skipping the path/doctor pickers since the doctor is already
+  known).
+- Cancel flow (from the phase above, re-verified here): exactly one clean
+  "Appointment with {doctor} cancelled." line, rendered as a plain muted
+  line (no amber box) — confirms Changes 2/3 compose correctly with the
+  prior phase's fix rather than reintroducing a second banner.
+
+**Files changed:**
+- `frontend/src/features/chat/chat-widget.tsx` — new
+  `launchWizardFromSelection` helper; `select_doctor`/`select_slot`/
+  `book_appointment`/`select_service`/`start_reschedule`/the "book"
+  starter rewritten to use it; `start_reschedule` rewritten to retire
+  only the acted-on row (`rescheduledIds`) and drop the banner; unused
+  `date-fns` `format` import removed (its only caller was the deleted
+  banner's date formatting).
+- `frontend/src/features/chat/messages/insurance-card.tsx` — hook-order
+  fix (see above); `messageId`/`completed` support (from the phase
+  above) confirmed live-working after the fix.
+- `frontend/src/features/chat/messages/appointment-card.tsx` —
+  `AppointmentCard` gains `inert`; `AppointmentCards` gains
+  `rescheduledIds`; `messageId` threaded from the reschedule-options
+  buttons.
+- `frontend/src/features/chat/messages/message-renderer.tsx` — threads
+  `rescheduledIds` into `AppointmentCards`.
+- `frontend/src/features/chat/messages/text-message.tsx` — removed the
+  amber "isSystem" box branch; system messages render as a normal
+  assistant bubble by default, with a subtle destructive tint only for
+  `variant: "error"`.
+- `frontend/src/features/chat/message-parser.ts` — `systemErrorMessage`
+  gains `payload: { variant: "error" }`.
+
+**Tests:** `python manage.py test apps.chatbot.tests apps.knowledge.tests
+apps.api --keepdb`: **1070/1071**, same single pre-existing
+`test_temporal_authority.py` flake as every baseline in this document —
+this phase touched no backend Python files, so the eval battery wasn't
+re-run (nothing routing-related changed). `tsc --noEmit`: clean. No new
+automated frontend tests were added this phase (this codebase has no
+frontend unit-test runner configured) — verification was live, via
+Playwright against the dev-mode debug-OTP path, per this session's
+established practice for frontend behavior changes.
+
+**Known limitations / found-but-not-fixed:**
+- No admin/dashboard UI change; this phase is chat-widget-only.
+- The `select_specialty` action can also indirectly precede a wizard (a
+  patient searches a specialty, then picks a doctor, which *does* go
+  through `select_doctor`'s own echo) — the specialty search step itself
+  stays un-echoed by design, consistent with the scoping above.
+
+**Recommended next phase:** none required by this ask.
+
+## ✅ Wizard height reconsidered (animated, content-driven), reschedule row layout, trimmed verify-identity copy, and a real resume-race bug found along the way
+
+**Objective.** User pushed back on this session's own prior "fixed wizard
+height" decision — reported that step transitions still felt like "a new
+UI rendered," with the card sometimes short-and-scrolled, sometimes tall,
+inconsistent placement — and explicitly asked for research into how
+real chat products handle this before touching anything again. Alongside
+that: trim the verify-identity card's text (inputs untouched), and put
+the reschedule flow's two button rows (confirm step, then "Current
+provider") on one line each — the second one wasn't.
+
+**Research done before rebuilding** (WebSearch, cited): PatternFly's own
+wizard design guidelines say the container should size to its actual
+content — "if the height causes the modal to push beyond the viewport
+height, a vertical scrollbar will appear" — not clamp to one fixed value
+regardless of content. Separately, UI-animation guidance for exactly this
+class of problem (card/panel resizing as content changes) calls for a
+short (~200–350ms) *animated* resize, because CSS cannot transition
+directly to `height: auto` — the practical, well-supported technique is
+measuring the real content height (ResizeObserver) and animating to that
+pixel value. Together these say the previous phase's fixed-height call
+was the wrong one in both directions: it produced an oversized empty box
+on short steps *and* didn't even fully solve the "feels like a new UI"
+complaint, because the abrupt snap (no animation) was always the real
+cause, not the exact height value.
+
+**Rebuilt accordingly** (`booking-wizard.tsx`): the step body is content-
+sized again (capped at `min(52dvh,420px)`, scrollable beyond that, same
+cap as before), but now measured via `ResizeObserver` on an inner,
+unconstrained div and applied to an outer wrapper as an explicit pixel
+`height` with `transition-[height] duration-300 ease-out`. A short step
+(3-button path picker) now renders at its own natural, small height
+instead of a padded box; a step change animates smoothly to the new
+content's height instead of snapping. The footer's "always reserved,
+Back button turns invisible rather than unmounting" treatment from the
+prior phase is unchanged — that part wasn't what wasn't working.
+
+**A real, independently significant bug found while verifying this live
+— not what was reported, not a dev-tooling artifact.** Live-testing the
+rebuilt wizard against a *fresh* session kept reproducing the exact "Book
+Appointment header + Booking closed" self-contradiction from two phases
+ago, even though that phase's staff-resume fix was already in place and
+this was the *public* widget path. Suspected a hot-reload artifact first
+(mid-session file edits were genuinely happening) and re-tested clean —
+still reproduced, deterministically. Traced it by instrumenting the
+message-array state directly (temporary console logging, removed after):
+the freshly-added, correctly-active wizard was ending up `completed:
+true` with no code path that should do that. Root cause: `chat-widget.
+tsx`'s mount-time `/chat/resume` GET (fired to restore a returning
+visitor's conversation) has no ordering guarantee against a real message
+the visitor sends in the meantime — confirmed by seeding the guard with
+`lastUserMessageRef` and watching the failure disappear. A fast typer (or
+an automated test, deterministically) can get a live reply with a fresh,
+interactive wizard *before* this slower resume call returns; when it
+finally does return, `hydrateHistoryRow` stamps its historical
+`booking_wizard` row `completed:true` by design (so a stale draft never
+re-fires its own `start()` from just scrolling into view) — and the
+effect applied that snapshot on top of the already-live conversation
+unconditionally, clobbering the just-added wizard for no real reason.
+Same exact pattern existed in the staff-resume effect a phase ago fixed
+for a different bug — fixed identically here: both effects now bail
+(`if (lastUserMessageRef.current) return;`) the moment the live
+conversation is already ahead of what a resume read could tell them,
+right after the `await`, before touching `messages` or any of the
+resume response's other side effects.
+
+**Change 2 — reschedule button rows.** "Reschedule appointment?" (No,
+keep it / Yes, reschedule) was already a row; "Current provider" (Keep /
+Change Doctor) was `flex-col` (stacked) — the one the user actually
+flagged. Switched to the same `flex gap-2` + `flex-1` row pattern as its
+sibling. The "Keep {doctor}" button also repeated the doctor's full name
+a second time (already shown one line above it) — shortened to "Keep" so
+a long doctor name doesn't cramp the row, incidentally serving the same
+"cut unwanted text" instruction as the verify-identity change below.
+
+**Change 3 — verify-identity copy trimmed, inputs untouched.**
+`verify-identity.tsx`'s phone-entry subtitle repeated the input's own
+placeholder ("enter the number you used when booking" vs. placeholder
+"Phone number used when booking") — cut down to "For your privacy, we'll
+text a quick code first." The code-entry subtitle's "a verification code"
+shortened to "a code" (redundant given the screen is already titled
+"Check your phone"). No input, button, or the privacy-safe wording
+property from the earlier researched phase was touched — only the
+redundant words.
+
+**Files changed:**
+- `frontend/src/features/booking/booking-wizard.tsx` — step body sizing
+  rebuilt as measured + animated instead of fixed.
+- `frontend/src/features/chat/chat-widget.tsx` — both resume effects
+  (public widget and staff) gained the `lastUserMessageRef` race guard.
+- `frontend/src/features/chat/messages/appointment-card.tsx` —
+  "Current provider" buttons in a row; "Keep" no longer repeats the
+  doctor's name.
+- `frontend/src/features/chat/messages/verify-identity.tsx` — trimmed
+  subtitles on both stages.
+
+**Tests:** `tsc --noEmit`: clean. This phase is frontend-only (confirmed
+via `git diff --stat`) — no backend suite or eval re-run needed. Verified
+live (Playwright, dev-mode debug OTP, `/embed/horizon-family-care` on the
+port-3001 dev server): a fresh "I would like to book an appointment" now
+reliably lands on a short, naturally-sized, fully live PathStep (0
+`Booking closed` false-positives across repeated clean runs, after
+reliably reproducing the bug before the resume-race fix); clicking
+"Choose a service" grows the same card naturally to fit the service list
+(screenshotted); "Current provider"'s Keep/Change Doctor buttons confirmed
+in the same row via bounding-box comparison; both verify-identity
+subtitles confirmed shortened in the live DOM.
+
+**Known limitations / found-but-not-fixed:**
+- The resume-race fix bails outright rather than merging/reconciling —
+  correct for this case (the live state is always a superset of what a
+  stale resume read could add), but worth naming as the chosen strategy
+  if resume ever needs to merge something the live path genuinely
+  couldn't have (none identified today).
+- No frontend automated test locks in the resume-race fix (this codebase
+  has no frontend test runner) — verified live only, per this session's
+  established practice for frontend behavior changes.
+
+**Recommended next phase:** none required by this ask.
