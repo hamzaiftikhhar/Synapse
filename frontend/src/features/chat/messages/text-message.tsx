@@ -16,18 +16,18 @@ export function TextMessage({
   assistantName?: string;
 }) {
   const isUser = message.role === "user";
-  const isSystem = message.role === "system" || message.type === "system";
+  // Ordinary system notices (status confirmations, emergency safety
+  // guidance) used to render in an amber "warning" box regardless of
+  // what they actually said — researched before this change: that
+  // color is reserved for "unintended but not dangerous" effects, not a
+  // routine "appointment cancelled" confirmation, and reads as alarming
+  // for the rare emergency case that isn't already deduplicated against
+  // the main reply (appendSafetyBanner in message-parser.ts). Those now
+  // render exactly like any other assistant reply. Only a genuine
+  // failure (systemErrorMessage) keeps a distinguishing accent, done as
+  // a subtle tint on the same bubble shape, not a separate colored box.
+  const isError = message.type === "system" && message.payload?.variant === "error";
   const streaming = Boolean(message.payload?.streaming);
-
-  if (isSystem) {
-    return (
-      <div className="synapse-chat-msg flex justify-start py-1 pl-9">
-        <p className="max-w-[min(100%,28rem)] rounded-xl border border-amber-200/80 bg-amber-50 px-3.5 py-2.5 text-left text-xs leading-relaxed text-amber-900">
-          {message.content}
-        </p>
-      </div>
-    );
-  }
 
   return (
     <div
@@ -54,7 +54,9 @@ export function TextMessage({
             "px-3.5 py-2.5 text-sm leading-relaxed synapse-chat-bubble",
             isUser
               ? "synapse-chat-bubble--user bg-primary text-primary-foreground shadow-sm"
-              : "synapse-chat-bubble--bot border border-border/80 bg-card text-foreground shadow-sm",
+              : isError
+                ? "synapse-chat-bubble--bot border border-destructive/25 bg-destructive/5 text-foreground shadow-sm"
+                : "synapse-chat-bubble--bot border border-border/80 bg-card text-foreground shadow-sm",
             streaming && !isUser && "synapse-stream-cursor"
           )}
         >

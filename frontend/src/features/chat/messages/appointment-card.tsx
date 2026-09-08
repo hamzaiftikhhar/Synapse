@@ -20,6 +20,8 @@ function AppointmentCard({
   appt,
   onAction,
   readOnly = false,
+  inert = false,
+  messageId,
 }: {
   appt: AppointmentCardData;
   onAction?: ChatActionHandler;
@@ -27,8 +29,27 @@ function AppointmentCard({
    * must be a deliberate action taken from the *current* state of a real
    * appointment, never a stray click replaying an old turn's snapshot. */
   readOnly?: boolean;
+  /** Set once a reschedule wizard has been launched from *this specific*
+   * row — same collapse-on-supersede idea as every other card, but
+   * row-scoped rather than message-scoped: other appointments still
+   * listed in the same card (a patient can have more than one) must stay
+   * fully live, only the row that was just acted on retires. */
+  inert?: boolean;
+  /** Passed through to start_reschedule so the parent can identify which
+   * row to retire once a wizard launches from it. */
+  messageId?: string;
 }) {
   const [stage, setStage] = useState<Stage>(null);
+
+  if (inert) {
+    return (
+      <div className="rounded-lg border border-border bg-card p-3 text-center">
+        <p className="text-sm text-muted-foreground">
+          Rescheduling {appt.doctor} ↓
+        </p>
+      </div>
+    );
+  }
 
   if (readOnly) {
     return (
@@ -111,19 +132,25 @@ function AppointmentCard({
       <div className="rounded-lg border border-border bg-card p-3">
         <p className="text-sm font-medium text-foreground">Current provider</p>
         <p className="mt-0.5 text-xs text-muted-foreground">{appt.doctor}</p>
-        <div className="mt-2.5 flex flex-col gap-1.5">
+        <div className="mt-2.5 flex gap-2">
           <Button
             type="button"
             size="xs"
-            onClick={() => onAction?.("start_reschedule", { ...appt, changeDoctor: false })}
+            className="flex-1"
+            onClick={() =>
+              onAction?.("start_reschedule", { ...appt, changeDoctor: false, messageId })
+            }
           >
-            Keep {appt.doctor}
+            Keep
           </Button>
           <Button
             type="button"
             size="xs"
             variant="outline"
-            onClick={() => onAction?.("start_reschedule", { ...appt, changeDoctor: true })}
+            className="flex-1"
+            onClick={() =>
+              onAction?.("start_reschedule", { ...appt, changeDoctor: true, messageId })
+            }
           >
             Change Doctor
           </Button>
@@ -167,6 +194,8 @@ export function AppointmentCards({
   appointments,
   onAction,
   completed = false,
+  cancelledMessage,
+  rescheduledIds,
   messageId,
   readOnly = false,
 }: {
@@ -177,11 +206,31 @@ export function AppointmentCards({
    * (Phase 22): once that click has launched a wizard, this card
    * shouldn't keep sitting there as a live, re-clickable prompt. */
   completed?: boolean;
+  /** Set when this card's list became empty because its one appointment
+   * was just cancelled from it — a distinct situation from `completed`
+   * (nothing was "started" here). Without this, the emptied card used to
+   * fall through to the full "No upcoming appointments" empty state
+   * (title + subtitle + "Book a New Appointment" button) *and* a separate
+   * "Appointment cancelled" system message appeared right after — two
+   * redundant signals for one action, live-confirmed. This replaces both
+   * with a single line here instead. */
+  cancelledMessage?: string;
+  /** Appointment ids a reschedule wizard has already been launched from —
+   * row-scoped, not message-scoped, so a patient with more than one
+   * upcoming appointment doesn't lose the others just for acting on one. */
+  rescheduledIds?: string[];
   messageId?: string;
   /** Set for a historical (resumed) appointments list — see AppointmentCard. */
   readOnly?: boolean;
 }) {
   if (appointments.length === 0) {
+    if (cancelledMessage) {
+      return (
+        <ChatInlineCard className="flex items-center gap-2 py-2.5 text-center">
+          <p className="text-sm text-muted-foreground">{cancelledMessage}</p>
+        </ChatInlineCard>
+      );
+    }
     if (completed) {
       return (
         <ChatInlineCard className="flex items-center gap-2 py-2.5 text-center">
@@ -214,7 +263,14 @@ export function AppointmentCards({
   return (
     <ChatInlineCard className="space-y-2">
       {appointments.map((a) => (
-        <AppointmentCard key={a.id} appt={a} onAction={onAction} readOnly={readOnly} />
+        <AppointmentCard
+          key={a.id}
+          appt={a}
+          onAction={onAction}
+          readOnly={readOnly}
+          inert={Boolean(rescheduledIds?.includes(a.id))}
+          messageId={messageId}
+        />
       ))}
     </ChatInlineCard>
   );

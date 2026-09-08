@@ -378,6 +378,7 @@ export function systemErrorMessage(content: string): ChatMessage {
     type: "system",
     content,
     createdAt: new Date().toISOString(),
+    payload: { variant: "error" },
   };
 }
 

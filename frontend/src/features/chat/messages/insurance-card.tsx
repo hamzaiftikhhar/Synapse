@@ -75,15 +75,28 @@ export function InsuranceCards({
   plans,
   onAction,
   clinicSlug,
+  messageId,
+  completed = false,
 }: {
   plans: InsuranceCardData[];
   onAction?: ChatActionHandler;
   clinicSlug?: string | null;
+  messageId?: string;
+  /** Same collapse-on-supersede convention as AppointmentCards/DoctorCards
+   * (ROADMAP.md "Chat card collapse-on-supersede", Phase 22) — once
+   * "Continue to book" has launched a wizard from this card, it stops
+   * being a live, re-clickable prompt. The selected plan itself survives
+   * in useSelectedInsurance (clinic-scoped, not message-scoped), so
+   * nothing is lost by retiring the card. */
+  completed?: boolean;
 }) {
   const { selected, setSelected } = useSelectedInsurance(clinicSlug);
   const [query, setQuery] = useState("");
   const activeSelection = isAcceptedPlan(selected) ? selected : null;
 
+  // All hooks must run unconditionally before any early return (Rules of
+  // Hooks) -- this filter always runs, even though its result is unused
+  // once `completed` short-circuits below.
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return plans;
@@ -92,6 +105,16 @@ export function InsuranceCards({
         p.name.toLowerCase().includes(q) || (p.plan || "").toLowerCase().includes(q)
     );
   }, [plans, query]);
+
+  if (completed) {
+    return (
+      <ChatInlineCard className="flex items-center gap-2 py-2.5 text-center">
+        <p className="text-sm text-muted-foreground">
+          You started booking a new appointment ↓
+        </p>
+      </ChatInlineCard>
+    );
+  }
 
   // Selecting a plan from our own accepted-plans list is a state change, not
   // a new question — we already know the answer, so this never sends a chat
@@ -138,7 +161,10 @@ export function InsuranceCards({
                 size="sm"
                 className="h-8 flex-1 rounded-full text-xs font-medium"
                 onClick={() =>
-                  onAction?.("book_appointment", { insurance: activeSelection.name })
+                  onAction?.("book_appointment", {
+                    insurance: activeSelection.name,
+                    messageId,
+                  })
                 }
               >
                 Continue to book

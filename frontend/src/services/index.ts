@@ -428,6 +428,15 @@ export const widgetService = {
     );
     return data;
   },
+  /** Accepted insurance plans for one clinic — small, fetched once and
+   * filtered client-side (same pattern InsuranceCards already uses), not
+   * searched per keystroke server-side. */
+  async getInsurancePlans(clinicSlug: string) {
+    const { data } = await widgetApi.get<
+      import("@/types/api").WidgetInsurancePlansOut
+    >("/widget/insurance-plans", { params: { clinic_slug: clinicSlug } });
+    return data;
+  },
 };
 
 /** Deterministic UI actions — the frontend already knows the intent (a

@@ -151,10 +151,12 @@ export function VerifyIdentity({
       {stage === "contact" ? (
         <>
           <div>
-            <p className="text-sm font-semibold text-foreground">Verify it&apos;s you</p>
+            <p className="text-sm font-semibold text-foreground">Let&apos;s verify it&apos;s you</p>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              We&apos;ll text a code to confirm it&apos;s really you before
-              showing your appointments.
+              {/* Trimmed: the placeholder below already says "used when
+                  booking" -- repeating it here in the subtitle was the
+                  unwanted-text length the phone step didn't need. */}
+              For your privacy, we&apos;ll text a quick code first.
             </p>
           </div>
           <Input
@@ -184,15 +186,23 @@ export function VerifyIdentity({
       ) : (
         <>
           <div>
-            <p className="text-sm font-semibold text-foreground">Verify your identity</p>
+            <p className="text-sm font-semibold text-foreground">Check your phone</p>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              We sent a code to {contact}.{" "}
+              {/* Privacy-safe by construction, not just by wording: this
+                  copy must stay true whether or not {contact} matches an
+                  appointment — the backend sends an identical response
+                  either way (apps/chatbot/services/otp_service.py), so a
+                  wrong number gets a wrong code with no signal it was
+                  wrong, exactly like a real one. Never say "we found..."
+                  or reveal a count here. */}
+              If {contact} has an appointment with us, a code is on its
+              way.{" "}
               <button
                 type="button"
                 onClick={changeContact}
                 className="text-primary underline-offset-2 hover:underline"
               >
-                Not you?
+                Wrong number?
               </button>
             </p>
           </div>

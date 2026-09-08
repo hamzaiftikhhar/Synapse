@@ -100,6 +100,8 @@ export function MessageRenderer({
           plans={(message.payload?.plans as never[]) || []}
           onAction={onAction}
           clinicSlug={clinicSlug}
+          messageId={message.id}
+          completed={Boolean(message.payload?.completed)}
         />
       );
       break;
@@ -142,6 +144,8 @@ export function MessageRenderer({
           appointments={(message.payload?.appointments as never[]) || []}
           onAction={onAction}
           completed={Boolean(message.payload?.completed)}
+          cancelledMessage={message.payload?.cancelledMessage as string | undefined}
+          rescheduledIds={message.payload?.rescheduledIds as string[] | undefined}
           messageId={message.id}
           readOnly={Boolean(message.payload?.readOnly)}
         />

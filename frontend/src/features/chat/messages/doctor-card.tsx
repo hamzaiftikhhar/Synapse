@@ -62,10 +62,13 @@ export function DoctorCard({
   );
 }
 
-// Below this many cards, the list is already scannable at a glance — a
-// search box would just be one more thing to look at for no benefit. A
-// typical small clinic's whole roster (4-6 doctors) is common enough that
-// this stays low rather than only kicking in for large rosters.
+// At or below this many cards, the list is already scannable at a
+// glance — a search box would just be one more thing to look at for no
+// benefit. A typical small clinic's whole roster (4-6 doctors) is common
+// enough that this stays low rather than only kicking in for large
+// rosters. Inclusive (>=) so a clinic with exactly this many doctors
+// still gets the search box — a strict > previously meant the box never
+// appeared at precisely the threshold count.
 const SEARCH_THRESHOLD = 4;
 
 export function DoctorCards({
@@ -100,7 +103,7 @@ export function DoctorCards({
 
   return (
     <ChatInlineCard className="grid gap-2">
-      {doctors.length > SEARCH_THRESHOLD ? (
+      {doctors.length >= SEARCH_THRESHOLD ? (
         <div className="relative">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input

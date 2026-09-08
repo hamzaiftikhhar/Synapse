@@ -639,6 +639,10 @@ export type MarketingChatInput = {
   message: string;
 };
 
+export type WidgetInsurancePlansOut = {
+  plans: import("@/types/chat").InsuranceCardData[];
+};
+
 /* ─── Persistent chat history (resume + cursor pagination) ────── */
 
 export type ChatMessageHistoryOut = {
@@ -710,6 +714,8 @@ export type StaffChatResumeOut = {
   has_history: boolean;
   messages: ConversationMessage[];
   has_more: boolean;
+  /** Same meaning as ChatResumeOut.active_booking above. */
+  active_booking?: BookingStepPayload | null;
 };
 
 export type BookingSpecialty = {

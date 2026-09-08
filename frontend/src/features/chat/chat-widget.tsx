@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { format } from "date-fns";
 import { ArrowDown, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -114,6 +113,21 @@ const CLINIC_STARTERS = [
   },
 ];
 
+// Same starters plus Check Insurance (message text matches
+// ui_meta.py::_smart_action's own "Check Insurance" chip verbatim, so
+// asking it here or tapping the contextual chip after a doctor search
+// behave identically) — a composer menu isn't chip-row-space-constrained
+// the way the empty state is, so it can hold one more item.
+const CLINIC_QUICK_ACTIONS = [
+  ...CLINIC_STARTERS,
+  {
+    id: "insurance",
+    label: "Check Insurance",
+    message: "Do you accept my insurance?",
+    icon: "Shield",
+  },
+];
+
 const MARKETING_SAMPLES = [
   { id: "s1", label: "What is Synapse?", message: "What is Synapse?" },
   { id: "s2", label: "Pricing", message: "Tell me about pricing" },
@@ -186,6 +200,34 @@ function runBackendAction(
  * `sendText`'s own launchedWizard logic and handleBookingConfirmed
  * already use for booking_wizard messages.
  */
+/**
+ * Structured-response echo (researched before building — this is the
+ * Carbon Design System chatbot pattern: clicking a structured response
+ * "changes its visual appearance and a user message will appear with the
+ * same content" before the next UI renders). Applied to every local (no
+ * NLU/LLM round trip) transition that mints a fresh booking wizard from a
+ * prior selection card — picking a doctor, a slot, a service, an
+ * insurance plan, or a reschedule doctor choice — so the wizard never
+ * just appears with no visible cause in the transcript, and the card that
+ * triggered it collapses via the same markMessageCompleted convention
+ * used everywhere else. `reason` is the same natural-language string
+ * already used as the wizard's own semantic context (BookingWizard's
+ * initialMessage) — one string, shown once, not a second phrasing to
+ * maintain.
+ */
+function launchWizardFromSelection(
+  messages: ChatMessage[],
+  sourceMessageId: string | undefined,
+  reason: string,
+  wizardPayload: Record<string, unknown> = {}
+): ChatMessage[] {
+  return [
+    ...markMessageCompleted(messages, sourceMessageId),
+    userTextMessage(reason),
+    bookingWizardMessage({ reason, ...wizardPayload }),
+  ];
+}
+
 function markMessageCompleted(
   messages: ChatMessage[],
   messageId: string | undefined
@@ -277,6 +319,11 @@ export function ChatWidget({
     resolvedMode === "marketing" ? MARKETING_STARTERS : CLINIC_STARTERS;
   const samples =
     resolvedMode === "marketing" ? MARKETING_SAMPLES : CLINIC_SAMPLES;
+  // Insurance/booking/doctors are clinic-only concepts — the marketing
+  // widget reuses its own (doctor-less) starters instead of the extra
+  // Check Insurance item.
+  const quickActions =
+    resolvedMode === "marketing" ? MARKETING_STARTERS : CLINIC_QUICK_ACTIONS;
 
   const [open, setOpen] = useState(mode === "embedded" || defaultOpen);
   const [expanded, setExpanded] = useState(false);
@@ -294,6 +341,7 @@ export function ChatWidget({
     () => new Set()
   );
   const scrollRef = useRef<HTMLDivElement>(null);
+  const scrollContentRef = useRef<HTMLDivElement>(null);
   const topSentinelRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
   const lastUserMessageRef = useRef("");
@@ -399,6 +447,27 @@ export function ChatWidget({
     [expanded]
   );
 
+  // Live-reported bug: the typing/"understanding" bubble grows *after* it's
+  // already on screen (TypingIndicator reveals a skeleton ~500ms late, and
+  // cycles its status phrase every ~400ms) — neither change touches
+  // `messages` or `typing`, the only two things the effect below re-scrolls
+  // on, so the growing bubble silently ended up rendered behind the
+  // composer. A ResizeObserver on the actual message-list content reacts to
+  // *any* height change (this one, a card image loading in late, etc.)
+  // instead of only message-count changes — while stickToBottom is still
+  // true, keep pinning to the true bottom as it grows, matching how the
+  // rest of this file already treats "the user hasn't scrolled away" as
+  // license to keep following new content.
+  useEffect(() => {
+    const el = scrollContentRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (stickToBottom.current) scrollToBottom(false);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [scrollToBottom]);
+
   // Closed-widget marketing teaser — only the standalone launcher bubble
   // has a closed state at all (embedded mode is always open, forced above).
   // Delay the first appearance so it doesn't flash on page load, then
@@ -440,12 +509,27 @@ export function ChatWidget({
     void (async () => {
       try {
         const res = await chatService.resumeStaffChat();
+        // Same race as the public widget's resume effect above -- once
+        // the user has sent anything, the live conversation already beats
+        // this read; never let it clobber a just-added live wizard.
+        if (lastUserMessageRef.current) return;
         if (res.session_token) rememberSessionToken(res.session_token);
-        if (res.messages.length) {
-          oldestCursorRef.current = res.messages[0].sequence_number;
-          setHasMoreOlder(res.has_more);
+        if (res.messages.length || res.active_booking) {
+          if (res.messages.length) {
+            oldestCursorRef.current = res.messages[0].sequence_number;
+            setHasMoreOlder(res.has_more);
+          }
           stickToBottom.current = true;
-          setMessages(hydrateHistoryMessages(res.messages));
+          const history = hydrateHistoryMessages(res.messages);
+          // Same reasoning as the public widget's resume effect above: the
+          // historical booking_wizard row (if any) is always inert once
+          // rehydrated, so a still-open booking is appended separately as
+          // the one live, resumable wizard card.
+          setMessages(
+            res.active_booking
+              ? [...history, bookingWizardMessage(res.active_booking)]
+              : history
+          );
           requestAnimationFrame(() => scrollToBottom(false));
         }
       } catch {
@@ -605,6 +689,19 @@ export function ChatWidget({
     void (async () => {
       try {
         const res = await widgetService.resume(clinicSlug, widgetCtx.visitorId);
+        // Live-reproduced race: this read is a plain GET fired at mount,
+        // with no ordering guarantee against a real message the visitor
+        // sends in the meantime — a fast typer (or, deterministically, an
+        // automated test) can get a live reply with a fresh, interactive
+        // wizard *before* this slow resume call returns. hydrateHistoryRow
+        // always stamps a historical booking_wizard row completed:true (by
+        // design, so a stale draft never re-fires its own start() from
+        // just scrolling into view) — applying that snapshot on top of an
+        // already-live conversation clobbered the just-added wizard with
+        // an inert "Booking closed" card for no real reason. Once the user
+        // has sent anything, the live conversation is already strictly
+        // more current than this read; let it win outright.
+        if (lastUserMessageRef.current) return;
         if (res.visitor_id) widgetCtx.setVisitorId(res.visitor_id);
         if (res.session_token) rememberSessionToken(res.session_token);
         if (res.messages.length || res.active_booking) {
@@ -729,7 +826,8 @@ export function ChatWidget({
             ? prev.map((m) =>
                 (m.type === "booking_wizard" ||
                   m.type === "appointments" ||
-                  m.type === "verify_identity") &&
+                  m.type === "verify_identity" ||
+                  m.type === "insurance_cards") &&
                 !m.payload?.completed
                   ? { ...m, payload: { ...(m.payload ?? {}), completed: true } }
                   : m
@@ -740,7 +838,9 @@ export function ChatWidget({
           // out already collapsed, never render live even for a frame.
           const incoming = launchedWizard
             ? parsed.messages.map((m) =>
-                m.type === "appointments" || m.type === "verify_identity"
+                m.type === "appointments" ||
+                m.type === "verify_identity" ||
+                m.type === "insurance_cards"
                   ? { ...m, payload: { ...(m.payload ?? {}), completed: true } }
                   : m
               )
@@ -1016,32 +1116,32 @@ export function ChatWidget({
         message?: string;
         messageId?: string;
       };
-      setMessages((prev) => [
-        ...markMessageCompleted(prev, doctor.messageId),
-        bookingWizardMessage({
-          reason: doctor.name
+      setMessages((prev) =>
+        launchWizardFromSelection(
+          prev,
+          doctor.messageId,
+          doctor.name
             ? `I would like to book an appointment with ${doctor.name}`
             : "I would like to book an appointment",
-          doctor_id: doctor.id || undefined,
-          doctor_name: doctor.name || undefined,
-        }),
-      ]);
+          { doctor_id: doctor.id || undefined, doctor_name: doctor.name || undefined }
+        )
+      );
       return;
     }
 
     if (action === "select_slot") {
       const slot = data as TimeSlotData & { messageId?: string };
       if (!slot.start || !slot.doctor_id) {
-        setMessages((prev) => [
-          ...markMessageCompleted(prev, slot.messageId),
-          bookingWizardMessage({
-            reason: slot.doctor
+        setMessages((prev) =>
+          launchWizardFromSelection(
+            prev,
+            slot.messageId,
+            slot.doctor
               ? `I would like to book an appointment with ${slot.doctor}`
               : "I would like to book an appointment",
-            doctor_id: slot.doctor_id || undefined,
-            doctor_name: slot.doctor || undefined,
-          }),
-        ]);
+            { doctor_id: slot.doctor_id || undefined, doctor_name: slot.doctor || undefined }
+          )
+        );
         return;
       }
       // Prefer a matching end; if missing, assume 30-minute slot
@@ -1052,16 +1152,19 @@ export function ChatWidget({
           end = new Date(startMs + 30 * 60 * 1000).toISOString();
         }
       }
-      setMessages((prev) => [
-        ...markMessageCompleted(prev, slot.messageId),
-        bookingWizardMessage({
-          reason: `Book ${slot.label || slot.time || "this time"}`,
-          doctor_id: slot.doctor_id,
-          doctor_name: slot.doctor,
-          slot_start: slot.start,
-          slot_end: end,
-        }),
-      ]);
+      setMessages((prev) =>
+        launchWizardFromSelection(
+          prev,
+          slot.messageId,
+          `Book ${slot.label || slot.time || "this time"}`,
+          {
+            doctor_id: slot.doctor_id,
+            doctor_name: slot.doctor,
+            slot_start: slot.start,
+            slot_end: end,
+          }
+        )
+      );
       return;
     }
 
@@ -1072,15 +1175,16 @@ export function ChatWidget({
         insurance?: string;
         messageId?: string;
       };
-      // The empty-appointments-card "Book a New Appointment" button (the
-      // only caller that ever sets messageId) carries no doctor/slot/
-      // service pick of its own — nothing precise to lose by routing it
-      // through a real message, matching every other bare "Book
-      // Appointment" entry point in this app (runBackendAction's
-      // launch_booking, below). Also collapses the card that triggered
-      // it. Other callers (e.g. insurance-card.tsx, after picking a
-      // plan) still carry structured data worth keeping local — untouched.
-      if (payload?.messageId) {
+      // The empty-appointments-card "Book a New Appointment" button is the
+      // one caller with messageId but no service/insurance pick of its own
+      // — nothing precise to lose by routing it through a real message,
+      // matching every other bare "Book Appointment" entry point in this
+      // app (runBackendAction's launch_booking, below). Callers that do
+      // carry structured data (insurance-card.tsx after picking a plan,
+      // the services-empty-state CTA) mint the wizard locally instead
+      // (launchWizardFromSelection below already retires their source
+      // card), no NLU round trip needed for data we already have.
+      if (payload?.messageId && !payload.service && !payload.insurance) {
         setMessages((prev) => markMessageCompleted(prev, payload.messageId));
         void sendText("I would like to book an appointment");
         return;
@@ -1089,17 +1193,22 @@ export function ChatWidget({
       const usableStored = stored && stored.is_accepted !== false ? stored : null;
       const insurance =
         payload?.insurance || usableStored?.name || undefined;
-      setMessages((prev) => [
-        ...prev,
-        bookingWizardMessage({
-          reason: payload?.service
+      setMessages((prev) =>
+        launchWizardFromSelection(
+          prev,
+          payload?.messageId,
+          payload?.service
             ? `I would like to book ${payload.service}`
-            : "I would like to book an appointment",
-          service_name: payload?.service,
-          service_id: payload?.service_id,
-          insurance_name: insurance,
-        }),
-      ]);
+            : insurance
+              ? `I would like to book an appointment with ${insurance}`
+              : "I would like to book an appointment",
+          {
+            service_name: payload?.service,
+            service_id: payload?.service_id,
+            insurance_name: insurance,
+          }
+        )
+      );
       return;
     }
 
@@ -1110,16 +1219,16 @@ export function ChatWidget({
         select_message?: string;
         messageId?: string;
       };
-      setMessages((prev) => [
-        ...markMessageCompleted(prev, service.messageId),
-        bookingWizardMessage({
-          reason: service.name
+      setMessages((prev) =>
+        launchWizardFromSelection(
+          prev,
+          service.messageId,
+          service.name
             ? `I would like to book ${service.name}`
             : "I would like to book an appointment",
-          service_id: service.id,
-          service_name: service.name,
-        }),
-      ]);
+          { service_id: service.id, service_name: service.name }
+        )
+      );
       return;
     }
 
@@ -1154,28 +1263,47 @@ export function ChatWidget({
           });
           // Drop it from any appointments card already on screen — otherwise
           // the just-cancelled appointment keeps showing Reschedule/Cancel
-          // buttons as if it were still active.
+          // buttons as if it were still active. When that empties the card
+          // entirely, the card itself carries the confirmation
+          // (cancelledMessage) instead of falling through to the full "No
+          // upcoming appointments" empty state *and* a separate system
+          // message — live-confirmed as two redundant signals for one
+          // action. Other appointments still on the card (not this one)
+          // still get the separate banner, since there's no card-local
+          // place left to say which one was cancelled once it's removed.
+          let emptied = false;
           setMessages((prev) =>
             prev.map((m) => {
               if (m.type !== "appointments") return m;
               const list = (m.payload?.appointments as AppointmentCardData[]) ?? [];
+              if (!list.some((a) => a.id === appointmentId)) return m;
+              const remaining = list.filter((a) => a.id !== appointmentId);
+              if (remaining.length === 0) emptied = true;
               return {
                 ...m,
                 payload: {
                   ...m.payload,
-                  appointments: list.filter((a) => a.id !== appointmentId),
+                  appointments: remaining,
+                  cancelledMessage:
+                    remaining.length === 0
+                      ? appt.doctor
+                        ? `Appointment with ${appt.doctor} cancelled.`
+                        : "Appointment cancelled."
+                      : m.payload?.cancelledMessage,
                 },
               };
             })
           );
-          setMessages((prev) => [
-            ...prev,
-            systemNoticeMessage(
-              appt.doctor
-                ? `Appointment cancelled. Your appointment with ${appt.doctor} has been cancelled.`
-                : "Appointment cancelled."
-            ),
-          ]);
+          if (!emptied) {
+            setMessages((prev) => [
+              ...prev,
+              systemNoticeMessage(
+                appt.doctor
+                  ? `Appointment cancelled. Your appointment with ${appt.doctor} has been cancelled.`
+                  : "Appointment cancelled."
+              ),
+            ]);
+          }
         } catch (err) {
           setMessages((prev) => [
             ...prev,
@@ -1192,6 +1320,7 @@ export function ChatWidget({
         doctor?: string;
         service?: string;
         changeDoctor?: boolean;
+        messageId?: string;
       };
       if (!appt.id) return;
       const appointmentId = appt.id;
@@ -1203,28 +1332,48 @@ export function ChatWidget({
             session_token: patientSessionToken(),
             appointment_id: appointmentId,
           });
-          const start = new Date(result.start_time);
-          const currentWhen =
-            result.when ||
-            (Number.isNaN(start.getTime())
-              ? result.start_time
-              : format(start, "EEE d MMM, h:mm a"));
-          setMessages((prev) => [
-            ...prev,
-            systemNoticeMessage(
-              `Current appointment: ${result.doctor_name} · ${currentWhen}. Choose a new time below — your current appointment stays booked until you confirm.`
-            ),
-            bookingWizardMessage({
-              reason: keepDoctor
-                ? `Reschedule with ${result.doctor_name}`
-                : "I would like to reschedule with a different doctor",
-              doctor_id: keepDoctor ? result.doctor_id : undefined,
-              doctor_name: keepDoctor ? result.doctor_name : undefined,
-              service_id: result.service_id || undefined,
-              service_name: result.service_name || undefined,
-              replaces_appointment_id: appointmentId,
-            }),
-          ]);
+          const reason = keepDoctor
+            ? `Reschedule with ${result.doctor_name}`
+            : "I would like to reschedule with a different doctor";
+          setMessages((prev) => {
+            // Retire only the one row a wizard is about to launch from —
+            // not the whole card, since a patient can have more than one
+            // upcoming appointment listed there. The old "Current
+            // appointment: ... stays booked until you confirm" banner is
+            // gone: the wizard's own header already names the doctor/
+            // service being rescheduled, and the still-visible retired row
+            // above it already shows the original date/time — repeating
+            // both in a separate colored banner was redundant chrome, not
+            // information the patient didn't already have.
+            const withRowRetired = appt.messageId
+              ? prev.map((m) =>
+                  m.id === appt.messageId
+                    ? {
+                        ...m,
+                        payload: {
+                          ...m.payload,
+                          rescheduledIds: [
+                            ...((m.payload?.rescheduledIds as string[]) ?? []),
+                            appointmentId,
+                          ],
+                        },
+                      }
+                    : m
+                )
+              : prev;
+            return [
+              ...withRowRetired,
+              userTextMessage(reason),
+              bookingWizardMessage({
+                reason,
+                doctor_id: keepDoctor ? result.doctor_id : undefined,
+                doctor_name: keepDoctor ? result.doctor_name : undefined,
+                service_id: result.service_id || undefined,
+                service_name: result.service_name || undefined,
+                replaces_appointment_id: appointmentId,
+              }),
+            ];
+          });
         } catch (err) {
           setMessages((prev) => [
             ...prev,
@@ -1260,7 +1409,9 @@ export function ChatWidget({
       return;
     }
     if (item?.id === "book") {
-      setMessages((prev) => [...prev, bookingWizardMessage({})]);
+      setMessages((prev) =>
+        launchWizardFromSelection(prev, undefined, "I would like to book an appointment")
+      );
       return;
     }
     void sendText(msg);
@@ -1331,6 +1482,7 @@ export function ChatWidget({
           className="h-full overflow-y-auto overscroll-contain scroll-smooth px-3 py-4 sm:px-4"
         >
           <div
+            ref={scrollContentRef}
             className={cn(
               "mx-auto flex w-full flex-col gap-4",
               expanded ? "max-w-3xl" : "max-w-xl"
@@ -1419,6 +1571,8 @@ export function ChatWidget({
         onStop={stopGenerating}
         generating={typing}
         placeholder="Write a message"
+        quickActions={quickActions}
+        onQuickAction={(action) => void sendText(action.message)}
       />
     </div>
   );
