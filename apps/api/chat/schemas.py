@@ -68,3 +68,4 @@ class StaffChatResumeOut(Schema):
     has_history: bool
     messages: list[ConversationMessageOut]
     has_more: bool
+    active_booking: dict[str, Any] | None = None

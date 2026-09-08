@@ -368,6 +368,32 @@ class StaffChatResumeTests(TestCase):
         self.assertEqual(body["messages"][0]["role"], "user")
         self.assertEqual(body["messages"][0]["content"], "hello")
 
+    def test_still_open_booking_wizard_survives_a_reload(self):
+        """Regression: this endpoint used to have no equivalent of the
+        public widget's active_booking (apps/api/widget/router.py) -- a
+        not-yet-confirmed booking_wizard row from history always renders
+        inert client-side (hydrateHistoryRow deliberately stamps
+        completed:true so a stale draft never re-fires its own start() just
+        from scrolling into view), and nothing here ever re-added a live
+        one to replace it. A staff QA tester who reloaded mid-booking saw
+        "Booking closed. Ask to book again anytime." even though the
+        underlying BookingSession was still fully open server-side."""
+        from apps.chatbot.booking.service import BookingService
+
+        send = self.client.post(
+            STAFF_MESSAGE_URL, {"message": "hello"}, content_type="application/json",
+            headers=self.headers,
+        )
+        token = send.json()["meta"]["session_token"]
+        session = ChatSession.objects.get(session_token=token)
+        started = BookingService.start(clinic=self.clinic, chat_session=session)
+
+        resp = self.client.get(STAFF_RESUME_URL, headers=self.headers)
+        body = resp.json()
+        self.assertIsNotNone(body["active_booking"])
+        self.assertEqual(body["active_booking"]["booking_id"], started["booking_id"])
+        self.assertNotEqual(body["active_booking"]["step"], "confirmed")
+
     def test_two_staff_members_at_the_same_clinic_never_resume_each_others_session(self):
         other_user = User.objects.create_user(
             username="resume-other", email="resume-other@convo-test.com",

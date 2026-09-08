@@ -152,6 +152,8 @@ def resume_staff_chat(request):
             session_token=None, has_history=False, messages=[], has_more=False
         )
 
+    from apps.chatbot.booking.service import BookingService
+
     rows, has_more = paginate_messages(session, before=None, limit=_MESSAGES_DEFAULT_LIMIT)
     return StaffChatResumeOut(
         session_token=session.session_token,
@@ -169,6 +171,17 @@ def resume_staff_chat(request):
             for m in rows
         ],
         has_more=has_more,
+        # Mirrors the public widget's /widget/chat/resume (apps/api/widget/
+        # router.py) -- without this, hydrateHistoryRow (frontend) always
+        # stamps a persisted, not-yet-confirmed booking_wizard row as
+        # completed:true (by design, so a stale draft never re-fires its
+        # own start() just from being scrolled into view), and nothing here
+        # ever re-added a live one to replace it. A staff QA tester who
+        # reloaded mid-booking saw the wizard permanently render "Booking
+        # closed. Ask to book again anytime." even though the underlying
+        # BookingSession was still fully open server-side -- live-confirmed
+        # against a real staff-console transcript.
+        active_booking=BookingService.active_booking_payload(clinic, session),
     )
 
 

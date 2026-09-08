@@ -146,6 +146,17 @@ class AppointmentRescheduleOut(Schema):
     when: str = ""
 
 
+class InsurancePlanCardOut(Schema):
+    id: str
+    name: str
+    plan: str = ""
+    is_accepted: bool = True
+
+
+class InsurancePlansOut(Schema):
+    plans: list[InsurancePlanCardOut]
+
+
 @router.get("/config", response=WidgetConfigOut, auth=None)
 def widget_config(request, clinic_slug: str):
     """Public widget configuration for tenant detection and branding."""
@@ -173,6 +184,34 @@ def widget_config(request, clinic_slug: str):
         phone=clinic.phone or "",
         timezone=clinic.timezone or "UTC",
         configuration=configuration,
+    )
+
+
+@router.get("/insurance-plans", response=InsurancePlansOut, auth=None)
+def widget_insurance_plans(request, clinic_slug: str):
+    """Accepted insurance plans for this clinic — powers the booking
+    wizard's insurance autocomplete (Review step). Same "browse mode" query
+    apps/chatbot/sql_tool/handlers/insurance.py::insurance_accepted uses
+    when nothing narrower was asked for, so the list a patient searches
+    while booking always matches what the chat itself would say is
+    accepted. Read-only, tenant-scoped, no patient data — safe unauthenticated,
+    same trust level as /config."""
+    from apps.insurance.models import InsurancePlan
+
+    clinic = resolve_public_clinic(request, clinic_slug)
+    plans = InsurancePlan.objects.filter(
+        clinic=clinic, is_deleted=False, is_accepted=True
+    ).order_by("provider_name", "plan_name")
+    return InsurancePlansOut(
+        plans=[
+            InsurancePlanCardOut(
+                id=str(p.id),
+                name=p.provider_name,
+                plan=p.plan_name or "",
+                is_accepted=True,
+            )
+            for p in plans
+        ]
     )
 
 
