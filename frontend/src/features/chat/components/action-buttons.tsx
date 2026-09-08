@@ -15,7 +15,7 @@ import {
 import { cn } from "@/lib/utils";
 import type { BackendAction } from "@/features/chat/types";
 
-const ICONS: Record<string, LucideIcon> = {
+export const ICONS: Record<string, LucideIcon> = {
   Calendar,
   MapPin,
   Clock,

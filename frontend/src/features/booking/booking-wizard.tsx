@@ -9,8 +9,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import { getApiErrorMessage } from "@/lib/api/client";
-import { classifyContact } from "@/lib/contact-validation";
-import { bookingService } from "@/services";
+import { isValidEmail } from "@/lib/contact-validation";
+import { normalizePhone, phoneIssueMessage, validatePhone } from "@/lib/phone";
+import { bookingService, widgetService } from "@/services";
 import type {
   BookingDateDensity,
   BookingDateOption,
@@ -19,6 +20,7 @@ import type {
   BookingSpecialty,
   BookingStepPayload,
 } from "@/types/api";
+import type { InsuranceCardData } from "@/types/chat";
 import { useWidget } from "@/providers/widget-provider";
 
 export type BookingWizardProps = {
@@ -180,6 +182,36 @@ export function BookingWizard({
     void start();
   }, [started, specialtyId, doctorId, serviceId, slotStart, start]);
 
+  // Step transitions used to snap to a new height instantly (or, briefly,
+  // to one hard-fixed height for every step regardless of content, which
+  // traded the snap for a career of its own -- an oversized empty box on
+  // short steps, plus real reports of inconsistent scroll placement).
+  // Researched before rebuilding this: wizard-pattern guidance (PatternFly)
+  // says the container should size to its actual content, not a fixed
+  // value; separate UI-animation guidance for exactly this class of
+  // problem calls for a short (~200-350ms) animated resize so a step
+  // change reads as "the same card, new content" rather than "a new UI
+  // appeared". CSS alone can't transition to `height: auto`, so the
+  // actual (capped, scrollable-beyond-cap) content height is measured via
+  // ResizeObserver and applied as an explicit pixel height with a CSS
+  // transition on the wrapping element.
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const [bodyHeight, setBodyHeight] = useState<number | null>(null);
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => {
+      // entry.contentRect is the content-box (padding excluded) -- this
+      // inner div carries its own py-3 padding, so sizing the animated
+      // wrapper from contentRect alone came up ~24px short every time,
+      // clipping the bottom of every step's content behind the footer.
+      // offsetHeight is the full border-box (padding + border included).
+      setBodyHeight(el.offsetHeight);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   const runStep = useCallback(
     async (action: string, value: Record<string, unknown> = {}) => {
       if (!active || !state?.booking_id) return;
@@ -319,7 +351,11 @@ export function BookingWizard({
         </div>
       ) : null}
 
-      <div className="min-h-[240px] max-h-[min(52dvh,420px)] overflow-y-auto px-3.5 py-3">
+      <div
+        style={bodyHeight != null ? { height: bodyHeight } : undefined}
+        className="overflow-hidden transition-[height] duration-300 ease-out"
+      >
+      <div ref={bodyRef} className="max-h-[min(52dvh,420px)] overflow-y-auto px-3.5 py-3">
         {error && step !== "confirmed" ? (
           <p className="mb-3 rounded-xl border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
             {error}
@@ -432,6 +468,7 @@ export function BookingWizard({
             patientFirstName={details.first_name || state.review.first_name || ""}
             brandColor={brandColor}
             loading={loading}
+            clinicSlug={clinicSlug}
             onConfirm={() => void runStep("confirm_review")}
             onEditDetails={(d) => void runStep("edit_details", d)}
           />
@@ -453,15 +490,26 @@ export function BookingWizard({
           </p>
         ) : null}
       </div>
+      </div>
 
-      {interactive && step && step !== "path" ? (
+      {step && step !== "confirmed" ? (
+        // Always reserved (not conditionally mounted) so the card's total
+        // height stays constant across every step -- the Back button
+        // merely turns invisible (space intact) on the one step where it
+        // doesn't apply, instead of the whole row disappearing and
+        // shrinking the card.
         <div className="shrink-0 border-t border-border/70 px-3.5 py-2.5">
           <Button
             type="button"
             variant="ghost"
             size="sm"
-            className="gap-1"
-            disabled={loading}
+            className={cn(
+              "gap-1",
+              (!interactive || step === "path") && "invisible"
+            )}
+            disabled={loading || !interactive || step === "path"}
+            tabIndex={!interactive || step === "path" ? -1 : 0}
+            aria-hidden={!interactive || step === "path"}
             onClick={() => void runStep("back")}
           >
             <ArrowLeft className="size-3.5" />
@@ -922,44 +970,42 @@ function DetailsStep({
   loading: boolean;
   verificationMode?: string;
 }) {
-  const [contactDraft, setContactDraft] = useState(
-    () => details.email || details.phone
-  );
-  const [contactError, setContactError] = useState<string | null>(null);
+  // Phone is mandatory (the clinic calls this number to confirm the
+  // booking — the same reason it's mandatory everywhere else a patient
+  // record gets created); email stays optional. One page, not a second
+  // step: one extra optional field isn't enough friction to justify
+  // another screen for every patient.
+  const [phoneError, setPhoneError] = useState<string | null>(null);
+  const [emailError, setEmailError] = useState<string | null>(null);
 
-  const contactLabel = "Email address";
-  const contactPlaceholder = "name@example.com";
-  // Phone/SMS verification is disabled for now — email only.
-  const effectiveMode = "email";
+  function handlePhoneChange(raw: string) {
+    onChange({ ...details, phone: raw });
+    if (phoneError) setPhoneError(null);
+  }
 
-  function handleContactChange(raw: string) {
-    setContactDraft(raw);
-    setContactError(null);
-    const classified = classifyContact(raw, effectiveMode);
-    onChange({
-      ...details,
-      phone: classified.phone,
-      email: classified.email,
-    });
+  function handleEmailChange(raw: string) {
+    onChange({ ...details, email: raw });
+    if (emailError) setEmailError(null);
   }
 
   function handleSubmit() {
-    const classified = classifyContact(contactDraft, effectiveMode);
-    const next = {
+    const phoneIssue = validatePhone(details.phone, { required: true });
+    const email = details.email.trim();
+    const emailInvalid = Boolean(email) && !isValidEmail(email);
+    setPhoneError(phoneIssue ? phoneIssueMessage(phoneIssue) : null);
+    setEmailError(emailInvalid ? "Enter a valid email address" : null);
+    if (phoneIssue || emailInvalid) return;
+    if (!details.first_name.trim() || !details.date_of_birth) return;
+    onSubmit({
       ...details,
-      phone: classified.phone,
-      email: classified.email,
-    };
-    onChange(next);
-    if (classified.error) {
-      setContactError(classified.error);
-      return;
-    }
-    if (!next.first_name.trim() || !next.date_of_birth) return;
-    onSubmit(next);
+      phone: normalizePhone(details.phone),
+      email: email.toLowerCase(),
+    });
   }
 
-  const contactOk = !classifyContact(contactDraft, effectiveMode).error;
+  const contactOk =
+    !validatePhone(details.phone, { required: true }) &&
+    (!details.email.trim() || isValidEmail(details.email.trim()));
 
   return (
     <div className="space-y-4">
@@ -994,22 +1040,48 @@ function DetailsStep({
         </div>
       </div>
       <div className="space-y-1">
-        <Label className="text-xs">{contactLabel}</Label>
+        <Label className="text-xs">Phone number</Label>
+        <Input
+          type="tel"
+          inputMode="tel"
+          autoComplete="tel"
+          value={details.phone}
+          onChange={(e) => handlePhoneChange(e.target.value)}
+          placeholder="+1 415 555 0123"
+          className={cn(
+            "h-9 rounded-xl",
+            phoneError && "border-destructive focus-visible:ring-destructive"
+          )}
+          aria-invalid={Boolean(phoneError)}
+        />
+        {phoneError ? (
+          <p className="text-xs text-destructive">{phoneError}</p>
+        ) : (
+          <p className="text-[11px] text-muted-foreground">
+            So the clinic can call to confirm your appointment.
+          </p>
+        )}
+      </div>
+      <div className="space-y-1">
+        <Label className="text-xs">
+          Email{" "}
+          <span className="font-normal text-muted-foreground">(optional)</span>
+        </Label>
         <Input
           type="email"
           inputMode="email"
           autoComplete="email"
-          value={contactDraft}
-          onChange={(e) => handleContactChange(e.target.value)}
-          placeholder={contactPlaceholder}
+          value={details.email}
+          onChange={(e) => handleEmailChange(e.target.value)}
+          placeholder="name@example.com"
           className={cn(
             "h-9 rounded-xl",
-            contactError && "border-destructive focus-visible:ring-destructive"
+            emailError && "border-destructive focus-visible:ring-destructive"
           )}
-          aria-invalid={Boolean(contactError)}
+          aria-invalid={Boolean(emailError)}
         />
-        {contactError ? (
-          <p className="text-xs text-destructive">{contactError}</p>
+        {emailError ? (
+          <p className="text-xs text-destructive">{emailError}</p>
         ) : null}
       </div>
       <div className="space-y-1">
@@ -1109,6 +1181,7 @@ function ReviewStep({
   review,
   patientFirstName,
   brandColor,
+  clinicSlug,
   onConfirm,
   onEditDetails,
   loading,
@@ -1116,6 +1189,7 @@ function ReviewStep({
   review: NonNullable<BookingStepPayload["review"]>;
   patientFirstName?: string;
   brandColor?: string;
+  clinicSlug: string;
   onConfirm: () => void;
   onEditDetails: (d: {
     first_name: string;
@@ -1139,6 +1213,15 @@ function ReviewStep({
   const [firstName, setFirstName] = useState(name);
   const [lastName, setLastName] = useState(review.last_name || "");
   const [insurance, setInsurance] = useState(review.insurance_plan_name || "");
+  // The clinic's accepted plans are small, tenant-scoped business data (the
+  // same list InsuranceCards already shows in chat) — fetched once, lazily,
+  // the first time editing opens, then filtered client-side per keystroke.
+  // No per-keystroke request means no debounce is actually needed; a stale
+  // empty list on a failed fetch just leaves the field as plain free text,
+  // exactly like before this feature existed.
+  const [insurancePlans, setInsurancePlans] = useState<InsuranceCardData[]>([]);
+  const plansRequestedRef = useRef(false);
+  const [suggestOpen, setSuggestOpen] = useState(false);
 
   useEffect(() => {
     if (editing) return;
@@ -1146,6 +1229,27 @@ function ReviewStep({
     setLastName(review.last_name || "");
     setInsurance(review.insurance_plan_name || "");
   }, [editing, name, review.last_name, review.insurance_plan_name]);
+
+  useEffect(() => {
+    if (!editing || plansRequestedRef.current) return;
+    plansRequestedRef.current = true;
+    void widgetService
+      .getInsurancePlans(clinicSlug)
+      .then((res) => setInsurancePlans(res.plans))
+      .catch(() => {});
+  }, [editing, clinicSlug]);
+
+  const insuranceQuery = insurance.trim().toLowerCase();
+  const insuranceSuggestions = useMemo(() => {
+    if (!insuranceQuery) return [];
+    return insurancePlans
+      .filter(
+        (p) =>
+          p.name.toLowerCase().includes(insuranceQuery) ||
+          (p.plan || "").toLowerCase().includes(insuranceQuery)
+      )
+      .slice(0, 6);
+  }, [insurancePlans, insuranceQuery]);
 
   function handleSave() {
     if (!firstName.trim()) return;
@@ -1201,12 +1305,43 @@ function ReviewStep({
             </div>
             <div className="space-y-1">
               <Label className="text-[11px]">Insurance (optional)</Label>
-              <Input
-                value={insurance}
-                onChange={(e) => setInsurance(e.target.value)}
-                placeholder="e.g. Aetna PPO"
-                className="h-8 rounded-lg text-xs"
-              />
+              <div className="relative">
+                <Input
+                  value={insurance}
+                  onChange={(e) => {
+                    setInsurance(e.target.value);
+                    setSuggestOpen(true);
+                  }}
+                  onFocus={() => setSuggestOpen(true)}
+                  onBlur={() =>
+                    window.setTimeout(() => setSuggestOpen(false), 120)
+                  }
+                  placeholder="e.g. Aetna PPO"
+                  className="h-8 rounded-lg text-xs"
+                />
+                {suggestOpen && insuranceSuggestions.length > 0 ? (
+                  <div className="absolute inset-x-0 top-full z-10 mt-1 max-h-36 overflow-y-auto rounded-lg border border-border bg-popover p-1 shadow-md">
+                    {insuranceSuggestions.map((p) => (
+                      <button
+                        key={p.id || `${p.name}-${p.plan}`}
+                        type="button"
+                        // Fires before the input's onBlur closes the list.
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => {
+                          setInsurance(p.plan ? `${p.name} (${p.plan})` : p.name);
+                          setSuggestOpen(false);
+                        }}
+                        className="block w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-accent"
+                      >
+                        {p.name}
+                        {p.plan ? (
+                          <span className="text-muted-foreground"> · {p.plan}</span>
+                        ) : null}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
             </div>
             {contactLine ? (
               <p className="text-[11px] text-muted-foreground">
