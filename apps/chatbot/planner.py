@@ -584,6 +584,7 @@ def compute_message_sensors(
     flags) — callers must use the returned .nlu from here on, the same
     way they already must use resolve_plan_after_sql's returned plan.
     """
+    from apps.chatbot.nlu.entity_extract import looks_like_compound
     from apps.chatbot.routing.confidence import apply_confidence_policy
     from apps.chatbot.routing.doc_catalog import matching_document_ids
     from apps.chatbot.routing.signals import (
@@ -641,6 +642,35 @@ def compute_message_sensors(
             and nlu.intent
             not in {Intent.CANCEL_APPOINTMENT, Intent.RESCHEDULE_APPOINTMENT, Intent.EMERGENCY}
             and not knowledge_q
+        )
+        or (
+            # Live-confirmed: nano anchors a clean, single-clause "I would
+            # like to book an appointment" to a stale conversational topic
+            # (previous turn discussed insurance) and ranks a *different*
+            # intent primary, demoting book_appointment to secondary_intents
+            # despite zero textual ambiguity in the current message itself
+            # (real trace: intent=insurance_verification, secondary_intents=
+            # [book_appointment], conf 0.85, reasoning literally "Verifying
+            # insurance and booking appointment" -> routed to the insurance
+            # SQL lane and answered "Search your plan below" for a message
+            # that never mentioned insurance). Trust the deterministic
+            # phrase match plus nano's own secondary signal over its
+            # primary-slot ranking -- same rescue spirit as the typo branch
+            # above, but for well-formed rather than garbled input.
+            # looks_like_compound guards against dropping a real second
+            # clause (e.g. "do you accept Aetna and can I book too") -- a
+            # genuinely compound message still falls through to the
+            # existing intent instead of being forced into booking here.
+            Intent.BOOK_APPOINTMENT in nlu.secondary_intents
+            and is_transactional_booking(message)
+            and not looks_like_compound(message)
+            and not knowledge_q
+            and nlu.intent
+            not in {
+                Intent.CANCEL_APPOINTMENT,
+                Intent.RESCHEDULE_APPOINTMENT,
+                Intent.EMERGENCY,
+            }
         )
     )
     soft_medical = (

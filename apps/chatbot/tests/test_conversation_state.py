@@ -261,6 +261,81 @@ class SlotConfirmationTests(SimpleTestCase):
         self.assertTrue(sensors.is_booking_intent)
 
 
+class SecondaryBookingIntentRescueTests(SimpleTestCase):
+    """Live-confirmed against a real production trace: a clean,
+    single-clause "I would like to book an appointment" — sent right after
+    an earlier turn about insurance — got classified intent=
+    insurance_verification (secondary_intents=[book_appointment], conf
+    0.85, reasoning literally "Verifying insurance and booking
+    appointment"). Nano anchored on stale conversational context even
+    though the current message is textually unambiguous. is_booking_intent
+    used to only trust nlu.intent itself (plus a narrow typo-rescue
+    branch), so this fell through to the wrong (insurance) lane and
+    answered "Search your plan below" for a booking request. Python must
+    trust its own deterministic phrase match plus nano's own
+    secondary-intent signal over nano's primary-slot ranking here."""
+
+    def test_book_appointment_in_secondary_intents_wins_over_wrong_primary(self):
+        from apps.chatbot.planner import compute_message_sensors
+
+        nlu = NLUResult(
+            intent=Intent.INSURANCE_VERIFICATION,
+            secondary_intents=[Intent.BOOK_APPOINTMENT],
+            confidence=0.85,
+            entities=ExtractedEntities(),
+        )
+        sensors = compute_message_sensors(
+            message="I would like to book an appointment",
+            nlu=nlu,
+            document_catalog=[],
+            service_catalog=[],
+        )
+        self.assertTrue(sensors.is_booking_intent)
+
+    def test_genuinely_compound_message_is_not_forced_into_booking(self):
+        """A real two-clause message must still fall through to the
+        existing (imperfect but conservative) compound handling instead of
+        silently dropping the insurance half — this rescue is for a
+        single-clause message misfiled by stale context, not a real
+        compound question."""
+        from apps.chatbot.planner import compute_message_sensors
+
+        nlu = NLUResult(
+            intent=Intent.INSURANCE_VERIFICATION,
+            secondary_intents=[Intent.BOOK_APPOINTMENT],
+            confidence=0.8,
+            entities=ExtractedEntities(),
+        )
+        sensors = compute_message_sensors(
+            message="Do you accept Aetna and can I also book an appointment?",
+            nlu=nlu,
+            document_catalog=[],
+            service_catalog=[],
+        )
+        self.assertFalse(sensors.is_booking_intent)
+
+    def test_cancel_appointment_primary_is_never_overridden(self):
+        """The rescue explicitly excludes CANCEL/RESCHEDULE/EMERGENCY
+        primaries — those need their own specific flows, never a generic
+        booking-wizard launch, even if book_appointment shows up as a
+        secondary guess and the message shape matches the booking regex."""
+        from apps.chatbot.planner import compute_message_sensors
+
+        nlu = NLUResult(
+            intent=Intent.CANCEL_APPOINTMENT,
+            secondary_intents=[Intent.BOOK_APPOINTMENT],
+            confidence=0.7,
+            entities=ExtractedEntities(),
+        )
+        sensors = compute_message_sensors(
+            message="I would like to book an appointment",
+            nlu=nlu,
+            document_catalog=[],
+            service_catalog=[],
+        )
+        self.assertFalse(sensors.is_booking_intent)
+
+
 class WorkingContextTests(SimpleTestCase):
     """Phase 39 — server-side working context. Root cause, reproduced
     against real trace logs (ROADMAP.md): "Based on what we already

@@ -156,22 +156,18 @@ def format_sql_results(results: list[dict[str, Any]]) -> str:
                 else:
                     parts.append(EMPTY_DOCTORS)
                 continue
-            # Text stays a short preview regardless of how many cards render
-            # below (cards are the actual browse surface) — but when there
-            # are more than the preview shows, say so rather than silently
-            # implying the preview is the whole list.
-            preview = rows[:3]
-            lines = [
-                f"- {r['full_name']}"
-                + (f" ({', '.join(r['specialties'])})" if r.get("specialties") else "")
-                for r in preview
-            ]
-            intro = (
-                "Here are a few doctors who may be a good fit:"
-                if len(rows) > len(preview)
-                else "Here are the doctors who may be a good fit:"
-            )
-            parts.append(intro + "\n" + "\n".join(lines))
+            # Never re-list names/specialties here — the cards below are the
+            # actual browse surface and already show that data in full; a
+            # text preview of the same fields is pure duplication (worse
+            # the more doctors there are) and, unlike the insurance handler
+            # just below (which already follows this rule for its own
+            # multi-result browse: "Search your plan below."), used to
+            # repeat every specialty per doctor in a bullet list on top of
+            # the cards.
+            if len(rows) == 1:
+                parts.append(f"Here's {rows[0]['full_name']} — details below.")
+            else:
+                parts.append(f"Found {len(rows)} doctors who may be a good fit — take a look below.")
             continue
 
         if handler == "list_specialties" and rows:
@@ -224,11 +220,16 @@ def format_sql_results(results: list[dict[str, Any]]) -> str:
                     )
                 )
                 continue
-            lines = [
-                f"- {r['doctor']} on {r.get('when') or r.get('start_time')} ({r['status']})"
-                for r in rows[:5]
-            ]
-            parts.append("Your upcoming appointments:\n" + "\n".join(lines))
+            # Same reasoning as search_doctors above: the appointment cards
+            # right below already show doctor/service/date-time per row, so
+            # repeating a full "- Dr. X on ... (status)" line for each one
+            # here was pure duplication (live-confirmed: a single
+            # appointment produced identical doctor/date/time text twice in
+            # the same turn — once in prose, once in the card).
+            if len(rows) == 1:
+                parts.append(f"Here's your appointment with {rows[0]['doctor']} — details below.")
+            else:
+                parts.append(f"You have {len(rows)} upcoming appointments — take a look below.")
             continue
 
         if summary:

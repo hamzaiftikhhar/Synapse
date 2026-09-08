@@ -721,7 +721,7 @@ def _parse_entity(
             label=_month_label(start),
         )
 
-    parsed = parse_natural_date(raw, tz=tz)
+    parsed = parse_natural_date(raw, tz=tz, today=today)
     if parsed is None:
         return None
     weekday_hint = _WEEKDAYS.get(text)

@@ -10,25 +10,25 @@ from apps.chatbot.sql_tool.utils import clinic_timezone, format_clinic_when
 
 def patient_appointments(ctx: SQLContext) -> SQLResult:
     from apps.appointments.models import Appointment, AppointmentStatus
-    from apps.clinics.features import get_verification_mode
 
     if ctx.patient is None:
-        # The verify-identity card that follows this reads the clinic's
-        # actual configured mode already (email vs. SMS) — this summary
-        # used to unconditionally say "phone number" even for an
-        # email-verified clinic, contradicting the card shown right below
-        # it.
-        mode = get_verification_mode(ctx.clinic)
-        contact_label = {
-            "sms": "phone number",
-            "email": "email address",
-            "sms_or_email": "phone number or email address",
-        }.get(mode, "contact info")
+        # Live-confirmed mismatch: this used to read the clinic's *general*
+        # verification_mode (email by default) to word this summary, but
+        # the appointment-management flow's own OTP endpoint
+        # (apps/api/auth/patient_router.py::send_otp) always forces phone
+        # (require_existing_patient=True — see otp_service.py's own
+        # docstring: "always verify by phone, never email, regardless of
+        # the clinic's general verification_mode/sms_otp configuration").
+        # A clinic whose general mode is "email" produced a summary saying
+        # "verify your email address" right above a verify-identity card
+        # that actually asked for a phone number and texted the code —
+        # reproduced live. This flow has exactly one contact method, not a
+        # clinic-configurable choice, so the text is no longer conditional.
         return SQLResult(
             handler="patient_appointments",
             found=False,
             summary=(
-                f"To cancel or reschedule, please verify your {contact_label} first "
+                "To cancel or reschedule, please verify your phone number first "
                 "so I can pull up your appointments. You can also start booking "
                 "a new visit if you prefer."
             ),

@@ -54,16 +54,33 @@ def format_clinic_when(dt: datetime, tz: ZoneInfo) -> str:
     return f"{local.strftime('%a')} {local.day} {local.strftime('%b')}, {clock}"
 
 
-def parse_natural_date(raw: str | None, *, tz: ZoneInfo | None = None) -> date | None:
-    """Lightweight natural-language date parser."""
+def parse_natural_date(
+    raw: str | None, *, tz: ZoneInfo | None = None, today: date | None = None
+) -> date | None:
+    """Lightweight natural-language date parser.
+
+    `today`: the caller's own already-computed reference date, when it has
+    one (temporal.py's resolver always does). Live-confirmed gap: every
+    branch below used to recompute "today" from the real wall clock
+    (`timezone.now()`) regardless of what the caller had already
+    established — harmless for "yesterday"/"tomorrow"/"weekend" (those were
+    already special-cased above this function specifically to avoid it, per
+    that code's own comment: "tests freeze today, and a production call
+    already computed clinic-local today before it got here"), but the
+    weekday-name branch below was never given the same treatment, so a bare
+    "tuesday" resolved relative to whatever the actual current moment
+    happened to be when the code ran, silently drifting away from an
+    explicitly injected reference date. Reproduced directly: with an
+    injected `today` of a real Tuesday, "tuesday" resolved 3-4 weeks out
+    instead of to the very next occurrence, once the real wall-clock date
+    had moved away from the injected one.
+    """
     if not raw:
         return None
     raw = raw.strip().lower()
-    now = timezone.now()
-    if tz:
-        today = now.astimezone(tz).date()
-    else:
-        today = timezone.localdate()
+    if today is None:
+        now = timezone.now()
+        today = now.astimezone(tz).date() if tz else timezone.localdate()
 
     if raw in ("today", "now"):
         return today

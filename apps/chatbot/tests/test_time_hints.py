@@ -146,6 +146,57 @@ class ParseNaturalDateWeekdayTests(SimpleTestCase):
                 self.assertIsNone(parse_natural_date(raw, tz=self.TZ))
 
 
+class ParseNaturalDateExplicitTodayTests(SimpleTestCase):
+    """Live-confirmed gap, found chasing an unrelated test failure in
+    test_temporal_authority.py: every branch of parse_natural_date used to
+    recompute "today" from the real wall clock regardless of an explicit
+    reference date the caller had already established. "yesterday"/
+    "tomorrow"/"weekend" were already special-cased in temporal.py's
+    resolver specifically to avoid this (that code's own comment: "tests
+    freeze today, and a production call already computed clinic-local
+    today before it got here") -- but the weekday-name branch inside
+    parse_natural_date itself was never given the same treatment, so a
+    bare "tuesday" silently drifted away from an injected `today` as the
+    real calendar moved on. Reproduced directly: with an injected `today`
+    that IS a Tuesday, "tuesday" resolved 3-4 weeks past that reference
+    date once the real wall-clock date had moved away from it -- not the
+    very next occurrence a patient would expect."""
+
+    TZ = ZoneInfo("America/Los_Angeles")
+
+    def test_explicit_today_is_used_instead_of_the_wall_clock(self):
+        # August 18, 2026 is a Tuesday.
+        injected_today = date(2026, 8, 18)
+        # The very next Tuesday after a Tuesday reference is one week out,
+        # not three or four.
+        self.assertEqual(
+            parse_natural_date("tuesday", tz=self.TZ, today=injected_today),
+            date(2026, 8, 25),
+        )
+        self.assertEqual(
+            parse_natural_date("wednesday", tz=self.TZ, today=injected_today),
+            date(2026, 8, 19),
+        )
+
+    def test_explicit_today_also_governs_relative_words(self):
+        injected_today = date(2026, 8, 18)
+        self.assertEqual(
+            parse_natural_date("tomorrow", tz=self.TZ, today=injected_today),
+            date(2026, 8, 19),
+        )
+        self.assertEqual(
+            parse_natural_date("today", tz=self.TZ, today=injected_today),
+            injected_today,
+        )
+
+    def test_omitting_today_still_falls_back_to_the_wall_clock(self):
+        """Backward compatible: existing callers that never pass `today`
+        (this file's other tests, any caller outside temporal.py) keep
+        their original real-time behavior unchanged."""
+        real_today = datetime.now(self.TZ).date()
+        self.assertEqual(parse_natural_date("today", tz=self.TZ), real_today)
+
+
 class FormatClinicWhenTests(SimpleTestCase):
     def test_midnight_is_12_am_not_0_00(self):
         dt = datetime(2026, 8, 13, 19, 0, tzinfo=dt_timezone.utc)

@@ -106,7 +106,15 @@ class StructuredRepliesTests(SimpleTestCase):
         )
         self.assertEqual(text, "Search your plan below.")
 
-    def test_patient_appointments_uses_when_not_iso(self):
+    def test_patient_appointments_single_result_names_doctor_not_raw_time(self):
+        """The appointment card rendered alongside this text already shows
+        doctor/service/date-time (appointment-card.tsx) -- repeating a raw
+        `when`/`start_time` line here was pure duplication (live-confirmed:
+        identical doctor+date+time shown twice in the same turn, once in
+        prose and once in the card), same fix already applied to
+        search_doctors/services_offered above. This only needs to name the
+        doctor and never leak the raw ISO timestamp -- the date/time itself
+        is the card's job now, not this text's."""
         text = format_sql_results(
             [
                 {
@@ -123,9 +131,26 @@ class StructuredRepliesTests(SimpleTestCase):
                 }
             ]
         )
-        self.assertIn("Fri 14 Aug, 12:00 AM", text)
+        self.assertIn("Dr. Chloe Bennett", text)
         self.assertNotIn("T19:00:00", text)
         self.assertNotIn("+00:00", text)
+
+    def test_patient_appointments_multiple_results_stays_minimal(self):
+        text = format_sql_results(
+            [
+                {
+                    "handler": "patient_appointments",
+                    "found": True,
+                    "rows": [
+                        {"doctor": "Dr. Chloe Bennett", "when": "Fri 14 Aug, 12:00 AM", "status": "confirmed"},
+                        {"doctor": "Dr. Omar Haddad", "when": "Sat 15 Aug, 9:00 AM", "status": "confirmed"},
+                    ],
+                }
+            ]
+        )
+        self.assertIn("2 upcoming appointments", text)
+        self.assertNotIn("Dr. Chloe Bennett", text)
+        self.assertNotIn("Dr. Omar Haddad", text)
 
     def test_search_doctors_authoritative_not_found_summary_survives_formatting(self):
         """Live-confirmed regression: search_doctors' honest "we don't have

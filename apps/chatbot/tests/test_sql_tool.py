@@ -579,6 +579,28 @@ class PatientAppointmentsTests(SQLToolTestBase):
         self.assertFalse(result.found)
         self.assertTrue(result.meta.get("requires_auth"))
 
+    def test_auth_prompt_always_says_phone_never_the_clinics_general_mode(self):
+        """Live-confirmed bug: this summary used to read the clinic's
+        *general* verification_mode (email by default) to word itself --
+        "please verify your email address" -- directly above a
+        verify-identity card that actually asked for a phone number and
+        texted the code, because the appointment-management OTP endpoint
+        (apps/api/auth/patient_router.py::send_otp) always forces phone
+        (require_existing_patient=True) regardless of that setting. A
+        clinic explicitly configured for email-mode new-patient booking
+        must still get the phone-worded prompt here -- this flow has
+        exactly one contact method, not a clinic-configurable choice."""
+        from apps.widget.models import WidgetSettings
+
+        WidgetSettings.objects.create(
+            clinic=self.clinic,
+            configuration={"booking": {"verification_mode": "email"}},
+        )
+        ctx = SQLContext(clinic=self.clinic, nlu=_nlu(Intent.CANCEL_APPOINTMENT))
+        result = patient_appointments(ctx)
+        self.assertIn("phone number", result.summary)
+        self.assertNotIn("email", result.summary)
+
     def test_returns_upcoming(self):
         ctx = SQLContext(
             clinic=self.clinic,
@@ -594,8 +616,13 @@ class PatientAppointmentsTests(SQLToolTestBase):
         # A bare "T" substring check is flaky here: the weekday abbreviation
         # itself is "Tue" or "Thu" roughly 2 days out of 7.
         self.assertNotRegex(when, r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}")
+        # The appointment card rendered alongside this text already shows
+        # the date/time (appointment-card.tsx) -- this text only needs to
+        # name the doctor and never leak the raw `when`/ISO value itself,
+        # same de-duplication already applied to search_doctors above.
         text = format_sql_results([result.to_dict()])
-        self.assertIn(when, text)
+        self.assertIn(result.rows[0]["doctor"], text)
+        self.assertNotIn(when, text)
         self.assertNotIn("T10:00", text)
 
 
@@ -625,3 +652,29 @@ class SQLFormatterTests(SQLToolTestBase):
         text = format_sql_results([result.to_dict()])
         self.assertIn("we're open", text.lower())
         self.assertIn("Monday", text)
+
+    def test_search_doctors_text_does_not_repeat_card_data(self):
+        """The doctor cards below already show name/title/specialties in
+        full -- the text bubble must not duplicate that (live-reported UX
+        issue: a bulleted name+every-specialty list on top of the same
+        cards, unreadable once a clinic has more than a couple of
+        doctors). Matches the pattern insurance_accepted already uses for
+        its own multi-result browse ("Search your plan below.")."""
+        Doctor.objects.create(
+            clinic=self.clinic, full_name="Dr. Second Doctor", is_accepting_patients=True
+        )
+        ctx = SQLContext(clinic=self.clinic, nlu=_nlu(Intent.DOCTOR_SEARCH))
+        result = search_doctors(ctx)
+        self.assertGreaterEqual(len(result.rows), 2)
+        text = format_sql_results([result.to_dict()])
+        self.assertNotIn(self.doctor.full_name, text)
+        self.assertNotIn("Cardiology", text)
+
+    def test_search_doctors_text_single_result_still_names_the_doctor(self):
+        ctx = SQLContext(
+            clinic=self.clinic,
+            nlu=_nlu(Intent.DOCTOR_SEARCH, entities=ExtractedEntities(doctor_name="Hamza")),
+        )
+        result = search_doctors(ctx)
+        text = format_sql_results([result.to_dict()])
+        self.assertIn(self.doctor.full_name, text)

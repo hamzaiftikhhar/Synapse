@@ -141,7 +141,15 @@ class RecoveryEngineIntegrationTests(TestCase):
             message="nah fr who are ur doctors rn",
             session=None,
         )
-        self.assertIn("Hamza", result.response)
+        # The real, SQL-backed multi-doctor result renders as "Found N
+        # doctors... take a look below" (formatter.py no longer repeats
+        # names/specialties already shown in the doctor cards) -- this
+        # still proves the real response wasn't discarded, which is what
+        # this test actually checks; a specific doctor's name is no longer
+        # part of that text for a 2+-result browse (see the single-result
+        # case in test_or_nah_preserves_hamza_response below, which still
+        # names the doctor since only one row matches there).
+        self.assertIn("Found 2 doctors", result.response)
         self.assertNotIn("what would you like to do instead", result.response)
 
     @patch("apps.chatbot.nlu.intent_entity.IntentEntityService.analyze")
