@@ -1,5 +1,9 @@
 """Phase 42A — the standard (non-shortcut) booking path: a new or
-returning patient typing a phone/email OTP code.
+returning patient typing a phone/email OTP code, for a clinic that has
+explicitly opted into requiring OTP for new bookings
+(verification_mode="email" — off by default platform-wide since the
+later "no OTP for new booking" architecture phase, so every clinic here
+sets it explicitly rather than relying on an implicit default).
 
 Before this phase, BookingStep.REVIEW's own docstring said this path
 "already requires entering a received code, which is itself a confirming
@@ -24,6 +28,7 @@ from apps.chatbot.models import ChatSession, ChatSessionStatus
 from apps.chatbot.services.otp_service import send_otp
 from apps.clinics.models import Clinic
 from apps.doctors.models import Doctor, DoctorSchedule
+from apps.widget.models import WidgetSettings
 
 _TZ = ZoneInfo("America/New_York")
 
@@ -44,6 +49,10 @@ class StandardOtpBookingFlowTests(TestCase):
             email="standard-otp@clinic.com",
             phone="+12125550800",
             timezone="America/New_York",
+        )
+        WidgetSettings.objects.create(
+            clinic=self.clinic,
+            configuration={"booking": {"verification_mode": "email"}},
         )
         self.doctor = Doctor.objects.create(clinic=self.clinic, full_name="Dr. Standard")
         self.target_date = _next_weekday(timezone.localdate().weekday())
@@ -208,6 +217,10 @@ class EditDetailsAtReviewTests(TestCase):
             email="edit-review@clinic.com",
             phone="+12125550900",
             timezone="America/New_York",
+        )
+        WidgetSettings.objects.create(
+            clinic=self.clinic,
+            configuration={"booking": {"verification_mode": "email"}},
         )
         self.plan = InsurancePlan.objects.create(
             clinic=self.clinic, provider_name="Aetna", plan_name="PPO",

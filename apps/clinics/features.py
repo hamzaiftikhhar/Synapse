@@ -40,8 +40,12 @@ def default_widget_configuration() -> dict[str, Any]:
         "booking": {
             "mode": "service_first",
             "ai_discovery": True,
-            "require_auth": True,
-            "verification_mode": "email",
+            "require_auth": False,
+            # No OTP for creating a new booking — see the matching comment
+            # in booking/config.py::DEFAULT_BOOKING_CONFIG for the full
+            # reasoning. Appointment management (view/cancel/reschedule) is
+            # a separate, always-phone-verified code path, unaffected.
+            "verification_mode": "none",
             "max_slots_preview": 5,
             "date_horizon_days": 14,
             "slot_hold_minutes": 10,
@@ -54,7 +58,13 @@ def default_widget_configuration() -> dict[str, Any]:
 
 
 def get_verification_mode(clinic: Any) -> str:
-    """Resolve patient verification mode from widget booking config."""
+    """Resolve patient verification mode from widget booking config.
+
+    Defaults to "none" — new-booking OTP is opt-in per clinic, not a
+    platform default (see default_widget_configuration's matching
+    comment). Appointment management's own identity check is a separate,
+    always-phone-verified code path this setting does not govern.
+    """
     try:
         from apps.widget.models import WidgetSettings
 
@@ -70,7 +80,7 @@ def get_verification_mode(clinic: Any) -> str:
             return "email" if booking.get("require_auth") else "none"
     except Exception:
         pass
-    return "email"
+    return "none"
 
 
 def get_feature_flags(clinic: Any) -> dict[str, bool]:

@@ -176,6 +176,17 @@ def send_otp(
 
         channel_resolved = resolve_otp_channel(clinic, requested or None)
 
+        # New-booking's contact step now requires phone and treats email as
+        # optional (the clinic calls the number to confirm a booking) --
+        # for a patient who genuinely gave only a phone, resolve_otp_channel
+        # can still land on "email" per the clinic's configured default/
+        # sms_otp gate (a *preference* between two available channels), a
+        # dead end when email was never available to begin with. Scoped
+        # narrowly to exactly that case: never overrides a clinic's real
+        # channel preference when both contacts were actually given.
+        if channel_resolved == "email" and not email and phone:
+            channel_resolved = "sms"
+
         if channel_resolved == "sms" and not phone:
             raise OTPError("Phone is required for SMS verification")
         if channel_resolved == "email" and not email:

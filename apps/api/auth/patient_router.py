@@ -66,7 +66,7 @@ def send_otp(request, payload: OTPSendIn):
         raise HttpError(exc.status_code, str(exc)) from exc
 
     return OTPSendOut(
-        message="If an account matches, a verification code has been sent.",
+        message="If that number has an appointment with us, a verification code is on its way.",
         session_token=result.session_token,
         patient_id=result.patient.id if result.patient else None,
         expires_in_minutes=result.expires_in_minutes,

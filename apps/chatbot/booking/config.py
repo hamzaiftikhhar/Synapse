@@ -10,8 +10,19 @@ DEFAULT_BOOKING_CONFIG: dict[str, Any] = {
     # Fallback only — patients pick a path on the PATH step unless doctor/service is prefilled.
     "mode": "service_first",
     "ai_discovery": True,
-    "require_auth": True,
-    "verification_mode": "email",  # sms | email | sms_or_email | none
+    "require_auth": False,
+    # sms | email | sms_or_email | none. "none" is the platform default —
+    # explicit user architecture decision: a *new* booking only needs
+    # identification (name + mandatory phone the clinic can call, optional
+    # email), not authentication. OTP verification is reserved for
+    # accessing/modifying an *existing* appointment (view/cancel/
+    # reschedule), which is a privacy boundary, not a booking-creation one
+    # — that flow is a separate code path (otp_service.py::send_otp's
+    # require_existing_patient=True) that always requires phone regardless
+    # of this setting, so this default has no effect on it. A clinic can
+    # still opt back into requiring OTP for new bookings too by setting
+    # this to "email"/"sms"/"sms_or_email" in its own WidgetSettings.
+    "verification_mode": "none",
     "max_slots_preview": 5,
     "date_horizon_days": 30,
     "slot_hold_minutes": 10,

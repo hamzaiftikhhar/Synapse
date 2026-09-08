@@ -62,6 +62,19 @@ class AuthSkipConfirmTests(TestCase):
             phone="+12125550100",
             timezone="America/New_York",
         )
+        from apps.widget.models import WidgetSettings
+
+        # This class's own tests exercise the *authenticated-session*
+        # skip (_route_to_review_if_authenticated), which fires regardless
+        # of verification_mode — but one test below deliberately flips to
+        # an unauthenticated session specifically to exercise the real
+        # DETAILS->OTP path, which needs a clinic actually configured to
+        # require OTP (off by default platform-wide since the "no OTP for
+        # new booking" architecture phase).
+        WidgetSettings.objects.create(
+            clinic=self.clinic,
+            configuration={"booking": {"verification_mode": "email"}},
+        )
         self.doctor = Doctor.objects.create(clinic=self.clinic, full_name="Dr. Skip")
         self.target_date = _next_weekday(timezone.localdate().weekday(), from_days_ahead=1)
         DoctorSchedule.objects.create(
@@ -535,3 +548,104 @@ class NoVerificationModeReviewTests(TestCase):
         self.assertEqual(saved["confirmation_code"], confirmation_code)
         self.assertEqual(saved["doctor_name"], self.doctor.full_name)
         self.assertIn(self.doctor.full_name, confirmation_messages[0].content)
+
+
+class NewBookingSkipsOtpByDefaultTests(TestCase):
+    """The actual architecture change: a clinic with *no* WidgetSettings
+    at all (never opted into anything) must behave exactly like
+    NoVerificationModeReviewTests above without being told to — "no OTP
+    for new booking" is the platform default now, not a per-clinic
+    opt-in. Appointment management (view/cancel/reschedule) is a
+    separate, always-phone-verified code path this does not touch —
+    covered by test_appointment_management_otp.py, untouched by this
+    phase."""
+
+    def setUp(self):
+        self.clinic = Clinic.objects.create(
+            slug="new-booking-no-otp-clinic",
+            name="New Booking No OTP Clinic",
+            email="new-booking-no-otp@clinic.com",
+            phone="+12125550102",
+            timezone="America/New_York",
+        )
+        self.doctor = Doctor.objects.create(clinic=self.clinic, full_name="Dr. Default")
+        self.target_date = _next_weekday(timezone.localdate().weekday(), from_days_ahead=1)
+        DoctorSchedule.objects.create(
+            clinic=self.clinic,
+            doctor=self.doctor,
+            day_of_week=self.target_date.weekday(),
+            start_time=time(9, 0),
+            end_time=time(11, 0),
+            slot_duration_min=30,
+        )
+        self.chat_session = ChatSession.objects.create(
+            clinic=self.clinic,
+            session_token="tok-new-booking-no-otp-1",
+            status=ChatSessionStatus.ACTIVE,
+            is_authenticated=False,
+        )
+        start = datetime(
+            self.target_date.year, self.target_date.month, self.target_date.day, 9, 0,
+            tzinfo=_TZ,
+        )
+        self.slot_start = start.isoformat()
+        self.slot_end = (start + timedelta(minutes=30)).isoformat()
+
+    def test_phone_only_details_skip_straight_to_review_no_config_needed(self):
+        started = BookingService.start(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            doctor_id=str(self.doctor.id),
+            doctor_name=self.doctor.full_name,
+            slot_start=self.slot_start,
+            slot_end=self.slot_end,
+        )
+        result = BookingService.apply_step(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            booking_id=started["booking_id"],
+            action="submit_details",
+            # Phone only, no email -- the new mandatory-phone/optional-
+            # email shape -- must not need an email to avoid landing on OTP.
+            value={
+                "first_name": "Sam",
+                "last_name": "Booker",
+                "phone": "+15559990000",
+                "date_of_birth": "1990-01-01",
+            },
+        )
+        self.assertEqual(result["step"], BookingStep.REVIEW.value)
+        self.assertFalse(Appointment.objects.filter(clinic=self.clinic).exists())
+
+    def test_confirm_review_creates_a_real_appointment_with_no_otp_ever_sent(self):
+        started = BookingService.start(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            doctor_id=str(self.doctor.id),
+            doctor_name=self.doctor.full_name,
+            slot_start=self.slot_start,
+            slot_end=self.slot_end,
+        )
+        BookingService.apply_step(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            booking_id=started["booking_id"],
+            action="submit_details",
+            value={
+                "first_name": "Sam",
+                "last_name": "Booker",
+                "phone": "+15559990000",
+                "date_of_birth": "1990-01-01",
+            },
+        )
+        confirmed = BookingService.apply_step(
+            clinic=self.clinic,
+            chat_session=self.chat_session,
+            booking_id=started["booking_id"],
+            action="confirm_review",
+            value={},
+        )
+        self.assertEqual(confirmed["step"], BookingStep.CONFIRMED.value)
+        appointment = Appointment.objects.get(clinic=self.clinic)
+        self.assertEqual(appointment.patient.phone, "+15559990000")
+        self.assertEqual(appointment.patient.email, "")
