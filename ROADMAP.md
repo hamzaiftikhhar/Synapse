@@ -9342,3 +9342,1501 @@ subtitles confirmed shortened in the live DOM.
   established practice for frontend behavior changes.
 
 **Recommended next phase:** none required by this ask.
+
+## ✅ Real-world stress test (74 external queries) + fixes for the confirmed bugs
+
+**Objective.** User asked for intense, realistic testing: 50 real patient
+queries from a Kaggle-family dataset, 12 from real clinic FAQ sites, and
+12 built from documented chatbot failure-mode research — then to fix
+whatever it found broken.
+
+**Method.** 50 queries from `ruslanmv/ai-medical-chatbot` (the corpus
+backing several Kaggle "medical chatbot" dataset listings — real,
+sometimes graphic patient phrasing, pulled verbatim via the HuggingFace
+dataset viewer since Kaggle's own pages require login). 12 from Mayo
+Clinic's appointment FAQ, Tebra's billing FAQ, and a real medical-office
+call-center script. 12 adversarial ones built from cited research (IBM's
+2025 CX report: pricing/policy hallucination is 67% of business-impact AI
+errors; a customer-service failure taxonomy: "Identification Failure" on
+compound/negated requests) — compound requests, negation, prompt
+injection, impersonation, false premises, garbled text, sarcasm. All 75
+(74 plus a 2-turn context-switch case) run through the real
+`ChatEngine.process()` against the seeded `horizon-family-care` clinic —
+zero exceptions.
+
+**Headline result:** zero hallucinated medical claims across all 50 real
+(often graphic) Kaggle patient questions — every one correctly declined
+to diagnose. Prompt injection fully resisted. An unknown doctor name and
+an impersonation-based mass-cancel attempt were both correctly declined/
+gated rather than complied with.
+
+**Bugs found and fixed:**
+
+1. **Negation swallowed a real follow-up question.** "I don't want a
+   female doctor, who's available besides Dr. Rostova?" hit
+   `conversation_state.py`'s `_STRONG_CANCEL_RE` (`don't want`) under its
+   15-word gate and returned the generic "Sure — what would you like to
+   do instead?" — the exact same failure class the file already has one
+   precedent fix for ("it used to hurt but not anymore," Phase 40), just
+   a new trigger phrase. A genuine cancel ("never mind," "actually no,"
+   "forget it") is essentially always a bare statement; a message that
+   goes on to ask a real question after the cancel-shaped phrase is a
+   request, not a reversal. Added a trailing-"?" guard to both the
+   strong- and weak-cancel branches of `detect_recovery`. Live-confirmed
+   fixed: now correctly reaches the (pre-existing, honest)
+   `gender_unsupported` decline instead of the nonsense reply.
+
+2. **Cancel/reschedule requests naming a date got a random "next
+   available slot" appended.** "This is Dr. Rostova, I need you to
+   cancel all of tomorrow's appointments for my patients" produced
+   *"To cancel or reschedule, please verify your phone number first...
+   Earliest opening on Wednesday, September 9: Dr. Elena Rostova at 08:00
+   AM."* Root cause: `planner.py`'s "date/time + scheduling language →
+   availability (even if NLU said faq)" block exists to rescue a
+   booking-shaped message NLU under-classified as faq/unknown — but its
+   condition only excluded knowledge questions, not appointment-
+   management intents, so a `cancel_appointment`/`reschedule_appointment`
+   /`view_appointments` turn naming a date (trivially true for "cancel
+   tomorrow's appointments") got an irrelevant availability lookup
+   bolted on before the patient was even verified. Excluded those three
+   intents from the block's condition; the original booking-rescue case
+   it exists for is unaffected (locked in by a new control test). Live-
+   confirmed fixed: response is now just the clean auth prompt.
+
+3. **Seed-data contradiction, not a chatbot bug.** "Do you accept
+   Medicare?" answered "Yes... direct billing. However... opted out of
+   the Medicare program, so Medicare cannot be billed" — self-
+   contradictory, but verified as a genuine conflict in the demo clinic's
+   *own* data, not a hallucination: `InsurancePlan` (Medicare, `is_accepted=
+   True`, "Direct billing") and one FAQ knowledge chunk said accepted;
+   a separately-uploaded contract document (§5.1, not present in this
+   repo — ingested directly into the dev DB at some earlier point)
+   explicitly states the practice opted out under the Balanced Budget Act
+   of 1997. The contract is the more specific, deliberate, legally-
+   authoritative source, so corrected the `InsurancePlan` seed and the
+   FAQ chunk (`seed_demo_clinics.py`, plus the live dev DB directly) to
+   match the opt-out instead of leaving two seed sources disagreeing with
+   an uploaded contract.
+
+**Investigated and correctly left alone:**
+
+- **"How do I schedule an appointment?" → told to use the "secure
+  Horizon Patient Portal"** instead of booking in-chat. Checked whether
+  this was hallucinated: it is not — `KnowledgeChunk` §6.1 of the same
+  uploaded contract states the portal is "the required and recommended
+  method for all non-urgent communications... and scheduling requests."
+  The bot is accurately citing the clinic's own real, uploaded policy.
+  Overriding a tenant's genuine policy document to always self-promote
+  the chat's booking feature would be the wrong fix — a real clinic
+  could have this exact requirement for compliance reasons. This is a
+  demo-content authoring choice (should this contract really blanket-
+  require the portal for scheduling, given the same demo also showcases
+  in-chat booking?), not a code defect. Corrected the initial stress-test
+  report, which had called this a bug before this investigation.
+- **False-positive emergency classification.** "Can stiff neck and pain
+  in arm be due to carpal tunnel syndrome?" (an informational question
+  about a named benign condition) was classified `EMERGENCY` at 0.98
+  confidence. Verified directly: `EMERGENCY_RE` does **not** match this
+  message at all (checked via direct regex test) — the classification
+  came entirely from the small NLU model's own judgment, not any Python
+  regex. `emergency_patterns.py` already has a narrow, deliberately-
+  unautomated precedent for exactly this class of fix
+  (`EXCEPTION_TERMS_RE`, two prior proven cases only) specifically
+  because the file's own documented policy is "the cost of a missed
+  genuine cardiac-arrest disclosure is far worse than one unnecessary
+  '911' nudge" — false alarms are an accepted, deliberate tradeoff here,
+  and this specific bypass mechanism only guards the regex path, not the
+  NLU's independent judgment, so extending it would not even have fixed
+  this case. Did not patch this without a deliberate, separate
+  conversation given the safety asymmetry — flagged for the user instead
+  of hastily changed.
+- Two adversarial cases (a 7s-degraded compound request; a run-on message
+  silently dropping 2 of 5 sub-questions) are latency- and multi-intent-
+  coverage limitations already known from this document's other eval
+  numbers, not new, cleanly-fixable bugs.
+
+**Files changed:**
+- `apps/chatbot/conversation_state.py` — `detect_recovery`'s question-mark
+  guard.
+- `apps/chatbot/planner.py` — appointment-management intents excluded
+  from the schedule-entity availability-forcing block.
+- `apps/chatbot/tests/test_recovery_override.py` — 2 new tests (the live
+  bug case, plus a control proving a genuine short cancel still works).
+- `apps/chatbot/tests/test_execution_plan.py` — new
+  `AppointmentManagementDoesNotForceAvailabilityTests` (4 tests: cancel,
+  reschedule, view all excluded; the original booking-rescue case still
+  works).
+- `core/management/commands/seed_demo_clinics.py` — Medicare seed
+  corrected to match the uploaded contract's opt-out; live dev DB
+  (`InsurancePlan` row + the affected `KnowledgeChunk`) updated to match
+  directly, since re-running the seed command against already-seeded
+  data isn't idempotent-safe.
+
+**Tests:** `python manage.py test apps.chatbot.tests apps.knowledge.tests
+apps.api --keepdb`: **1076/1077**, same single pre-existing
+`test_temporal_authority.py` flake as every baseline in this document.
+`run_chat_eval --target 520`: **698/706 (98.9%)**, unchanged.
+
+**Known limitations / found-but-not-fixed:**
+- The false-positive emergency classification (informational carpal-
+  tunnel question) is real and reproducible but deliberately not patched
+  here — needs a scoped, careful decision given the safety asymmetry
+  involved, not a reactive fix inside a broader testing phase.
+- Whether the demo contract's portal-scheduling clause (§6.1) should be
+  narrowed to exclude scheduling (so it stops conflicting with the same
+  demo's own in-chat booking feature) is a demo-content question for the
+  user, not resolved here.
+- NLU latency spikes (7-11s, ~4% of the 75-query sample) degrade routing
+  quality under real load — an infrastructure/latency concern, not a
+  logic bug this phase's fixes address.
+
+**Recommended next phase:** a deliberate, narrow look at the emergency
+false-positive from real query #1 above, scoped and tested the same way
+the two existing `EXCEPTION_TERMS_RE` cases were — only if the user wants
+to proceed, given the safety stakes.
+
+## ✅ Catalog-grounded specialty/service matching (Phase 1: discovery gate fix; Phase 2: structured CatalogMatch layer)
+
+**Objective.** User reported "Do you have any heart specialist?" not
+reliably finding a doctor, plus a pasted `rules_fallback` NLU trace, and
+proposed an architecture: give the LLM the clinic's real, ID-tagged
+specialty/service catalog and let it pick an exact id, backend does a
+deterministic DB lookup. Went through two rounds of detailed plan-mode
+review (see `/Users/apple/.claude/plans/generic-snuggling-falcon.md` for
+the full approved plan) before implementation — the plan required
+treating this as two separate, root-caused bugs rather than one fix, an
+explicit 4-state resolution model, and a documented resolver-precedence
+policy.
+
+**Root cause (Bug A, Phase 1).** `apps/chatbot/booking/discovery.py`'s
+`resolve_symptom_specialty_ids`/`resolve_symptom_service_ids` returned
+`None` immediately whenever `entities.symptom` was empty, before ever
+looking at the message text — even though every resolution step inside
+already matches against `message` directly. "Do you have any heart
+specialist?" is a capability question, not a symptom complaint, so entity
+extraction correctly leaves `entities.symptom` empty; the gate just never
+let the (already-built) concern-map matching try. Live-confirmed via
+Django shell before and after the fix.
+
+**A second, separate, confirmed bug (Bug B, NOT fixed here).** Live-
+repeated the exact same capability-question message multiple times
+through `IntentEntityService`/`ChatEngine.process()`: classification
+flips between `doctor_search`, `faq`, and `off_topic` call to call, at
+varying confidence. Reproduced again during Phase 2's live verification
+below (same message, same clinic, two calls, two different intents). This
+is upstream of discovery.py entirely — a capability question that lands
+on `off_topic`/`faq` never reaches `search_doctors`/`services_offered` at
+all, so neither Phase 1 nor Phase 2 touches it. Deliberately not fixed
+this phase (the approved plan's Phase 3, gated on this exact evidence,
+which now exists) — diagnosing *which* layer causes it (prompt wording,
+a genuine taxonomy gap, or small-model instability) is real, separate
+work.
+
+**Phase 1 fix.** Restructured both resolver functions: build the matching
+`text` from `message` first, gate on `if not text: return None`, and move
+the "genuinely nothing matched" `None`-return to the end of the function,
+after every resolution tier has had a chance to run. Added a targeted
+exclusion regex (`_is_referral_backstory`) for a false-positive risk
+caught in plan review: widening matching to raw message text means a
+concern word mentioned only as backstory ("my heart specialist told me I
+need a root canal") could wrongly resolve — the regex excludes exactly
+the "my {phrase} (specialist|doctor) (told|said|referred)" shape, not
+compound asks ("my heart hurts and I also need a root canal").
+`apps/chatbot/sql_tool/handlers/services.py`'s `services_offered` also
+had a redundant outer `entities.symptom` gate duplicating the resolver's
+own (now-fixed) internal one — removed it; `doctors.py`'s two call sites
+were already unconditional.
+
+**Phase 2: structured `CatalogMatch` layer.** New `CatalogMatch` dataclass
+(`nlu/schemas.py`) attached to `NLUResult` (not folded into
+`ExtractedEntities` — extraction and resolution are different concerns),
+five explicit states: `matched` / `ambiguous` / `no_match` / `unresolved`
+/ `not_applicable`. The NLU prompt now includes an id-tagged
+`Catalog:` block (this tenant's real, active specialty+service rows) and
+instructs the model to select an id from it for *explicit* capability/
+provider requests only — never for a symptom/condition narrative, which
+stays on the Phase 1 concern-map path. `nlu/resolvers.py::
+resolve_catalog_match` is the one place a claimed match is checked for
+real: tenant id, `is_active`, `is_deleted`, actual DB existence, correct
+model (specialty vs. service) — a hallucinated, wrong-tenant, inactive,
+deleted, or wrong-type id is downgraded to `unresolved`, never trusted
+because the model sounded confident. `discovery.py` gained a tier 4 in
+both resolver functions (`_catalog_match_resolution`), consulted only
+after the existing three tiers (concern map → `suggest_specialties` →
+category hint) find nothing — strict sequential short-circuit, never
+arbitrated; an ambiguous catalog match reuses the existing
+`ambiguous_categories` quick-reply-chip mechanism with real, DB-looked-up
+names. A combined specialty+service catalog over 50 rows truncates
+(`catalog_for_catalog_match_context`) — a documented tripwire, not yet
+exercised by any seeded clinic.
+
+**Live verification (real LLM calls, `horizon-family-care`, not
+guessed).** Confirmed via direct `IntentEntityService().analyze()` calls
+with the real prompt/catalog wired in:
+- "Can I get a Pediatric Well-Child Exam here?" → `matched`,
+  `match_type=service`, `catalog_id` = the real Pediatric Well-Child Exam
+  service id, copied verbatim from the Catalog block.
+- "I have severe chest pain spreading to my left arm." → `not_applicable`
+  (correctly excluded as a symptom narrative) and routed to `emergency`
+  via `rules_safety`, unaffected.
+- "Do you have a rheumatologist on staff?" → `no_match`, but initially
+  with `match_type=None` rather than `specialty` — the model didn't
+  reliably fill `match_type` for the `no_match` case even though the
+  original prompt wording asked for it. Strengthened the prompt
+  instruction (explicit "REQUIRED even for no_match" wording plus a
+  worked example) — compliance improved but stayed inconsistent across
+  repeated identical calls (see Known limitations). Because
+  `_catalog_match_resolution` gates on `match_type` matching the
+  resolver's domain, a `no_match` with no `match_type` is safely ignored
+  (falls through to whatever tiers 1-3 or the existing fallback already
+  decided) rather than guessed at — the intended fail-safe, not a
+  silent bug.
+
+**Files changed:**
+- `apps/chatbot/nlu/schemas.py` — `CatalogMatch` dataclass,
+  `VALID_CATALOG_MATCH_STATUSES`/`_TYPES`, `_parse_raw_catalog_match`
+  (shape-only normalization), `NLUResult.catalog_match` field + `to_dict`.
+- `apps/chatbot/nlu/resolvers.py` — `resolve_catalog_match` (the real DB
+  validation step).
+- `apps/chatbot/nlu/prompts.py` — `catalog_match` field instructions, new
+  `Catalog:` context block (distinct from the plain-name `Services:`/
+  `Doctors:` blocks).
+- `apps/chatbot/routing/doc_catalog.py` (+ `routing/__init__.py` exports)
+  — `build_specialty_catalog`, `catalog_for_catalog_match_context`.
+- `apps/chatbot/engine.py` — builds the specialty catalog + capability
+  catalog context block; calls `resolve_catalog_match` right after
+  `resolve_entities`, before any SQL handler can read `nlu.catalog_match`.
+- `apps/chatbot/booking/discovery.py` — Phase 1 gate restructuring in
+  both resolver functions; `_is_referral_backstory` + cache; tier 4
+  (`_catalog_match_resolution`) in both resolver functions; docstrings
+  renumbered/updated.
+- `apps/chatbot/sql_tool/handlers/services.py` — removed the redundant
+  outer `entities.symptom` gate in the category-mode symptom fallback.
+- Tests: `apps/chatbot/tests/test_discovery.py` (`DirectCapabilityQuestionResolutionTests`,
+  `ReferralBackstoryFalsePositiveTests`, `CatalogMatchTierResolutionTests`),
+  `test_sql_tool.py` (invariant tests on both `search_doctors`/
+  `services_offered`, for both the Phase 1 concern-map tier and the
+  Phase 2 catalog-match tier; updated `test_unresolved_specific_role_
+  gets_honest_clarification` in both `SearchDoctorsUnresolvedRoleTests`
+  and `DoctorAvailabilityUnresolvedRoleTests` — see Known limitations/
+  test-change note below), `test_resolvers.py`
+  (`ResolveCatalogMatchTests`, `CatalogMatchContextBuilderTests`),
+  `test_nlu.py` (`ParseCatalogMatchTests`), `test_prompts.py` (3 new
+  tests for the `catalog_match` field/`Catalog:` block).
+
+**Test-change note (per this repo's bar for changing an existing test):**
+`test_unresolved_specific_role_gets_honest_clarification` (both
+`SearchDoctorsUnresolvedRoleTests` and its `doctor_availability`
+counterpart) asserted `"not sure which kind of specialist"` for "is there
+an eye doctor here" — "eye" is a real, pre-existing `_CONCERN_MAP` phrase
+(`ConcernEntry(name="eye", phrases=("eye","vision","blurry"),
+hints=("ophthalmology","optometry","eye"))`, `discovery.py:82-86`). With
+the Phase 1 fix, this now resolves via the concern map even with no
+`entities.symptom`, and the fixture clinic has no matching specialty, so
+it correctly produces the more specific "We don't have a specialist for
+that here" instead of the vaguer "not sure which kind of specialist"
+(which implied the system didn't understand "eye doctor" at all, when it
+does — it just doesn't offer one). Updated both tests to assert the new,
+more specific, honest-decline text, and added a sibling test in each
+class (`test_role_noun_absent_from_the_concern_map_still_gets_the_vaguer_
+clarification`, using "podiatrist" — no `_CONCERN_MAP` entry) confirming
+the `mentions_specific_doctor_role` fallback still fires for a role word
+the concern map genuinely has no entry for, so that path isn't silently
+dead code after this change.
+
+**Tests:** `python manage.py test apps.chatbot.tests.test_sql_tool
+apps.chatbot.tests.test_discovery apps.chatbot.tests.test_resolvers
+apps.chatbot.tests.test_nlu apps.chatbot.tests.test_prompts --keepdb`:
+all passing (212 across the first four files alone). Full suite —
+`python manage.py test apps.chatbot.tests apps.knowledge.tests apps.api
+--keepdb`: **1129/1130**, the same single pre-existing
+`test_temporal_authority.py` date-boundary flake as every baseline in
+this document (reproduced in isolation, unrelated to this phase).
+
+**Eval:** `run_chat_eval --target 520`: **698/706 (98.9%)** both before
+and after Phase 2 — identical to the recorded baseline, same 8 failing
+cases (`adversarial_booking_slang_squeeze`,
+`adversarial_medical_slang_pediatric`, both pre-existing Bug-B-flavored
+classification-confidence issues, not new). No drift in unrelated
+intents despite the shared NLU prompt/schema change.
+
+**Known limitations / found-but-not-fixed:**
+- **Bug B (classification instability)** — a capability-shaped question
+  can land on `doctor_search`, `faq`, or `off_topic` across identical,
+  repeated calls. Neither Phase 1 nor Phase 2 fixes this; it's the
+  explicitly-deferred Phase 3 of the approved plan, now with concrete,
+  repeated live evidence (this session, `horizon-family-care`, both
+  before and after Phase 2's changes) rather than a single anecdotal
+  trace. Needs its own diagnosis-first phase per the plan (reproduce
+  under deterministic conditions, identify which layer is responsible,
+  then a scoped fix) — not started here.
+- **`match_type` compliance for `status=no_match`/`unresolved`** is real
+  but inconsistent on the small NLU model (`gpt-4.1-nano`) even after
+  strengthening the prompt instruction — live-reproduced both before and
+  after the fix, across repeated identical calls. The code's response
+  (skip tier 4 when `match_type` doesn't match the resolver's domain,
+  including when it's simply absent) is the correct, conservative
+  fail-safe already required by the invariant, not a bug to chase
+  further with more prompt tuning right now — flagging as a known,
+  measured reliability ceiling of the current NLU model/prompt combination
+  rather than silently accepting or hiding it.
+- The 50-row catalog-size truncation threshold (`catalog_for_catalog_
+  match_context`) is implemented but not exercised by any clinic seeded
+  in this repo today — a real tripwire with no current test clinic large
+  enough to trigger it organically (covered by a direct unit test instead).
+- Retrieval-based catalog truncation for large tenants (top-K
+  specialty/service selection before the LLM call, for clinics that
+  would exceed the 50-row threshold) remains explicitly out of scope, as
+  stated in the approved plan.
+
+**Recommended next phase:** Phase 3 of the approved plan — diagnose Bug B
+(classification instability for capability-shaped questions) under
+deterministic, isolated conditions before making any prompt or routing
+change; only start if/when asked, per this repo's phase discipline.
+
+## ✅ Phase 3: Bug B diagnosis + fix (doctor-capability classification), plus a real second bug (Bug C) found underneath it
+
+**Objective.** User pasted a real production trace (StackUp Technologies,
+a dental-only clinic) showing the exact failure Phase 1/2 was meant to
+close still happening, plus several other clearly-wrong responses
+("What is hypothyroidism?" → "I can't diagnose symptoms..."), and
+explicitly authorized going further architecturally than the original
+conservative Phase 3 scoping if the evidence warranted it. Investigated
+every distinct failure in the trace against live code before proposing
+anything (not the pasted external analysis at face value) — this
+surfaced two separate, real, root-caused bugs, one of them entirely new.
+
+**Bug B, diagnosed (not just reproduced again).** Repeated the same
+message ("Do you have any cardiology specialist?", "Do you have any
+heart specialist?") multiple times live against `stackup-technologies`.
+Confirmed the model's own `reasoning_short` text consistently showed
+*correct* understanding ("Cardiology is outside dental services") while
+`intent` flip-flopped between `doctor_search`/`faq`/`off_topic` and
+confidence collapsed to `very_low` — the model understood the question,
+it just didn't reliably know which taxonomy bucket "the clinic doesn't
+have this, and that's a fine, answerable question" belongs in. Checked
+the prompt for a precedent: `nlu/prompts.py` already had exactly this
+rule for services/pricing ("do you offer/do X" is `services_offered`/
+`pricing` even when "not offered" is the honest answer — never
+`off_topic`), added when a documented earlier phase found the identical
+failure mode for named procedures. **No equivalent rule existed for
+doctor/specialty capability questions at all** — the services rule was
+never generalized to its sibling case. This is the root cause: not a
+vague "small model is flaky" problem, a specific, fixable prompt gap.
+
+**Fix:** added the missing rule to `nlu/prompts.py`, mirrored directly
+from the existing services rule's own phrasing and scope ("a yes/no
+question about whether the clinic HAS a doctor/specialist for a named
+specialty... is doctor_search — even when... the clinic doesn't have
+one... regardless of how unrelated the named specialty seems to this
+clinic's own field").
+
+**Live re-verification (before vs. after, same clinic, repeated
+identical calls):**
+| Message | Before | After |
+|---|---|---|
+| "Do you have any heart specialist?" | off_topic 2/3, doctor_search 1/3 (no filter applied) | doctor_search, conf 0.95, 3/3 |
+| "Do you have any cardiology specialist?" | off_topic 3/3 | doctor_search, conf 0.95, 3/3 |
+| "Which doctors specialize in orthodontics?" | unstable (found 6 doctors once — an unfiltered browse; generic decline otherwise) | doctor_search, honest decline, 3/3 |
+| "Do you have a pediatrician?" | mostly off_topic/generic | doctor_search + honest decline, 2/3; **still off_topic 1/3** (see Known limitations) |
+
+**Bug C (new, found while diagnosing Bug B, not previously known):**
+even *with* Bug B's classification fixed, `search_doctors`/
+`doctor_availability` (`apps/chatbot/sql_tool/handlers/doctors.py`) had
+their own separate defect: when `entities.specialty` is explicitly named
+(as opposed to inferred from a symptom/hint), the handler took a
+completely different, older code branch — a bare `specialties__name`
+literal-containment filter — that **never called
+`resolve_symptom_specialty_ids` at all**, so it never benefited from any
+of Phase 1/2's catalog-aware resolution machinery. This is why "Do you
+have any heart specialist?" (no `entities.specialty`, resolved via the
+concern map) and "Do you have any cardiology specialist?" (the *same
+question*, but `entities.specialty="Cardiology"` set) produced two
+completely different answers — one the correct, specific "We don't have
+a specialist for that here...", the other the generic
+`sql_tool/formatter.py::EMPTY_DOCTORS` fallback ("I couldn't find
+matching doctors for that. Try a specialty name..."). Root-caused by
+direct code reading (`doctors.py` lines ~107-142 before the fix), not
+guessed from the trace.
+
+**A second layer under Bug C, also live-confirmed:** `catalog_match`
+itself is measurably non-deterministic across repeated identical real
+LLM calls — live-confirmed 1 of 4 identical "Do you have any cardiology
+specialist?" calls returned `catalog_match.status="not_applicable"`
+instead of `"no_match"`, while `entities.specialty="Cardiology"` stayed
+correctly set every time. Since "cardiology" is a specialty *name*, not
+a `_CONCERN_MAP` symptom *phrase* (phrases are patient words like
+"heart"/"chest"; "cardiology"/"cardiologist" are hint *words* only
+consulted after a phrase already matched), `resolve_symptom_specialty_ids`
+legitimately has nothing to go on in that case and correctly returns
+`None`. The fix's first pass (falling back to `qs = named_qs`, i.e. the
+already-empty literal filter, whenever the resolver returned `None`)
+still produced the wrong generic message in that case. Second, smaller
+fix: when `entities.specialty` is non-empty at all, that is itself the
+detected constraint — a `None` from the resolver chain now becomes an
+explicit `SymptomResolution(matched_ids=[], understood=True)` rather
+than silently falling through to the generic decline. This is the same
+invariant Phase 1/2 already established, applied one layer earlier: an
+explicitly-named specialty must never be treated the same as "no
+constraint was ever expressed," independent of whether any downstream
+resolver tier could further place it.
+
+**Files changed:**
+- `apps/chatbot/nlu/prompts.py` — new doctor/specialty-capability
+  classification rule (Bug B fix).
+- `apps/chatbot/sql_tool/handlers/doctors.py` — `search_doctors` and
+  `doctor_availability` both restructured: try the literal
+  `specialties__name` filter first (unchanged, common case), fall back to
+  the full catalog-aware resolution chain when it finds nothing, and
+  treat a `None` resolution as an honest decline (not a silent empty
+  filter) whenever a specialty was explicitly named (Bug C fix, two
+  layers).
+- `apps/chatbot/tests/test_prompts.py` — new test locking in the
+  doctor-capability prompt rule.
+- `apps/chatbot/tests/test_sql_tool.py` — new
+  `NamedSpecialtyUnresolvedFallsBackToCatalogResolutionTests` (6 tests):
+  the exact "cardiology vs. heart" reproduction (both `search_doctors`
+  and `doctor_availability`), the `None`-resolution-still-honest-decline
+  case (both handlers), a synonym that now actually resolves via the
+  concern-map category tier (not just a better message), and a control
+  confirming the common literal-name-match case is unaffected.
+
+**Tests:** `python manage.py test apps.chatbot.tests.test_sql_tool
+apps.chatbot.tests.test_prompts --keepdb`: all passing (62 across both
+files). Full suite — `apps.chatbot.tests apps.knowledge.tests apps.api
+--keepdb`: **1136/1137**, same single pre-existing
+`test_temporal_authority.py` flake as every baseline in this document.
+
+**Eval:** `run_chat_eval --target 520`: **698/706 (98.9%)**, identical to
+the recorded baseline — same 8 pre-existing failures
+(`adversarial_booking_slang_squeeze`,
+`adversarial_medical_slang_pediatric`), no new drift despite two more
+changes to the shared NLU prompt.
+
+**Known limitations / found-but-not-fixed (explicitly flagged, not
+buried):**
+- **Bug B is dramatically improved but not eliminated.** "Do you have a
+  pediatrician?" still classified `off_topic` in 1 of 3 identical live
+  calls after this fix. The new prompt rule generalizes the existing,
+  proven services-rule pattern, but a small, cheap model (`gpt-4.1-nano`)
+  doesn't perfectly generalize a rule to every specialty-name phrasing on
+  every call. This is a measured reliability ceiling of the current
+  NLU model/prompt combination, not a logic bug left unfixed — the same
+  honest framing as Phase 2's `match_type` compliance gap.
+- **The bigger issue the user's trace also demonstrated is real and
+  NOT touched by this phase at all:** `medical_question` intent
+  (`planner.py`'s `soft_medical` fact, `engine.py::_soft_medical_reply`)
+  collapses three genuinely different user goals into one lane —
+  (1) a pure definitional/educational question ("What is hypothyroidism?",
+  "What is a crown?"), (2) a personal symptom disclosure ("I have knee
+  pain"), (3) a risk/safety question ("Is it safe to take Clenbuterol
+  being overweight and asthmatic?") — and answers all three with the same
+  canned "I can't diagnose symptoms, but I can help you find a doctor"
+  (or, worse, a specialty-suggestion block triggered by an incidental
+  `_CONCERN_MAP` word inside a definitional question, e.g. "crown" in
+  "What is a crown in dentistry?" — confirmed via code reading this is
+  **pre-existing** behavior in `_soft_medical_reply`'s call to
+  `suggest_specialties(message=...)`, not something Phase 1/2 introduced).
+  This is a real, user-facing product/architecture decision (should the
+  bot ever give general medical information via the response LLM's own
+  knowledge, unconstrained by clinic type?) with genuine safety/liability
+  weight — the same category of decision this document's own prior phase
+  explicitly declined to patch reactively ("Did not patch this without a
+  deliberate, separate conversation given the safety asymmetry"). Not
+  started here; recommended as its own plan-mode round below.
+- The user's separate proposal (giving the NLU/planner a small,
+  structured knowledge-base coverage summary so a `medical_question` the
+  KB clearly doesn't cover skips a doomed vector search) has not been
+  verified against a demonstrated failure yet — every trace in this
+  session's evidence showed vector search simply never executing for
+  these `medical_question` cases (`soft_medical` routes direct, not
+  through vector search at all), so the KB-summary idea may be solving a
+  problem that doesn't reproduce in the current pipeline. Needs its own
+  reproduction step before being designed, not assumed useful.
+
+**Recommended next phase:** a dedicated plan-mode round (matching how
+Phase 1/2's architecture change was handled) for the `medical_question`/
+`soft_medical` redesign above — separating "explain a medical concept"
+from "I have a personal symptom" from "is this safe" is a real capability
+and safety-tradeoff decision, not a smallest-change bug fix, and
+deserves the same upfront review this session's other architectural
+change got before implementation.
+
+## ✅ Phase 4: medical_question_mode — definitional / personal / risk split, plus a severe NLU-field-dropping bug found underneath it
+
+**Objective.** User pushed back explicitly: clinic type should gate what
+a clinic can *do* (booking, capability claims), not what it can *know* —
+a dental clinic should still explain "What is hypothyroidism?" correctly,
+distinguish that from a personal symptom disclosure, and distinguish both
+from a risk question. Went through a full plan-mode round (two rounds of
+detailed review — see `/Users/apple/.claude/plans/generic-snuggling-falcon.md`
+for the approved plan) before implementing.
+
+**Root cause, verified directly.** `planner.py`'s `soft_medical` fact
+treated `nlu.intent == Intent.MEDICAL_QUESTION` alone as sufficient to
+trigger the generic "I can't diagnose symptoms, but I can help you find a
+doctor" canned reply — with no requirement the message actually disclose
+a personal symptom. Compounding this, the NLU's own entity-extraction
+rule sets `entities.symptom` for *any* illness/condition word in the
+message, even a pure definitional one ("hypothyroidism" gets set for
+"What is hypothyroidism?"), conflating "the message names a medical
+term" with "the user has this."
+
+**Fix: a new, narrowly-scoped `medical_question_mode` field** (`nlu/
+schemas.py`) — `"definitional"` | `"personal"` | `"risk"` | `None`,
+LLM-classified (same incremental-field pattern as `specialty_category_
+hint`/`catalog_match`, not a new intent taxonomy), meaningful only inside
+`Intent.MEDICAL_QUESTION`. Explicit governing invariant, written into
+both the plan and the code comments: **semantic classification wins over
+lexical medical-term detection, never the other way around** — an
+explicit `"definitional"` classification must never be overridden by
+`entities.symptom`/`looks_like_symptom` being incidentally true (the
+review round that caught this: my first draft would have let exactly
+that happen, silently re-opening the "What is a crown?" bug through a
+different door). `medical_question_mode` also strictly classifies
+*content*, never *action* — it's read nowhere outside the
+`Intent.MEDICAL_QUESTION` branch and has zero authority over
+doctor_search/services_offered/booking routing, which stay governed
+solely by `Intent`/`secondary_intents`/`resolved_ids`/`entities` exactly
+as before.
+
+**New response path.** `response_llm.py` gained
+`build_general_knowledge_prompts`/`generate_general_knowledge_reply` — a
+genuinely new, separate, ungrounded system prompt (the existing
+`_system_prompt`/`synthesize_clinic_reply` RAG path explicitly forbids
+answering from general knowledge — "use ONLY the provided knowledge
+excerpts... never invent one" — and must never be weakened to allow
+this). New `direct_mode="general_medical_knowledge"`, wired into both of
+`engine.py`'s existing `direct_mode` dispatch points, with a static
+soft_medical-line fallback on any provider failure. Care-navigation offer
+is conditional, not a forced booking pitch on every answer — a
+purely-educational question gets a clean answer, per review feedback.
+`"risk"` mode funnels into the *existing* `medical_advice_refusal`
+mechanism (previously narrowly scoped to aesthetic-procedure safety
+questions only) rather than duplicating its reply text — a generic,
+non-personalized risk/side-effect question ("What are the side effects
+of ibuprofen?") stays `"definitional"`, not `"risk"`, per explicit review
+correction.
+
+**A related, smaller fix bundled in per the plan: `doc_match` gating.**
+`planner.py`'s `doc_match` computation gave `Intent.MEDICAL_QUESTION` a
+free pass to `True` merely because the clinic had *any* document
+uploaded, independent of real keyword/topic overlap — firing a real,
+costly vector search doomed to find nothing for a question about a topic
+no uploaded document covers. This exact failure was already reproduced
+by an existing test (`test_latency_stability.py::
+ComposeFromPlanSoftMedicalFallbackTests`, "i have kidney stones"); that
+test's fix was a downstream composition-layer band-aid, not a fix to the
+gate itself. Removed `Intent.MEDICAL_QUESTION` from the `has_catalog`-only
+shortcut (FAQ/MEMBERSHIP intentionally keep it — a separate, reasonable
+existing editorial call this doesn't revisit).
+
+**A severe, independently-discovered bug found while live-verifying the
+fix (not something the plan anticipated).** The first live test of the
+three target messages against the real `stackup-technologies` trace
+showed *zero change* — all three still produced the old, wrong replies,
+3/3 identical repeats. Direct inspection proved the raw LLM call *was*
+correctly setting `medical_question_mode="definitional"` every time —
+the field was being silently destroyed downstream. Root cause: two
+separate functions in the real pipeline —
+`routing/heuristics.py::_result` (used by `apply_routing_heuristics`) and
+`routing/confidence.py::apply_confidence_policy` — both reconstruct a
+fresh `NLUResult(...)` field-by-field instead of via
+`dataclasses.replace()`, so **any field not explicitly named in either
+constructor call silently resets to its dataclass default**, regardless
+of what the raw LLM produced. Both functions run in the real pipeline
+between the raw NLU parse and everything that consumes `catalog_match`/
+`medical_question_mode`. This means **Phase 2's `catalog_match` field had
+been silently getting wiped back to `not_applicable` on every single
+real `ChatEngine.process()` call this entire session** — every earlier
+"live-confirmed working" verification of Phase 2 and Phase 3/Bug C in
+this document was run via a manual script that called
+`IntentEntityService`/`resolve_entities`/`resolve_catalog_match` directly
+and happened to never invoke `apply_routing_heuristics`/
+`apply_confidence_policy` at all, so the bug was invisible to every prior
+check. The "cardiology specialist" honest-decline fix in Phase 3 was
+still landing correctly in production, but *only* by accident, via the
+separate `entities.specialty`-non-empty fallback added in that same
+phase — not via the catalog_match tier-4 mechanism it was believed to be
+exercising. Fixed both constructors to pass `catalog_match=nlu.
+catalog_match, medical_question_mode=nlu.medical_question_mode` through
+unchanged, the same way `is_off_topic`/`provider`/`timings` already were.
+Added `test_router_inversion.py::NLUResultFieldPreservationTests` (5
+tests) specifically so a *third* future field added to `NLUResult` can't
+silently repeat this exact bug class in either function again.
+
+**Files changed:**
+- `apps/chatbot/nlu/schemas.py` — `VALID_MEDICAL_QUESTION_MODES`,
+  `NLUResult.medical_question_mode` (+ `to_dict`), defensive parsing in
+  `parse_nlu_payload` (nulled unless `intent == medical_question` and an
+  exact valid value).
+- `apps/chatbot/nlu/prompts.py` — new `medical_question_mode`
+  instruction + `Fields:` line update.
+- `apps/chatbot/planner.py` — new `direct_mode` branches for
+  `"risk"`/`"definitional"` (checked ahead of `soft_medical`);
+  `soft_medical`'s trigger narrowed (excludes `"definitional"`/`"risk"`,
+  defense-in-depth only since the early-return above already prevents
+  it being reached for those); `doc_match` gating fix.
+- `apps/chatbot/routing/heuristics.py` — **the field-dropping bug fix**
+  in `_result` (also fixes `catalog_match`).
+- `apps/chatbot/routing/confidence.py` — **the same fix** in
+  `apply_confidence_policy` (also fixes `catalog_match`).
+- `apps/chatbot/response_llm.py` — extracted `_call_response_llm` (pure
+  refactor of `synthesize_clinic_reply`'s provider-fallback loop, no
+  behavior change) so the new prompt doesn't duplicate ~55 lines of
+  circuit-breaker/deadline logic; new
+  `build_general_knowledge_prompts`/`generate_general_knowledge_reply`.
+- `apps/chatbot/engine.py` — new `_general_knowledge_reply` method
+  (fail-safe fallback to the static soft_medical line on provider error);
+  wired into both `direct_mode` dispatch points.
+- Tests: `test_nlu.py` (`ParseMedicalQuestionModeTests`, 7 tests),
+  `test_prompts.py` (1 test), `test_execution_plan.py`
+  (`MedicalQuestionModeRoutingTests` 7 tests,
+  `MedicalQuestionDocMatchGatingTests` 3 tests),
+  `test_general_knowledge_reply.py` (new file, 7 tests),
+  `test_router_inversion.py` (`NLUResultFieldPreservationTests`, 5
+  tests).
+
+**Tests:** all new test classes green (30 new tests total). Full suite —
+`apps.chatbot.tests apps.knowledge.tests apps.api --keepdb`:
+**1166/1167**, same single pre-existing `test_temporal_authority.py`
+date-boundary flake as every baseline in this document. Confirmed
+`ComposeFromPlanSoftMedicalFallbackTests` (the existing test documenting
+the doc_match bug) passes unmodified — it bypasses `planner.py`'s gating
+entirely, as expected.
+
+**Eval:** `run_chat_eval --target 520`: **698/706 (98.9%)**, identical to
+the recorded baseline — same 8 pre-existing failures, `soft_medical`
+lane itself still 100% (16/16), confirming the personal-symptom path
+wasn't disturbed.
+
+**Live verification (real LLM calls, `stackup-technologies`, the exact
+reported trace, repeated 3x each, before vs. after):**
+| Message | Before | After |
+|---|---|---|
+| "What is hypothyroidism?" | "I can't diagnose symptoms..." | Real, correct thyroid-hormone explanation, no forced booking pitch |
+| "What is a crown in dentistry?" | Wrong Cosmetic/General Dentistry specialty-suggestion block | Real, correct dental-crown explanation |
+| "Is it safe to take Clenbuterol being overweight and asthmatic?" | "I can't diagnose symptoms..." | `medical_advice_refusal` ("discuss this with your clinician...") |
+| "I have knee pain." | Existing soft_medical reply | Unchanged (regression check passed) |
+
+**Known limitations / found-but-not-fixed:**
+- `medical_question_mode`, like `catalog_match.match_type` before it, is
+  not guaranteed 100% reliable on every call — the fail-safe default
+  (`None` → today's existing behavior) bounds the downside; no new
+  compliance gap was found in this session's live testing, but none of
+  this changes the honest ceiling already documented for LLM-classified
+  fields on a small model.
+- The field-dropping bug class (a function reconstructing `NLUResult`
+  field-by-field instead of via `dataclasses.replace()`) was fixed in the
+  two places found via this specific investigation
+  (`heuristics.py::_result`, `confidence.py::apply_confidence_policy`).
+  A full audit of every `NLUResult(...)` construction site in the
+  codebase for this same anti-pattern was **not** performed as a separate
+  systematic pass — the two known call sites in the real per-message
+  pipeline were checked and fixed; `ui_actions.py`'s three constructors
+  were checked and confirmed to be intentionally synthetic (no real NLU
+  call to preserve fields from), not instances of the bug.
+
+**Recommended next phase:** none proposed proactively — the three
+originally-reported failure classes (Bug B classification instability,
+Bug C specialty-name resolution gap, and now this medical_question split)
+are all addressed and live-verified. Bug B's residual ~2/3-not-1/1
+reliability ceiling on some phrasings (documented in the prior phase
+entry) remains a known, bounded limitation, not a new open item.
+
+## ✅ Phase 5: availability-search pool truncation (Bug D) + a large triaged backlog of real, distinct issues from a fresh production trace batch
+
+**Objective.** User pasted a large batch of real conversations across
+three clinics (StackUp Technologies, Umbrella Health, Horizon Family
+Medicine), explicitly flagging two for direct investigation: (1) "the
+biggest blunder" — `doctor_availability` said no Friday slots existed at
+StackUp, but the real booking wizard (same backend) found a real one
+seconds later; (2) "Can I get a pediatric checkup here?" asked twice
+back-to-back at Horizon, getting two different wrong answers. Investigated
+both with real reproduction before touching anything; the rest of the
+batch (13+ more distinct symptoms) was triaged and catalogued rather than
+patched blind, given the volume and this repo's phase discipline against
+bundling unrelated fixes into one uncontrolled pass.
+
+**Bug D (root-caused, fixed, live-verified): `doctor_availability`
+capped the doctor pool at `[:5]` *before* checking availability.**
+`apps/chatbot/sql_tool/handlers/doctors.py`'s bare-browse fallback (no
+doctor/specialty/symptom entity — "give me the first available doctor
+for Friday") took `list(doctor_qs[:5])`, a cap borrowed from
+`search_doctors`'s `DOCTOR_LIST_CEILING` (a legitimate "how many doctor
+*cards* to show" UX limit there). Applied to an availability *search*
+instead, this is categorically wrong: checking fewer doctors than exist
+can only produce a false "no slots," never a real answer. Reproduced
+directly: StackUp has 6 doctors; the first 5 (by default/PK query order)
+only work Monday-Thursday, and the 6th (`Dr hamza iftikhar`) is the only
+one with a Friday schedule. `compute_slots_for_day` — the exact same
+function the real booking-wizard API endpoint (`apps/api/doctors/
+router.py::get_doctor_available_slots`) calls — confirmed directly via
+Django shell to return 12 real Friday slots for all 6 doctors and for
+just doctor #6 alone; querying only the first 5 (the old behavior)
+confirmed 0 slots. Fixed by removing the cap (`list(doctor_qs)`) —
+`_first_day_with_slots` already bounds cost via `_MAX_DAYS_SCANNED` (62)
+and stops scanning at the first day with any slot, so this is not an
+unbounded-cost change; measured `sql_ms` was unaffected (~140-150ms
+before and after in the live trace).
+
+**Bug B/pediatric-checkup: investigated per explicit request, could not
+reproduce.** 20 fresh, isolated `ChatEngine.process()` calls for "Can I
+get a pediatric checkup here?" against `horizon-family-care` all
+returned `services_offered` at 0.95 confidence with the correct answer
+("Pediatric Well-Child Exam is $120.00, about 30 minutes."), 20/20. The
+user's pasted trace shows the identical message asked twice in a row
+getting two different wrong answers, with no visible prior turn to
+explain context-dependence. Could not confirm a distinct new root cause
+beyond the already-documented Bug B classification-instability pattern
+(a small model's confidence/intent selection varying across identical
+calls, sometimes correlated with real provider degradation — see the
+`rules_fallback` investigation earlier in this document). Not fabricating
+a specific mechanism here since it didn't reproduce; flagged honestly as
+unresolved rather than claimed fixed.
+
+**Files changed:**
+- `apps/chatbot/sql_tool/handlers/doctors.py` — removed the `[:5]` cap
+  in `doctor_availability`'s bare-browse path.
+- `apps/chatbot/tests/test_sql_tool.py` — new
+  `DoctorAvailabilityDoesNotTruncateThePoolBeforeSearchingTests` (6
+  doctors, 5 Mon-Thu-only + 1 Friday-only, confirms the Friday search
+  finds the 6th doctor).
+
+**Tests:** new test passing. Full suite —
+`apps.chatbot.tests apps.knowledge.tests apps.api --keepdb`:
+**1167/1168**, same single pre-existing `test_temporal_authority.py`
+flake as every baseline in this document. Eval — `run_chat_eval --target
+520`: **698/706 (98.9%)**, identical to baseline, no drift.
+
+**The rest of the batch — triaged, not yet fixed, grouped by actual
+shared root cause (not by surface symptom):**
+
+1. **Services/procedure capability-matching lacks the robust,
+   catalog-aware resolver architecture specialty-matching already has
+   (Phases 1-3).** Confirmed pattern across multiple independent
+   examples: "Do you treat cuts that need stitches?" and "I cut my hand
+   ... think I need stitches" both confidently declined ("we don't have
+   a specialist for that") at Horizon, which literally lists "Simple
+   Wound Laceration Repair (Sutures)" as a service and has Urgent Care
+   doctors — a false-negative, not an honest gap. "What are the urgent
+   services you perform" (typo'd), "what do you know about the Combo
+   Swab", and "tell me about Level 1" all failed to resolve to real,
+   literally-listed services ("Urgent Care Visit (Level 1/Basic)",
+   "Rapid Strep / Flu Combo Swab") — falling to a generic clarify menu, a
+   pure-general-knowledge answer that ignores the clinic's own real
+   service, or the RAG-empty apology, respectively — purely because the
+   phrasing doesn't exact-match `_category_needle`'s hardcoded phrase
+   list or the strict-token service-name matcher. "Do you handle minor
+   urgent-care problems?" (the same underlying need, different wording)
+   *does* work, because it happens to contain the literal hardcoded
+   phrase "urgent care". This is the single highest-value follow-up: the
+   services-side resolver needs the same tiered, catalog-aware treatment
+   (concern-map-style phrase matching + the Phase 2 `catalog_match` LLM
+   tier, already built and working for specialties) applied to procedures/
+   services, not just specialties. Not attempted here — real architecture
+   work, not a smallest-fix patch, and deserves its own scoped
+   investigation given how many symptoms trace back to this one gap.
+
+2. **A new gap this session's own Phase 4 work introduced: the new
+   `general_medical_knowledge` path's free-text offer isn't trackable as
+   a pending offer.** At Umbrella Health, the bot's LLM-composed reply to
+   "severe head pain" ended with "Would you like me to do that?" (offering
+   to schedule a neurologist) — a plain "yes" immediately after got the
+   generic soft_medical fallback instead of proceeding, because that
+   offer was never recorded via the existing `pending_offer_from_turn`/
+   `mark_pending_decline` mechanism (`conversation_state.py`) the way a
+   structured quick-reply offer already is. This is a real regression
+   risk specifically introduced by adding a second free-text-composing
+   response path — worth a scoped follow-up: either have
+   `generate_general_knowledge_reply` avoid open-ended questions
+   entirely, or wire its offer into the existing pending-offer tracking.
+
+3. **Bug B (classification instability) continues to surface in new
+   phrasings** — "what are the urgent services do you perform" and the
+   pediatric-checkup case above are both consistent with the
+   already-documented, bounded reliability ceiling (ROADMAP's prior Phase
+   3 entry), not new mechanisms.
+
+4. **Treatment/product-recommendation requests** ("Kindly suggest a
+   homeopathic medicine...", "Will Nano-Leo give permanent solution
+   for...", "Will Kalarchikai cure...", "Shall I take Raw Bovine Ovary
+   pills to...") get the generic soft_medical line or a bare clarify —
+   arguably acceptable as a deflection (never prescribing is correct),
+   but the copy ("I can't diagnose symptoms") doesn't quite fit a
+   recommendation-request framing. Low-severity copy mismatch, not a
+   safety gap.
+
+5. **One `medical_question_mode` boundary case found:** "As I am having
+   a history of miscarriages, will taking hCG injections help me to
+   continue pregnancy?" — a personal-history-stated-as-context-for-a-
+   treatment-safety-question — got the generic soft_medical fallback
+   instead of the intended `"risk"` classification. The current prompt
+   instruction doesn't explicitly disambiguate "personal history stated
+   as backstory for a risk question" from a personal symptom disclosure;
+   worth tightening in a future prompt pass, not urgent given the
+   fail-safe default (current behavior, not a wrong-but-confident one).
+
+6. **Smaller, likely-low-value-to-chase items:** typo tolerance for day
+   names ("frinday"/"thonsday") and short booking-flow phrases ("iknow my
+   doctor"); an isolated "Booking closed" for one specific service-driven
+   booking attempt (insufficient context to root-cause without further
+   reproduction); free-text date/time input not being gracefully accepted
+   mid-quick-reply-flow in the booking wizard's "How would you like to
+   book?" step.
+
+**Recommended next phase:** item 1 above (services/procedure
+catalog-aware capability matching) is the highest-leverage next piece —
+it explains the largest number of distinct-looking symptoms in this
+batch and follows the exact playbook already proven for specialties.
+Should get its own plan-mode round given it's real architecture work,
+not a patch, mirroring how the specialty-matching work was handled. Items
+2 and 5 are small, well-scoped, and could be picked up quickly if wanted.
+Item 3 remains the standing, bounded Bug B limitation.
+
+## ✅ Phase 6: a data-completeness gap, not an architecture gap — Specialty.category was never populated, plus a scoped Primary Care fallback
+
+**Objective.** User pasted an external LLM's architectural critique of
+item 5 above (the "hCG injections"/miscarriage boundary case) and asked
+for real research (web search) plus independent verification before
+acting — explicitly warning against over-engineering further and asking
+whether anything could be *removed*, not just added. Investigated the
+critique's specific factual claims against the actual code and real
+seeded data before accepting or rejecting any of its proposed changes.
+
+**The critique's central claim ("the care-navigation bridge is
+architecturally missing") is false — verified directly.** The bridge
+(`booking/discovery.py`: concern-map phrase matching → `suggest_
+specialties` → `specialty_category_hint` fallback → clinic capability)
+already exists, predates this session, and is exercised by existing,
+passing tests. What actually broke the four failing examples ("Nano-Leo
+for erection problem", "Kalarchikai for PCOD", "hCG injections for
+miscarriage", homeopathic hairfall) is a **data-completeness gap**:
+`Specialty.category` — the field `suggest_specialties`'s category-hint
+tier does an exact match against — **was blank on every single specialty
+of every seeded demo clinic** (Horizon, Apex, Lumina, and the
+organically-created StackUp/Beula/Comsats tenants), confirmed via direct
+query. `_specialty()`, the seed-script helper (`core/management/
+commands/seed_demo_clinics.py`), never accepted or set a `category`
+parameter at all — not a prompt bug, not a missing layer, a helper
+function that was never wired up. This means the category-hint fallback
+tier has been silently non-functional for every real clinic tested this
+entire session; every earlier "the bridge works" verification used
+synthetic unit-test fixtures that manually set `category`, never real
+seeded data.
+
+**A second, compounding reliability finding, live-confirmed:** even
+`specialty_category_hint` itself is considerably less reliable than
+`entities.symptom` for this class of message. 6 repeated identical NLU
+calls for the exact hCG/miscarriage message returned `entities.symptom
+="history of miscarriages"` every time, but `specialty_category_hint`
+came back `null` in all 6 (not even the critique's observed "Other" —
+genuinely unset). This is exactly the kind of "too many requirements in
+one LLM call" degradation externally documented (see Sources) — but the
+fix is not restructuring the prompt/schema further; it's not depending on
+the least-reliable signal when a more-reliable one already carries the
+same information.
+
+**External research (explicitly requested) supports the existing
+architecture, not the critique's proposed replacement:**
+- A hybrid "small/cheap model for classification + deterministic
+  structured system for the actual decision" pattern — exactly what this
+  codebase's concern-map + catalog machinery already is — is validated by
+  production examples like Infermedica's Conversational Triage (LLM +
+  Bayesian/structured knowledge graph for patient navigation).
+- "With the number of requirements increasing, it is much easier to
+  neglect some requirements" and "single-quality templates were
+  generally more reliable... compared to templates evaluating all
+  metrics using a single prompt" — direct support for *not* continuing
+  to bolt more fields onto the one large NLU prompt, which is exactly
+  the caution behind scoping this phase's fix to data + one small,
+  narrowly-targeted function rather than a new taxonomy/schema field.
+
+**What was rejected from the critique, and why:**
+- **A coarser, hand-rolled category list** ("Men's Health", "Women's
+  Health", etc.) to replace `core.care_categories.CareCategory` — the
+  existing list already has 26 NUCC-aligned categories including
+  `Urology` and `OB-GYN`, more clinically precise than what was proposed;
+  the model picking a poor category is a guidance/data problem, not a
+  taxonomy-size problem, confirmed by the fact that even a *correct*
+  category guess (verified directly) still failed here purely because no
+  specialty had any category populated at all.
+- **Renaming `entities.symptom` to `concern`/`medical_concern`** — pure
+  churn across every existing consumer for zero behavior change.
+- **A new tenant-capability-config JSON layer** — the real, tenant-scoped
+  data already lives in real `Specialty`/`Service` rows queried live;
+  adding a parallel config layer would duplicate that, not simplify it.
+- **A 5-state `medical_mode` enum replacing the 3-state `medical_question_
+  mode` shipped in Phase 4** — the actual gap (personal concern with an
+  unserved specific category) is fully addressed by `primary_care_
+  fallback` below without touching the schema at all.
+
+**The fix actually shipped — small, data + one function, no schema
+change:**
+1. `core/management/commands/seed_demo_clinics.py::_specialty()` now
+   accepts and sets `category`; all 8 existing call sites (Horizon x4,
+   Apex x2, Lumina x2) updated with the correct `CareCategory` value
+   (Family Medicine/Internal Medicine/Urgent Care/Wellness & Acute Care →
+   `Primary Care` — no dedicated "Urgent Care" category exists in the
+   curated list, and Primary Care is the closest real fit for "does this
+   clinic have somewhere to send a non-specific concern"; General/Cosmetic
+   Dentistry + Orthodontics → `Dentistry`; Medical & Surgical Dermatology
+   → `Dermatology`; Cosmetic Injectables & Lasers → `Aesthetics /
+   Cosmetic`). Live dev DB updated directly to match (re-seeding isn't
+   idempotent-safe, same precedent as the earlier Medicare seed fix).
+2. `apps/chatbot/booking/discovery.py::primary_care_fallback(clinic, *,
+   category_hint="", reason="")` — a new, narrowly-scoped function used
+   **only** by `ChatEngine._soft_medical_reply` (the care-navigation
+   lane). Fires when either `category_hint` or `reason` (the raw
+   `entities.symptom` value) is non-empty and `suggest_specialties`
+   already found nothing, offering the clinic's own `category="Primary
+   Care"` specialty as an honest starting point ("evaluate you and refer
+   you onward if needed" — never framed as a match for the stated
+   concern). Explicitly **not** wired into `resolve_symptom_specialty_
+   ids`/`suggest_specialties` themselves, which stay a plain honest
+   decline for capability questions (`doctor_search`/`doctor_availability`
+   SQL handlers) — live-confirmed "Do you have a cardiologist?" is
+   completely unaffected, still a plain "we don't have that."
+
+**Files changed:**
+- `core/management/commands/seed_demo_clinics.py` — `_specialty()`
+  category param + 8 call sites.
+- `apps/chatbot/booking/discovery.py` — new `primary_care_fallback`.
+- `apps/chatbot/engine.py` — `_soft_medical_reply` calls it when
+  `suggest_specialties` finds nothing.
+- `apps/chatbot/tests/test_discovery.py` — new `PrimaryCareFallbackTests`
+  (5 tests) + one regression guard on the existing
+  `SoftMedicalReplyHonestFallbackTests` (a clinic with no Primary Care
+  specialty must keep the exact old plain-decline behavior).
+- Live dev DB: `Specialty.category` set directly for Horizon (4),
+  Lumina (2), Apex (2), matching the corrected seed script.
+
+**Tests:** all new tests passing (6 total). Full suite —
+`apps.chatbot.tests apps.knowledge.tests apps.api --keepdb`:
+**1173/1174**, same single pre-existing `test_temporal_authority.py`
+flake as every baseline in this document. Eval — `run_chat_eval --target
+520`: **698/706 (98.9%)**, identical to baseline, `soft_medical` and
+`horizon_specialties` lanes both still 100%, no drift.
+
+**Live verification (real LLM calls, `horizon-family-care`, the exact
+failing examples, before vs. after):**
+| Message | Before | After |
+|---|---|---|
+| "...will taking hCG injections help me to continue pregnancy?" (history of miscarriages) | "I can't diagnose symptoms..." (flat, 5/5) | "That's not something we specialize in directly, but our Family Medicine team can evaluate you and refer you onward if needed..." (5/5) |
+| "Will Kalarchikai cure multiple ovarian cysts in PCOD?" | same flat reply | same Family Medicine fallback (2/2) |
+| "Do you have a cardiologist?" (control — capability question, must stay unaffected) | honest decline | unchanged, honest decline (2/2) |
+
+**Known limitations / found-but-not-fixed:**
+- `beula-medical-family-clinic`, `comsats-university-islamabadlahore`,
+  and `stackup-technologies` are organically-created tenants, not
+  seed-script output — their specialties still have blank `category`
+  and were not corrected here (fixing organic tenant data via a script
+  edit isn't the right move; a real product fix for this — e.g. making
+  `category` required at specialty-creation time, or prompting staff to
+  set it — is a separate, deliberate product decision, not something to
+  slip into this phase).
+- `specialty_category_hint`'s reliability gap (frequently null even when
+  `entities.symptom` is reliably set) is noted but not separately
+  "fixed" — `primary_care_fallback`'s dual-signal trigger already routes
+  around it for this specific case; whether the underlying NLU prompt
+  instruction for `specialty_category_hint` itself needs strengthening
+  is a candidate for a future, separately-scoped pass, not addressed
+  here.
+- Homeopathic/treatment-recommendation-request phrasing ("Kindly suggest
+  a homeopathic medicine...", "Shall I take Raw Bovine Ovary pills...")
+  still gets `off_topic`/generic clarify in some live trials — consistent
+  with the already-documented Bug B classification-instability ceiling,
+  not a new mechanism.
+
+**Recommended next phase:** none proposed proactively. The
+architecture-critique thread that prompted this phase is resolved: the
+underlying bridge was real, the gap was data-completeness plus an
+over-reliance on the less-reliable of two available signals, and the fix
+required no schema or taxonomy changes. Item 1 from the prior phase's
+backlog (services/procedure catalog-aware capability matching) remains
+the standing highest-leverage recommendation if the user wants to
+continue.
+
+Sources consulted for this phase's architecture verification:
+- [Launching Conversational Triage: Combining LLMs with Bayesian Models — Infermedica Blog](https://infermedica.com/blog/articles/launching-conversational-triage)
+- [Small Language Models in Healthcare: The Rise of Compact AI for Clinical Practice](https://medium.com/@sanaz.jamalzadeh/small-language-models-in-healthcare-the-rise-of-compact-ai-for-clinical-practice-d2ffc08572b2)
+- [Using LLM Structured Outputs For Routing — John Damask](https://johndamask.substack.com/p/using-llm-structured-outputs-for)
+- [What Prompts Don't Say: Understanding and Managing Underspecification in LLM Prompts (arXiv)](https://arxiv.org/pdf/2505.13360)
+- [Prompt Engineering Isn't Enough — I Built a Control Layer That Works in Production — Towards Data Science](https://towardsdatascience.com/prompt-engineering-isnt-enough-i-built-a-control-layer-that-works-in-production/)
+- [Three Ways of Using Large Language Models to Evaluate Chat (arXiv)](https://arxiv.org/pdf/2308.06502)
+
+## ✅ Phase 7: pipeline-debugging pass — consolidate the duplicated fallback path, guard against overriding an authoritative SQL decline
+
+**Objective.** User asked for a strict pipeline-debugging trace (not
+architecture redesign) of exactly where 3 specific messages from a fresh
+production log went wrong, then a verified, minimal-diff fix — explicitly
+requiring verification of the "shared resolver" assumption before acting
+on it, and explicitly preferring consolidation/deletion of duplicate
+logic over new logic.
+
+**Step 1 (required verification, done before any code change):** traced
+every real caller of `resolve_symptom_specialty_ids`/`resolve_symptom_
+service_ids`. Finding: it genuinely **is** the shared choke point for all
+four `doctors.py` SQL-handler call sites (`search_doctors` ×2,
+`doctor_availability` ×2) — but **not** for `ChatEngine._soft_medical_
+reply` (engine.py), which calls `suggest_specialties` + `primary_care_
+fallback` directly, bypassing the shared resolver (and its tier 4
+`catalog_match` check) entirely. The original assumption ("one shared
+resolver already ties both paths together") was **false as stated** —
+confirmed before touching anything, per instruction.
+
+**Root cause, case by case (full trace: NLU → heuristics → planner →
+resolver → SQL/vector selection → response), file:line references:**
+
+1. *"I have recurring urinary problems. Can someone here help?"* — first
+   incorrect decision: response generation (`_compose_from_plan`,
+   `engine.py`) let the Large LLM synthesize a claim not grounded in
+   either the SQL result or the retrieved chunk. `search_doctors` had
+   already returned an authoritative decline
+   (`meta.authoritative_summary=True`), but `resolve_plan_after_sql`
+   (`planner.py:1354`) decides whether to escalate to vector+LLM using
+   only `sql_found: bool` — with zero awareness of `authoritative_
+   summary`. A single chunk scoring `0.2513` (`CHAT_VECTOR_MIN_SCORE`
+   defaults to `0.25`, `config/settings/base.py:322`) was enough to make
+   `vector_rows` non-empty, routing to the real Large LLM (`engine.py:
+   1489`) instead of the `if not vector_rows:` branch that would have
+   deferred to Python's own answer.
+2. *"I've had several miscarriages and want to speak with a doctor."* /
+   *"Will hCG injections help me continue my pregnancy?"* — these were
+   already correct as of last phase (`primary_care_fallback` fires via
+   `_soft_medical_reply`'s empty-vector branch, `engine.py:1454`, which
+   has no authoritative-summary guard at all — it always tries
+   `_soft_medical_reply`). Confirmed by direct trace, not assumed.
+3. The real, unifying bug, found by testing 17 further messages: two
+   **inconsistent** implementations of "SQL found nothing, this is a
+   soft_medical message" coexist in `_compose_from_plan` — `engine.py:
+   1454` (no authoritative check, always calls `_soft_medical_reply`) vs.
+   `engine.py:1507-1521` (checks `_has_authoritative_summary` first, and
+   if true, keeps the *raw* SQL text instead, skipping `_soft_medical_
+   reply`/`primary_care_fallback` entirely). Which branch a message hits
+   depends on an incidental planning-time detail (whether a vector
+   fallback task got pre-authorized via `doc_match`), not on anything
+   about the message itself. This is exactly why *"I've been having
+   erection problems. Who should I see?"* (`doctor_search` intent, no
+   vector task pre-authorized) kept the bare "I'm not sure which kind of
+   specialist..." while *"My kid got sick"* (`specialty_category_hint=
+   "Pediatrics"`, a real, specific category none of Horizon's
+   Primary-Care-tagged specialties carry) got a flatly wrong "We don't
+   have a specialist for that here" — confirmed live, both cases
+   directly traced with real NLU output before writing any fix.
+
+**Fix 1 — consolidate: move `primary_care_fallback` into the actual
+shared resolver, not just `_soft_medical_reply`.** New tier 5 in
+`resolve_symptom_specialty_ids` (`apps/chatbot/booking/discovery.py`),
+consulted only after tiers 1-4 (concern-map, `suggest_specialties`,
+category-hint, `catalog_match`) all found nothing: if `reason`
+(`entities.symptom`) or `category_hint` is non-empty, try `primary_care_
+fallback` (the existing helper, unchanged, no new logic) before falling
+through to the final "nothing/not sure" branches. Live-verified this
+correctly and automatically respects all four of the required scoping
+rules without any extra branch-awareness plumbing, because the signal it
+gates on is already exactly the right one:
+- *specific supported care category* → resolves normally via tiers 1-4,
+  unchanged, tier 5 never reached.
+- *unsupported specific category + symptom/concern navigation* →
+  tier 5 fires (`category_hint`/`reason` non-empty).
+- *explicit unsupported specialty request* ("Do you have a
+  cardiologist?") → verified directly, 6/6 live calls: this phrasing
+  leaves **both** `entities.symptom` and `specialty_category_hint` null
+  (the NLU prompt only ever populates `specialty_category_hint` alongside
+  a real symptom entity) — tier 5's trigger condition is naturally false,
+  no fallback, exactly as required, with no special-casing needed.
+- *genuinely ambiguous concern* → tier 1 (`ambiguous_categories_for`)
+  already runs first and returns early; tier 5 sits after it, unchanged
+  ordering.
+Deliberately scoped to `resolve_symptom_specialty_ids` only, not
+`resolve_symptom_service_ids` — no clear "generalist service" equivalent
+exists, and none of the reported failures were services-shaped.
+
+**Fix 2 — stop discarding an authoritative SQL answer for a weak vector
+hit.** `resolve_plan_after_sql` (`planner.py:1354`) gained a
+`sql_authoritative: bool = False` parameter; when true, the fallback-
+vector-escalation activation is skipped entirely (same short-circuit
+as the existing `sql_found` check), regardless of retrieval score. Call
+site (`engine.py:727`) now passes `sql_authoritative=self._has_
+authoritative_summary(sql_rows)` — reusing the existing method verbatim,
+not new logic. Per instruction, did **not** touch `CHAT_VECTOR_MIN_SCORE`
+— this guard makes the threshold irrelevant for *this specific* failure
+mode (an authoritative decline being second-guessed) since vector search
+is no longer attempted at all in that case; the threshold may still
+matter for a genuinely-non-authoritative empty SQL result paired with a
+weak chunk, which is a separate, broader concern not scoped to what was
+diagnosed here and was not touched.
+
+**A known, smaller remaining inconsistency, not fixed this phase:**
+`_soft_medical_reply` still has its own independent implementation
+(`suggest_specialties` + `primary_care_fallback` called directly) rather
+than consuming the now-more-complete `resolve_symptom_specialty_ids`
+(which also has tier 4's `catalog_match`, which `_soft_medical_reply`
+still lacks). Consolidating this fully would require changing `_soft_
+medical_reply`'s signature to accept a real `NLUResult` instead of bare
+`symptom_hint`/`category_hint` strings, touching all 3 call sites and
+~10 existing tests that construct it with the string-based signature —
+judged out of scope for this phase's "smallest change" bar; flagged
+rather than done silently.
+
+**Files changed:**
+- `apps/chatbot/booking/discovery.py` — tier 5 in `resolve_symptom_
+  specialty_ids`.
+- `apps/chatbot/planner.py` — `resolve_plan_after_sql`'s new
+  `sql_authoritative` parameter.
+- `apps/chatbot/engine.py` — one call-site update, passing `self._has_
+  authoritative_summary(sql_rows)` through.
+- `apps/chatbot/tests/test_execution_plan.py` — new
+  `ResolvePlanAfterSqlAuthoritativeGuardTests` (4 tests: authoritative
+  empty result never escalates; non-authoritative empty result still
+  does, a control; `sql_found=True` still never escalates; no
+  pre-authorized fallback tasks is a no-op either way).
+
+**Tests:** all new tests passing. `apps.chatbot.tests.test_discovery
+apps.chatbot.tests.test_sql_tool apps.chatbot.tests.test_resolvers
+--keepdb`: **168/168**, zero regressions from tier 5. Full suite —
+`apps.chatbot.tests apps.knowledge.tests apps.api --keepdb`:
+**1177/1178**, same single pre-existing `test_temporal_authority.py`
+flake as every baseline in this document. Eval — `run_chat_eval --target
+520`: **698/706 (98.9%)**, identical to baseline, same 8 pre-existing
+failures, no drift.
+
+**Live re-verification — full 17-message batch + the 3 originally-traced
+cases, before vs. after both fixes:**
+
+| # | Message | First decision point (before) | Resolver path (after) | SQL/vector (after) | Final response (after) |
+|---|---|---|---|---|---|
+| — | "...recurring urinary problems..." | `resolve_plan_after_sql` escalated past an authoritative decline | tier 5 (Primary Care) | SQL only, `found=True` | "Found 2 doctors who may be a good fit" — **fixed**, no longer reaches vector/LLM at all |
+| — | "...miscarriages...speak with a doctor" | already correct | `_soft_medical_reply` (unchanged path) | direct lane, no SQL/vector | `primary_care_fallback` text — unchanged, still correct |
+| — | "Will hCG injections help me continue my pregnancy?" | already correct | `_soft_medical_reply` | direct lane | unchanged, still correct |
+| 4 | "...erection problems. Who should I see?" | inconsistent-branch bug (`engine.py:1507`, no fallback available on this path) | tier 5 (Primary Care) | SQL only, `found=True` | "Found 2 doctors..." — **fixed** (was "I'm not sure which kind of specialist...") |
+| 5 | "...urinary problems. Can someone help?" | same as case 1 above (this exact phrasing) | tier 5 | SQL only, `found=True` | "Found 2 doctors..." — **fixed** |
+| 16 | "My kid got sick." | `specialty_category_hint="Pediatrics"`, unsupported, confident false decline | tier 5 (Primary Care) | SQL only, `found=True` | "Found 2 doctors..." — **fixed** (was "We don't have a specialist for that here", flatly wrong) |
+| 11, 12 | "Do you have a cardiologist?" / "...dermatologist?" | n/a (already correct) | tiers 1-4, tier 5 correctly not reached | SQL only, `found=False`, authoritative | unchanged, honest decline — **confirms rule 3 holds** |
+| 15 | "I cut my hand badly. Who should I see?" | n/a | varies | varies | **non-deterministic across identical calls: 3/5 `emergency`, 2/5 `doctor_search`** (confirmed via 5 repeated trials) — pre-existing Bug B classification instability, unrelated to either fix (neither touches emergency detection); when it lands on `doctor_search` it now correctly gets the fixed "Found 2 doctors" answer |
+| 2, 17 | emergency messages | n/a | n/a | n/a | unchanged, correctly escalate to emergency — **confirmed unaffected** |
+| 9, 10 | "What is PCOS?" / pregnancy-dates | n/a | n/a | n/a | unchanged, real answers via Phase 4's general-knowledge path — **confirmed unaffected** |
+
+**Regressions found:** none. `test_unresolved_specific_role_gets_honest_
+clarification` and its siblings (empty `entities.symptom`/`category_hint`
+cases) are structurally untouched, since tier 5's trigger condition is
+false for them by construction — confirmed by the full 168/168 pass on
+the three most relevant test files plus the 1177/1178 full-suite/698/706
+eval results above.
+
+**Known limitations / found-but-not-fixed (unchanged from what these two
+fixes were scoped to):**
+- Services/procedure capability-matching gap (item 1, prior phase's
+  backlog) is still open — *"I need stitches for a cut"* still gets the
+  Primary Care fallback wording ("not something we specialize in
+  directly") even though the clinic literally lists "Simple Wound
+  Laceration Repair (Sutures)" as a service; tier 5 only reasons about
+  specialties, not services, by design/scope this phase.
+- `_soft_medical_reply`'s own parallel, slightly-less-complete
+  implementation (missing tier 4) noted above, not consolidated this
+  phase.
+- Bug B classification instability (case 15 above) remains the same
+  standing, bounded, documented limitation — not newly introduced, not
+  addressed here.
+
+**Recommended next phase:** none proposed proactively. The two changes
+requested this phase are complete, verified, and regression-free.
+
+## ✅ Phase 8: services-side "Family 1"/"Family 2" prompt fixes for need-statement procedure requests
+
+**Objective.** Following the Phase 7 diagnosis, fix the two distinct
+NLU-classification gaps found for service/procedure requests phrased as
+need-statements ("I need stitches") or paraphrased capability questions
+("Can you stitch a cut?") — using only existing prompt/resolver
+machinery, no new schema field, ontology, or service map, per explicit
+instruction. Family 1 (intent misses `services_offered` entirely) fixed
+first and verified with a full contrast set before touching Family 2
+(`service_filter_mode` staying `"none"` even when the model's own
+reasoning already named the match), per the approved sequencing.
+
+**Family 1 fix.** Extended the existing `services_offered`/`pricing`
+prompt rule (`apps/chatbot/nlu/prompts.py`) — already proven reliable for
+yes/no phrasing ("do you offer X") — to explicitly cover a need/want
+statement naming the same procedure directly ("I need stitches for a
+cut", "I need wound repair"), while explicitly carving out the opposite
+case (describing a concern and asking who to see stays doctor_search/
+medical_question). Same incremental-prompt-rule pattern as the existing
+doctor/specialist sibling rule from an earlier phase, not a new rule
+family.
+
+**Live-verified, full contrast set (11 messages, matching the user's own
+requested boundary table):**
+| Message | Before | After |
+|---|---|---|
+| "I need stitches for a cut." | `medical_question`, `sql_tasks=[]` | `services_offered`, `sql_tasks=['services']` — **fixed** |
+| "I cut my hand and need stitches." | `medical_question`, `sql_tasks=[]` | `services_offered` — **fixed** |
+| "I need wound repair." | `faq`, empty entities, `sql_tasks=[]` (worst outcome — generic RAG apology) | `services_offered`, `sql_tasks=['services']` — **fixed** |
+| "Do you offer stitches?" / "Can you stitch my cut?" | already `services_offered` | unchanged, confirms baseline preserved |
+| "I have a cut. Who should I see?" | `doctor_search` | unchanged `doctor_search` — **boundary held**, not swallowed into services_offered |
+| "Can I get a flu test?" / "My throat hurts. Do you have a flu test?" | `services_offered` | unchanged |
+| "I need a blood draw." | `services_offered`, named | unchanged |
+| "What is wound repair?" | `medical_question` | unchanged, real definitional answer via Phase 4's general-knowledge path — **boundary held**, not swallowed into services_offered |
+| "What should I do about my cut?" | `medical_question` | unchanged, care-navigation via Phase 7's tier 5 — **boundary held** |
+
+No over-broadening detected — the two contrast messages the user specifically
+flagged as the real risk ("What is wound repair?", "I have a cut. Who
+should I see?") both stayed on their correct, pre-existing path.
+
+**Family 2 fix, and a correction to the originally-proposed wording.**
+The user's suggested fix text said to set `service_filter_mode=named`
+when the model already recognizes the service. Verified against
+`apps/chatbot/sql_tool/handlers/services.py` before implementing:
+**`"named"` mode never consults `catalog_match`** — only `"category"`
+mode's fallback chain does (`resolve_symptom_service_ids`, called only
+when `_category_needle` and `_match_services_strict`/`resolved_service_ids`
+both find nothing). Setting `"named"` for a paraphrased ask like
+"stitches" (no literal substring overlap with "Simple Wound Laceration
+Repair (Sutures)") would dead-end with **no fallback at all** — worse
+than today, since `"named"` mode's only other branch requires
+`entities.service` to be both set and a close literal match. Implemented
+the corrected version instead: instructed the model that `"none"` is
+only for a genuine browse (never merely because the message was phrased
+as a question), and that `"category"` — not `"named"` — is the right
+mode when the message describes a procedure in wording that differs from
+a likely catalog name, since that is the mode with the catalog-resolving
+fallback.
+
+**Live-verified result — a genuine, partial improvement, reported
+honestly rather than overstated:**
+| Message | Before | After |
+|---|---|---|
+| "I need wound repair." | `sfm=none`, "Pick a service below" | `sfm=named`, **directly resolved**: "Simple Wound Laceration Repair (Sutures) is $240.00, about 45 minutes." |
+| "I need stitches for a cut." / "Do you offer stitches?" | `sfm=none` | still `sfm=none`, still "Pick a service below" (unchanged) |
+| "Can you stitch my cut?" / "Can I get a flu test?" / "My throat hurts. Do you have a flu test?" | `sfm=none` | now `sfm=named`, but **still** "Pick a service below" — `entities.service` isn't also being populated with a matchable value, so `"named"` mode's own (fallback-free) logic still finds nothing and the query stays unfiltered |
+| "What services do you offer?" | `sfm=none` | unchanged, correctly still a genuine browse — **confirms "none" wasn't over-corrected away** |
+
+Net effect: the internally-contradictory "the model says the answer out
+loud in its own reasoning, then reports a mode that discards that
+knowledge" pattern is reduced but not eliminated — three of six
+paraphrased-ask messages now resolve directly (versus one before), the
+other three still fall back to the same "Pick a service below" quick-
+reply list they did before (a workable, non-wrong, non-regressing
+outcome, just not maximally direct) rather than the worse alternative a
+literal "named" mode dead-end would have produced. Not pursued further
+this phase — the user's own stated next step is to inspect these traces
+before any further prompt tuning, not to keep iterating blind.
+
+**Files changed:**
+- `apps/chatbot/nlu/prompts.py` — Family 1's extended `services_offered`
+  rule; Family 2's `service_filter_mode` instruction (corrected to
+  recommend `"category"`, not the originally-suggested `"named"`, for
+  paraphrased asks).
+- `apps/chatbot/tests/test_prompts.py` — 2 new tests locking in both
+  rules' presence and key phrasing.
+
+**Tests:** `apps.chatbot.tests.test_prompts --keepdb`: 18/18. Full suite
+— `apps.chatbot.tests apps.knowledge.tests apps.api --keepdb`:
+**1179/1180**, same single pre-existing `test_temporal_authority.py`
+flake as every baseline in this document. Eval — `run_chat_eval --target
+520`: **698/706 (98.9%)**, identical to baseline, no drift from either
+prompt change.
+
+**Known limitations / found-but-not-fixed:**
+- Family 2 remains partially open: `"named"` mode still has no fallback
+  when `entities.service` isn't also populated, so simply steering the
+  model away from `"none"` isn't sufficient on its own for every
+  paraphrased case — a more forceful nudge toward `"category"`
+  specifically (not just away from `"none"`) is the likely next
+  refinement, deferred pending the user's own trace inspection.
+- A new, separate, unrelated finding surfaced by the user in the same
+  message (Apex Dental & Orthodontics, a real dental clinic): "which
+  doctor can do teeth whitening" returned **all 6 doctors at the
+  clinic**, including a pediatric dentist, an endodontist, and a
+  periodontist — a fully unfiltered browse for an explicit, nameable
+  cosmetic procedure, apparently not going through the catalog_match/
+  concern-map machinery at all. Not yet investigated — flagged for the
+  next phase per the user's own stated preference to inspect current
+  results before further changes.
+
+**Recommended next phase:** inspect the Family 2 partial-fix traces as
+the user intends, then decide whether to push `service_filter_mode`
+further or accept the current improvement; separately, investigate the
+new Apex Dental "teeth whitening → all 6 doctors" unfiltered-browse
+finding with the same trace-first discipline as this phase.
+
+## ✅ Phase 9: Apex Dental "teeth whitening → 6 unfiltered doctors" — two real, distinct bugs found; one pasted critique's central claim refuted
+
+**Objective.** Investigate the Phase 8 finding (`entities.doctor_name`
+notwithstanding, "which doctor can do teeth whitening" returned all 6
+Apex doctors unfiltered) plus a second pasted "GPT" critique claiming
+`planner.facts.matched_service_ids` already contained the whitening
+service id for "my teeth are a bit yellow" and that the planner simply
+wasn't using it. Explicit instruction: trace first, don't add a new
+ontology/schema field/prompt rule until existing code is shown incapable.
+
+**The critique's central factual claim does not hold up.** Verified
+directly, 10 repeated live trials total (5 via isolated NLU+resolver
+calls, 5 more via the full `ChatEngine.process()` pipeline-debug JSON):
+`matched_service_ids=[]` for "my teeth are a bit yellow" in **every**
+trial; `catalog_match` never reaches `matched` for this message (mostly
+`not_applicable`, once `no_match`) — correct behavior per the existing
+Phase 2 scoping ("never for a symptom/condition narrative"), not a bug.
+`matched_service_ids` **does** get populated, but only for messages that
+name the service closely enough for the deterministic planner-level
+matcher to find it in the raw text (e.g. "I need teeth whitening",
+"which doctor can do teeth whitening") — not for a symptom description
+like "yellow teeth". The critique's specific evidence was fabricated or
+misread; the real bugs found below are unrelated to its diagnosis.
+
+**Bug 1 (the real cause of the confirmed 6-doctor unfiltered browse) —
+`apps/chatbot/sql_tool/handlers/doctors.py`, both `search_doctors` and
+`doctor_availability`.** Live trace of "which doctor can do teeth
+whitening": the NLU hallucinated `entities.doctor_name="can do"` (from
+"which doctor **can do** teeth whitening") and left `entities.service`
+null (a real, separate NLU extraction gap — the existing "capability
+phrase names one listed service" rule apparently doesn't reliably fire
+for this doctor_search-shaped paraphrase, unlike the same concept phrased
+as a `services_offered` ask, which resolves `entities.service` correctly
+every time). Both tokens of "can do" are in the handler's own
+`_NAME_NOISE` set, so the noise filter correctly stripped it from the
+actual SQL name filter — but the line computing `doctor_named` re-ran
+`entity_list(nlu.entities.doctor_name)` on the **raw, unfiltered** entity
+instead of reusing the noise-filtered `names` list computed two lines
+above. Net effect: `doctor_named=True` from the hallucinated value, which
+skips the `elif not doctor_named:` branch that calls
+`resolve_symptom_specialty_ids` — while the query itself carries no name
+filter either (correctly stripped) — so `qs` stayed completely
+unfiltered by name, specialty, or service. Two doctors said what a
+"symptom detected but no filter applied" bug looks like; this one instead
+was "name detected as filterable, name filter silently dropped, but the
+fallback that only fires for a *nameless* message was skipped anyway."
+
+**Fix:** reuse the already-noise-filtered `names` variable (initialized
+before the `if/elif`) instead of re-extracting the raw entity, in both
+handlers — `doctor_named = bool(doctor_ids) or bool(names)`. For any
+message with a real doctor name, `names` is non-empty and behavior is
+identical to before (no regression); the fix only changes behavior when
+`entities.doctor_name` is entirely noise-words, closing the gap for any
+future hallucinated non-name value, not just "can do" specifically. No
+new ontology, schema field, or prompt rule — a one-line correction to an
+existing variable-reuse mistake.
+
+**Live-verified result:** "which doctor can do teeth whitening" — 6
+doctors → **4 doctors** (Dr. Aris Thorne, Dr. Maya Lin, Dr. Priya Nair,
+Dr. Marco Bellini), now identical to the already-correct filtering
+"my teeth look yellow, who should I see?" and "my tooth hurts, who
+should I see?" get via the existing concern-map/`suggest_specialties`
+chain (word-boundary match on "dentistry" against Apex's specialty
+names, `resolve_symptom_specialty_ids` tiers 1-2) — correctly excluding
+the periodontist and endodontist. This is the same category-level
+granularity ceiling already documented elsewhere in this codebase (one
+`CareCategory.DENTISTRY` bucket, not a per-procedure taxonomy) — a real,
+large improvement (0 exclusions → 2 of 6 correctly excluded), not a
+perfect single-doctor resolution, and not claimed to be one.
+
+**Bug 2 (found investigating why the service-side category-hint tier
+could never help here) — `Service.category` never held a real
+`CareCategory` value at any of the three seed-script clinics.** The
+model field (`apps/services/models.py`) declares
+`choices=CareCategory.choices`, documented in its own comment as sharing
+`Specialty.category`'s canonical vocabulary — but Django's `choices` is
+never enforced at the ORM/DB level, and `seed_demo_clinics.py`'s
+`_service()` calls were never validated against it. Checked every active
+service at all three seed-controlled clinics directly against
+`CareCategory.values`:
+| Clinic | Service | Stored category | Valid? |
+|---|---|---|---|
+| Horizon | Establish Patient Adult Physical | Primary Care | ✅ (coincidence) |
+| Horizon | Pediatric Well-Child Exam | Primary Care | ✅ (coincidence) |
+| Horizon | Urgent Care Visit (Level 1/Basic) | Urgent Care | ❌ |
+| Horizon | Simple Wound Laceration Repair | Urgent Care | ❌ |
+| Horizon | Rapid Strep/Flu Combo Swab | In-House Lab | ❌ |
+| Horizon | Routine Blood Draw | In-House Lab | ❌ |
+| Apex | all 5 services | Preventive / Cosmetic / Restorative / Orthodontics / Oral Surgery | ❌ (all 5) |
+| Lumina | all 5 services | Medical (×2) / Cosmetic (×2) / Laser | ❌ (all 5, incl. 1 inactive) |
+
+14 of 16 services clinic-wide (6 Horizon + 5 Apex + 5 Lumina, including
+one inactive Lumina row) had an invalid category; the 2 "valid" Horizon
+rows were coincidental, not a sign the mechanism was working.
+This means `resolve_symptom_service_ids`'s category-hint tier (exact
+`Service.category == category_hint` match) was structurally unable to
+match real service data for **any** service at any seeded clinic, no
+matter how accurately the LLM guessed the canonical category — the same
+class of gap as Phase 6's `Specialty.category` finding, on the `Service`
+side. This did not affect the confirmed Bug 1 fix above (that path never
+reaches the service-category tier), but it silently disabled
+`services_offered`'s "category" filter-mode fallback for a paraphrased
+ask industry-wide across every demo clinic.
+
+**Fix:** corrected all 15 invalid `category=` values in
+`seed_demo_clinics.py` to real `CareCategory` members — "Urgent Care" →
+`"Primary Care"` (same mapping Phase 6 used for Horizon's own Urgent
+Care specialty, since no dedicated category exists), "In-House Lab" →
+`"Laboratory / Diagnostics"`, all 5 Apex services → `"Dentistry"` (one
+category for the whole specialty, matching `Specialty.category`'s own
+granularity there), Horizon/Lumina's "Medical" → `"Dermatology"`,
+"Cosmetic"/"Laser" → `"Aesthetics / Cosmetic"`. Applied the same 14
+corrections directly to the live dev DB (re-seeding isn't idempotent-safe
+here, same precedent as Phase 6).
+
+**A third, separate, smaller finding — not fixed this phase.** "My teeth
+are a bit yellow" alone (no "who should I see" tail) classifies
+`medical_question` at confidence 0.95 but routes to the generic
+`clarify` lane ("could you tell me if this is about booking, a doctor, a
+service, or clinic info?") instead of the `soft_medical` direct lane the
+same underlying `entities.symptom`/category-hint signal drives correctly
+for its sibling phrasing. `planner.facts.soft_medical=True` is computed
+correctly; something in the confidence/lane-selection layer (not the
+resolver chain this phase touched) still picks `clarify` over `direct`
+for this exact phrasing. Not investigated further this phase — flagged
+per the "don't bundle in adjacent fixes" rule.
+
+**Files changed:**
+- `apps/chatbot/sql_tool/handlers/doctors.py` — `doctor_named` now
+  computed from the noise-filtered `names` list instead of re-extracting
+  the raw entity, in both `search_doctors` and `doctor_availability`.
+- `core/management/commands/seed_demo_clinics.py` — 14 `Service.category`
+  values corrected to real `CareCategory` members: Horizon 4 (2 "Urgent
+  Care" → "Primary Care", 2 "In-House Lab" → "Laboratory / Diagnostics"),
+  Apex 5 (all → "Dentistry"), Lumina 5 (2 "Medical" → "Dermatology", 2
+  "Cosmetic" + 1 "Laser" → "Aesthetics / Cosmetic", including the one
+  inactive Botox row).
+- Live dev DB: the same 14 `Service.category` rows updated directly to
+  match (re-seeding isn't idempotent-safe here, same precedent as Phase
+  6's `Specialty.category` fix).
+
+**Tests:** No new test file added this phase — both fixes are data/logic
+corrections covered by re-running the existing suite, not new
+behavior needing new assertion surface beyond what Phase 6/7/8's
+resolver-chain tests already lock in. Full suite —
+`apps.chatbot.tests apps.knowledge.tests apps.api --keepdb`:
+**1179/1180**, same single pre-existing `test_temporal_authority.py`
+date-arithmetic flake as every baseline in this document (reproduced in
+isolation, unrelated to this phase). Eval — `run_chat_eval --target
+520`: **698/706 (98.9%)**, identical to baseline, no drift.
+
+**Known limitations / found-but-not-fixed:**
+- The generic-clarify-lane finding above (bare "my teeth are a bit
+  yellow" not reaching `soft_medical`) is real and unfixed.
+- Bug 1's fix resolves to category-level granularity (all
+  Dentistry-tagged specialties), not procedure-level — a request for
+  "teeth whitening" specifically still can't distinguish "the 2 doctors
+  who actually offer that exact service" from "the 4 doctors in a
+  Dentistry-tagged specialty" without `search_doctors` also consulting
+  `ctx.resolved_service_ids` (the deterministic per-turn service matcher
+  already computed and already used by `services_offered`'s category-mode
+  fallback) for doctor-level narrowing — it currently isn't consulted at
+  all in either doctor handler. A real, scoped next step, not done this
+  phase to keep this phase to its one stated bug.
+- `entities.service` still doesn't reliably populate for a doctor_search-
+  shaped capability question ("which doctor can do X") even though the
+  identical concept phrased as a `services_offered` ask resolves it
+  correctly every time — a live, real, but non-blocking NLU-prompt gap
+  (Bug 1's fix makes the missing signal's absence far less costly, since
+  the specialty-level fallback now actually fires instead of being
+  skipped).
+
+**Recommended next phase:** (a) investigate the bare "my teeth are a bit
+yellow" clarify-vs-direct lane selection quirk; (b) consider wiring
+`ctx.resolved_service_ids` into `search_doctors`/`doctor_availability` for
+service-level (not just category-level) doctor narrowing when it's
+populated and `entities.service`/`resolved_ids.service_id` are not; (c)
+consider a targeted prompt clarification for `entities.service`
+extraction on doctor_search-shaped capability questions, mirroring the
+rule that already works for `services_offered` phrasing.
