@@ -394,20 +394,39 @@ export const widgetService = {
     return data;
   },
   /** Cursor pagination for older messages — `before` is the oldest
-   * sequence_number already loaded; omit for the newest page. */
+   * sequence_number already loaded; omit for the newest page.
+   * `authSessionToken` is the Phase 2 cross-device read path: pass the
+   * *current* browser's own verified session token when opening a
+   * *different* session found via `listConversations` — the backend
+   * accepts either that or a matching visitor header as proof of
+   * ownership. */
   async getMessages(
     sessionToken: string,
     clinicSlug: string,
-    params: { before?: number; limit?: number } = {},
+    params: { before?: number; limit?: number; authSessionToken?: string } = {},
     visitorId?: string | null
   ) {
+    const { before, limit, authSessionToken } = params;
     const { data } = await widgetApi.get<ChatMessagesPageOut>(
       `/widget/chat/sessions/${encodeURIComponent(sessionToken)}/messages`,
       {
-        params: { clinic_slug: clinicSlug, ...params },
+        params: {
+          clinic_slug: clinicSlug,
+          before,
+          limit,
+          auth_session_token: authSessionToken,
+        },
         headers: visitorHeaders(visitorId),
       }
     );
+    return data;
+  },
+  /** The patient's other verified conversations (Phase 2) — read-only,
+   * never mutates or replaces the calling session. */
+  async listConversations(input: { clinic_slug: string; session_token: string }) {
+    const { data } = await widgetApi.post<
+      import("@/types/api").ChatConversationsOut
+    >("/widget/chat/conversations", input);
     return data;
   },
   async sendGuestMessage(

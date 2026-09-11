@@ -383,6 +383,8 @@ export type Appointment = {
   doctor_name: string;
   patient_id: string;
   patient_name: string;
+  patient_phone: string;
+  patient_email: string | null;
   service_id: string | null;
   service_name: string | null;
   insurance_plan_id: string | null;
@@ -671,6 +673,20 @@ export type ChatResumeOut = {
 export type ChatMessagesPageOut = {
   messages: ChatMessageHistoryOut[];
   has_more: boolean;
+};
+
+/** A patient's *other* verified conversation, surfaced only after OTP
+ * verification on a new browser/device — never merged into the current
+ * session, only opened separately as a read-only view. */
+export type ChatConversationSummary = {
+  session_token: string;
+  last_active_at: string;
+  message_count: number;
+  preview: string;
+};
+
+export type ChatConversationsOut = {
+  conversations: ChatConversationSummary[];
 };
 
 /* ─── Staff conversations inbox ─────────────────────────────────── */

@@ -12,6 +12,7 @@ export type ChatMessageType =
   | "time_slots"
   | "appointment_form"
   | "appointments"
+  | "previous_conversations"
   | "verify_identity"
   | "booking_wizard"
   | "confirmation"
