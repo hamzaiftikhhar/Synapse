@@ -5,14 +5,19 @@ from __future__ import annotations
 from django.test import TestCase
 
 from apps.chatbot.nlu.resolvers import (
+    resolve_catalog_match,
     resolve_doctor_candidates,
     resolve_doctor_from_text,
     resolve_entities,
     resolve_pediatric_service_fallback,
     resolve_specialty_for_service,
 )
-from apps.chatbot.nlu.schemas import ExtractedEntities
-from apps.chatbot.routing import build_doctor_catalog
+from apps.chatbot.nlu.schemas import CatalogMatch, ExtractedEntities
+from apps.chatbot.routing import (
+    build_doctor_catalog,
+    build_specialty_catalog,
+    catalog_for_catalog_match_context,
+)
 from apps.clinics.models import Clinic
 from apps.doctors.models import Doctor, DoctorService, DoctorSpecialty
 from apps.services.models import Service
@@ -300,3 +305,216 @@ class PediatricServiceFallbackTests(TestCase):
         self.assertIsNone(
             resolve_pediatric_service_fallback(self.clinic, "Which doctors can see children?")
         )
+
+
+class ResolveCatalogMatchTests(TestCase):
+    """Phase 2 of the catalog-matching plan (ROADMAP.md): the one place an
+    LLM-proposed CatalogMatch.catalog_id/candidates is checked against
+    real data. LLM confidence must never be treated as truth -- every case
+    here is about what happens to a *claimed* match once it's checked."""
+
+    def setUp(self):
+        self.clinic = Clinic.objects.create(
+            slug="catalog-match-clinic",
+            name="Catalog Match Clinic",
+            email="catalogmatch@clinic.com",
+            phone="+12125550020",
+            timezone="America/New_York",
+        )
+        self.other_clinic = Clinic.objects.create(
+            slug="catalog-match-other-clinic",
+            name="Other Clinic",
+            email="othercatalogmatch@clinic.com",
+            phone="+12125550021",
+            timezone="America/New_York",
+        )
+        self.cardiology = Specialty.objects.create(
+            clinic=self.clinic, name="Cardiology", slug="cardiology",
+        )
+        self.dermatology = Specialty.objects.create(
+            clinic=self.clinic, name="Dermatology", slug="dermatology",
+        )
+        self.inactive_specialty = Specialty.objects.create(
+            clinic=self.clinic, name="Retired Specialty", slug="retired-specialty",
+            is_active=False,
+        )
+        self.deleted_specialty = Specialty.objects.create(
+            clinic=self.clinic, name="Deleted Specialty", slug="deleted-specialty",
+            is_deleted=True,
+        )
+        self.other_clinic_specialty = Specialty.objects.create(
+            clinic=self.other_clinic, name="Cardiology", slug="cardiology",
+        )
+        self.root_canal = Service.objects.create(
+            clinic=self.clinic, name="Root Canal", duration_min=60, price_cents=80000,
+        )
+
+    def test_not_applicable_and_no_match_pass_through_unvalidated(self):
+        for status in ("not_applicable", "no_match", "unresolved"):
+            with self.subTest(status=status):
+                raw = CatalogMatch(status=status, match_type="specialty")
+                result = resolve_catalog_match(self.clinic, raw)
+                self.assertEqual(result.status, status)
+                self.assertIsNone(result.catalog_id)
+
+    def test_matched_real_tenant_active_id_is_trusted(self):
+        raw = CatalogMatch(
+            status="matched", match_type="specialty", catalog_id=str(self.cardiology.id)
+        )
+        result = resolve_catalog_match(self.clinic, raw)
+        self.assertEqual(result.status, "matched")
+        self.assertEqual(result.catalog_id, str(self.cardiology.id))
+
+    def test_matched_service_id_is_trusted(self):
+        raw = CatalogMatch(
+            status="matched", match_type="service", catalog_id=str(self.root_canal.id)
+        )
+        result = resolve_catalog_match(self.clinic, raw)
+        self.assertEqual(result.status, "matched")
+        self.assertEqual(result.catalog_id, str(self.root_canal.id))
+
+    def test_matched_hallucinated_id_is_downgraded_to_unresolved(self):
+        """An id that doesn't exist at all -- the LLM must never be
+        trusted just because it claimed high confidence."""
+        raw = CatalogMatch(
+            status="matched", match_type="specialty", catalog_id="00000000-0000-0000-0000-000000000000"
+        )
+        result = resolve_catalog_match(self.clinic, raw)
+        self.assertEqual(result.status, "unresolved")
+        self.assertIsNone(result.catalog_id)
+
+    def test_matched_wrong_tenant_id_is_downgraded_to_unresolved(self):
+        """A real, active Specialty row -- but it belongs to a different
+        clinic. The tenant boundary is a real DB filter, never inferred
+        from "the prompt only offered this clinic's ids"."""
+        raw = CatalogMatch(
+            status="matched",
+            match_type="specialty",
+            catalog_id=str(self.other_clinic_specialty.id),
+        )
+        result = resolve_catalog_match(self.clinic, raw)
+        self.assertEqual(result.status, "unresolved")
+        self.assertIsNone(result.catalog_id)
+
+    def test_matched_inactive_id_is_downgraded_to_unresolved(self):
+        raw = CatalogMatch(
+            status="matched", match_type="specialty", catalog_id=str(self.inactive_specialty.id)
+        )
+        result = resolve_catalog_match(self.clinic, raw)
+        self.assertEqual(result.status, "unresolved")
+
+    def test_matched_deleted_id_is_downgraded_to_unresolved(self):
+        raw = CatalogMatch(
+            status="matched", match_type="specialty", catalog_id=str(self.deleted_specialty.id)
+        )
+        result = resolve_catalog_match(self.clinic, raw)
+        self.assertEqual(result.status, "unresolved")
+
+    def test_matched_wrong_catalog_type_is_downgraded_to_unresolved(self):
+        """A real, active, this-tenant id -- but it's a Service id claimed
+        as match_type=specialty. The type must match the model actually
+        queried, not just "some real id.\""""
+        raw = CatalogMatch(
+            status="matched", match_type="specialty", catalog_id=str(self.root_canal.id)
+        )
+        result = resolve_catalog_match(self.clinic, raw)
+        self.assertEqual(result.status, "unresolved")
+
+    def test_ambiguous_two_valid_candidates_stays_ambiguous_with_real_names(self):
+        raw = CatalogMatch(
+            status="ambiguous",
+            match_type="specialty",
+            candidates=[
+                {"id": str(self.cardiology.id), "match_type": "specialty"},
+                {"id": str(self.dermatology.id), "match_type": "specialty"},
+            ],
+        )
+        result = resolve_catalog_match(self.clinic, raw)
+        self.assertEqual(result.status, "ambiguous")
+        names = {c["name"] for c in result.candidates}
+        self.assertEqual(names, {"Cardiology", "Dermatology"})
+
+    def test_ambiguous_with_one_hallucinated_candidate_drops_it_not_the_real_one(self):
+        raw = CatalogMatch(
+            status="ambiguous",
+            match_type="specialty",
+            candidates=[
+                {"id": str(self.cardiology.id), "match_type": "specialty"},
+                {"id": "00000000-0000-0000-0000-000000000000", "match_type": "specialty"},
+            ],
+        )
+        result = resolve_catalog_match(self.clinic, raw)
+        # Only one candidate survived validation -- this is a match now,
+        # not a real ambiguity anymore.
+        self.assertEqual(result.status, "matched")
+        self.assertEqual(result.catalog_id, str(self.cardiology.id))
+
+    def test_ambiguous_with_zero_valid_candidates_is_downgraded_to_unresolved(self):
+        raw = CatalogMatch(
+            status="ambiguous",
+            match_type="specialty",
+            candidates=[
+                {"id": "00000000-0000-0000-0000-000000000000", "match_type": "specialty"},
+                {"id": "11111111-1111-1111-1111-111111111111", "match_type": "specialty"},
+            ],
+        )
+        result = resolve_catalog_match(self.clinic, raw)
+        self.assertEqual(result.status, "unresolved")
+        self.assertEqual(result.candidates, [])
+
+
+class CatalogMatchContextBuilderTests(TestCase):
+    """build_specialty_catalog + catalog_for_catalog_match_context -- the
+    id-tagged Catalog: block the Phase 2 NLU prompt reads from
+    (nlu/prompts.py). Real ids only, active/non-deleted only, and the
+    documented 50-row combined-size tripwire (ROADMAP.md's Phase 2 entry:
+    a temporary implementation threshold, not an architectural ceiling)."""
+
+    def setUp(self):
+        self.clinic = Clinic.objects.create(
+            slug="catalog-context-clinic",
+            name="Catalog Context Clinic",
+            email="catalogcontext@clinic.com",
+            phone="+12125550023",
+            timezone="America/New_York",
+        )
+
+    def test_build_specialty_catalog_excludes_inactive_and_deleted(self):
+        active = Specialty.objects.create(
+            clinic=self.clinic, name="Cardiology", slug="cardiology"
+        )
+        Specialty.objects.create(
+            clinic=self.clinic, name="Retired", slug="retired", is_active=False
+        )
+        Specialty.objects.create(
+            clinic=self.clinic, name="Deleted", slug="deleted", is_deleted=True
+        )
+        catalog = build_specialty_catalog(self.clinic)
+        self.assertEqual(catalog, [{"id": str(active.id), "name": "Cardiology"}])
+
+    def test_context_block_empty_when_nothing_to_show(self):
+        self.assertEqual(catalog_for_catalog_match_context([], []), "")
+
+    def test_context_block_renders_id_tagged_lines(self):
+        block = catalog_for_catalog_match_context(
+            [{"id": "spec-1", "name": "Cardiology"}],
+            [{"id": "svc-1", "name": "Root Canal"}],
+        )
+        self.assertIn("[specialty] id=spec-1 name=Cardiology", block)
+        self.assertIn("[service] id=svc-1 name=Root Canal", block)
+
+    def test_combined_over_threshold_is_truncated_not_dropped(self):
+        specialties = [{"id": f"spec-{i}", "name": f"Specialty {i}"} for i in range(40)]
+        services = [{"id": f"svc-{i}", "name": f"Service {i}"} for i in range(40)]
+        block = catalog_for_catalog_match_context(specialties, services, size_threshold=50)
+        lines = block.split("\n")
+        self.assertEqual(len(lines), 50)
+        # Still real, correctly-tagged lines -- a truncated list, not
+        # dropped or malformed ones.
+        self.assertTrue(all(l.startswith("[specialty]") or l.startswith("[service]") for l in lines))
+
+    def test_combined_under_threshold_is_not_truncated(self):
+        specialties = [{"id": f"spec-{i}", "name": f"Specialty {i}"} for i in range(10)]
+        services = [{"id": f"svc-{i}", "name": f"Service {i}"} for i in range(10)]
+        block = catalog_for_catalog_match_context(specialties, services, size_threshold=50)
+        self.assertEqual(len(block.split("\n")), 20)

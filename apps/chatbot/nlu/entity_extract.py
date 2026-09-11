@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from typing import Any
 
 from apps.chatbot.nlu.emergency_patterns import SYMPTOM_CUE_RE as _SYMPTOM_CUE_RE
@@ -10,6 +11,7 @@ from apps.chatbot.nlu.emergency_patterns import (
     SYMPTOM_NARRATIVE_RE as _SYMPTOM_NARRATIVE_RE,
     is_informational_emergency_mention as _is_informational_emergency_mention,
 )
+from apps.chatbot.nlu.schemas import ExtractedEntities
 
 _DATE_PATTERNS = [
     r"\bnext\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
@@ -290,13 +292,65 @@ def clean_doctor_name(value: str | None) -> str | None:
     return " ".join(kept)
 
 
+def _edit_distance_le(a: str, b: str, max_dist: int) -> bool:
+    """True if the optimal-string-alignment distance between `a` and `b`
+    (insert/delete/substitute, plus an adjacent-transposition operation)
+    is <= max_dist. The transposition case matters here specifically: the
+    live-confirmed bug this guards ("availabel"/"availalbe" for
+    "available") is an adjacent-letter swap, which plain Levenshtein scores
+    as distance 2 (two substitutions), not the single real-world typo it
+    is -- silently defeating a distance-1 threshold for exactly the typo
+    shape this check exists to catch. Early-exits on the length gap alone
+    before running the DP table."""
+    if abs(len(a) - len(b)) > max_dist:
+        return False
+    la, lb = len(a), len(b)
+    d = [[0] * (lb + 1) for _ in range(la + 1)]
+    for i in range(la + 1):
+        d[i][0] = i
+    for j in range(lb + 1):
+        d[0][j] = j
+    for i in range(1, la + 1):
+        for j in range(1, lb + 1):
+            cost = 0 if a[i - 1] == b[j - 1] else 1
+            d[i][j] = min(
+                d[i - 1][j] + 1,
+                d[i][j - 1] + 1,
+                d[i - 1][j - 1] + cost,
+            )
+            if i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
+                d[i][j] = min(d[i][j], d[i - 2][j - 2] + 1)
+    return d[la][lb] <= max_dist
+
+
+def _is_doctor_name_stopword(word: str) -> bool:
+    """Exact stopword match, or a same-ballpark-length word within one
+    character edit of a *longer* stopword (>= 6 chars on both sides) --
+    catches common typos of high-frequency non-name words ("availabel" for
+    "available") that would otherwise survive _DOCTOR_RE's capture and get
+    misclassified as a doctor's name, live-confirmed in a rules_fallback
+    trace. The length floor matters: fuzzy-matching against short
+    stopwords ("a", "an", "is", "on") would risk dropping a real short
+    name (e.g. "Ana" is one edit from "an") -- restricting the fuzzy check
+    to long stopwords makes an accidental collision with a real name
+    implausible while still catching realistic typos of longer words."""
+    if word in _DOCTOR_NAME_STOPWORDS:
+        return True
+    if len(word) < 6:
+        return False
+    return any(
+        len(stopword) >= 6 and _edit_distance_le(word, stopword, 1)
+        for stopword in _DOCTOR_NAME_STOPWORDS
+    )
+
+
 def _extract_doctors(text: str) -> list[str] | None:
     names: list[str] = []
     for match in _DOCTOR_RE.finditer(text):
         first = match.group(1)
         last = match.group(2)
         # Skip common non-name tokens after Dr./doctor
-        if first.lower() in _DOCTOR_NAME_STOPWORDS:
+        if _is_doctor_name_stopword(first.lower()):
             continue
         name = first if not last else f"{first} {last}"
         cleaned = clean_doctor_name(name)
@@ -343,6 +397,141 @@ def _extract_list(lower: str, candidates: list[str]) -> list[str] | None:
         if re.search(rf"\b{re.escape(item)}\b", lower):
             found.append(item)
     return found or None
+
+
+# Fields the capability-resolution audit's live regression actually
+# reproduced leaking from a prior turn's Recent: transcript text into the
+# CURRENT turn's entities ("symptom", plus the same class of value:
+# service/specialty/doctor/insurance a prior turn named). date/time/
+# location/patient_name were a different, unaudited concern and
+# deliberately left untouched here — smallest safe fix, not a general
+# entity-hygiene pass.
+#
+# `language` was originally left out under that same "unaudited" call —
+# but live-reproduced against a real Horizon Family Medicine transcript
+# (ROADMAP.md): "please talk me in roman urdu" set entities.language=
+# "Roman Urdu" once (a response-language preference, not a doctor-search
+# request), and it then kept reappearing on every subsequent turn that
+# never mentioned any language at all ("whats the speciality of dr
+# marcus"). search_doctors's language filter (sql_tool/handlers/
+# doctors.py) treats *any* entities.language value as "find a doctor who
+# speaks this" and — correctly, on its own terms — filters to zero rows
+# rather than silently ignoring an unresolvable language name ("Roman
+# Urdu" has no ISO code of its own). The combination wiped out a real,
+# otherwise-resolvable doctor lookup for a doctor ("Dr. Marcus Vance")
+# that was named plainly in the current message. Same leak-detection
+# mechanism as the other fields: only dropped when NOT grounded in the
+# current message AND grounded in the recent-turns transcript, so a
+# genuine "is there a Spanish-speaking doctor" (the word is right there
+# in the current message) is completely unaffected.
+_LEAK_PRONE_FIELDS = (
+    "symptom",
+    "service",
+    "specialty",
+    "doctor_name",
+    "insurance_provider",
+    "language",
+)
+
+_GROUNDING_TOKEN_RE = re.compile(r"[a-z0-9']+")
+
+
+def _grounded_in(value_lower: str, text: str) -> bool:
+    """True if `value_lower`'s content is substantiated by `text` — either
+    verbatim, or (for multi-word values) via at least one non-trivial
+    shared token. Deliberately loose (token overlap, not full-phrase
+    match): the LLM may rephrase an entity slightly even when it IS
+    grounded in the current message, and this only needs to distinguish
+    "said again this turn" from "not said this turn at all", not do exact
+    string matching."""
+    if not value_lower or not text:
+        return False
+    if value_lower in text:
+        return True
+    tokens = [t for t in _GROUNDING_TOKEN_RE.findall(value_lower) if len(t) >= 4]
+    if not tokens:
+        return False
+    return any(t in text for t in tokens)
+
+
+def _leaked_from_history(value: str, message_lower: str, history_lower: str) -> bool:
+    """An entity value counts as leaked only if it is NOT grounded in the
+    current message AND IS grounded in the recent-turns transcript --
+    i.e. it's provably copied from history, not some other, unrelated
+    hallucination this function has no business touching."""
+    value_lower = str(value or "").strip().lower()
+    if not value_lower:
+        return False
+    if _grounded_in(value_lower, message_lower):
+        return False
+    return _grounded_in(value_lower, history_lower)
+
+
+def scrub_entities_leaked_from_recent_turns(
+    entities: ExtractedEntities,
+    *,
+    message: str,
+    recent_turns: list[dict[str, Any]] | None,
+) -> ExtractedEntities:
+    """Enforce: recent conversation may give the model context, but must
+    NEVER supply an entity value for the current message.
+
+    The system prompt already tells the model this (nlu/prompts.py:
+    "Never let recent turns override or supply an entity the current
+    message doesn't itself state") — but live capability-resolution
+    validation reproduced the model not reliably complying: a prior
+    turn's symptom ("I cut my hand and need stitches") leaked into the
+    very next, unrelated turn's entities.symptom in 4/10 real two-turn
+    runs, derailing the response in 2/10. This is a deterministic
+    backstop enforcing that same invariant in Python rather than trusting
+    prompt compliance a second time — not a second classifier, no new
+    ontology, no synonym system: a value is dropped only when it is (a)
+    absent from the current message's own text and (b) traceable to the
+    recent-turns transcript, so a genuinely restated entity ("stitches"
+    mentioned again this turn) is never touched.
+    """
+    if not recent_turns:
+        return entities
+    history_lower = " ".join(
+        str(turn.get("content") or "")
+        for turn in recent_turns
+        if isinstance(turn, dict)
+    ).lower()
+    if not history_lower:
+        return entities
+    message_lower = (message or "").lower()
+
+    changes: dict[str, Any] = {}
+    for field_name in _LEAK_PRONE_FIELDS:
+        value = getattr(entities, field_name, None)
+        if value in (None, "", [], ()):
+            continue
+        items = value if isinstance(value, list) else [value]
+        kept = [
+            item
+            for item in items
+            if not _leaked_from_history(item, message_lower, history_lower)
+        ]
+        if len(kept) == len(items):
+            continue
+        if isinstance(value, list):
+            changes[field_name] = kept or None
+        else:
+            changes[field_name] = kept[0] if kept else None
+
+    if not changes:
+        return entities
+
+    # specialty_category_hint is only ever a guess derived FROM
+    # entities.symptom (see prompts.py: "When entities.symptom is set,
+    # also set entities.specialty_category_hint..."). If the symptom it
+    # was guessed from just got dropped as leaked, the guess has nothing
+    # left to be about either — leaving it behind would let a stale
+    # category hint alone re-trigger the same class of misrouting.
+    if "symptom" in changes and not changes["symptom"]:
+        changes["specialty_category_hint"] = None
+
+    return replace(entities, **changes)
 
 
 def merge_entities(

@@ -9,7 +9,7 @@ from typing import Any
 from django.db.models import Q
 
 from apps.clinics.models import Clinic
-from apps.chatbot.nlu.schemas import ExtractedEntities, ResolvedIds
+from apps.chatbot.nlu.schemas import CatalogMatch, ExtractedEntities, ResolvedIds
 from apps.chatbot.routing.signals import DOCTOR_ROLE_ALIASES, STOPWORDS
 
 # Confidence bands for doctor matching
@@ -88,6 +88,75 @@ def resolve_entities(
     )
 
 
+def resolve_catalog_match(clinic: Clinic, raw: CatalogMatch) -> CatalogMatch:
+    """The one place an LLM-proposed `CatalogMatch.catalog_id`/`candidates`
+    gets checked against real data. `raw` (from
+    nlu/schemas.py::_parse_raw_catalog_match) is only shape-validated --
+    "well-formed JSON," not "a real row." This is the tenant+active+
+    not-deleted+exists check the Phase 2 plan requires: an id the model
+    invented, or one that belongs to a different clinic, or one that's
+    since been deactivated, must never reach a SQL handler as if it were
+    trustworthy. LLM confidence is not treated as truth anywhere in this
+    function -- only a real queryset hit is.
+
+    "not_applicable"/"no_match"/"unresolved" carry no ids and pass through
+    unchanged -- nothing to validate.
+    """
+    if raw.status not in ("matched", "ambiguous") or not raw.match_type:
+        return raw
+
+    from apps.services.models import Service
+    from apps.specialties.models import Specialty
+
+    model = Specialty if raw.match_type == "specialty" else Service
+    clinic_id = _clinic_id(clinic)
+
+    if raw.status == "matched":
+        if not raw.catalog_id:
+            return CatalogMatch(status="unresolved", match_type=raw.match_type)
+        obj = (
+            model.objects.filter(
+                id=raw.catalog_id, clinic_id=clinic_id, is_active=True, is_deleted=False
+            )
+            .only("id")
+            .first()
+        )
+        if obj is None:
+            # Claimed a match against an id that isn't real, isn't this
+            # tenant's, or isn't active -- never pass a hallucinated or
+            # stale id further down the chain. This is "the matcher tried
+            # and the match doesn't hold up," not "no constraint existed."
+            return CatalogMatch(status="unresolved", match_type=raw.match_type)
+        return CatalogMatch(
+            status="matched", match_type=raw.match_type, catalog_id=str(obj.id)
+        )
+
+    # status == "ambiguous": re-validate every candidate for real; a
+    # candidate that doesn't check out is dropped, not trusted.
+    ids = [c["id"] for c in raw.candidates if c.get("match_type") == raw.match_type]
+    rows = list(
+        model.objects.filter(
+            id__in=ids, clinic_id=clinic_id, is_active=True, is_deleted=False
+        ).only("id", "name")
+    )
+    if len(rows) >= 2:
+        return CatalogMatch(
+            status="ambiguous",
+            match_type=raw.match_type,
+            candidates=[
+                {"id": str(r.id), "name": r.name, "match_type": raw.match_type}
+                for r in rows
+            ],
+        )
+    if len(rows) == 1:
+        # Only one candidate survived real validation -- this is a match,
+        # not an ambiguity anymore.
+        return CatalogMatch(
+            status="matched", match_type=raw.match_type, catalog_id=str(rows[0].id)
+        )
+    return CatalogMatch(status="unresolved", match_type=raw.match_type)
+
+
 def _first_str(value: str | list[str] | None) -> str | None:
     if value is None:
         return None
@@ -155,7 +224,10 @@ def _fuzzy_score(needle: str, candidate: str) -> float:
         return 0.0
     if n == c:
         return 1.0
-    if (n in c or c in n) and min(len(n), len(c)) >= _MIN_SUBSTRING_MATCH_LEN:
+    if (
+        (c.startswith(n) or n.startswith(c))
+        and min(len(n), len(c)) >= _MIN_SUBSTRING_MATCH_LEN
+    ):
         # A flat 0.92 here used to treat any prefix/suffix relationship as
         # near-certain — including "priya" being a strict prefix of the
         # unrelated, longer, equally real name "priyanka". That silently
@@ -180,6 +252,23 @@ def _fuzzy_score(needle: str, candidate: str) -> float:
         # as likely to be coincidence as a genuine partial name, so it
         # falls through to Levenshtein scoring instead (0.5 for had/
         # Haddad — correctly under the "medium" clarify threshold).
+        #
+        # Restricted from "appears anywhere" (`n in c or c in n`) to
+        # "is a prefix of" (`startswith`) in the capability-family
+        # reliability phase, live-reproduced: "I cut my hand and need
+        # stitches, do you have any doctor for that one" scored "hand"
+        # against "Chandrasekaran" at 0.65 (0.55 + 0.35*4/14) via this
+        # exact branch, purely because "hand" happens to appear
+        # mid-string in "C-HAND-rasekaran" — not a prefix, not a typo of
+        # any doctor's actual name, just English-language coincidence.
+        # Every real case this branch was built for (priya/priyanka,
+        # had/haddad, chandra/chandrasekaran) is a genuine name prefix or
+        # abbreviation; nothing legitimate here depends on matching a
+        # substring buried in the middle of a name. A second latent
+        # instance of the identical class was confirmed present in this
+        # same roster ("take" mid-string inside "whitAKEr") without ever
+        # having fired live yet — this is a systemic class of false
+        # positive, not a single coincidence to special-case away.
         shorter_len = min(len(n), len(c))
         longer_len = max(len(n), len(c))
         return 0.55 + 0.35 * (shorter_len / longer_len)

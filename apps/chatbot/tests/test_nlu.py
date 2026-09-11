@@ -9,11 +9,12 @@ from apps.chatbot.nlu.entity_extract import (
     extract_entities,
     has_symptom_cues,
     looks_like_compound,
+    scrub_entities_leaked_from_recent_turns,
 )
 from apps.chatbot.nlu.intent_entity import IntentEntityService, _apply_confidence_threshold
 from apps.chatbot.nlu.json_utils import parse_json_response
 from apps.chatbot.nlu.rules import try_rule_classify
-from apps.chatbot.nlu.schemas import Intent, Route, parse_nlu_payload
+from apps.chatbot.nlu.schemas import ExtractedEntities, Intent, Route, parse_nlu_payload
 
 
 class ParseNLUPayloadTests(SimpleTestCase):
@@ -50,6 +51,202 @@ class ParseNLUPayloadTests(SimpleTestCase):
     def test_confidence_clamped(self):
         result = parse_nlu_payload({"intent": "greeting", "confidence": 5})
         self.assertEqual(result.confidence, 1.0)
+
+
+class ParseCatalogMatchTests(SimpleTestCase):
+    """Phase 2 of the catalog-matching plan (ROADMAP.md) --
+    _parse_raw_catalog_match's defensive, shape-only normalization. No DB
+    here (schemas.py has no clinic) -- the real tenant/active/exists check
+    is a separate step, resolvers.py::resolve_catalog_match, tested in
+    test_resolvers.py::ResolveCatalogMatchTests."""
+
+    def test_missing_field_defaults_to_not_applicable(self):
+        result = parse_nlu_payload({"intent": "doctor_search"})
+        self.assertEqual(result.catalog_match.status, "not_applicable")
+        self.assertIsNone(result.catalog_match.match_type)
+        self.assertIsNone(result.catalog_match.catalog_id)
+        self.assertEqual(result.catalog_match.candidates, [])
+
+    def test_invalid_status_falls_back_to_not_applicable(self):
+        result = parse_nlu_payload(
+            {"intent": "doctor_search", "catalog_match": {"status": "definitely_sure"}}
+        )
+        self.assertEqual(result.catalog_match.status, "not_applicable")
+
+    def test_matched_with_valid_shape_parses(self):
+        result = parse_nlu_payload(
+            {
+                "intent": "doctor_search",
+                "catalog_match": {
+                    "status": "matched",
+                    "match_type": "specialty",
+                    "catalog_id": "abc-123",
+                },
+            }
+        )
+        self.assertEqual(result.catalog_match.status, "matched")
+        self.assertEqual(result.catalog_match.match_type, "specialty")
+        self.assertEqual(result.catalog_match.catalog_id, "abc-123")
+
+    def test_matched_without_catalog_id_is_downgraded(self):
+        """Claimed a match but gave nothing to check -- not a real match,
+        never passed further as if it were one."""
+        result = parse_nlu_payload(
+            {
+                "intent": "doctor_search",
+                "catalog_match": {"status": "matched", "match_type": "specialty"},
+            }
+        )
+        self.assertEqual(result.catalog_match.status, "unresolved")
+        self.assertIsNone(result.catalog_match.catalog_id)
+
+    def test_matched_without_match_type_or_id_is_not_applicable(self):
+        result = parse_nlu_payload(
+            {"intent": "doctor_search", "catalog_match": {"status": "matched"}}
+        )
+        self.assertEqual(result.catalog_match.status, "not_applicable")
+
+    def test_invalid_match_type_is_nulled(self):
+        result = parse_nlu_payload(
+            {
+                "intent": "doctor_search",
+                "catalog_match": {
+                    "status": "no_match",
+                    "match_type": "doctor",
+                },
+            }
+        )
+        self.assertEqual(result.catalog_match.status, "no_match")
+        self.assertIsNone(result.catalog_match.match_type)
+
+    def test_ambiguous_with_two_well_formed_candidates_parses(self):
+        result = parse_nlu_payload(
+            {
+                "intent": "doctor_search",
+                "catalog_match": {
+                    "status": "ambiguous",
+                    "match_type": "service",
+                    "candidates": [
+                        {"id": "svc-1", "match_type": "service"},
+                        {"id": "svc-2", "match_type": "service"},
+                    ],
+                },
+            }
+        )
+        self.assertEqual(result.catalog_match.status, "ambiguous")
+        self.assertEqual(len(result.catalog_match.candidates), 2)
+
+    def test_ambiguous_with_fewer_than_two_candidates_is_downgraded(self):
+        result = parse_nlu_payload(
+            {
+                "intent": "doctor_search",
+                "catalog_match": {
+                    "status": "ambiguous",
+                    "match_type": "service",
+                    "candidates": [{"id": "svc-1", "match_type": "service"}],
+                },
+            }
+        )
+        self.assertEqual(result.catalog_match.status, "unresolved")
+        self.assertEqual(result.catalog_match.candidates, [])
+
+    def test_ambiguous_candidate_missing_id_is_dropped(self):
+        result = parse_nlu_payload(
+            {
+                "intent": "doctor_search",
+                "catalog_match": {
+                    "status": "ambiguous",
+                    "match_type": "service",
+                    "candidates": [
+                        {"id": "svc-1", "match_type": "service"},
+                        {"match_type": "service"},
+                        {"id": "svc-2", "match_type": "service"},
+                    ],
+                },
+            }
+        )
+        self.assertEqual(result.catalog_match.status, "ambiguous")
+        self.assertEqual(len(result.catalog_match.candidates), 2)
+
+    def test_non_dict_catalog_match_is_ignored(self):
+        result = parse_nlu_payload(
+            {"intent": "doctor_search", "catalog_match": "matched"}
+        )
+        self.assertEqual(result.catalog_match.status, "not_applicable")
+
+    def test_to_dict_includes_catalog_match(self):
+        result = parse_nlu_payload(
+            {
+                "intent": "doctor_search",
+                "catalog_match": {
+                    "status": "matched",
+                    "match_type": "specialty",
+                    "catalog_id": "abc-123",
+                },
+            }
+        )
+        self.assertEqual(
+            result.to_dict()["catalog_match"],
+            {
+                "status": "matched",
+                "match_type": "specialty",
+                "catalog_id": "abc-123",
+                "candidates": [],
+            },
+        )
+
+
+class ParseMedicalQuestionModeTests(SimpleTestCase):
+    """Sub-classifies medical_question content only -- see
+    VALID_MEDICAL_QUESTION_MODES's own comment (nlu/schemas.py) and the
+    approved plan ("Separate 'explain a concept' / 'personal symptom' /
+    'risk question' inside medical_question") for the governing
+    invariant this exists to serve."""
+
+    def test_valid_value_accepted_for_medical_question(self):
+        result = parse_nlu_payload(
+            {"intent": "medical_question", "medical_question_mode": "definitional"}
+        )
+        self.assertEqual(result.medical_question_mode, "definitional")
+
+    def test_all_three_valid_values_accepted(self):
+        for mode in ("definitional", "personal", "risk"):
+            with self.subTest(mode=mode):
+                result = parse_nlu_payload(
+                    {"intent": "medical_question", "medical_question_mode": mode}
+                )
+                self.assertEqual(result.medical_question_mode, mode)
+
+    def test_missing_defaults_to_none(self):
+        result = parse_nlu_payload({"intent": "medical_question"})
+        self.assertIsNone(result.medical_question_mode)
+
+    def test_invalid_value_discarded(self):
+        result = parse_nlu_payload(
+            {"intent": "medical_question", "medical_question_mode": "diagnostic"}
+        )
+        self.assertIsNone(result.medical_question_mode)
+
+    def test_discarded_when_intent_is_not_medical_question(self):
+        """The field is meaningless outside medical_question -- silently
+        discarded rather than trusted, even if a value was set (e.g. the
+        model set it on doctor_search by mistake)."""
+        result = parse_nlu_payload(
+            {"intent": "doctor_search", "medical_question_mode": "personal"}
+        )
+        self.assertIsNone(result.medical_question_mode)
+
+    def test_case_insensitive(self):
+        result = parse_nlu_payload(
+            {"intent": "medical_question", "medical_question_mode": "Definitional"}
+        )
+        self.assertEqual(result.medical_question_mode, "definitional")
+
+    def test_to_dict_includes_field(self):
+        result = parse_nlu_payload(
+            {"intent": "medical_question", "medical_question_mode": "risk"}
+        )
+        self.assertEqual(result.to_dict()["medical_question_mode"], "risk")
 
 
 class JsonUtilsTests(SimpleTestCase):
@@ -415,6 +612,34 @@ class EntityExtractTests(SimpleTestCase):
                     f"{token!r} missing from {dates!r}",
                 )
 
+    def test_typo_of_a_stopword_after_doctor_is_not_read_as_a_name(self):
+        """Live-confirmed rules_fallback bug (real production trace): "is
+        there any doctor availabel on monday afternoon that can treat the
+        stitches" extracted entities.doctor_name = "availabel" -- one
+        character off from "available", which is already an exact-match
+        stopword. _DOCTOR_RE's capture survived because the stopword check
+        was exact-match only; a misspelled ordinary word must never become
+        a doctor name candidate."""
+        cases = (
+            "is there any doctor availabel on monday afternoon that can treat the stitches",
+            "is there any doctor availble tomorrow",
+            "is any doctor availalbe this afternoon",
+        )
+        for message in cases:
+            with self.subTest(message=message):
+                self.assertIsNone(extract_entities(message)["doctor_name"], message)
+
+    def test_real_short_name_survives_the_typo_stopword_check(self):
+        """The typo-tolerance fix is scoped to stopwords >= 6 characters
+        specifically so it never starts dropping a real short doctor name
+        that happens to be one edit from a short stopword (e.g. "Ana" is
+        one edit from "an")."""
+        names = [
+            n.lower()
+            for n in extract_entities("book with dr ana tomorrow")["doctor_name"]
+        ]
+        self.assertTrue(any("ana" in n for n in names), names)
+
     def test_sun_words_are_not_read_as_sunday(self):
         # A dermatology clinic talks about sun constantly — none of it is a day.
         for message in (
@@ -755,3 +980,218 @@ class LooksLikeCompoundCoverageTests(SimpleTestCase):
         ):
             with self.subTest(msg=msg):
                 self.assertTrue(looks_like_compound(msg))
+
+
+class ScrubEntitiesLeakedFromRecentTurnsTests(SimpleTestCase):
+    """Capability-resolution audit, follow-up phase: live two-turn testing
+    (10 real runs against Horizon) proved the raw Ctx: JSON blob is closed
+    (see prompts.py's timeline/last_* exclusions) but a *different*
+    channel still leaks — the model sometimes copies a prior turn's
+    symptom/service/specialty/doctor/insurance out of the intentionally-
+    included Recent: transcript into the CURRENT turn's entities, despite
+    the system prompt forbidding it. These lock in the deterministic
+    Python backstop for that specific, reproduced failure mode."""
+
+    def _recent(self, *messages: str) -> list[dict[str, str]]:
+        return [{"role": "user", "content": m} for m in messages]
+
+    def test_previous_symptom_does_not_become_current_turn_entity(self):
+        entities = ExtractedEntities(
+            symptom="cut my hand",
+            specialty_category_hint="Surgery",
+        )
+        scrubbed = scrub_entities_leaked_from_recent_turns(
+            entities,
+            message="I need to get my blood drawn",
+            recent_turns=self._recent("I cut my hand and need stitches"),
+        )
+        self.assertIsNone(scrubbed.symptom)
+        # The category hint is only ever a guess derived FROM the symptom
+        # that just got dropped — it must not survive as an orphaned,
+        # unverifiable guess either.
+        self.assertIsNone(scrubbed.specialty_category_hint)
+
+    def test_previous_service_does_not_become_current_turn_entity(self):
+        # Informal wording, same as the live-observed symptom leak (LLM
+        # copies the earlier turn's own words, not a resolved catalog name
+        # it never saw literally written down).
+        entities = ExtractedEntities(service="stitches")
+        scrubbed = scrub_entities_leaked_from_recent_turns(
+            entities,
+            message="What insurance do you accept?",
+            recent_turns=self._recent("I cut my hand and need stitches"),
+        )
+        self.assertIsNone(scrubbed.service)
+
+    def test_previous_specialty_does_not_become_current_turn_entity(self):
+        entities = ExtractedEntities(specialty="Cardiology")
+        scrubbed = scrub_entities_leaked_from_recent_turns(
+            entities,
+            message="What are your hours on Saturday?",
+            recent_turns=self._recent("Do you have anyone in Cardiology here?"),
+        )
+        self.assertIsNone(scrubbed.specialty)
+
+    def test_previous_doctor_does_not_become_current_turn_entity(self):
+        entities = ExtractedEntities(doctor_name=["Elena Rostova"])
+        scrubbed = scrub_entities_leaked_from_recent_turns(
+            entities,
+            message="How much does a physical cost?",
+            recent_turns=self._recent("Is Dr. Elena Rostova available tomorrow?"),
+        )
+        self.assertIsNone(scrubbed.doctor_name)
+
+    def test_previous_insurance_does_not_become_current_turn_entity(self):
+        entities = ExtractedEntities(insurance_provider=["Aetna"])
+        scrubbed = scrub_entities_leaked_from_recent_turns(
+            entities,
+            message="Can I book a same-day appointment?",
+            recent_turns=self._recent("Do you take Aetna insurance?"),
+        )
+        self.assertIsNone(scrubbed.insurance_provider)
+
+    def test_previous_language_does_not_become_current_turn_entity(self):
+        """Live-reproduced (ROADMAP.md, real Horizon Family Medicine
+        transcript): "please talk me in roman urdu" set entities.language=
+        "Roman Urdu" once — a response-language preference, not a
+        doctor-search request — and it then kept reappearing on every
+        later, unrelated turn ("whats the speciality of dr marcus") that
+        never mentioned any language at all. search_doctors's language
+        filter (sql_tool/handlers/doctors.py) treats any entities.language
+        value as "find a doctor who speaks this" and filters to zero rows
+        when it can't resolve a code for it ("Roman Urdu" has none) —
+        wiping out an otherwise fully resolvable doctor lookup."""
+        entities = ExtractedEntities(doctor_name="Marcus", language="Roman Urdu")
+        scrubbed = scrub_entities_leaked_from_recent_turns(
+            entities,
+            message="whats the speciality  of dr marcus",
+            recent_turns=self._recent("please talk me in roman urdu"),
+        )
+        self.assertIsNone(scrubbed.language)
+        # The doctor name genuinely stated this turn must be untouched.
+        self.assertEqual(scrubbed.doctor_name, "Marcus")
+
+    def test_genuine_current_turn_language_request_is_not_scrubbed(self):
+        """The legitimate shape ("is there a Spanish-speaking doctor") must
+        be completely unaffected -- the language word is right there in
+        the current message, so it's never traceable to history alone."""
+        entities = ExtractedEntities(language="Spanish")
+        scrubbed = scrub_entities_leaked_from_recent_turns(
+            entities,
+            message="Is there a Spanish speaking doctor here?",
+            recent_turns=self._recent("What are your hours?"),
+        )
+        self.assertEqual(scrubbed.language, "Spanish")
+
+    def test_genuine_current_turn_entity_is_not_scrubbed(self):
+        """The exact same word appearing in Recent: must not make the
+        scrubber distrust it when the CURRENT message also, genuinely,
+        states it — this is context, not proof of leakage."""
+        entities = ExtractedEntities(symptom="cut my hand")
+        scrubbed = scrub_entities_leaked_from_recent_turns(
+            entities,
+            message="It's still bleeding, I cut my hand pretty badly",
+            recent_turns=self._recent("I cut my hand and need stitches"),
+        )
+        self.assertEqual(scrubbed.symptom, "cut my hand")
+
+    def test_no_recent_turns_is_a_no_op(self):
+        entities = ExtractedEntities(symptom="cut my hand")
+        scrubbed = scrub_entities_leaked_from_recent_turns(
+            entities, message="I need to get my blood drawn", recent_turns=None
+        )
+        self.assertIs(scrubbed, entities)
+
+    def test_unrelated_entity_not_traceable_to_history_is_left_alone(self):
+        """Scoped fix: only drop a value that's traceable to Recent: text.
+        A value grounded in neither the current message nor history is a
+        different (pre-existing, out-of-scope) hallucination class this
+        function must not also start policing."""
+        entities = ExtractedEntities(specialty="Neurology")
+        scrubbed = scrub_entities_leaked_from_recent_turns(
+            entities,
+            message="What are your hours?",
+            recent_turns=self._recent("Do you have a cardiologist here?"),
+        )
+        self.assertEqual(scrubbed.specialty, "Neurology")
+
+    def test_list_valued_entity_partially_scrubbed(self):
+        """A leaked item is dropped from a multi-value field without
+        discarding a co-occurring genuine one."""
+        entities = ExtractedEntities(insurance_provider=["Aetna", "Cigna"])
+        scrubbed = scrub_entities_leaked_from_recent_turns(
+            entities,
+            message="Do you take Cigna?",
+            recent_turns=self._recent("Do you take Aetna insurance?"),
+        )
+        self.assertEqual(scrubbed.insurance_provider, ["Cigna"])
+
+
+@override_settings(
+    NLU_ENABLE_RULES=False,
+    NLU_RULES_BEFORE_LLM=False,
+    NLU_CONFIDENCE_THRESHOLD=0.75,
+    NLU_API_TIMEOUT_SECONDS=6.5,
+)
+class IntentEntityServiceRecentTurnLeakageIntegrationTests(SimpleTestCase):
+    """End-to-end through IntentEntityService.analyze() — proves the scrub
+    actually runs in the real pipeline (before resolve_entities), not just
+    as an isolated pure function."""
+
+    class _FakeClinic:
+        id = "00000000-0000-0000-0000-000000000001"
+
+    def _analyze(self, *, message, recent_turns, fake_entities):
+        from unittest.mock import patch
+
+        class FakeProvider:
+            provider_name = "gemini"
+            model_name = "gemini-1.5-flash"
+
+            def classify(self, *, message, conversation_context=None, timeout=None):
+                return {
+                    "intent": "services_offered",
+                    "confidence": 0.9,
+                    "entities": fake_entities,
+                    "_usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                }
+
+        service = IntentEntityService(provider=FakeProvider())
+        with (
+            patch(
+                "apps.chatbot.nlu.intent_entity.resolve_entities",
+                side_effect=lambda clinic, entities: parse_nlu_payload({}).resolved_ids,
+            ),
+            patch.object(IntentEntityService, "_log_usage"),
+        ):
+            return service.analyze(
+                clinic=self._FakeClinic(),  # type: ignore[arg-type]
+                message=message,
+                conversation_context={"recent_turns": recent_turns} if recent_turns else None,
+                log_usage=False,
+            )
+
+    def test_leaked_symptom_stripped_end_to_end(self):
+        result = self._analyze(
+            message="I need to get my blood drawn",
+            recent_turns=[{"role": "user", "content": "I cut my hand and need stitches"}],
+            fake_entities={"symptom": "cut my hand", "specialty_category_hint": "Surgery"},
+        )
+        self.assertIsNone(result.entities.symptom)
+        self.assertIsNone(result.entities.specialty_category_hint)
+
+    def test_genuine_current_turn_entity_survives_end_to_end(self):
+        result = self._analyze(
+            message="I need to get my blood drawn",
+            recent_turns=[{"role": "user", "content": "I cut my hand and need stitches"}],
+            fake_entities={"service": "Routine Blood Draw (Venipuncture)"},
+        )
+        self.assertEqual(result.entities.service, "Routine Blood Draw (Venipuncture)")
+
+    def test_no_recent_turns_leaves_entities_untouched(self):
+        result = self._analyze(
+            message="I need to get my blood drawn",
+            recent_turns=None,
+            fake_entities={"symptom": "some symptom"},
+        )
+        self.assertEqual(result.entities.symptom, "some symptom")
