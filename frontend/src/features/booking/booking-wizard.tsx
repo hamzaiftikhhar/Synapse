@@ -6,6 +6,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { BirthDatePicker } from "@/components/dob-picker";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PhoneInput } from "@/components/ui/phone-input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import { getApiErrorMessage } from "@/lib/api/client";
@@ -1041,17 +1042,9 @@ function DetailsStep({
       </div>
       <div className="space-y-1">
         <Label className="text-xs">Phone number</Label>
-        <Input
-          type="tel"
-          inputMode="tel"
-          autoComplete="tel"
+        <PhoneInput
           value={details.phone}
-          onChange={(e) => handlePhoneChange(e.target.value)}
-          placeholder="+1 415 555 0123"
-          className={cn(
-            "h-9 rounded-xl",
-            phoneError && "border-destructive focus-visible:ring-destructive"
-          )}
+          onChange={handlePhoneChange}
           aria-invalid={Boolean(phoneError)}
         />
         {phoneError ? (
