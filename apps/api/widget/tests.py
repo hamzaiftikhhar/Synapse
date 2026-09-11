@@ -33,6 +33,7 @@ CONFIG_URL = "/api/v1/widget/config"
 RESUME_URL = "/api/v1/widget/chat/resume"
 GUEST_CHAT_URL = "/api/v1/widget/chat/guest"
 CONTACT_URL = "/api/v1/widget/chat/contact"
+CONVERSATIONS_URL = "/api/v1/widget/chat/conversations"
 _VISITOR_HEADER = "X-Synapse-Visitor-Id"
 
 
@@ -962,3 +963,208 @@ class EmbedPolicyTests(TestCase):
         resp = self.client.get(EMBED_POLICY_URL, {"clinic_slug": "does-not-exist"})
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["allowed_origins"], [])
+
+
+class CrossDeviceMessagesOwnershipTests(TestCase):
+    """Phase 2 (Patient Identity/Chat History plan) — the cross-device read
+    path: a caller proves ownership of a *different* browser's session via
+    their own already-verified `auth_session_token`, not a visitor header.
+    `MessagesOwnershipTests` above already locks in the pre-existing
+    visitor-header path is untouched; this class covers the new path added
+    alongside it, including that it never weakens the old one."""
+
+    def setUp(self):
+        self.clinic = _make_clinic("cross-device-clinic")
+        self.patient = Patient.objects.create(
+            clinic=self.clinic, phone="+15550007777", first_name="Nia", last_name="Doe",
+        )
+        self.other_patient = Patient.objects.create(
+            clinic=self.clinic, phone="+15550008888", first_name="Kai", last_name="Roe",
+        )
+        self.current = ChatSession.objects.create(
+            clinic=self.clinic, session_token="tok-cd-current", patient=self.patient,
+            is_authenticated=True, status=ChatSessionStatus.ACTIVE,
+        )
+        target_visitor = ChatVisitor.objects.create(
+            clinic=self.clinic, visitor_key="tok-cd-target-visitor",
+        )
+        self.target = ChatSession.objects.create(
+            clinic=self.clinic, visitor=target_visitor, session_token="tok-cd-target",
+            patient=self.patient, is_authenticated=True, status=ChatSessionStatus.ACTIVE,
+        )
+        _seed_messages(self.target, 2)
+
+    def test_auth_session_token_from_the_same_patient_can_read(self):
+        resp = self.client.get(
+            _messages_url("tok-cd-target"),
+            {"clinic_slug": self.clinic.slug, "auth_session_token": "tok-cd-current"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(resp.json()["messages"]), 2)
+
+    def test_auth_session_token_from_a_different_patient_is_rejected(self):
+        ChatSession.objects.create(
+            clinic=self.clinic, session_token="tok-cd-other-patient",
+            patient=self.other_patient, is_authenticated=True,
+            status=ChatSessionStatus.ACTIVE,
+        )
+        resp = self.client.get(
+            _messages_url("tok-cd-target"),
+            {"clinic_slug": self.clinic.slug, "auth_session_token": "tok-cd-other-patient"},
+        )
+        self.assertEqual(resp.status_code, 404)
+
+    def test_unverified_auth_session_token_is_rejected(self):
+        ChatSession.objects.create(
+            clinic=self.clinic, session_token="tok-cd-unverified", patient=self.patient,
+            is_authenticated=False, status=ChatSessionStatus.ACTIVE,
+        )
+        resp = self.client.get(
+            _messages_url("tok-cd-target"),
+            {"clinic_slug": self.clinic.slug, "auth_session_token": "tok-cd-unverified"},
+        )
+        self.assertEqual(resp.status_code, 404)
+
+    def test_target_session_itself_must_be_verified_not_just_the_caller(self):
+        """Even a real, verified `auth_session_token` must not unlock a
+        target session that was never itself OTP-verified (e.g. a
+        same-visitor sibling only passively backfilled with `patient`) —
+        is_authenticated=True is required on BOTH sides, same boundary as
+        list_other_verified_sessions()."""
+        sibling_visitor = ChatVisitor.objects.create(
+            clinic=self.clinic, visitor_key="cd-sibling-visitor", patient=self.patient,
+        )
+        unverified_target = ChatSession.objects.create(
+            clinic=self.clinic, visitor=sibling_visitor,
+            session_token="tok-cd-unverified-target", patient=self.patient,
+            is_authenticated=False, status=ChatSessionStatus.ACTIVE,
+        )
+        _seed_messages(unverified_target, 1)
+        resp = self.client.get(
+            _messages_url("tok-cd-unverified-target"),
+            {"clinic_slug": self.clinic.slug, "auth_session_token": "tok-cd-current"},
+        )
+        self.assertEqual(resp.status_code, 404)
+
+    def test_missing_auth_session_token_still_rejected_same_as_before(self):
+        """No visitor header AND no auth_session_token — must still 404,
+        exactly the pre-Phase-2 behavior (regression)."""
+        resp = self.client.get(
+            _messages_url("tok-cd-target"), {"clinic_slug": self.clinic.slug},
+        )
+        self.assertEqual(resp.status_code, 404)
+
+    def test_same_browser_visitor_header_path_still_works_unaffected(self):
+        """Regression: adding the cross-device path must not change the
+        original same-browser visitor-header ownership path at all."""
+        visitor = ChatVisitor.objects.create(clinic=self.clinic, visitor_key="cd-own-visitor")
+        own_session = ChatSession.objects.create(
+            clinic=self.clinic, visitor=visitor, session_token="tok-cd-own",
+            status=ChatSessionStatus.ACTIVE,
+        )
+        _seed_messages(own_session, 1)
+        resp = self.client.get(
+            _messages_url("tok-cd-own"), {"clinic_slug": self.clinic.slug},
+            headers={_VISITOR_HEADER: "cd-own-visitor"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(resp.json()["messages"]), 1)
+
+
+class ChatConversationsEndpointTests(TestCase):
+    """Phase 2 — `/widget/chat/conversations`: the read-only listing behind
+    the "you have a previous conversation" affordance. Never mutates or
+    replaces the calling session (asserted directly below)."""
+
+    def setUp(self):
+        self.clinic = _make_clinic("conversations-clinic")
+        self.patient = Patient.objects.create(
+            clinic=self.clinic, phone="+15550009999", first_name="Uma", last_name="Fox",
+        )
+        self.current = ChatSession.objects.create(
+            clinic=self.clinic, session_token="tok-conv-current", patient=self.patient,
+            is_authenticated=True, status=ChatSessionStatus.ACTIVE,
+        )
+        _seed_messages(self.current, 3)
+
+    def test_requires_an_authenticated_session(self):
+        unverified = ChatSession.objects.create(
+            clinic=self.clinic, session_token="tok-conv-unverified",
+            status=ChatSessionStatus.ACTIVE,
+        )
+        resp = self.client.post(
+            CONVERSATIONS_URL,
+            {"clinic_slug": self.clinic.slug, "session_token": unverified.session_token},
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 401)
+
+    def test_unknown_session_token_404s(self):
+        resp = self.client.post(
+            CONVERSATIONS_URL,
+            {"clinic_slug": self.clinic.slug, "session_token": "does-not-exist"},
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 404)
+
+    def test_empty_when_no_other_verified_sessions_exist(self):
+        resp = self.client.post(
+            CONVERSATIONS_URL,
+            {"clinic_slug": self.clinic.slug, "session_token": "tok-conv-current"},
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["conversations"], [])
+
+    def test_lists_another_verified_session_for_the_same_patient(self):
+        other = ChatSession.objects.create(
+            clinic=self.clinic, session_token="tok-conv-other", patient=self.patient,
+            is_authenticated=True, status=ChatSessionStatus.ACTIVE,
+        )
+        _seed_messages(other, 1)
+        resp = self.client.post(
+            CONVERSATIONS_URL,
+            {"clinic_slug": self.clinic.slug, "session_token": "tok-conv-current"},
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        conversations = resp.json()["conversations"]
+        self.assertEqual(len(conversations), 1)
+        self.assertEqual(conversations[0]["session_token"], "tok-conv-other")
+        self.assertEqual(conversations[0]["message_count"], 1)
+
+    def test_does_not_include_itself(self):
+        resp = self.client.post(
+            CONVERSATIONS_URL,
+            {"clinic_slug": self.clinic.slug, "session_token": "tok-conv-current"},
+            content_type="application/json",
+        )
+        tokens = [c["session_token"] for c in resp.json()["conversations"]]
+        self.assertNotIn("tok-conv-current", tokens)
+
+    def test_never_mutates_the_calling_session(self):
+        """The core Phase 2 correction from plan review: listing other
+        conversations must never touch the current session's own identity
+        or messages."""
+        other = ChatSession.objects.create(
+            clinic=self.clinic, session_token="tok-conv-other-2", patient=self.patient,
+            is_authenticated=True, status=ChatSessionStatus.ACTIVE,
+        )
+        _seed_messages(other, 5)
+        self.client.post(
+            CONVERSATIONS_URL,
+            {"clinic_slug": self.clinic.slug, "session_token": "tok-conv-current"},
+            content_type="application/json",
+        )
+        self.current.refresh_from_db()
+        self.assertEqual(self.current.session_token, "tok-conv-current")
+        self.assertEqual(ChatMessage.objects.filter(session=self.current).count(), 3)
+
+    def test_clinic_b_cannot_see_clinic_a_patients_sessions(self):
+        other_clinic = _make_clinic("conversations-clinic-other")
+        resp = self.client.post(
+            CONVERSATIONS_URL,
+            {"clinic_slug": other_clinic.slug, "session_token": "tok-conv-current"},
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 404)

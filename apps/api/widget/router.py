@@ -113,6 +113,22 @@ class AppointmentsListIn(Schema):
     session_token: str
 
 
+class ChatConversationsIn(Schema):
+    clinic_slug: str
+    session_token: str
+
+
+class ChatConversationSummaryOut(Schema):
+    session_token: str
+    last_active_at: str
+    message_count: int
+    preview: str
+
+
+class ChatConversationsOut(Schema):
+    conversations: list[ChatConversationSummaryOut]
+
+
 class AppointmentCardOut(Schema):
     id: str
     doctor: str
@@ -314,12 +330,19 @@ def chat_messages_page(
     clinic_slug: str,
     before: int | None = None,
     limit: int = _DEFAULT_PAGE_SIZE,
+    auth_session_token: str | None = None,
 ):
     """Cursor-paginated older messages for one conversation, newest-first
     boundary semantics (`before=<sequence_number>`, strictly older than
     that cursor) — never offset-based, so concurrent inserts elsewhere in
     the same session can't shift a page's contents underneath a scrolling
-    reader (see ROADMAP.md's persistent-chat-history phase for why)."""
+    reader (see ROADMAP.md's persistent-chat-history phase for why).
+
+    `auth_session_token` is the Phase 2 cross-device read path: the
+    calling browser's own already-verified session, submitted as proof of
+    identity when it wants to open a *different* session (found via
+    `/chat/conversations`) that it has no visitor-header relationship to.
+    """
     clinic = resolve_public_clinic(request, clinic_slug)
     check_rate_limit(
         "chat_messages_ip", client_ip(request) or "",
@@ -343,7 +366,10 @@ def chat_messages_page(
         # Same 404 either way — never confirm a session_token is real to a
         # caller who can't prove ownership of it.
         submitted = (request.headers.get(_VISITOR_HEADER) or "").strip()
-        if not submitted or submitted != session.visitor.visitor_key:
+        owns_via_visitor = bool(submitted) and submitted == session.visitor.visitor_key
+        if not owns_via_visitor and not _owns_via_verified_patient(
+            clinic, session, auth_session_token,
+        ):
             raise HttpError(404, "Session not found") from None
 
     if before is not None and before < 1:
@@ -605,6 +631,36 @@ def list_appointments(request, payload: AppointmentsListIn):
     )
 
 
+@router.post("/chat/conversations", response=ChatConversationsOut, auth=None)
+def list_chat_conversations(request, payload: ChatConversationsIn):
+    """The patient's other verified conversations (Phase 2 — cross-device
+    chat history), for the "you have a previous conversation" affordance
+    shown after OTP verification on a new browser/device.
+
+    Read-only: never mutates or replaces the calling session. The current
+    session's own token and messages are completely untouched by this
+    endpoint — this only lists what else exists so the frontend can offer
+    to open it separately.
+    """
+    from apps.chatbot.services.visitor_service import list_other_verified_sessions
+
+    clinic = resolve_public_clinic(request, payload.clinic_slug)
+    session = _resolve_authenticated_session(clinic, payload.session_token)
+
+    others = list_other_verified_sessions(clinic, session.patient, exclude=session)
+    return ChatConversationsOut(
+        conversations=[
+            ChatConversationSummaryOut(
+                session_token=o["session_token"],
+                last_active_at=o["last_active_at"].isoformat(),
+                message_count=o["message_count"],
+                preview=o["preview"],
+            )
+            for o in others
+        ]
+    )
+
+
 @router.post("/chat/marketing", response=ChatMessageOut, auth=None)
 def marketing_chat_message(request, payload: MarketingChatIn):
     """Synapse marketing assistant — never exposes clinic tenant data."""
@@ -729,6 +785,29 @@ def _resolve_guest_session(clinic: Clinic, session_token: str | None, visitor=No
         status=ChatSessionStatus.ACTIVE,
         last_active_at=timezone.now(),
     )
+
+
+def _owns_via_verified_patient(
+    clinic: Clinic, session, auth_session_token: str | None
+) -> bool:
+    """Cross-device read path (Phase 2): grants read access to another
+    browser's conversation only when the caller supplies their own,
+    already-verified session token, and both that token and the target
+    `session` resolve to the *same* patient and are themselves
+    `is_authenticated=True`. Never a same-visitor sibling that only got
+    `patient` passively backfilled by `link_visitor_to_patient` — see
+    `apps/chatbot/services/visitor_service.py` for why that distinction is
+    the hard security boundary here, same as `list_other_verified_sessions`.
+    """
+    if not auth_session_token or not session.is_authenticated or session.patient_id is None:
+        return False
+
+    from apps.chatbot.models import ChatSession
+
+    caller = ChatSession.objects.filter(
+        clinic=clinic, session_token=auth_session_token, is_authenticated=True,
+    ).first()
+    return bool(caller) and caller.patient_id == session.patient_id
 
 
 def _resolve_authenticated_session(clinic: Clinic, session_token: str):
