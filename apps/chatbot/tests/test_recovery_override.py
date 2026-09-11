@@ -80,6 +80,89 @@ class RecoveryDetectionTests(SimpleTestCase):
         self.assertEqual(action.kind, "reverse")
         self.assertTrue(action.strong_cancel)
 
+    def test_dont_want_inside_a_real_followup_question_is_not_a_cancel(self):
+        """Live-confirmed (stress test against real chatbot failure-mode
+        research): "I don't want a female doctor, who's available besides
+        Dr. Rostova?" is short enough to pass _STRONG_CANCEL_MAX_WORDS, and
+        "don't want" matches _STRONG_CANCEL_RE, but this is a preference
+        clause inside a real, answerable follow-up question -- not a
+        whole-thread cancellation. It used to get swallowed into the
+        generic "Sure — what would you like to do instead?" reverse reply
+        instead of reaching the doctor-search handling underneath. A
+        genuine cancel ("never mind", "actually no", "forget it") is
+        essentially always a bare statement, never a message that goes on
+        to ask something real -- the trailing "?" is what distinguishes
+        this case."""
+        action = detect_recovery(
+            "I don't want a female doctor, who's available besides Dr. Rostova?",
+            ConversationTimeline(),
+        )
+        self.assertEqual(action.kind, "none")
+
+    def test_short_dont_want_cancel_without_a_question_still_recovers(self):
+        """The new question-mark guard must not swallow a genuine short
+        cancel that happens to have no trailing question."""
+        action = detect_recovery("actually I don't want that anymore", ConversationTimeline())
+        self.assertEqual(action.kind, "reverse")
+        self.assertTrue(action.strong_cancel)
+
+    # Live-reproduced (ROADMAP.md "context-switch pricing-anchor" phase):
+    # a real cancel phrase followed by a genuine follow-up *typed without a
+    # trailing "?"* used to still swallow the follow-up into the generic
+    # "what would you like to do instead?" reverse reply, discarding an
+    # already-correct, already-computed answer downstream. These are the
+    # exact 7 topic-switch shapes reproduced live against the real
+    # ChatEngine/real Horizon clinic/real OpenAI NLU (pricing->hours,
+    # pricing->insurance, pricing->doctors, pricing->checkup, booking->
+    # information, doctor_search->pricing, service_search->hours) —
+    # `detect_recovery` alone is the exact layer that decided this, so a
+    # unit test here is the precise regression lock; the full-pipeline
+    # version is `test_unpunctuated_cancel_plus_followup_is_not_swallowed`
+    # below.
+    def test_pricing_to_hours_switch_without_question_mark_is_not_a_cancel(self):
+        action = detect_recovery(
+            "ok cool, and what time do you guys close today", ConversationTimeline()
+        )
+        self.assertEqual(action.kind, "none")
+
+    def test_pricing_to_doctors_switch_without_question_mark_is_not_a_cancel(self):
+        action = detect_recovery(
+            "actually forget that, who are your doctors", ConversationTimeline()
+        )
+        self.assertEqual(action.kind, "none")
+
+    def test_pricing_to_checkup_switch_without_question_mark_is_not_a_cancel(self):
+        action = detect_recovery(
+            "never mind, i think i just need a checkup", ConversationTimeline()
+        )
+        self.assertEqual(action.kind, "none")
+
+    def test_doctor_search_to_pricing_switch_without_question_mark_is_not_a_cancel(self):
+        action = detect_recovery(
+            "ok never mind that, how much is a physical", ConversationTimeline()
+        )
+        self.assertEqual(action.kind, "none")
+
+    def test_service_search_to_hours_switch_without_question_mark_is_not_a_cancel(self):
+        action = detect_recovery(
+            "forget it, what time do you open tomorrow", ConversationTimeline()
+        )
+        self.assertEqual(action.kind, "none")
+
+    def test_booking_to_information_switch_without_question_mark_is_not_a_cancel(self):
+        action = detect_recovery(
+            "actually forget it, can I get your address", ConversationTimeline()
+        )
+        self.assertEqual(action.kind, "none")
+
+    def test_bare_cancel_with_only_filler_after_it_still_recovers(self):
+        """The new remainder-word-count signal must not become "any text
+        after the cancel phrase at all counts as a real follow-up" — pure
+        filler ("thanks", "that's it") is still a bare cancel."""
+        action = detect_recovery("never mind, thanks", ConversationTimeline())
+        self.assertEqual(action.kind, "reverse")
+        self.assertTrue(action.strong_cancel)
+
 
 class RecoveryOverrideGuardTests(SimpleTestCase):
     def test_weak_cold_start_does_not_override_sql(self):
@@ -164,6 +247,25 @@ class RecoveryEngineIntegrationTests(TestCase):
         )
         self.assertIn("Hamza", result.response)
         self.assertNotIn("what would you like to do instead", result.response)
+
+    @patch("apps.chatbot.nlu.intent_entity.IntentEntityService.analyze")
+    def test_unpunctuated_cancel_plus_followup_is_not_swallowed(self, mock_analyze):
+        """Full-pipeline lock for the live-reproduced bug: a real cancel
+        phrase ("actually forget that") followed by a real follow-up
+        question typed with no "?" must reach the actual doctor_search
+        answer, not the generic reverse reply -- even though there's an
+        active prior thread (pricing) recovery could otherwise latch onto."""
+        mock_analyze.return_value = self._fake_nlu(intent=Intent.DOCTOR_SEARCH)
+        tl = ConversationTimeline(intent_thread="pricing", service={"name": "Sutures"})
+        ctx = {"timeline": tl.to_dict(), "last_service": {"name": "Sutures"}}
+        result = ChatEngine().process(
+            clinic=self.clinic,
+            message="actually forget that, who are your doctors",
+            session=None,
+            conversation_context=ctx,
+        )
+        self.assertNotIn("what would you like to do instead", result.response.lower())
+        self.assertIn("Found 2 doctors", result.response)
 
     @patch("apps.chatbot.nlu.intent_entity.IntentEntityService.analyze")
     def test_strong_cancel_still_recovers(self, mock_analyze):

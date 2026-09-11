@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import time
 from unittest.mock import patch
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from apps.chatbot.engine import ChatEngine
 from apps.chatbot.models import ChatSession, ChatSessionStatus
@@ -300,3 +300,149 @@ class SlotConfirmationUptakeTests(TestCase):
         self.assertIsNone(
             pending, "an unrelated intervening turn should expire the slot offer"
         )
+
+
+class SoftMedicalServiceFollowupUptakeTests(TestCase):
+    """Capability audit G2: soft_medical booking offer → 'yes' must bind
+    via existing service_followup, not fresh NLU."""
+
+    def setUp(self):
+        self.clinic = Clinic.objects.create(
+            slug="soft-med-uptake",
+            name="Soft Med Clinic",
+            email="sm@clinic.com",
+            phone="+12125550088",
+            timezone="America/Los_Angeles",
+        )
+        WidgetSettings.objects.create(
+            clinic=self.clinic,
+            configuration={"booking": {"date_horizon_days": 21}},
+        )
+        self.svc_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        self.session = ChatSession.objects.create(
+            clinic=self.clinic,
+            session_token="tok-soft-med-yes",
+            status=ChatSessionStatus.ACTIVE,
+            conversation_context={
+                "timeline": {
+                    "pending_clarification": {
+                        "type": "service_followup",
+                        "action": "show_availability",
+                        "service_id": self.svc_id,
+                        "service_name": "Routine Blood Draw",
+                    },
+                },
+            },
+        )
+
+    def _nlu(self, intent, **kwargs):
+        return NLUResult(
+            intent=intent,
+            confidence=kwargs.get("confidence", 0.95),
+            entities=kwargs.get("entities", ExtractedEntities()),
+            resolved_ids=ResolvedIds(),
+            needs_sql=True,
+        )
+
+    @patch("apps.chatbot.nlu.intent_entity.IntentEntityService.analyze")
+    def test_yes_after_soft_medical_offer_rewrites_to_availability(self, mock_analyze):
+        # Live failure mode: bare "yes" classified as something unrelated.
+        mock_analyze.return_value = self._nlu(Intent.FAQ, confidence=0.95)
+        result = ChatEngine().process(
+            clinic=self.clinic,
+            message="yes please",
+            session=self.session,
+        )
+        # service_followup uptake → DOCTOR_AVAILABILITY, never FAQ/RAG dead end.
+        self.assertEqual(result.intent, Intent.DOCTOR_AVAILABILITY.value)
+        self.assertNotIn("couldn't find", result.response.lower())
+
+
+@override_settings(NLU_TIER1_ENABLED=False, NLU_ENABLE_RULES=False)
+class RecentTurnScrubDoesNotBreakPendingUptakeTests(TestCase):
+    """Follow-up phase: the new entities-leak scrub runs INSIDE the real
+    IntentEntityService.analyze() (unlike the tests above, which mock
+    analyze() away entirely). This exercises the real analyze() → scrub →
+    resolve_entities path together with apply_pending_uptake, proving the
+    scrub doesn't disturb the deterministic uptake binder for any of the
+    five affirmation phrasings the capability audit's G2 validation used
+    live — even when the underlying (fake) LLM turn returns entities that
+    would otherwise look leak-prone."""
+
+    def setUp(self):
+        self.clinic = Clinic.objects.create(
+            slug="scrub-uptake-clinic",
+            name="Scrub Uptake Clinic",
+            email="scrub@clinic.com",
+            phone="+12125550099",
+            timezone="America/Los_Angeles",
+        )
+        WidgetSettings.objects.create(
+            clinic=self.clinic,
+            configuration={"booking": {"date_horizon_days": 21}},
+        )
+        self.svc_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+    def _session_with_pending(self, token: str) -> ChatSession:
+        return ChatSession.objects.create(
+            clinic=self.clinic,
+            session_token=token,
+            status=ChatSessionStatus.ACTIVE,
+            conversation_context={
+                "timeline": {
+                    "pending_clarification": {
+                        "type": "service_followup",
+                        "action": "show_availability",
+                        "service_id": self.svc_id,
+                        "service_name": "Routine Blood Draw",
+                    },
+                },
+                "recent_turns": [
+                    {"role": "user", "content": "I cut my hand and need stitches"},
+                    {
+                        "role": "assistant",
+                        "content": "I'm sorry you're dealing with that. Would you like "
+                        "me to find a doctor or start booking?",
+                    },
+                ],
+            },
+        )
+
+    def _patch_leak_prone_classify(self):
+        """Simulates the live failure mode at the classify_message boundary
+        (below rules/tier1, above IntentEntityService.analyze's own
+        post-processing) — for a bare affirmation, the raw classifier
+        output still (wrongly) echoes the prior turn's symptom into
+        entities. This is the exact leak this phase's scrub targets, and
+        exercises the REAL analyze() → scrub → resolve_entities path,
+        unlike the mocked-analyze() tests above."""
+        return patch(
+            "apps.chatbot.nlu.intent_entity.classify_message",
+            return_value={
+                "intent": "medical_question",
+                "confidence": 0.6,
+                "entities": {
+                    "symptom": "cut my hand",
+                    "specialty_category_hint": "Surgery",
+                },
+                "_classifier_source": "gemini",
+            },
+        )
+
+    def test_affirmations_still_bind_to_pending_service_despite_leak_prone_llm_output(self):
+        for i, text in enumerate(("yes", "yes please", "sure", "okay", "book it")):
+            with self.subTest(text=text):
+                with self._patch_leak_prone_classify(), patch(
+                    "apps.chatbot.nlu.intent_entity.IntentEntityService._log_usage"
+                ):
+                    result = ChatEngine().process(
+                        clinic=self.clinic,
+                        message=text,
+                        session=self._session_with_pending(f"tok-scrub-uptake-{i}"),
+                    )
+                # apply_pending_uptake rewrites intent/resolved service
+                # from the PENDING offer's own fields, not from whatever
+                # (leak-prone) entities the fake classifier turn returned —
+                # proof the deterministic binder still wins regardless of
+                # the scrub's presence.
+                self.assertEqual(result.intent, Intent.DOCTOR_AVAILABILITY.value, msg=text)
