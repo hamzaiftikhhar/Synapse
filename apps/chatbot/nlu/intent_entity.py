@@ -11,6 +11,7 @@ from django.conf import settings
 from apps.clinics.models import Clinic
 from apps.chatbot.nlu.base import NLUError, NLUProvider
 from apps.chatbot.nlu.classifier import classify_message
+from apps.chatbot.nlu.entity_extract import scrub_entities_leaked_from_recent_turns
 from apps.chatbot.nlu.resolvers import resolve_entities
 from apps.chatbot.nlu.schemas import NLUResult, parse_nlu_payload
 from apps.chatbot.nlu.timings import NLUTimings
@@ -97,6 +98,19 @@ class IntentEntityService:
             model=model_name,
         )
         result = _apply_confidence_threshold(result)
+
+        # Recent-turns context is shown to the model for disambiguating
+        # bare replies ("yes"/"sure") only — it must never be allowed to
+        # supply an entity value for THIS message. The system prompt asks
+        # for that; this is the deterministic backstop for when the model
+        # doesn't comply (live-confirmed it doesn't, reliably). Must run
+        # before resolve_entities below, or a leaked entity could still
+        # get DB-validated into a resolved_id.
+        result.entities = scrub_entities_leaked_from_recent_turns(
+            result.entities,
+            message=text,
+            recent_turns=(conversation_context or {}).get("recent_turns"),
+        )
 
         t0 = time.perf_counter()
         result.resolved_ids = resolve_entities(clinic, result.entities)
