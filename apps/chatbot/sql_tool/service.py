@@ -88,6 +88,9 @@ class SQLTool:
         patient: object | None = None,
         message: str = "",
         resolved_service_ids: list[str] | None = None,
+        resolved_specialty_ids: list[str] | None = None,
+        capability_resolver_used: bool = False,
+        informational_service_candidates: list[str] | None = None,
         blocked_entity_fields: dict[str, frozenset[str]] | None = None,
     ) -> list[SQLResult]:
         """Execute SQL tools named by the ExecutionPlan (planner source of truth)."""
@@ -99,6 +102,9 @@ class SQLTool:
             patient=patient,
             message=message or "",
             resolved_service_ids=list(resolved_service_ids or []),
+            resolved_specialty_ids=list(resolved_specialty_ids or []),
+            capability_resolver_used=bool(capability_resolver_used),
+            informational_service_candidates=list(informational_service_candidates or []),
             blocked_entity_fields=dict(blocked_entity_fields or {}),
         )
         clinic_id = getattr(clinic, "id", None)

@@ -22,7 +22,27 @@ def services_offered(ctx: SQLContext) -> SQLResult:
     qs = Service.objects.filter(clinic=ctx.clinic, is_deleted=False, is_active=True)
     mode = _filter_mode(ctx)
 
-    if mode == "none":
+    if mode == "none" and ctx.capability_resolver_used and ctx.resolved_service_ids:
+        # Live-confirmed bug (Clinic Capability Resolver vertical slice):
+        # "can i just walk in for a minor cut or do i need to book
+        # something first" classifies service_filter_mode="none" (this
+        # reads as a logistics question, not "which service"), so the
+        # generic "never collapse an ambiguous browse to one fuzzy SKU"
+        # rule below fired and showed the full service picker -- even
+        # though the resolver had already run for this exact message,
+        # validated every candidate id against the real catalog, and
+        # confidently identified Simple Wound Laceration Repair (Sutures)
+        # (context=explicit, confidence 0.9). The "none" guard exists to
+        # stop a crude keyword/token match (routing/signals.py's
+        # match_services_in_message) from over-confidently collapsing a
+        # genuine browse -- it was never meant to also discard a real,
+        # already-validated LLM decision the planner made for this turn.
+        # capability_resolver_used is only ever True when resolved_
+        # service_ids came from that validated path (see SQLContext's
+        # docstring), so this cannot reopen the original "none" bug for
+        # the older, cruder signal.
+        qs = qs.filter(id__in=ctx.resolved_service_ids)
+    elif mode == "none":
         # Browse / list — never collapse to one fuzzy SKU
         pass
     elif mode == "named" and ctx.nlu.resolved_ids.service_id:
@@ -65,7 +85,7 @@ def services_offered(ctx: SQLContext) -> SQLResult:
             matched_ids = ctx.resolved_service_ids or _match_services_strict(ctx)
             if matched_ids:
                 qs = qs.filter(id__in=matched_ids)
-            elif ctx.nlu.entities.symptom:
+            else:
                 # Neither a hardcoded category phrase nor the strict
                 # name-token fallback found anything -- try the same
                 # symptom-to-canonical-category resolution chain
@@ -76,6 +96,16 @@ def services_offered(ctx: SQLContext) -> SQLResult:
                 # bare symptom ("what service would help with my tooth
                 # pain") fell through to "no filter" above -- every active
                 # service, not services related to the concern.
+                #
+                # Phase 1 fix (live-confirmed bug): this branch used to
+                # require ctx.nlu.entities.symptom to be set before even
+                # calling the resolver -- an outer gate duplicating the
+                # resolver's own (now-fixed) internal one. A capability
+                # question ("can you do a root canal?") never sets
+                # entities.symptom (it's not a symptom complaint), so the
+                # resolver never got a chance to try matching the message
+                # text directly. Always attempt it here; the resolver
+                # itself now decides whether it has anything to go on.
                 from apps.chatbot.booking.discovery import (
                     resolve_symptom_service_ids,
                     symptom_no_match_result,
@@ -128,7 +158,8 @@ def services_offered(ctx: SQLContext) -> SQLResult:
         }
         for s in services
     ]
-    if rows and len(rows) == 1 and mode == "named":
+    resolver_narrowed_none = mode == "none" and ctx.capability_resolver_used and ctx.resolved_service_ids
+    if rows and len(rows) == 1 and (mode == "named" or resolver_narrowed_none):
         s = rows[0]
         dur = f", about {s['duration_min']} minutes" if s.get("duration_min") else ""
         summary = f"{s['name']} is {s['price']}{dur}."

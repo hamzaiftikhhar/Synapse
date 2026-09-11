@@ -83,6 +83,8 @@ def search_doctors(ctx: SQLContext) -> SQLResult:
     # availability, reschedule) is also present in the same message.
     doctor_blocked = "doctor_id" in ctx.blocked_entity_fields.get("doctors", frozenset())
     doctor_ids = [] if doctor_blocked else entity_ids(nlu.resolved_ids.doctor_id)
+    names: list[str] = []
+    name_filter_matched = False
     if doctor_ids:
         qs = qs.filter(id__in=doctor_ids)
     elif not doctor_blocked:
@@ -96,13 +98,39 @@ def search_doctors(ctx: SQLContext) -> SQLResult:
             and not all(tok in _NAME_NOISE for tok in n.lower().split())
         ]
         if names:
-            qs = qs.filter(build_name_filter("full_name", names))
+            named_qs = qs.filter(build_name_filter("full_name", names))
+            if named_qs.exists():
+                qs = named_qs
+                name_filter_matched = True
+            # else: survived noise-filtering (not pure filler) but matched
+            # no real doctor -- live-confirmed bug: "which doctor HANDLES
+            # ROOT canals?" extracts doctor_name="handles root" (neither
+            # word is in _NAME_NOISE, so the earlier noise fix doesn't
+            # catch it), which matches zero real doctors. Left unfiltered
+            # here (mirrors the specs/specialty-name branch below, which
+            # already has this exact `named_qs.exists()` safety net) so
+            # the capability/specialty resolution fallback further down
+            # still gets a chance instead of being blocked by a phantom
+            # "a doctor was named" signal.
 
     # A doctor was explicitly named ("does Dr Lee treat cardiac issues") —
     # keep filtering by that doctor regardless of whether their symptom
     # also maps to a specialty; only a bare, doctor-less symptom mention
     # should trigger the honest "we don't have that" path below.
-    doctor_named = bool(doctor_ids) or bool(entity_list(nlu.entities.doctor_name))
+    #
+    # Live-confirmed bug (first instance): this used to re-extract
+    # entities.doctor_name raw (entity_list(nlu.entities.doctor_name))
+    # instead of reusing the noise-filtered `names` above -- so a
+    # hallucinated non-name entity the noise filter correctly stripped
+    # from the actual query (e.g. "which doctor CAN DO teeth whitening"
+    # -> doctor_name="can do", both tokens in _NAME_NOISE) still counted
+    # as "a doctor was named" here. Second instance, fixed alongside this
+    # one: `bool(names)` alone isn't enough either -- a hallucinated
+    # phrase can survive noise-filtering (no individual token is pure
+    # filler) and still match no real doctor ("handles root"). Must
+    # reflect whether the name filter *actually matched something real*,
+    # not merely whether non-noise text was extracted.
+    doctor_named = bool(doctor_ids) or name_filter_matched
 
     specialty_ids = entity_ids(nlu.resolved_ids.specialty_id)
     # Set only when the message itself gave *nothing at all* to go on --
@@ -122,8 +150,65 @@ def search_doctors(ctx: SQLContext) -> SQLResult:
     else:
         specs = entity_list(nlu.entities.specialty)
         if specs:
-            q = build_name_filter("specialties__name", specs)
-            qs = qs.filter(q).distinct()
+            named_qs = qs.filter(build_name_filter("specialties__name", specs)).distinct()
+            if named_qs.exists() or doctor_named:
+                qs = named_qs
+            else:
+                # A named specialty that didn't resolve at all
+                # (resolved_ids.specialty_id empty, above) AND doesn't
+                # literally appear in any real specialty name here --
+                # live-confirmed bug: "Do you have any cardiology
+                # specialist?" (entities.specialty="Cardiology" set,
+                # unresolved) fell straight through to the generic
+                # "I couldn't find matching doctors for that" formatter
+                # fallback, while "Do you have any heart specialist?"
+                # (a concern-map hint, no specialty entity) got the
+                # specific, honest "We don't have a specialist for that
+                # here" via the branch below -- two phrasings of the same
+                # question giving two different answers. Give an
+                # explicitly-named specialty the same catalog-aware
+                # resolution chain (concern map -> suggest_specialties ->
+                # category hint -> Phase 2 catalog match) the bare-symptom
+                # path already uses below, both for a better match (a
+                # synonym/category hit the literal name filter can't see)
+                # and for the same honest-decline wording either way.
+                from apps.chatbot.booking.discovery import (
+                    SymptomResolution,
+                    resolve_symptom_specialty_ids,
+                    symptom_no_match_result,
+                )
+
+                resolution = resolve_symptom_specialty_ids(clinic, nlu, ctx.message)
+                if resolution is None:
+                    # The concern-map/catalog-match chain had nothing to
+                    # add (e.g. "cardiology" isn't a _CONCERN_MAP phrase,
+                    # and this particular LLM call's catalog_match came
+                    # back not_applicable rather than no_match -- live-
+                    # confirmed non-deterministic across repeated identical
+                    # calls) -- but entities.specialty being non-empty at
+                    # all is itself the detected constraint, independent
+                    # of whether any resolver tier could further place it.
+                    # A named specialty the clinic doesn't have is always
+                    # "understood, not offered," never "nothing to go on."
+                    resolution = SymptomResolution(matched_ids=[], understood=True)
+                if resolution.matched_ids:
+                    qs = qs.filter(
+                        doctor_specialties__specialty_id__in=resolution.matched_ids
+                    ).distinct()
+                else:
+                    return symptom_no_match_result("search_doctors", resolution, kind="doctor")
+        elif not doctor_named and ctx.resolved_specialty_ids:
+            # Clinic Capability Resolver live vertical slice: the planner
+            # already ran resolve_capability/decide_routing for this exact
+            # message (apply_capability_resolution) and authorized these
+            # specialty ids -- a more targeted result than the internal
+            # concern-map/category-hint chain below would independently
+            # find, and consulting it here avoids redundantly re-resolving
+            # a question already answered. Same authority rule Step 5
+            # already established for resolved_service_ids.
+            qs = qs.filter(
+                doctor_specialties__specialty_id__in=ctx.resolved_specialty_ids
+            ).distinct()
         elif not doctor_named:
             from apps.chatbot.booking.discovery import (
                 resolve_symptom_specialty_ids,
@@ -152,6 +237,22 @@ def search_doctors(ctx: SQLContext) -> SQLResult:
         qs = qs.filter(services__id=service_id).distinct()
     elif not service_blocked and nlu.entities.service:
         qs = qs.filter(services__name__icontains=nlu.entities.service, services__is_deleted=False).distinct()
+    elif not service_blocked and ctx.resolved_service_ids:
+        # Proven bug (live-confirmed): "which doctor can do teeth
+        # whitening?" already computes ctx.resolved_service_ids (the
+        # shared per-turn message->service matcher, planner.py) with the
+        # exact right service id -- neither branch above ever consulted
+        # it, so this query stayed completely unfiltered by service, only
+        # narrowed by specialty (4 doctors instead of the 2-3 who
+        # actually offer it). resolved_service_ids only ever populates
+        # from a close literal/token match against a real service name
+        # (routing/signals.py::match_services_in_message), so it's
+        # already conservative about firing on a bare symptom/concern
+        # message ("yellow teeth" never triggers it) -- an additional
+        # narrowing filter here, same as the two branches above, not a
+        # new decision axis.
+        qs = qs.filter(services__id__in=ctx.resolved_service_ids).distinct()
+        service_named = True
 
     language_values = entity_list(getattr(nlu.entities, "language", None))
     if language_values:
@@ -197,13 +298,41 @@ def search_doctors(ctx: SQLContext) -> SQLResult:
 
     doctors = list(qs[:DOCTOR_LIST_CEILING])
     rows = [doctor_to_dict(d) for d in doctors]
+    meta: dict[str, Any] = {}
     if rows:
         names = ", ".join(r["full_name"] for r in rows[:3])
         more = f" (+{len(rows) - 3} more)" if len(rows) > 3 else ""
         summary = f"Found {len(rows)} doctor(s): {names}{more}."
+        if ctx.informational_service_candidates:
+            # Clinic Capability Resolver: a "concern" can surface a real,
+            # relevant service candidate alongside the specialty that
+            # actually drove this doctor filter -- capability_routing_
+            # policy.py's own rule is that this must never narrow the
+            # query itself, only ever be mentioned. Previously computed,
+            # logged in capability_resolver_live, and silently discarded:
+            # "my smile looks dull and yellow, is there a quick fix"
+            # correctly resolved General & Cosmetic Dentistry (the doctor
+            # filter) *and* In-Office Laser Teeth Whitening (informational)
+            # but the final reply never mentioned the service at all. Every
+            # id is re-validated against this clinic's real active catalog
+            # here -- never trust an id at face value this far downstream.
+            from apps.services.models import Service
+
+            info_names = list(
+                Service.objects.filter(
+                    clinic=clinic,
+                    id__in=ctx.informational_service_candidates,
+                    is_deleted=False,
+                    is_active=True,
+                ).values_list("name", flat=True)
+            )
+            if info_names:
+                meta["informational_services"] = info_names
     else:
         summary = "No matching doctors found."
-    return SQLResult(handler="search_doctors", found=bool(rows), rows=rows, summary=summary)
+    return SQLResult(
+        handler="search_doctors", found=bool(rows), rows=rows, summary=summary, meta=meta
+    )
 
 
 def list_specialties(ctx: SQLContext) -> SQLResult:
@@ -287,6 +416,8 @@ def doctor_availability(ctx: SQLContext) -> SQLResult:
         is_accepting_patients=True,
     )
     doctor_ids = entity_ids(nlu.resolved_ids.doctor_id)
+    names: list[str] = []
+    name_filter_matched = False
     if doctor_ids:
         doctor_qs = doctor_qs.filter(id__in=doctor_ids)
     else:
@@ -298,9 +429,22 @@ def doctor_availability(ctx: SQLContext) -> SQLResult:
             and not all(tok in _NAME_NOISE for tok in n.lower().split())
         ]
         if names:
-            doctor_qs = doctor_qs.filter(build_name_filter("full_name", names))
+            named_qs = doctor_qs.filter(build_name_filter("full_name", names))
+            if named_qs.exists():
+                doctor_qs = named_qs
+                name_filter_matched = True
+            # else: same live-confirmed bug as search_doctors -- a
+            # hallucinated phrase can survive noise-filtering and still
+            # match no real doctor ("which doctor HANDLES ROOT canals?"
+            # -> doctor_name="handles root"). Left unfiltered so the
+            # specialty/capability resolution fallback below still runs.
 
-    doctor_named = bool(doctor_ids) or bool(entity_list(nlu.entities.doctor_name))
+    # Same live-confirmed bug and fix as search_doctors above: must reflect
+    # whether the name filter *actually matched a real doctor*, not merely
+    # whether non-noise text was extracted -- a hallucinated non-name
+    # value (e.g. "can do", or "handles root") must not otherwise
+    # incorrectly count as "a doctor was named."
+    doctor_named = bool(doctor_ids) or name_filter_matched
 
     specialty_ids = entity_ids(nlu.resolved_ids.specialty_id)
     symptom_resolution = None
@@ -318,7 +462,56 @@ def doctor_availability(ctx: SQLContext) -> SQLResult:
     else:
         specs = entity_list(nlu.entities.specialty)
         if specs:
-            doctor_qs = doctor_qs.filter(build_name_filter("specialties__name", specs)).distinct()
+            named_qs = doctor_qs.filter(build_name_filter("specialties__name", specs)).distinct()
+            if named_qs.exists() or doctor_named:
+                doctor_qs = named_qs
+            else:
+                # Same fix, same live-confirmed bug, as search_doctors: a
+                # named specialty that doesn't resolve and doesn't
+                # literally match any real specialty name must get the
+                # same catalog-aware resolution chain as a bare symptom
+                # mention, not a different, generic "no matching doctors"
+                # fallback. symptom_no_match_result isn't called in this
+                # branch directly, but must still be imported here --
+                # Python's function-wide local-variable scoping means the
+                # `elif not doctor_named:` branch's own import below only
+                # binds the name along *that* code path; the shared
+                # "if not doctors:" handling further down needs it
+                # regardless of which branch actually ran.
+                from apps.chatbot.booking.discovery import (
+                    SymptomResolution,
+                    resolve_symptom_specialty_ids,
+                    symptom_no_match_result,
+                )
+
+                resolution = resolve_symptom_specialty_ids(clinic, nlu, ctx.message)
+                if resolution is None:
+                    # Same reasoning as search_doctors's identical fix: a
+                    # named specialty is itself the detected constraint,
+                    # independent of whether any resolver tier -- or a
+                    # non-deterministic catalog_match call -- could place
+                    # it further.
+                    resolution = SymptomResolution(matched_ids=[], understood=True)
+                if resolution.matched_ids:
+                    doctor_qs = doctor_qs.filter(
+                        doctor_specialties__specialty_id__in=resolution.matched_ids
+                    ).distinct()
+                else:
+                    symptom_resolution = resolution
+        elif not doctor_named and ctx.resolved_specialty_ids:
+            # Same fix as search_doctors: doctor_availability had never
+            # consumed ctx.resolved_specialty_ids at all -- the Clinic
+            # Capability Resolver's live vertical slice only reached
+            # search_doctors, so a doctor_availability-classified message
+            # naming a capability rather than a specialty/symptom (e.g.
+            # "is the root canal doctor free tomorrow?") fell straight to
+            # the bare-symptom branch below, which has nothing to resolve
+            # against since no entities.symptom was set either -- an
+            # unresolved-role decline despite the planner already having
+            # authorized a specialty via apply_capability_resolution.
+            doctor_qs = doctor_qs.filter(
+                doctor_specialties__specialty_id__in=ctx.resolved_specialty_ids
+            ).distinct()
         elif not doctor_named:
             # Same fix as search_doctors: a bare symptom ("cardiac doctor
             # available tomorrow") must not silently check availability
@@ -341,7 +534,48 @@ def doctor_availability(ctx: SQLContext) -> SQLResult:
             ):
                 unresolved_role_mentioned = True
 
-    doctors = [] if (symptom_resolution or unresolved_role_mentioned) else list(doctor_qs[:5])
+    # Service-level narrowing, same three-tier pattern as search_doctors
+    # above (explicit resolved_ids.service_id -> literal entities.service
+    # text match -> ctx.resolved_service_ids) -- applied on top of
+    # whatever the specialty chain above already produced, never in place
+    # of it. Live-confirmed gap: unlike search_doctors, this handler never
+    # consulted a service at all -- "is there any doctor available Monday
+    # afternoon that can treat the stitches?" (doctor_availability, no
+    # specialty/symptom entity, only a capability phrase that should
+    # resolve to Horizon's real "Simple Wound Laceration Repair (Sutures)"
+    # service) fell through the specialty chain with nothing to filter on
+    # and returned every active doctor's Monday-afternoon slots, stitches
+    # capability or not. Same "doctors" key as search_doctors's own block
+    # would use, kept per-task as "availability" for symmetry with
+    # _SERVICE_BLOCKED_TASKS_BY_INTENT's existing per-task keying, even
+    # though nothing populates that key for this task today.
+    service_blocked = "service_id" in ctx.blocked_entity_fields.get("availability", frozenset())
+    service_id = None if service_blocked else nlu.resolved_ids.service_id
+    if service_id:
+        doctor_qs = doctor_qs.filter(services__id=service_id).distinct()
+    elif not service_blocked and nlu.entities.service:
+        doctor_qs = doctor_qs.filter(
+            services__name__icontains=nlu.entities.service, services__is_deleted=False
+        ).distinct()
+    elif not service_blocked and ctx.resolved_service_ids:
+        doctor_qs = doctor_qs.filter(services__id__in=ctx.resolved_service_ids).distinct()
+
+    # Live-confirmed bug (real production trace): this used to be
+    # doctor_qs[:5] -- a "how many to show" cap borrowed from
+    # search_doctors's DOCTOR_LIST_CEILING listing use case, but wrong
+    # here: this feeds an availability SEARCH ("does any slot exist"),
+    # not a listing. A clinic with 6+ doctors where the one(s) with real
+    # availability happened to sort past the first 5 (default/PK query
+    # order, not meaningful) got a confidently wrong "No available slots
+    # found" -- reproduced live: the chatbot said Friday had nothing,
+    # while the real booking wizard (querying the same DoctorSchedule
+    # data with no such cap) found a real 9:30 AM slot with the 6th
+    # doctor. _first_day_with_slots already bounds cost via
+    # _MAX_DAYS_SCANNED and stops at the first day with any slot -- an
+    # arbitrary doctor-count cap here can only make an honest "no slots"
+    # into a false one, never make a real search meaningfully cheaper in
+    # the common case.
+    doctors = [] if (symptom_resolution or unresolved_role_mentioned) else list(doctor_qs)
     if not doctors:
         if symptom_resolution is not None:
             no_match = symptom_no_match_result(
