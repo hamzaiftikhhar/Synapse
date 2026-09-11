@@ -90,9 +90,46 @@ def synthesize_clinic_reply(
         history=history,
         extra_context=extra_context,
     )
-    system = prompts["system_prompt"]
-    user_block = prompts["user_prompt"]
+    return _call_response_llm(
+        system=prompts["system_prompt"],
+        user_block=prompts["user_prompt"],
+        deadline_seconds=deadline_seconds,
+    )
 
+
+def _call_response_llm(
+    *,
+    system: str,
+    user_block: str,
+    deadline_seconds: float | None = None,
+    max_tokens: int = 400,
+    workload: str = "response",
+) -> str:
+    """Provider-fallback call shared by every Large-LLM prompt this module
+    builds (grounded RAG reply, general medical knowledge reply, ...) --
+    extracted from synthesize_clinic_reply so a new prompt never has to
+    re-implement budget splitting, circuit-breaker skip, or provider
+    fallback from scratch.
+
+    `max_tokens` defaults to 400 (right-sized for this module's short,
+    2-4 sentence prose replies) -- a caller with a structurally different
+    output shape (e.g. capability_resolver.py's multi-candidate JSON with
+    a reasoning string per candidate) must pass a larger value explicitly.
+    Live-confirmed gap: the default silently truncated a 5-6 candidate
+    JSON response mid-string, producing a JSON parse failure that looked
+    identical to a provider outage rather than an output-budget problem.
+
+    `workload` namespaces the circuit-breaker key (see
+    providers/circuit_breaker.py) as f"{provider}:{workload}" -- e.g.
+    "openai:response" vs "openai:capability". Confirmed root cause of a
+    real coupling bug: this function and nlu/classifier.py's own OpenAI
+    calls both used the bare provider name ("openai") as the circuit key,
+    so a burst of failures from either -- including capability_resolver.py's
+    heavier, slower calls, which also route through this function -- could
+    open the shared circuit and silence NLU classification for the full
+    cooldown window. Each caller now gets its own independent circuit;
+    `is_nlu_degraded`'s failure mode is orthogonal to and layered on top of
+    this, not a substitute for it."""
     budget = float(
         deadline_seconds
         if deadline_seconds is not None
@@ -122,30 +159,43 @@ def synthesize_clinic_reply(
 
     last_error: Exception | None = None
     for provider in providers:
+        circuit_key = f"{provider}:{workload}"
         remaining = budget - (time.perf_counter() - started)
         if remaining < 0.5:
             break
-        if not circuit_breaker.is_available(provider):
-            logger.info("response_llm skip provider=%s circuit_open", provider)
+        if not circuit_breaker.is_available(circuit_key):
+            logger.info(
+                "response_llm skip provider=%s workload=%s circuit_open",
+                provider,
+                workload,
+            )
             continue
         deadline = min(remaining, per_provider_budget)
         try:
             if provider == "openai":
                 text = _openai_generate(
-                    system=system, user_block=user_block, deadline=deadline
+                    system=system,
+                    user_block=user_block,
+                    deadline=deadline,
+                    max_tokens=max_tokens,
                 )
             elif provider == "gemini":
                 text = _gemini_generate(
-                    system=system, user_block=user_block, deadline=deadline
+                    system=system,
+                    user_block=user_block,
+                    deadline=deadline,
+                    max_tokens=max_tokens,
                 )
             else:
                 continue
-            circuit_breaker.record_success(provider)
+            circuit_breaker.record_success(circuit_key)
             return text
         except Exception as exc:
             last_error = exc
-            circuit_breaker.record_failure(provider, str(exc))
-            logger.warning("response_llm provider=%s failed: %s", provider, exc)
+            circuit_breaker.record_failure(circuit_key, str(exc))
+            logger.warning(
+                "response_llm provider=%s workload=%s failed: %s", provider, workload, exc
+            )
             continue
 
     raise last_error or ResponseLLMError("Response LLM failed for all providers")
@@ -166,6 +216,50 @@ def empty_rag_reply(clinic: Any) -> str:
     return (
         f"I don't have clinic-specific information on that. Our care team can "
         f"help directly — please reach out through the patient portal{phone_bit}."
+    )
+
+
+_GENERAL_KNOWLEDGE_SYSTEM_PROMPT = """You are a clinic assistant answering a purely general, educational medical/health question -- NOT a personal symptom disclosure (those are routed elsewhere and never reach you). The planner only sends you a message here when it has already classified it as asking what a condition/term/procedure IS, how it works, or its general risks/side effects, with no personal circumstance stated.
+
+Answer from your own general medical knowledge, in 2-4 sentences. Never diagnose the user, never recommend a specific treatment, dose, or medication for the user's own situation, never imply you know anything about the user's personal health -- you don't, and weren't told anything. Use hedging/qualification language where medically appropriate (e.g. "generally", "in most cases", "a doctor can confirm this for your specific situation") -- the same advisory tone a careful clinic receptionist would use, never a confident clinical pronouncement.
+
+Keep it a clean, direct educational answer -- do not pad it with an appointment pitch by default. Only add a brief, optional offer to help find a doctor or book an appointment (one short sentence, at most) if the question's own phrasing suggests it might be personally motivated even though it wasn't classified as personal -- most purely definitional questions ("What is X?", "How does X work?") don't need this at all and should end cleanly with the answer.
+
+Never mention documents, knowledge bases, retrieval, or internal tools. Never break character to explain your own routing."""
+
+
+def build_general_knowledge_prompts(message: str) -> dict[str, str]:
+    """System/user prompts for a purely general, non-personalized medical
+    education question (planner_direct_mode == "general_medical_knowledge").
+
+    Deliberately a separate prompt from _system_prompt/_user_block above,
+    not a variant of them -- those are RAG-grounded and explicitly forbid
+    answering from the model's own knowledge ("use ONLY the provided
+    knowledge excerpts and SQL context -- never invent one"); weakening
+    that constraint to also allow this case would risk it leaking into
+    the grounded clinic-fact path. This prompt is the opposite: it MUST
+    use general knowledge, precisely because there is no clinic-specific
+    grounding to give it for a question like "What is hypothyroidism?"
+    """
+    return {
+        "system_prompt": _GENERAL_KNOWLEDGE_SYSTEM_PROMPT,
+        "user_prompt": (message or "").strip(),
+    }
+
+
+def generate_general_knowledge_reply(
+    message: str, *, deadline_seconds: float | None = None
+) -> str:
+    """Answer a purely definitional/educational medical question using the
+    model's own general knowledge -- see build_general_knowledge_prompts
+    for the safety framing. Reuses the same provider-fallback/circuit-
+    breaker machinery as synthesize_clinic_reply (_call_response_llm),
+    just with a different, ungrounded prompt."""
+    prompts = build_general_knowledge_prompts(message)
+    return _call_response_llm(
+        system=prompts["system_prompt"],
+        user_block=prompts["user_prompt"],
+        deadline_seconds=deadline_seconds,
     )
 
 
@@ -272,15 +366,17 @@ def _user_block(
     return "\n\n".join(parts)
 
 
-def _gemini_generate(*, system: str, user_block: str, deadline: float) -> str:
+def _gemini_generate(
+    *, system: str, user_block: str, deadline: float, max_tokens: int = 400
+) -> str:
     api_key = getattr(settings, "GOOGLE_API_KEY", "") or ""
     if not api_key:
         raise ResponseLLMError("GOOGLE_API_KEY is not configured")
 
-    primary = getattr(settings, "CHAT_RESPONSE_MODEL", "gemini-2.0-flash-lite")
+    primary = getattr(settings, "CHAT_RESPONSE_MODEL", "gemini-3.5-flash-lite")
     # Only use Gemini model list when provider is gemini; else a flash-lite default
     if "gpt" in str(primary).lower():
-        primary = "gemini-2.0-flash-lite"
+        primary = "gemini-3.5-flash-lite"
     models = [primary]
     per_try = min(float(deadline), float(getattr(settings, "CHAT_RESPONSE_TIMEOUT_SECONDS", 8.0)))
 
@@ -289,7 +385,7 @@ def _gemini_generate(*, system: str, user_block: str, deadline: float) -> str:
         "contents": [{"role": "user", "parts": [{"text": user_block}]}],
         "generationConfig": {
             "temperature": 0.35,
-            "maxOutputTokens": 400,
+            "maxOutputTokens": max_tokens,
         },
     }
     body = json.dumps(payload).encode("utf-8")
@@ -339,7 +435,9 @@ def _gemini_generate(*, system: str, user_block: str, deadline: float) -> str:
     raise last_error or ResponseLLMError("Gemini response LLM failed for all models")
 
 
-def _openai_generate(*, system: str, user_block: str, deadline: float) -> str:
+def _openai_generate(
+    *, system: str, user_block: str, deadline: float, max_tokens: int = 400
+) -> str:
     api_key = getattr(settings, "OPENAI_API_KEY", "") or ""
     if not api_key:
         raise ResponseLLMError("OPENAI_API_KEY is not configured")
@@ -363,7 +461,7 @@ def _openai_generate(*, system: str, user_block: str, deadline: float) -> str:
                 {"role": "user", "content": user_block},
             ],
             temperature=0.35,
-            max_tokens=400,
+            max_tokens=max_tokens,
         )
         text = (resp.choices[0].message.content or "").strip()
         if not text:

@@ -90,6 +90,8 @@ class ChatEngine:
             build_doctor_catalog,
             build_document_catalog,
             build_service_catalog,
+            build_specialty_catalog,
+            catalog_for_catalog_match_context,
             catalog_for_nlu_context,
         )
 
@@ -98,6 +100,7 @@ class ChatEngine:
         doc_catalog = build_document_catalog(clinic)
         service_catalog = build_service_catalog(clinic)
         doctor_catalog = build_doctor_catalog(clinic)
+        specialty_catalog = build_specialty_catalog(clinic)
         timings["doc_catalog_ms"] = (time.perf_counter() - t0) * 1000
 
         ctx = conversation_context or self._build_context(session) or {}
@@ -136,6 +139,11 @@ class ChatEngine:
                 else str(d.get("full_name") or "")
                 for d in doctor_catalog[:30]
             )[:900]
+        catalog_match_block = catalog_for_catalog_match_context(
+            specialty_catalog, service_catalog
+        )
+        if catalog_match_block:
+            nlu_ctx["capability_catalog"] = catalog_match_block
         # Lets the classifier resolve a short/bare reply ("sure", "earliest")
         # against what the assistant's immediately preceding turn actually
         # offered, instead of guessing a topic from zero context — the gap
@@ -173,6 +181,7 @@ class ChatEngine:
         )
 
         from apps.chatbot.nlu.resolvers import (
+            resolve_catalog_match,
             resolve_entities,
             resolve_pediatric_service_fallback,
         )
@@ -182,6 +191,11 @@ class ChatEngine:
         nlu_result = replace(
             nlu_result,
             resolved_ids=resolve_entities(clinic, nlu_result.entities),
+            # Real tenant+active+exists DB check on whatever the LLM
+            # proposed -- see resolvers.py::resolve_catalog_match. Must run
+            # before any SQL handler (doctors.py/services.py) ever reads
+            # nlu.catalog_match, since those trust it as already-validated.
+            catalog_match=resolve_catalog_match(clinic, nlu_result.catalog_match),
         )
         # Phase 41 — the Small LLM maps "which doctors can see children" to
         # the clinic's real Pediatric service most of the time (verified
@@ -581,6 +595,104 @@ class ChatEngine:
         else:
             safety_message = None
 
+        # Clinic Capability Resolver -- live vertical slice. Stabilization
+        # mode: OFF by default (settings.CAPABILITY_RESOLVER_LIVE_ENABLED),
+        # and even when enabled, gated by live_resolver_context_for_nlu's
+        # scope: services_offered/pricing (explicit), doctor_search/
+        # doctor_availability (explicit or bare-concern), and
+        # medical_question (concern only -- Phase 2 boundary fix, a real
+        # classification, not a degraded fallback). Intent.UNKNOWN is
+        # deliberately still excluded -- live-confirmed dangerous (see
+        # live_resolver_context_for_nlu's docstring) -- plus an explicit
+        # refusal to run on any rules-fallback/degraded NLU result
+        # regardless of intent (see is_nlu_degraded). Every other
+        # direct_mode (emergency,
+        # medical_advice_refusal, general_medical_knowledge,
+        # doctor_ranking_refusal, prompt_injection_refusal,
+        # unknown_doctor_refusal, session_recall, gender_unsupported,
+        # doctor_pronoun_ambiguous, template, doctor_followup) is
+        # completely untouched by the `not exec_plan.emergency` guard plus
+        # the explicit direct_mode allowlist below. An already-SQL-
+        # dispatching plan (doctor_search/services_offered/pricing/
+        # doctor_availability) only has its resolved ids refined, never
+        # its dispatch decision -- see planner.apply_capability_resolution.
+        #
+        # Capability-family reliability phase: also skip the call outright
+        # when the plan already carries a resolved service or specialty id
+        # (deterministic NLU/lexical resolution already succeeded for this
+        # turn). This is not just a latency saving -- apply_capability_
+        # resolution's "already SQL-dispatching" branch takes the
+        # resolver's decision.specialty_ids/service_ids first, falling
+        # back to the plan's own ids only when the resolver declines
+        # (`list(decision.specialty_ids) or list(plan.resolved_specialty_ids)`),
+        # so calling the LLM resolver on an already-correctly-resolved
+        # message risks silently overriding a good deterministic answer
+        # with a different one the resolver happens to rank first. Since
+        # `resolved_service_ids`/`resolved_specialty_ids` are always empty
+        # by construction for the two `was_unclaimed` states (Intent.UNKNOWN,
+        # soft_medical), this narrows only the already-dispatching branch --
+        # exactly the informal-capability-language gap (flu test/stitches
+        # phrasing that resolves to nothing today) this phase targets --
+        # without changing behavior for any message that already works.
+        if (
+            getattr(settings, "CAPABILITY_RESOLVER_LIVE_ENABLED", False)
+            and not exec_plan.emergency
+            and exec_plan.direct_mode in (None, "soft_medical")
+            and not exec_plan.resolved_service_ids
+            and not exec_plan.resolved_specialty_ids
+        ):
+            from apps.chatbot.booking.capability_resolver import (
+                expressed_need_for_nlu,
+                live_resolver_context_for_nlu,
+                resolve_capability,
+            )
+            from apps.chatbot.booking.capability_routing_policy import decide_routing
+            from apps.chatbot.planner import apply_capability_resolution
+
+            resolver_ctx = live_resolver_context_for_nlu(nlu_result, message)
+            if resolver_ctx is not None:
+                t0 = time.perf_counter()
+                expressed_need = expressed_need_for_nlu(
+                    nlu_result, message, context=resolver_ctx
+                )
+                resolution = resolve_capability(clinic, expressed_need, context=resolver_ctx)
+                decision = decide_routing(resolver_ctx, resolution)
+                capability_resolver_ms = (time.perf_counter() - t0) * 1000
+                timings["capability_resolver_ms"] = round(capability_resolver_ms, 1)
+                # direct_mode is None for BOTH a truly unclaimed plan
+                # (Intent.UNKNOWN, a bare concern at clarify) AND an
+                # ordinary already-SQL-dispatching plan (doctor_search/
+                # services_offered/pricing/doctor_availability normally
+                # never sets direct_mode at all) -- sql_tasks/booking is
+                # what actually distinguishes them.
+                was_unclaimed = exec_plan.direct_mode == "soft_medical" or not (
+                    exec_plan.sql_tasks or exec_plan.booking
+                )
+                exec_plan = apply_capability_resolution(
+                    exec_plan, decision=decision, was_unclaimed=was_unclaimed
+                )
+                lane = exec_plan.primary_lane
+                route = exec_plan.to_route()
+                logger.info(
+                    "capability_resolver_live clinic=%s context=%s outcome=%s "
+                    "candidates=%s action=%s resolved_specialty_ids=%s "
+                    "resolved_service_ids=%s informational_service_candidates=%s "
+                    "latency_ms=%.1f final_direct_mode=%s "
+                    "final_sql_tasks=%s final_lane=%s",
+                    getattr(clinic, "id", None),
+                    resolver_ctx,
+                    resolution.outcome,
+                    [(c.target_type, c.name, c.confidence) for c in resolution.candidates],
+                    decision.action,
+                    exec_plan.resolved_specialty_ids,
+                    exec_plan.resolved_service_ids,
+                    decision.informational_service_candidates,
+                    capability_resolver_ms,
+                    exec_plan.direct_mode,
+                    exec_plan.sql_tasks,
+                    lane.value,
+                )
+
         if exec_plan.direct or exec_plan.emergency:
             t0 = time.perf_counter()
             if exec_plan.direct_mode == "doctor_ranking_refusal":
@@ -591,6 +703,12 @@ class ChatEngine:
                 response_text = self._unknown_doctor_reply()
             elif exec_plan.direct_mode == "medical_advice_refusal":
                 response_text = self._medical_advice_refusal_reply()
+            elif exec_plan.direct_mode == "general_medical_knowledge":
+                response_text = self._general_knowledge_reply(message)
+            elif exec_plan.direct_mode == "capability_not_offered":
+                response_text = self._capability_not_offered_reply(
+                    clinic, exec_plan.informational_service_candidates
+                )
             elif exec_plan.direct_mode == "session_recall":
                 from apps.chatbot.conversation_state import compose_session_recall
 
@@ -651,6 +769,9 @@ class ChatEngine:
                     patient=patient,
                     message=message,
                     resolved_service_ids=exec_plan.resolved_service_ids,
+                    resolved_specialty_ids=exec_plan.resolved_specialty_ids,
+                    capability_resolver_used=exec_plan.capability_resolver_used,
+                    informational_service_candidates=exec_plan.informational_service_candidates,
                     blocked_entity_fields=exec_plan.blocked_entity_fields,
                 )
                 timings["sql_ms"] = (time.perf_counter() - t0) * 1000
@@ -709,7 +830,9 @@ class ChatEngine:
             remaining = request_budget - (time.perf_counter() - started)
             if remaining >= min_llm_remaining:
                 exec_plan = resolve_plan_after_sql(
-                    exec_plan, sql_found=self._sql_found(sql_rows)
+                    exec_plan,
+                    sql_found=self._sql_found(sql_rows),
+                    sql_authoritative=self._has_authoritative_summary(sql_rows),
                 )
                 lane = exec_plan.primary_lane
                 route = exec_plan.to_route()
@@ -903,6 +1026,7 @@ class ChatEngine:
                 nlu=nlu_result,
                 last_doctor=last_doctor,
                 matched_services=matched_services,
+                response_text=response_text,
             )
             if offer:
                 timeline = merge_turn_context(
@@ -954,6 +1078,25 @@ class ChatEngine:
             timings=timings,
             ui_meta=ui_meta,
         )
+
+        # Clinic Capability Resolver -- log-only shadow mode. Fired after
+        # the real response is already fully decided; runs in a background
+        # daemon thread (same fire-and-forget pattern already used for
+        # document ingestion, apps/knowledge/services/document_service.py)
+        # so it can never add latency to, or otherwise influence, this
+        # response. See apps/chatbot/booking/capability_shadow.py.
+        try:
+            from apps.chatbot.booking.capability_shadow import emit_capability_shadow
+
+            emit_capability_shadow(
+                clinic=clinic,
+                message=message,
+                nlu_result=nlu_result,
+                exec_plan=exec_plan,
+                sql_rows=sql_rows,
+            )
+        except Exception:
+            logger.exception("capability_shadow dispatch failed")
 
         return EngineResult(
             response=response_text,
@@ -1059,6 +1202,8 @@ class ChatEngine:
                 "document_needed": nlu_result.document_needed,
                 "sql_tool": nlu_result.sql_tool,
                 "service_filter_mode": nlu_result.service_filter_mode,
+                "medical_question_mode": nlu_result.medical_question_mode,
+                "catalog_match": nlu_result.catalog_match.to_dict(),
                 "reasoning": nlu_result.reasoning_short,
                 "system_prompt": nlu_prompts.get("system_prompt", ""),
                 "user_prompt": nlu_prompts.get("user_prompt", ""),
@@ -1139,7 +1284,7 @@ class ChatEngine:
         self, clinic: Any, message: str, symptom_hint: str = "", category_hint: str = ""
     ) -> str:
         from apps.chatbot.booking.config import get_booking_config
-        from apps.chatbot.booking.discovery import suggest_specialties
+        from apps.chatbot.booking.discovery import primary_care_fallback, suggest_specialties
 
         cfg = get_booking_config(clinic)
         if cfg.get("ai_discovery"):
@@ -1155,6 +1300,27 @@ class ChatEngine:
                 # I'm not able to diagnose, but these areas may help:
                 # Urology Center. Would you like...").
                 return f"{guidance} Would you like me to find a doctor or start booking?"
+            # Live-confirmed gap: a personal concern the NLU understood to
+            # a specific category (category_hint set) that this clinic
+            # doesn't happen to offer directly used to get the exact same
+            # flat reply as a concern with no understood category at all
+            # -- e.g. "will hCG injections help me continue my pregnancy,
+            # given my history of miscarriages" (understood as OB-GYN) at
+            # a family-medicine clinic with no OB-GYN specialty. Offer the
+            # clinic's own Primary Care capability as an honest starting
+            # point instead, when it has one -- never framed as a match
+            # for the concern, just a safe place to be evaluated and
+            # referred onward if needed.
+            fallback = primary_care_fallback(
+                clinic, category_hint=category_hint, reason=symptom_hint
+            )
+            if fallback:
+                return (
+                    f"That's not something we specialize in directly, but our "
+                    f"{fallback['plain_label']} team can evaluate you and refer "
+                    "you onward if needed. Would you like me to find a doctor or "
+                    "start booking?"
+                )
         return (
             "I'm sorry you're dealing with that. I can't diagnose symptoms, "
             "but I can help you find a doctor or start booking an appointment."
@@ -1256,6 +1422,9 @@ class ChatEngine:
         patient: Any = None,
         message: str = "",
         resolved_service_ids: list[str] | None = None,
+        resolved_specialty_ids: list[str] | None = None,
+        capability_resolver_used: bool = False,
+        informational_service_candidates: list[str] | None = None,
         blocked_entity_fields: dict[str, frozenset[str]] | None = None,
     ) -> list[dict[str, Any]]:
         from apps.chatbot.sql_tool import SQLTool
@@ -1267,6 +1436,9 @@ class ChatEngine:
             patient=patient,
             message=message,
             resolved_service_ids=resolved_service_ids,
+            resolved_specialty_ids=resolved_specialty_ids,
+            capability_resolver_used=capability_resolver_used,
+            informational_service_candidates=informational_service_candidates,
             blocked_entity_fields=blocked_entity_fields,
         )
         return [r.to_dict() for r in results]
@@ -1382,6 +1554,9 @@ class ChatEngine:
         if exec_plan.direct_mode == "medical_advice_refusal":
             return self._medical_advice_refusal_reply()
 
+        if exec_plan.direct_mode == "general_medical_knowledge":
+            return self._general_knowledge_reply(message)
+
         # A temporal refusal is a decision Python already made — the date has
         # passed, the month isn't open yet, the expression can't be read. The
         # response LLM does not get to revisit it. Given the same refusal in
@@ -1478,6 +1653,28 @@ class ChatEngine:
                 )
                 sql_text = self._soft_medical_reply(
                     clinic, message, symptom_hint, category_hint
+                )
+            elif (
+                soft_medical
+                and self._sql_found(sql_rows)
+                and getattr(exec_plan, "capability_resolver_used", False)
+            ):
+                # Live-reproduced (ROADMAP.md, real Lumina Skin & Laser
+                # Dermatology transcript): a soft-medical concern the
+                # capability resolver converted into a real doctor search
+                # (planner.apply_capability_resolution's "filter" branch)
+                # used to hand back a bare "Found N doctors" with zero
+                # acknowledgment of what was actually asked -- especially
+                # visible on a narrow, single-specialty clinic, where any
+                # topically-adjacent question (even a plain product-
+                # recommendation question with no real personal concern)
+                # converts to the exact same doctor list every time, with
+                # nothing distinguishing one question from another. A
+                # short, generic, no-advice preamble makes clear *why*
+                # doctors are being shown instead of a direct answer.
+                sql_text = (
+                    "I can't give medical or product advice directly, but "
+                    "here's who can help:\n\n" + sql_text
                 )
             if booking_text:
                 return f"{sql_text}\n\n{booking_text}" if sql_text else booking_text
@@ -1623,6 +1820,75 @@ class ChatEngine:
             "situation. Please discuss this with your clinician through the patient "
             "portal or by calling the clinic before booking."
         )
+
+    def _capability_not_offered_reply(
+        self, clinic: Any, informational_service_ids: list[str] | None = None
+    ) -> str:
+        """Clinic Capability Resolver live vertical slice: an honest
+        decline for an unclaimed plan (Intent.UNKNOWN, or a bare concern
+        that previously dead-ended at clarify/soft_medical) where the
+        resolver found no matching specialty this clinic offers. Reuses
+        the exact existing wording booking/discovery.py::
+        symptom_no_match_result already uses for the identical
+        "understood, not offered" case on the SQL-dispatching side, so the
+        two paths never say different things for the same underlying
+        honest decline.
+
+        informational_service_ids: capability_routing_policy.py's
+        "concern_no_specialty_candidate" case can still find a real
+        SERVICE candidate even with no specialty match (its own governing
+        rule: a concern's service candidate must never silently become a
+        SQL filter). Previously that candidate was computed, logged, and
+        discarded -- a patient asking a described concern the resolver
+        couldn't tie to any specialty got a bare decline even when the
+        resolver had already found a specific, real, offered service that
+        was directly relevant. Every id is re-validated against this
+        clinic's real active catalog here before being named -- never
+        trust an id at face value just because a decision object carried
+        it this far."""
+        base = (
+            "We don't have a specialist for that here. Ask me to "
+            "list our doctors or specialties if you'd like to see who's available."
+        )
+        if not informational_service_ids:
+            return base
+        from apps.services.models import Service
+
+        names = list(
+            Service.objects.filter(
+                clinic=clinic,
+                id__in=informational_service_ids,
+                is_deleted=False,
+                is_active=True,
+            ).values_list("name", flat=True)
+        )
+        if not names:
+            return base
+        return (
+            "We don't have a specialist specifically for that, but you might ask "
+            f"about: {', '.join(names)}."
+        )
+
+    def _general_knowledge_reply(self, message: str) -> str:
+        """A purely definitional/educational medical question (planner_
+        direct_mode == "general_medical_knowledge", nlu.medical_question_mode
+        == "definitional") -- answered from the Large LLM's own general
+        knowledge rather than the existing grounded-RAG or soft_medical
+        canned-decline paths. See response_llm.py::
+        generate_general_knowledge_reply for the safety framing. On any
+        provider failure, fall back to the existing soft_medical static
+        line rather than let an LLM outage produce no reply at all --
+        same fail-safe posture as the rest of this pipeline."""
+        from apps.chatbot.response_llm import generate_general_knowledge_reply
+
+        try:
+            return generate_general_knowledge_reply(message)
+        except Exception:
+            logger.warning("general_knowledge_reply provider failure, falling back", exc_info=True)
+            return (
+                "I'm sorry you're dealing with that. I can't diagnose symptoms, "
+                "but I can help you find a doctor or start booking an appointment."
+            )
 
     def _build_context(self, session: Any | None) -> dict[str, Any] | None:
         if session is None:

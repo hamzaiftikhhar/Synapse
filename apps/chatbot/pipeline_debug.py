@@ -153,6 +153,8 @@ class ChatPipelineTrace:
             f"document_needed={nlu.get('document_needed')}",
             f"SQL tool:   {nlu.get('sql_tool') or '-'}",
             f"Filter:     {nlu.get('service_filter_mode') or '-'}",
+            f"Med Q Mode: {nlu.get('medical_question_mode') or '-'}",
+            f"CatalogMatch: {_fmt_json(nlu.get('catalog_match'))}",
             f"Reasoning:  {nlu.get('reasoning') or '-'}",
             "",
             "NLU System Prompt:",
