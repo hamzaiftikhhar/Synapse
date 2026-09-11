@@ -12,6 +12,20 @@ from apps.chatbot.nlu.timings import NLUTimings
 
 VALID_CARE_CATEGORIES = frozenset(c.value for c in CareCategory)
 
+VALID_CATALOG_MATCH_STATUSES = frozenset(
+    {"matched", "ambiguous", "no_match", "unresolved", "not_applicable"}
+)
+VALID_CATALOG_MATCH_TYPES = frozenset({"specialty", "service"})
+
+# Sub-classifies the *content* of a medical_question message only --
+# never a signal for choosing between doctor_search/services_offered/
+# booking/etc, which stay governed solely by Intent/secondary_intents/
+# resolved_ids/entities exactly as today. See the approved plan
+# ("Separate 'explain a concept' / 'personal symptom' / 'risk question'
+# inside medical_question") for the full routing invariant this exists
+# to serve.
+VALID_MEDICAL_QUESTION_MODES = frozenset({"definitional", "personal", "risk"})
+
 
 class Intent(str, Enum):
     GREETING = "greeting"
@@ -140,6 +154,55 @@ class ResolvedIds:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class CatalogMatch:
+    """Resolved-target object for an EXPLICIT capability/provider/service/
+    specialty request ("do you have a heart specialist", "can you do a
+    root canal") against this tenant's real, ID-tagged catalog -- kept
+    separate from `ExtractedEntities` (extraction and resolution are
+    different concerns; see Phase 2 of the catalog-matching plan in
+    ROADMAP.md) and separate from the existing, more conservative
+    concern-map path used for symptom/condition narratives.
+
+    Five explicit states, never conflated:
+      - "matched": exactly one real catalog entry corresponds to the
+        request. `catalog_id` is set and has already passed backend
+        validation (tenant, active, not deleted, real DB row) by the time
+        any caller sees it -- see nlu/resolvers.py::resolve_catalog_match.
+        LLM confidence is never treated as truth; this status only
+        survives past parsing if the id checked out for real.
+      - "ambiguous": 2+ real, validated catalog entries plausibly match
+        (`candidates`, each `{"id","name","match_type"}` with the name
+        looked up from the DB, never trusted verbatim from the LLM).
+      - "no_match": the request was understood -- match_type identifies
+        whether it asked about a specialty or a service -- but nothing in
+        this tenant's real catalog corresponds to it. An honest decline,
+        never an unfiltered browse.
+      - "unresolved": this *was* a capability-shaped request but which
+        catalog entry it means couldn't be confidently determined. Never
+        treated the same as "no constraint was ever expressed" -- see the
+        invariant in ROADMAP.md's Phase 2 entry.
+      - "not_applicable": the message isn't a catalog-matching request at
+        all (symptom/condition narrative, generic browse, off-topic,
+        etc.) -- the default/inert state, distinct from "unresolved" so
+        "this matcher doesn't apply here" is never confused with "this
+        matcher was the right tool but failed."
+    """
+
+    status: str = "not_applicable"
+    match_type: str | None = None  # "specialty" | "service"
+    catalog_id: str | None = None
+    candidates: list[dict[str, Any]] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "match_type": self.match_type,
+            "catalog_id": self.catalog_id,
+            "candidates": self.candidates,
+        }
+
+
 @dataclass
 class NLUResult:
     intent: Intent
@@ -147,6 +210,15 @@ class NLUResult:
     confidence: float = 0.0
     entities: ExtractedEntities = field(default_factory=ExtractedEntities)
     resolved_ids: ResolvedIds = field(default_factory=ResolvedIds)
+    # Raw (parse-time-normalized, not yet DB-validated) until engine.py
+    # runs it through resolvers.py::resolve_catalog_match right after
+    # resolve_entities -- same two-step pattern as resolved_ids above.
+    catalog_match: CatalogMatch = field(default_factory=CatalogMatch)
+    # Sub-classifies medical_question content only ("definitional" |
+    # "personal" | "risk"); None outside medical_question or when unset.
+    # See VALID_MEDICAL_QUESTION_MODES's own comment for the governing
+    # invariant -- never read for anything but medical_question routing.
+    medical_question_mode: str | None = None
     needs_sql: bool = False
     needs_vector: bool = False
     needs_llm: bool = False
@@ -172,6 +244,8 @@ class NLUResult:
             "confidence": self.confidence,
             "entities": self.entities.to_dict(),
             "resolved_ids": self.resolved_ids.to_dict(),
+            "catalog_match": self.catalog_match.to_dict(),
+            "medical_question_mode": self.medical_question_mode,
             "needs_sql": self.needs_sql,
             "needs_vector": self.needs_vector,
             "needs_llm": self.needs_llm,
@@ -264,6 +338,21 @@ def parse_nlu_payload(
         if sql_tool not in VALID_SQL_TOOLS or sql_tool == "null":
             sql_tool = None
 
+    catalog_match = _parse_raw_catalog_match(data.get("catalog_match"))
+
+    medical_question_mode = _optional_str(data.get("medical_question_mode"))
+    if medical_question_mode:
+        medical_question_mode = medical_question_mode.strip().lower()
+    if (
+        intent != Intent.MEDICAL_QUESTION
+        or medical_question_mode not in VALID_MEDICAL_QUESTION_MODES
+    ):
+        # Meaningless outside medical_question -- discard rather than
+        # trust the model not to set it on an unrelated intent. Also
+        # nulls out any typo/invented value the same way
+        # specialty_category_hint's exact-match-or-null check does.
+        medical_question_mode = None
+
     document_needed = bool(data.get("document_needed", False))
     needs_vector = bool(data.get("needs_vector", False)) or document_needed
     needs_llm = bool(data.get("needs_llm", False))
@@ -275,6 +364,8 @@ def parse_nlu_payload(
         secondary_intents=secondary,
         confidence=confidence_f,
         entities=entities,
+        catalog_match=catalog_match,
+        medical_question_mode=medical_question_mode,
         needs_sql=bool(data.get("needs_sql", False)),
         needs_vector=needs_vector,
         needs_llm=needs_llm,
@@ -290,6 +381,56 @@ def parse_nlu_payload(
         provider=provider,
         model=model,
         raw=data,
+    )
+
+
+def _parse_raw_catalog_match(value: Any) -> "CatalogMatch":
+    """Defensive normalization only -- no DB access here (schemas.py has no
+    clinic to validate against). `catalog_id`/`candidates` are trusted
+    exactly as far as "well-formed JSON shape," never as "real, tenant-
+    owned, active rows" -- that check happens once, in
+    nlu/resolvers.py::resolve_catalog_match, right after this NLUResult is
+    built (same split as ResolvedIds/resolve_entities)."""
+    if not isinstance(value, dict):
+        return CatalogMatch()
+
+    status = str(value.get("status") or "not_applicable").strip().lower()
+    if status not in VALID_CATALOG_MATCH_STATUSES:
+        status = "not_applicable"
+
+    match_type = _optional_str(value.get("match_type"))
+    if match_type:
+        match_type = match_type.strip().lower()
+        if match_type not in VALID_CATALOG_MATCH_TYPES:
+            match_type = None
+
+    catalog_id = _optional_str(value.get("catalog_id")) if status == "matched" else None
+
+    candidates: list[dict[str, Any]] = []
+    if status == "ambiguous":
+        raw_candidates = value.get("candidates")
+        if isinstance(raw_candidates, list):
+            for item in raw_candidates[:8]:
+                if not isinstance(item, dict):
+                    continue
+                cid = _optional_str(item.get("id"))
+                ctype = _optional_str(item.get("match_type"))
+                if ctype:
+                    ctype = ctype.strip().lower()
+                if not cid or ctype not in VALID_CATALOG_MATCH_TYPES:
+                    continue
+                candidates.append({"id": cid, "match_type": ctype})
+
+    if status == "matched" and not catalog_id:
+        # Claimed a match but gave no id to check -- not a real match.
+        status = "unresolved" if match_type else "not_applicable"
+    if status == "ambiguous" and len(candidates) < 2:
+        # Claimed ambiguity but didn't actually supply 2+ candidates.
+        status = "unresolved" if match_type else "not_applicable"
+        candidates = []
+
+    return CatalogMatch(
+        status=status, match_type=match_type, catalog_id=catalog_id, candidates=candidates
     )
 
 

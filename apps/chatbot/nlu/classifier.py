@@ -111,7 +111,16 @@ def classify_message(
     budget_started = time.monotonic()
     for attempt in attempts:
         name = attempt["name"]
-        if not circuit_breaker.is_available(name):
+        # Own circuit-breaker namespace ("openai:nlu", "gemini:nlu", ...) --
+        # confirmed root cause of a real coupling bug: this used to key on
+        # the bare provider name, the same key response_llm.py's OpenAI/
+        # Gemini calls (RAG replies, general knowledge, and the capability
+        # resolver) use -- a burst of failures in either could silence NLU
+        # classification entirely for the full cooldown window, or vice
+        # versa. See response_llm.py::_call_response_llm's `workload` param
+        # for the other half of this fix.
+        circuit_key = f"{name}:nlu"
+        if not circuit_breaker.is_available(circuit_key):
             logger.info("NLU skip provider=%s circuit_open", name)
             continue
         remaining = total_budget - (time.monotonic() - budget_started)
@@ -151,11 +160,11 @@ def classify_message(
                         ents = raw.get("entities") if isinstance(raw.get("entities"), dict) else {}
                         ents["symptom"] = symptoms or ents.get("symptom")
                         raw["entities"] = ents
-            circuit_breaker.record_success(name)
+            circuit_breaker.record_success(circuit_key)
             return raw
         except NLUError as exc:
             last_error = exc
-            circuit_breaker.record_failure(name, str(exc))
+            circuit_breaker.record_failure(circuit_key, str(exc))
             logger.warning(
                 "NLU provider %s failed (timeout=%s): %s",
                 name,
