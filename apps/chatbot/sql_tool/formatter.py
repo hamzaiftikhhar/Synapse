@@ -165,9 +165,13 @@ def format_sql_results(results: list[dict[str, Any]]) -> str:
             # repeat every specialty per doctor in a bullet list on top of
             # the cards.
             if len(rows) == 1:
-                parts.append(f"Here's {rows[0]['full_name']} — details below.")
+                text = f"Here's {rows[0]['full_name']} — details below."
             else:
-                parts.append(f"Found {len(rows)} doctors who may be a good fit — take a look below.")
+                text = f"Found {len(rows)} doctors who may be a good fit — take a look below."
+            info_services = (block.get("meta") or {}).get("informational_services") or []
+            if info_services:
+                text += f" You might also ask about: {', '.join(info_services)}."
+            parts.append(text)
             continue
 
         if handler == "list_specialties" and rows:
