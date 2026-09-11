@@ -150,6 +150,46 @@ class PendingUptakeTests(SimpleTestCase):
         self.assertEqual(offer["type"], "service_followup")
         self.assertEqual(offer["service_id"], "rc-1")
 
+    def test_soft_medical_booking_tail_records_service_followup(self):
+        """Capability audit G2: soft_medical's 'Would you like me to find a
+        doctor or start booking?' tail never wrote pending_clarification,
+        so a bare 'yes' was reclassified from scratch. Reuse the existing
+        service_followup kind — no new offer type."""
+        from apps.chatbot.nlu.schemas import Intent, NLUResult, ResolvedIds
+
+        nlu = NLUResult(
+            intent=Intent.MEDICAL_QUESTION,
+            confidence=0.9,
+            resolved_ids=ResolvedIds(service_id="svc-blood-1"),
+        )
+        nlu.entities.service = "Routine Blood Draw"
+        offer = pending_offer_from_turn(
+            sql_rows=[],
+            nlu=nlu,
+            last_doctor=None,
+            matched_services=None,
+            response_text=(
+                "I'm sorry you're dealing with that. I can't diagnose "
+                "symptoms, but I can help you find a doctor or start "
+                "booking an appointment."
+            ),
+        )
+        self.assertIsNotNone(offer)
+        self.assertEqual(offer["type"], "service_followup")
+        self.assertEqual(offer["service_id"], "svc-blood-1")
+        self.assertEqual(offer["service_name"], "Routine Blood Draw")
+
+    def test_soft_medical_without_booking_tail_records_nothing(self):
+        from apps.chatbot.nlu.schemas import Intent, NLUResult
+
+        offer = pending_offer_from_turn(
+            sql_rows=[],
+            nlu=NLUResult(intent=Intent.MEDICAL_QUESTION, confidence=0.9),
+            last_doctor=None,
+            matched_services=None,
+            response_text="What symptoms are you experiencing?",
+        )
+        self.assertIsNone(offer)
 
 class SlotConfirmationTests(SimpleTestCase):
     """A *found* availability slot ("Earliest opening: Dr Priya at 12 PM")

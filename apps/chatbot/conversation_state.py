@@ -15,6 +15,17 @@ _STRONG_CANCEL_RE = re.compile(
     re.I,
 )
 _STRONG_CANCEL_MAX_WORDS = 15
+# Live-reproduced gap (ROADMAP.md "context-switch pricing-anchor" phase):
+# the "?" check below correctly withholds the reverse override for a
+# *punctuated* real follow-up ("...who's available besides Dr. Rostova?"),
+# but plenty of genuine follow-ups are typed without a "?" at all --
+# "forget it, what time do you open tomorrow", "never mind, how much is a
+# physical" -- and those still got swallowed into the generic "what would
+# you like to do instead?" reverse reply, discarding an already-correct,
+# already-computed answer. `_FOLLOWUP_MIN_WORDS` is the second signal:
+# real words left over after the cancel phrase itself (not just "thanks"/
+# "that anymore"), regardless of punctuation.
+_FOLLOWUP_MIN_WORDS = 3
 _WEAK_CANCEL_RE = re.compile(r"\b(nah|nope)\b", re.I)
 _RHETORICAL_NAH_RE = re.compile(r"\bor\s+nah\b", re.I)
 _CONTINUE_RE = re.compile(
@@ -137,6 +148,24 @@ def _active_thread(timeline: ConversationTimeline) -> str | None:
     return None
 
 
+def _has_real_followup(text: str, cancel_match: re.Match[str]) -> bool:
+    """Whether real content — not just filler — follows the matched
+    cancel phrase, i.e. this is "cancel X, but also ask Y" rather than a
+    bare cancellation. A trailing "?" is the strongest signal (an
+    explicit question). The second, live-reproduced-gap signal: real
+    words left over after the cancel phrase itself, regardless of
+    punctuation — "thanks"/"that anymore" is filler (bare cancel, still
+    reverses), but "what time do you open tomorrow"/"how much is a
+    physical" is a real follow-up that must not be swallowed just because
+    the user didn't bother typing a "?". Only looks *after* the matched
+    phrase — a real question stated *before* a trailing cancel-shaped
+    aside is a rarer shape this doesn't cover (see ROADMAP.md)."""
+    if "?" in text:
+        return True
+    remainder = text[cancel_match.end():].strip(" ,.;:!\u2014-")
+    return len(remainder.split()) >= _FOLLOWUP_MIN_WORDS
+
+
 def detect_recovery(message: str, timeline: ConversationTimeline) -> RecoveryAction:
     text = (message or "").strip()
     if not text:
@@ -165,10 +194,31 @@ def detect_recovery(message: str, timeline: ConversationTimeline) -> RecoveryAct
     # instead?" reverse reply. Same word-count-gate pattern already used for
     # _OFF_TOPIC_ABUSE_RE below, at a slightly longer bound since a genuine
     # cancel utterance runs a bit longer than an abusive aside.
-    if len(text.split()) <= _STRONG_CANCEL_MAX_WORDS and _STRONG_CANCEL_RE.search(text):
+    #
+    # Live-confirmed follow-up gap: "I don't want a female doctor, who's
+    # available besides Dr. Rostova?" is short enough to pass the word-count
+    # gate above, but "don't want" here qualifies a preference inside a real,
+    # answerable follow-up question — not a whole-thread cancellation — and
+    # got swallowed the same way. A genuine cancel ("never mind", "actually
+    # no", "forget it", "scratch that") is essentially always a bare
+    # statement; a message that goes on to ask a real question after the
+    # cancel-shaped phrase is a request, not a reversal, so a trailing "?"
+    # withholds the reverse override and lets the rest of the pipeline
+    # answer the actual question instead.
+    strong_match = _STRONG_CANCEL_RE.search(text)
+    if (
+        len(text.split()) <= _STRONG_CANCEL_MAX_WORDS
+        and strong_match
+        and not _has_real_followup(text, strong_match)
+    ):
         return RecoveryAction(kind="reverse", thread=thread, strong_cancel=True)
 
-    if _WEAK_CANCEL_RE.search(text) and not _RHETORICAL_NAH_RE.search(text):
+    weak_match = _WEAK_CANCEL_RE.search(text)
+    if (
+        weak_match
+        and not _RHETORICAL_NAH_RE.search(text)
+        and not _has_real_followup(text, weak_match)
+    ):
         if thread is not None:
             return RecoveryAction(kind="reverse", thread=thread, strong_cancel=False)
 
@@ -449,6 +499,7 @@ def pending_offer_from_turn(
     nlu: Any,
     last_doctor: dict[str, Any] | None,
     matched_services: list[dict[str, Any]] | None,
+    response_text: str | None = None,
 ) -> dict[str, Any] | None:
     """What this turn just offered the patient, if anything.
 
@@ -500,8 +551,35 @@ def pending_offer_from_turn(
                 "service_id": svc.get("id"),
                 "service_name": svc.get("name"),
             }
+
+    # soft_medical / specialty-suggestion tails ("Would you like me to find
+    # a doctor or start booking?") never produced sql_rows or
+    # matched_services, so the four offer types above never fired — a bare
+    # "yes please" next turn was reclassified from scratch (capability
+    # audit G2). Reuse service_followup; apply_pending_uptake already
+    # handles it. Prefer a validated resolved_ids.service_id when present.
+    if response_text and _SOFT_MEDICAL_BOOKING_OFFER_RE.search(response_text):
+        resolved = getattr(nlu, "resolved_ids", None)
+        entities = getattr(nlu, "entities", None)
+        service_id = getattr(resolved, "service_id", None) or None
+        service_name = getattr(entities, "service", None) or None
+        if isinstance(service_name, (list, tuple)):
+            service_name = service_name[0] if service_name else None
+        return {
+            "type": "service_followup",
+            "action": "show_availability",
+            "service_id": service_id,
+            "service_name": service_name,
+        }
     return None
 
+
+_SOFT_MEDICAL_BOOKING_OFFER_RE = re.compile(
+    r"would you like me to (?:find a doctor|help you book)|"
+    r"find a doctor or start booking|"
+    r"help you find a doctor or start booking",
+    re.I,
+)
 
 # ── Working context (Phase 39) ────────────────────────────────────────────
 # Reproduced as a real hallucination: "Based on what we already discussed,
