@@ -4,7 +4,7 @@ import type { ChatActionHandler, ChatMessage } from "@/types/chat";
 import { ContextActionChips } from "@/features/chat/components/action-buttons";
 import type { BackendAction } from "@/features/chat/types";
 import { BookingInlineCard } from "@/features/booking";
-import type { BookingStepPayload } from "@/types/api";
+import type { BookingStepPayload, ChatConversationSummary } from "@/types/api";
 import { TextMessage } from "./text-message";
 import { TypingIndicator } from "./typing-indicator";
 import { QuickReplies } from "./quick-replies";
@@ -21,6 +21,7 @@ import { DatePickerMessage } from "./date-picker-message";
 import { TimeSlotsMessage } from "./time-slots-message";
 import { AppointmentFormMessage } from "./appointment-form-message";
 import { AppointmentCards } from "./appointment-card";
+import { PreviousConversationsCard } from "./previous-conversations-card";
 import { VerifyIdentity } from "./verify-identity";
 import { ConfirmationCard } from "./confirmation-card";
 import { ClinicLocationCard } from "./clinic-location-card";
@@ -40,6 +41,7 @@ export function MessageRenderer({
   onBookingStarted,
   onIdentityVerified,
   onSessionToken,
+  onDismissPreviousConversations,
   typingHint,
 }: {
   message: ChatMessage;
@@ -55,6 +57,7 @@ export function MessageRenderer({
   onBookingStarted?: (messageId: string, bookingId: string) => void;
   onIdentityVerified?: (messageId: string, sessionToken: string) => void;
   onSessionToken?: (token: string) => void;
+  onDismissPreviousConversations?: (messageId: string) => void;
   /** Last user message — used for calm typing status copy. */
   typingHint?: string;
 }) {
@@ -150,6 +153,22 @@ export function MessageRenderer({
           readOnly={Boolean(message.payload?.readOnly)}
         />
       );
+      break;
+    case "previous_conversations":
+      if (message.payload?.dismissed) {
+        body = null;
+        break;
+      }
+      body = clinicSlug && sessionToken ? (
+        <PreviousConversationsCard
+          conversations={
+            (message.payload?.conversations as ChatConversationSummary[]) || []
+          }
+          clinicSlug={clinicSlug}
+          currentSessionToken={sessionToken}
+          onDismiss={() => onDismissPreviousConversations?.(message.id)}
+        />
+      ) : null;
       break;
     case "verify_identity":
       body = clinicSlug ? (

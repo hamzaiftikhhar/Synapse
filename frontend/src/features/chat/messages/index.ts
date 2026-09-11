@@ -18,3 +18,4 @@ export { VerifyIdentity } from "./verify-identity";
 export { ConfirmationCard } from "./confirmation-card";
 export { ClinicLocationCard } from "./clinic-location-card";
 export { ImageMessage } from "./image-message";
+export { PreviousConversationsCard } from "./previous-conversations-card";

@@ -434,14 +434,14 @@ export function ChatWidget({
 
   const scrollToBottom = useCallback(
     (smooth = true) => {
-      const el = scrollRef.current;
-      if (!el) return;
+    const el = scrollRef.current;
+    if (!el) return;
       el.scrollTo({
         top: el.scrollHeight,
         behavior: smooth && !expanded ? "smooth" : "auto",
       });
-      stickToBottom.current = true;
-      setShowJumpDown(false);
+    stickToBottom.current = true;
+    setShowJumpDown(false);
       setUnreadCount(0);
     },
     [expanded]
@@ -979,7 +979,43 @@ export function ChatWidget({
           ),
         ]);
       }
+
+      // Cross-device history (Phase 2): a separate, optional affordance —
+      // never replaces or merges into the live thread above, and never an
+      // artificial "welcome back" message. Silent on failure, since
+      // verification and the appointments card already succeeded either
+      // way and this is a nice-to-have, not a critical path.
+      try {
+        const { conversations } = await widgetService.listConversations({
+          clinic_slug: bookingClinicSlug,
+          session_token: token,
+        });
+        if (conversations.length) {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: uid("previous_conversations"),
+              role: "assistant",
+              type: "previous_conversations",
+              createdAt: new Date().toISOString(),
+              payload: { conversations },
+            },
+          ]);
+        }
+      } catch {
+        // Silent — see comment above.
+      }
     })();
+  }
+
+  function handleDismissPreviousConversations(messageId: string) {
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.id === messageId
+          ? { ...m, payload: { ...(m.payload ?? {}), dismissed: true } }
+          : m
+      )
+    );
   }
 
   function handleBookingConfirmed() {
@@ -1476,9 +1512,9 @@ export function ChatWidget({
   const chatBody = (
     <div className="relative flex min-h-0 flex-1 flex-col bg-background">
       <div className="relative min-h-0 flex-1">
-        <div
-          ref={scrollRef}
-          onScroll={onScroll}
+      <div
+        ref={scrollRef}
+        onScroll={onScroll}
           className="h-full overflow-y-auto overscroll-contain scroll-smooth px-3 py-4 sm:px-4"
         >
           <div
@@ -1494,17 +1530,17 @@ export function ChatWidget({
               <div ref={topSentinelRef} className="flex justify-center py-1" aria-hidden>
                 {loadingOlder ? (
                   <div className="synapse-chat-skeleton h-2 w-24 rounded-full" />
-                ) : null}
+          ) : null}
               </div>
             ) : null}
             {renderItems.map((item) =>
               item.kind === "separator" ? (
                 <DateSeparator key={item.key} label={item.label} />
               ) : (
-                <MessageRenderer
+            <MessageRenderer
                   key={item.message.id}
                   message={item.message}
-                  onAction={handleAction}
+              onAction={handleAction}
                   onBackendAction={handleBackendAction}
                   showContextActions={item.message.id === lastActionMessageId && !typing}
                   assistantName={`${displayName} Assistant`}
@@ -1526,23 +1562,24 @@ export function ChatWidget({
                   onBookingStarted={handleBookingStarted}
                   onIdentityVerified={handleIdentityVerified}
                   onSessionToken={rememberSessionToken}
+                  onDismissPreviousConversations={handleDismissPreviousConversations}
                 />
               )
             )}
-            {typing ? (
-              <MessageRenderer
-                message={{
-                  id: "typing",
-                  role: "assistant",
-                  type: "typing",
-                  createdAt: new Date().toISOString(),
-                }}
+          {typing ? (
+            <MessageRenderer
+              message={{
+                id: "typing",
+                role: "assistant",
+                type: "typing",
+                createdAt: new Date().toISOString(),
+              }}
                 assistantName={`${displayName} Assistant`}
                 typingHint={lastUserMessageRef.current}
-              />
-            ) : null}
-          </div>
+            />
+          ) : null}
         </div>
+      </div>
 
         {showJumpDown ? (
           <button
@@ -1559,13 +1596,13 @@ export function ChatWidget({
               <span className="ml-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold leading-none text-primary-foreground">
                 {unreadCount > 9 ? "9+" : unreadCount}
               </span>
-            ) : null}
+        ) : null}
           </button>
         ) : null}
       </div>
 
       <ChatComposer
-        value={input}
+          value={input}
         onChange={setInput}
         onSubmit={() => void sendText(input)}
         onStop={stopGenerating}
@@ -1617,29 +1654,29 @@ export function ChatWidget({
 
   return (
     <WidgetThemeProvider appearance={clinicAppearance}>
-      {open && expanded ? (
+        {open && expanded ? (
         <div
           className="pointer-events-auto fixed inset-0 z-[55] bg-black/20"
-          onClick={() => setExpanded(false)}
-          aria-hidden
-        />
-      ) : null}
+            onClick={() => setExpanded(false)}
+            aria-hidden
+          />
+        ) : null}
 
       <div
         className="pointer-events-none fixed inset-x-0 bottom-0 z-[60] flex flex-col items-end p-3 sm:inset-x-auto sm:right-5 sm:bottom-5 sm:p-0"
         style={themeStyle}
       >
-        {open ? (
+          {open ? (
           <div
-            className={cn(
-              "pointer-events-auto mb-3 w-full sm:mb-3",
-              expanded &&
+              className={cn(
+                "pointer-events-auto mb-3 w-full sm:mb-3",
+                expanded &&
                 "sm:fixed sm:inset-0 sm:z-[60] sm:m-0 sm:flex sm:items-center sm:justify-center sm:p-5"
-            )}
-          >
-            {panel}
+              )}
+            >
+              {panel}
           </div>
-        ) : null}
+          ) : null}
 
         {!open && teaserVisible ? (
           <button
