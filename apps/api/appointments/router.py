@@ -20,6 +20,7 @@ from apps.appointments.models import Appointment, AppointmentSource, Appointment
 from apps.doctors.models import Doctor
 from apps.insurance.models import InsurancePlan
 from apps.patients.models import Patient
+from apps.patients.phone import display_phone
 from apps.services.models import Service
 
 router = Router(tags=["Appointments"])
@@ -40,6 +41,8 @@ def _serialize(appt: Appointment) -> AppointmentOut:
         doctor_name=appt.doctor.full_name,
         patient_id=appt.patient_id,
         patient_name=appt.patient.full_name,
+        patient_phone=display_phone(appt.patient.phone),
+        patient_email=appt.patient.email or None,
         service_id=appt.service_id,
         service_name=appt.service.name if appt.service else None,
         insurance_plan_id=appt.insurance_plan_id,

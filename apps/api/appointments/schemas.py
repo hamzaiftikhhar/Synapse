@@ -12,6 +12,8 @@ class AppointmentOut(Schema):
     doctor_name: str
     patient_id: UUID
     patient_name: str
+    patient_phone: str
+    patient_email: str | None
     service_id: UUID | None
     service_name: str | None
     insurance_plan_id: UUID | None
