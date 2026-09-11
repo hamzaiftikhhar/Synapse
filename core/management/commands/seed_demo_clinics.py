@@ -152,12 +152,26 @@ class Command(BaseCommand):
                 is_closed=closed,
             )
 
-    def _specialty(self, clinic: Clinic, name: str, description: str = "") -> Specialty:
+    def _specialty(
+        self, clinic: Clinic, name: str, description: str = "", category: str = ""
+    ) -> Specialty:
+        # Live-confirmed gap (ROADMAP.md): this helper never accepted or
+        # set `category` at all, so every demo clinic's specialties had a
+        # permanently blank category -- silently disabling the entire
+        # specialty_category_hint fallback tier in
+        # booking/discovery.py::suggest_specialties (an exact-match
+        # comparison against a blank string can never succeed, regardless
+        # of what the NLU's category guess is). `category` is optional
+        # (defaults to "" for a specialty with no clean canonical
+        # CareCategory fit) but should be passed a real
+        # core.care_categories.CareCategory value at every call site where
+        # one clearly applies.
         return Specialty.objects.create(
             clinic=clinic,
             name=name,
             slug=slugify(name)[:64],
             description=description,
+            category=category,
             is_active=True,
         )
 
@@ -416,10 +430,26 @@ class Command(BaseCommand):
             ],
         )
 
-        sp_fm = self._specialty(clinic, "Family Medicine", "Chronic care and primary care")
-        sp_im = self._specialty(clinic, "Internal Medicine", "Adult internal medicine")
-        sp_uc = self._specialty(clinic, "Urgent Care", "Walk-in acute care")
-        sp_well = self._specialty(clinic, "Wellness & Acute Care", "Wellness exams and acute visits")
+        sp_fm = self._specialty(
+            clinic, "Family Medicine", "Chronic care and primary care", category="Primary Care"
+        )
+        sp_im = self._specialty(
+            clinic, "Internal Medicine", "Adult internal medicine", category="Primary Care"
+        )
+        # No dedicated "Urgent Care" entry in the curated CareCategory
+        # list (it's a care setting, not a NUCC clinical specialty) --
+        # "Primary Care" is the closest real fit for "does this clinic
+        # have somewhere to send a non-specific concern", which is what
+        # this field is actually used for downstream.
+        sp_uc = self._specialty(
+            clinic, "Urgent Care", "Walk-in acute care", category="Primary Care"
+        )
+        sp_well = self._specialty(
+            clinic,
+            "Wellness & Acute Care",
+            "Wellness exams and acute visits",
+            category="Primary Care",
+        )
 
         svc_physical = self._service(
             clinic,
@@ -441,7 +471,7 @@ class Command(BaseCommand):
             clinic,
             code="SRV-UC-01",
             name="Urgent Care Visit (Level 1 / Basic)",
-            category="Urgent Care",
+            category="Primary Care",
             price_dollars=135,
             duration_min=20,
         )
@@ -449,7 +479,7 @@ class Command(BaseCommand):
             clinic,
             code="SRV-UC-02",
             name="Simple Wound Laceration Repair (Sutures)",
-            category="Urgent Care",
+            category="Primary Care",
             price_dollars=240,
             duration_min=45,
         )
@@ -457,7 +487,7 @@ class Command(BaseCommand):
             clinic,
             code="SRV-LAB-01",
             name="Rapid Strep / Flu Combo Swab",
-            category="In-House Lab",
+            category="Laboratory / Diagnostics",
             price_dollars=35,
             duration_min=10,
         )
@@ -465,7 +495,7 @@ class Command(BaseCommand):
             clinic,
             code="SRV-LAB-02",
             name="Routine Blood Draw (Venipuncture)",
-            category="In-House Lab",
+            category="Laboratory / Diagnostics",
             price_dollars=25,
             duration_min=15,
         )
@@ -478,7 +508,12 @@ class Command(BaseCommand):
             self._insurance(clinic, "UnitedHealthcare", "Choice", "PPO", True),
             self._insurance(clinic, "UnitedHealthcare", "Choice Plus", "PPO", True),
             self._insurance(
-                clinic, "Medicare", "Part B", "Medicare", True, "Direct billing"
+                clinic,
+                "Medicare",
+                "Part B",
+                "Medicare",
+                False,
+                "Practice has opted out of Medicare (see patient contract, Section 5.1) — cannot be billed",
             ),
         ]
         self._insurance(
@@ -586,9 +621,10 @@ class Command(BaseCommand):
                 (
                     "Insurance vs cash-pay",
                     "In-network plans include Blue Cross Blue Shield (PPO, Choice POS), Aetna "
-                    "(HMO Plus, PPO), UnitedHealthcare (Choice, Choice Plus), and Medicare Part B "
-                    "with direct billing. Medicaid is not accepted for non-established urgent care "
-                    "walk-ins. Humana HMO and all Kaiser Permanente plans are cash-pay / "
+                    "(HMO Plus, PPO), and UnitedHealthcare (Choice, Choice Plus). The Practice has "
+                    "opted out of Medicare (see patient contract, Section 5.1) and cannot bill "
+                    "Medicare for any services. Medicaid is not accepted for non-established urgent "
+                    "care walk-ins. Humana HMO and all Kaiser Permanente plans are cash-pay / "
                     "out-of-network only. Standard cash prices are listed on each service.",
                 ),
                 (
@@ -654,17 +690,23 @@ class Command(BaseCommand):
         )
 
         sp_gen = self._specialty(
-            clinic, "General & Cosmetic Dentistry", "Cleanings, restorations, whitening"
+            clinic,
+            "General & Cosmetic Dentistry",
+            "Cleanings, restorations, whitening",
+            category="Dentistry",
         )
         sp_ortho = self._specialty(
-            clinic, "Orthodontics", "Invisalign and orthodontic consultations"
+            clinic,
+            "Orthodontics",
+            "Invisalign and orthodontic consultations",
+            category="Dentistry",
         )
 
         svc_clean = self._service(
             clinic,
             code="DNT-PREV-01",
             name="Adult Cleaning, Exam & X-Rays",
-            category="Preventive",
+            category="Dentistry",
             price_dollars=220,
             duration_min=60,
         )
@@ -672,7 +714,7 @@ class Command(BaseCommand):
             clinic,
             code="DNT-COSM-01",
             name="In-Office Laser Teeth Whitening",
-            category="Cosmetic",
+            category="Dentistry",
             price_dollars=450,
             duration_min=90,
         )
@@ -680,7 +722,7 @@ class Command(BaseCommand):
             clinic,
             code="DNT-REST-01",
             name="Composite Resin Filling (1 Surface)",
-            category="Restorative",
+            category="Dentistry",
             price_dollars=180,
             duration_min=45,
         )
@@ -688,7 +730,7 @@ class Command(BaseCommand):
             clinic,
             code="DNT-ORTH-01",
             name="Invisalign Comprehensive Evaluation",
-            category="Orthodontics",
+            category="Dentistry",
             price_dollars=0,
             duration_min=30,
             description="Promotional free evaluation",
@@ -697,7 +739,7 @@ class Command(BaseCommand):
             clinic,
             code="DNT-SURG-01",
             name="Surgical Tooth Extraction",
-            category="Oral Surgery",
+            category="Dentistry",
             price_dollars=350,
             duration_min=60,
         )
@@ -860,17 +902,23 @@ class Command(BaseCommand):
         )
 
         sp_med = self._specialty(
-            clinic, "Medical & Surgical Dermatology", "Acne, moles, skin cancer"
+            clinic,
+            "Medical & Surgical Dermatology",
+            "Acne, moles, skin cancer",
+            category="Dermatology",
         )
         sp_cos = self._specialty(
-            clinic, "Cosmetic Injectables & Lasers", "Botox, fillers, IPL"
+            clinic,
+            "Cosmetic Injectables & Lasers",
+            "Botox, fillers, IPL",
+            category="Aesthetics / Cosmetic",
         )
 
         svc_mole = self._service(
             clinic,
             code="DERM-MED-01",
             name="Full Body Mole & Cancer Screening",
-            category="Medical",
+            category="Dermatology",
             price_dollars=210,
             duration_min=30,
         )
@@ -878,7 +926,7 @@ class Command(BaseCommand):
             clinic,
             code="DERM-MED-02",
             name="Acne Vulgaris Initial Consultation",
-            category="Medical",
+            category="Dermatology",
             price_dollars=150,
             duration_min=30,
         )
@@ -886,7 +934,7 @@ class Command(BaseCommand):
             clinic,
             code="DERM-COS-01",
             name="Botox / Dysport Wrinkle Treatment",
-            category="Cosmetic",
+            category="Aesthetics / Cosmetic",
             price_dollars=14,
             duration_min=30,
             description="Priced at $14.00 per unit. Total depends on units used.",
@@ -896,7 +944,7 @@ class Command(BaseCommand):
             clinic,
             code="DERM-COS-02",
             name="Hyaluronic Acid Dermal Filler (1 Syringe)",
-            category="Cosmetic",
+            category="Aesthetics / Cosmetic",
             price_dollars=650,
             duration_min=45,
         )
@@ -904,7 +952,7 @@ class Command(BaseCommand):
             clinic,
             code="DERM-COS-03",
             name="IPL Photofacial (Full Face)",
-            category="Laser",
+            category="Aesthetics / Cosmetic",
             price_dollars=350,
             duration_min=60,
         )
