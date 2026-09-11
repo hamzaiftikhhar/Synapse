@@ -11,6 +11,8 @@ from apps.chatbot.routing.doc_catalog import (
     build_doctor_catalog,
     build_document_catalog,
     build_service_catalog,
+    build_specialty_catalog,
+    catalog_for_catalog_match_context,
     catalog_for_nlu_context,
     matching_document_ids,
 )
@@ -35,6 +37,8 @@ __all__ = [
     "build_doctor_catalog",
     "build_document_catalog",
     "build_service_catalog",
+    "build_specialty_catalog",
+    "catalog_for_catalog_match_context",
     "catalog_for_nlu_context",
     "matching_document_ids",
     "is_transactional_booking",

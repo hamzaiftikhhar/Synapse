@@ -204,6 +204,15 @@ def apply_confidence_policy(
         confidence=nlu.confidence,
         entities=nlu.entities,
         resolved_ids=nlu.resolved_ids,
+        # Same bug, same fix as routing/heuristics.py::_result: this
+        # helper rebuilds NLUResult field-by-field rather than via
+        # dataclasses.replace(), so catalog_match/medical_question_mode
+        # were silently reset to their inert defaults every time this ran
+        # -- which is on every real message, from compute_message_sensors
+        # (planner.py), after apply_routing_heuristics already ran.
+        # Passed through unchanged, same as entities/resolved_ids above.
+        catalog_match=nlu.catalog_match,
+        medical_question_mode=nlu.medical_question_mode,
         needs_sql=needs_sql,
         needs_vector=needs_vector,
         needs_llm=needs_llm,

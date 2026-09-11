@@ -5,7 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, TestCase
 
 from apps.chatbot.nlu.decision import DecisionEngine
 from apps.chatbot.nlu.rules import try_rule_classify
@@ -462,8 +462,22 @@ class SqlHonestyTests(SimpleTestCase):
         self.assertIn("Pick a service below.", text)
 
 
-class EngineLaneIsolationTests(SimpleTestCase):
-    """SQL lane must never call synthesize_clinic_reply; RAG lane must."""
+class EngineLaneIsolationTests(TestCase):
+    """SQL lane must never call synthesize_clinic_reply; RAG lane must.
+
+    TestCase, not SimpleTestCase (capability-family reliability phase):
+    with CAPABILITY_RESOLVER_LIVE_ENABLED on, a bare zero-entity
+    doctor_search ("Help me find a doctor") now legitimately reaches the
+    live Clinic Capability Resolver's own real catalog query
+    (`_catalog_rows`, see capability_resolver.py's Phase 3 boundary fix --
+    already documented there as the accepted cost of widening zero-entity
+    doctor_search/doctor_availability to "explicit") before this test's
+    mocked `_run_sql_tasks` ever gets consulted. The fake `SimpleNamespace`
+    clinic below has no real Specialty/Service rows (a genuinely empty
+    catalog), so the resolver call itself is unaffected in outcome -- it
+    now just needs real (if trivial, zero-row) DB access to reach that
+    honest "nothing to resolve" result, which SimpleTestCase forbids
+    outright regardless of what the query would find."""
 
     def _clinic(self):
         return SimpleNamespace(

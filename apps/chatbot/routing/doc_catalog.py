@@ -87,6 +87,67 @@ def build_service_catalog(clinic: Any, *, limit: int = 40) -> list[dict[str, Any
         return []
 
 
+def build_specialty_catalog(clinic: Any, *, limit: int = 60) -> list[dict[str, Any]]:
+    """Active specialties for this clinic, with real ids -- the specialty
+    half of the Phase 2 catalog-match NLU block (see
+    nlu/schemas.py::CatalogMatch). `limit` is a defensive cap on the query
+    itself, not the prompt-size policy -- see
+    catalog_for_catalog_match_context's documented 50-row combined
+    threshold for that."""
+    try:
+        from apps.specialties.models import Specialty
+
+        clinic_id = getattr(clinic, "id", None)
+        if clinic_id is None:
+            return []
+        qs = (
+            Specialty.objects.filter(clinic_id=clinic_id, is_deleted=False, is_active=True)
+            .order_by("name")[:limit]
+        )
+        return [{"id": str(s.id), "name": s.name} for s in qs]
+    except Exception:
+        return []
+
+
+def catalog_for_catalog_match_context(
+    specialty_catalog: list[dict[str, Any]],
+    service_catalog: list[dict[str, Any]],
+    *,
+    size_threshold: int = 50,
+) -> str:
+    """Render the ID-tagged specialty+service block for the Phase 2
+    catalog-match NLU field -- a distinct block from the plain-name
+    `services`/`doctors` context (nlu/prompts.py), which callers must
+    never confuse with an id-bearing list.
+
+    Size threshold (per the Phase 2 plan, a documented tripwire, not an
+    architectural ceiling): a clinic with more than `size_threshold`
+    combined rows switches to a truncated, alphabetical-first slice
+    rather than the full catalog. Every clinic seeded in this repo today
+    is well under this, so today this is a real trigger with no clinic
+    yet exercising it -- exact truncation-by-relevance (e.g. a keyword
+    pre-filter before the LLM call) is deliberately out of scope here,
+    same as the approved plan states.
+    """
+    combined = len(specialty_catalog) + len(service_catalog)
+    if combined == 0:
+        return ""
+    if combined > size_threshold:
+        # Simple, documented-as-temporary truncation: keep the two lists
+        # proportionally, alphabetical order already applied by the
+        # builders above.
+        half = size_threshold // 2
+        specialty_catalog = specialty_catalog[:half]
+        service_catalog = service_catalog[: size_threshold - len(specialty_catalog)]
+
+    lines = []
+    for s in specialty_catalog:
+        lines.append(f"[specialty] id={s['id']} name={s['name']}")
+    for s in service_catalog:
+        lines.append(f"[service] id={s['id']} name={s['name']}")
+    return "\n".join(lines)
+
+
 def build_doctor_catalog(clinic: Any, *, limit: int = 40) -> list[dict[str, Any]]:
     """Active doctors for this clinic — grounds the Small NLU's doctor_name
     extraction and intent classification against who's actually on staff.

@@ -346,6 +346,18 @@ def _result(
         confidence=confidence,
         entities=entities,
         resolved_ids=resolved_ids if resolved_ids is not None else nlu.resolved_ids,
+        # Live-confirmed bug: this helper rebuilds NLUResult field-by-field
+        # rather than via dataclasses.replace(), so any field not named
+        # here silently resets to its dataclass default regardless of what
+        # the raw LLM call produced -- catalog_match (Phase 2) and
+        # medical_question_mode were both being wiped back to their inert
+        # defaults on every real ChatEngine.process() call, since this
+        # function always runs between the raw NLU parse and the code that
+        # consumes them. Passed through unchanged here, same as
+        # is_off_topic/provider/model/timings already are below -- this
+        # function has no business rewriting either of them.
+        catalog_match=nlu.catalog_match,
+        medical_question_mode=nlu.medical_question_mode,
         needs_sql=needs_sql,
         needs_vector=needs_vector,
         needs_llm=needs_llm,

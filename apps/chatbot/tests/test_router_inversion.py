@@ -6,7 +6,9 @@ from django.test import SimpleTestCase
 
 from apps.chatbot.nlu.entity_extract import has_symptom_cues
 from apps.chatbot.nlu.rules import try_rule_classify
-from apps.chatbot.nlu.schemas import Intent, parse_nlu_payload
+from dataclasses import replace
+
+from apps.chatbot.nlu.schemas import CatalogMatch, Intent, parse_nlu_payload
 from apps.chatbot.routing.confidence import apply_confidence_policy
 from apps.chatbot.routing.heuristics import apply_routing_heuristics
 from apps.chatbot.routing.signals import (
@@ -130,3 +132,88 @@ class CancelFeeAndTimeoutTests(SimpleTestCase):
         )
         self.assertNotIn(out.intent, {Intent.SERVICES_OFFERED, Intent.PRICING})
         self.assertFalse(out.needs_sql)
+
+
+class NLUResultFieldPreservationTests(SimpleTestCase):
+    """Severe, previously-undetected live bug (ROADMAP.md): both
+    apply_routing_heuristics (routing/heuristics.py::_result) and
+    apply_confidence_policy (routing/confidence.py) rebuild NLUResult
+    field-by-field instead of via dataclasses.replace() -- so
+    catalog_match (Phase 2) and medical_question_mode were both silently
+    reset to their inert defaults on every single real ChatEngine.process()
+    call, since both functions always run in the real pipeline between
+    the raw NLU parse and the code that consumes those fields (planner.py,
+    sql_tool handlers). Confirmed live: a real "Do you have a cardiology
+    specialist?" call correctly produced catalog_match=no_match from the
+    LLM, but by the time discovery.py's resolver saw it, it had already
+    been wiped back to not_applicable -- masked in earlier verification
+    only because those manual scripts happened to call the NLU/resolver
+    functions directly, skipping apply_routing_heuristics/
+    apply_confidence_policy entirely. These tests exist so adding a THIRD
+    such field in the future doesn't silently repeat this exact bug --
+    the fix must be maintained in both places, not just added once and
+    forgotten as a passing test elsewhere masks the regression."""
+
+    def _nlu_with_both_fields(self, **overrides):
+        nlu = parse_nlu_payload(
+            {"intent": "medical_question", "medical_question_mode": "definitional", **overrides}
+        )
+        return replace(
+            nlu,
+            catalog_match=CatalogMatch(
+                status="matched", match_type="specialty", catalog_id="abc-123"
+            ),
+        )
+
+    def test_apply_routing_heuristics_preserves_catalog_match(self):
+        nlu = self._nlu_with_both_fields()
+        out = apply_routing_heuristics(
+            message="What is hypothyroidism?",
+            nlu=nlu,
+            document_catalog=[],
+            service_catalog=[],
+        )
+        self.assertEqual(out.catalog_match.status, "matched")
+        self.assertEqual(out.catalog_match.catalog_id, "abc-123")
+
+    def test_apply_routing_heuristics_preserves_medical_question_mode(self):
+        nlu = self._nlu_with_both_fields()
+        out = apply_routing_heuristics(
+            message="What is hypothyroidism?",
+            nlu=nlu,
+            document_catalog=[],
+            service_catalog=[],
+        )
+        self.assertEqual(out.medical_question_mode, "definitional")
+
+    def test_apply_confidence_policy_preserves_catalog_match(self):
+        nlu = self._nlu_with_both_fields(confidence=0.9)
+        policy = apply_confidence_policy(
+            nlu, has_catalog=False, service_hit=False, knowledge_q=False
+        )
+        self.assertEqual(policy.nlu.catalog_match.status, "matched")
+        self.assertEqual(policy.nlu.catalog_match.catalog_id, "abc-123")
+
+    def test_apply_confidence_policy_preserves_medical_question_mode(self):
+        nlu = self._nlu_with_both_fields(confidence=0.9)
+        policy = apply_confidence_policy(
+            nlu, has_catalog=False, service_hit=False, knowledge_q=False
+        )
+        self.assertEqual(policy.nlu.medical_question_mode, "definitional")
+
+    def test_both_fields_survive_the_full_real_chain(self):
+        """The real pipeline order: apply_routing_heuristics, then
+        apply_confidence_policy -- both must preserve both fields end to
+        end, not just individually."""
+        nlu = self._nlu_with_both_fields(confidence=0.9)
+        nlu = apply_routing_heuristics(
+            message="What is hypothyroidism?",
+            nlu=nlu,
+            document_catalog=[],
+            service_catalog=[],
+        )
+        policy = apply_confidence_policy(
+            nlu, has_catalog=False, service_hit=False, knowledge_q=False
+        )
+        self.assertEqual(policy.nlu.catalog_match.status, "matched")
+        self.assertEqual(policy.nlu.medical_question_mode, "definitional")
