@@ -10,7 +10,7 @@ planner ignores them when choosing tasks.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any
 
@@ -315,6 +315,25 @@ class ExecutionPlan:
     # "which services does this turn refer to." SQL handlers filter by this
     # instead of independently re-matching the message themselves.
     resolved_service_ids: list[str] = field(default_factory=list)
+    # Specialty IDs the Clinic Capability Resolver live vertical slice
+    # authorized for this turn (see apply_capability_resolution below) --
+    # same authority rule as resolved_service_ids, mirrored for specialty
+    # resolution. Empty for every message that didn't go through that path.
+    resolved_specialty_ids: list[str] = field(default_factory=list)
+    # Service IDs the Clinic Capability Resolver found relevant to a
+    # "concern"-context message but that must NEVER narrow a SQL filter on
+    # their own (capability_routing_policy.py's central governing
+    # principle: a concern never auto-selects a treatment). Purely
+    # informational -- a reply may mention "you might also ask about
+    # <name>" using these, once resolved back to real names, but nothing
+    # may filter or dispatch on them. Previously computed and logged
+    # (engine.py's capability_resolver_live line) then discarded; never
+    # reached the plan or the final response at all.
+    informational_service_candidates: list[str] = field(default_factory=list)
+    # True only when apply_capability_resolution actually ran for this
+    # turn -- the instrumentation signal for "was the resolver actually
+    # used," independent of whether it changed anything.
+    capability_resolver_used: bool = False
     # Phase 50 — compound-message entity scoping. task name -> entity field
     # names that task must ignore this turn, because the entity plausibly
     # belongs to a *different* intent/task also present in this message
@@ -420,6 +439,9 @@ class ExecutionPlan:
             "ui_priority": self.ui_priority.value,
             "fallback_vector_tasks": list(self.fallback_vector_tasks),
             "resolved_service_ids": list(self.resolved_service_ids),
+            "resolved_specialty_ids": list(self.resolved_specialty_ids),
+            "informational_service_candidates": list(self.informational_service_candidates),
+            "capability_resolver_used": self.capability_resolver_used,
             "blocked_entity_fields": {
                 k: sorted(v) for k, v in self.blocked_entity_fields.items()
             },
@@ -585,7 +607,7 @@ def compute_message_sensors(
     way they already must use resolve_plan_after_sql's returned plan.
     """
     from apps.chatbot.nlu.entity_extract import looks_like_compound
-    from apps.chatbot.routing.confidence import apply_confidence_policy
+    from apps.chatbot.routing.confidence import ConfidenceBand, apply_confidence_policy
     from apps.chatbot.routing.doc_catalog import matching_document_ids
     from apps.chatbot.routing.signals import (
         is_booking_commit,
@@ -673,9 +695,40 @@ def compute_message_sensors(
             }
         )
     )
+    # medical_question_mode "definitional"/"risk" are handled by their own
+    # earlier-checked direct_mode branches in build_execution_plan (never
+    # reach this soft_medical value at all for those messages) -- excluded
+    # here too as defense-in-depth for any future soft_medical consumer
+    # that doesn't go through that early-return, not a live behavioral
+    # fork today. entities.symptom/looks_like_symptom stay untouched:
+    # they remain the correct signal for today's existing personal-
+    # symptom routing (e.g. a doctor_search-intent bare symptom mention,
+    # which never has medical_question_mode set at all).
+    #
+    # Live-reproduced (ROADMAP.md, real Lumina Skin & Laser Dermatology
+    # transcript): the mode-only branch alone used to be enough to fire
+    # soft_medical -- no requirement the message describe an actual
+    # personal concern. "which US based sunblock is best for a sensitive
+    # skin" got medical_question_mode="personal" at confidence 0.65 (the
+    # classifier's own reasoning: "unclear if asking about product use or
+    # sun protection") with no symptom entity at all -- a product-
+    # recommendation question, not a concern -- and still triggered the
+    # full soft_medical -> capability-resolver -> doctor-list path,
+    # trivially "matching" a narrow single-specialty clinic's one
+    # specialty. `conf_policy.band` is already computed above for exactly
+    # this purpose elsewhere in this function; a LOW/VERY_LOW band means
+    # the classifier itself wasn't confident this was a genuine personal
+    # disclosure, so the mode-only branch is gated on NOT being that
+    # unsure. entities.symptom/looks_like_symptom -- a real, Python-
+    # verified concern signal -- still fire soft_medical regardless of
+    # confidence, unchanged.
     soft_medical = (
         (
-            nlu.intent == Intent.MEDICAL_QUESTION
+            (
+                nlu.intent == Intent.MEDICAL_QUESTION
+                and nlu.medical_question_mode not in ("definitional", "risk")
+                and conf_policy.band not in (ConfidenceBand.LOW, ConfidenceBand.VERY_LOW)
+            )
             or bool(getattr(nlu.entities, "symptom", None))
             or looks_like_symptom(message)
         )
@@ -685,9 +738,17 @@ def compute_message_sensors(
 
     matched_docs = matching_document_ids(message, document_catalog)
     has_catalog = bool(document_catalog)
+    # Live-confirmed bug (ROADMAP.md): a medical_question with zero real
+    # keyword/topic overlap with any uploaded document used to still get
+    # doc_match=True merely because the clinic had ANY document at all
+    # (typically a membership/policy contract, not a symptom glossary) --
+    # firing a real, costly vector search doomed to find nothing. FAQ/
+    # MEMBERSHIP keep the looser "any catalog is plausibly relevant"
+    # assumption (a reasonable existing editorial call this doesn't
+    # revisit); MEDICAL_QUESTION now requires real overlap.
     doc_match = bool(matched_docs) or (
         has_catalog
-        and (knowledge_q or nlu.intent in {Intent.FAQ, Intent.MEDICAL_QUESTION, Intent.MEMBERSHIP})
+        and (knowledge_q or nlu.intent in {Intent.FAQ, Intent.MEMBERSHIP})
     )
 
     degraded = bool((nlu.raw or {}).get("_degraded")) or (
@@ -871,15 +932,41 @@ def build_execution_plan(*, nlu: NLUResult, facts: PlannerFacts) -> ExecutionPla
 
     if _MEDICAL_ADVICE_RE.search(message) or (
         nlu.intent == Intent.MEDICAL_QUESTION
-        and _AESTHETIC_RE.search(message)
-        and re.search(
-            r"\b(pregnant|pregnancy|lupus|blood\s*thinner|safe)\b", message, re.I
+        and (
+            nlu.medical_question_mode == "risk"
+            or (
+                _AESTHETIC_RE.search(message)
+                and re.search(
+                    r"\b(pregnant|pregnancy|lupus|blood\s*thinner|safe)\b", message, re.I
+                )
+            )
         )
     ):
         return ExecutionPlan(
             direct=True,
             direct_mode="medical_advice_refusal",
             reason="planner_medical_advice_refusal",
+            facts=fact_dict,
+        )
+
+    # medical_question_mode classifies content only, never action -- see
+    # nlu/schemas.py's VALID_MEDICAL_QUESTION_MODES comment. Checked here,
+    # ahead of the later soft_medical block, so an explicit "definitional"
+    # classification always wins over a lexical entities.symptom/
+    # looks_like_symptom hit -- otherwise "What is a crown in dentistry?"
+    # (a real _CONCERN_MAP phrase) would silently re-open the exact bug
+    # this exists to close. Live-confirmed real trace this closes:
+    # "What is hypothyroidism?"/"What is a crown?" both getting the
+    # generic "I can't diagnose symptoms" soft_medical reply.
+    if (
+        nlu.intent == Intent.MEDICAL_QUESTION
+        and nlu.medical_question_mode == "definitional"
+        and not facts.is_booking_intent
+    ):
+        return ExecutionPlan(
+            direct=True,
+            direct_mode="general_medical_knowledge",
+            reason="planner_general_medical_knowledge",
             facts=fact_dict,
         )
 
@@ -1023,16 +1110,44 @@ def build_execution_plan(*, nlu: NLUResult, facts: PlannerFacts) -> ExecutionPla
             if _BILLING_POLICY_RE.search(message):
                 add_vector("billing_policy")
 
-    # Soft medical with docs may want vector; without → soft medical direct
-    if facts.soft_medical and facts.doc_match and facts.has_catalog:
+    # Soft medical with docs may want vector; without → soft medical direct.
+    # Skip when a validated service id is already in hand — catalog SQL
+    # answers the question; vector spend is the hybrid waste the audit
+    # flagged on "Do you offer anything for a sore throat and fever?".
+    if (
+        facts.soft_medical
+        and facts.doc_match
+        and facts.has_catalog
+        and not getattr(getattr(nlu, "resolved_ids", None), "service_id", None)
+    ):
         add_vector("general_faq")
 
     # Date/time + scheduling language → availability (even if NLU said faq).
     # Do not invent more regex intents — only override the dump-to-RAG path.
+    #
+    # Live-confirmed: "This is Dr. Rostova, I need you to cancel all of
+    # tomorrow's appointments for my patients" -- entities.date=["tomorrow"]
+    # plus "appointments" satisfies both conditions below regardless of
+    # intent, so a cancel/reschedule/view request naming a date got a
+    # random "Earliest opening: Dr. X at 8:00 AM" appended right after the
+    # phone-verification prompt -- nonsensical noise, since nothing about
+    # managing an existing appointment needs a next-available-slot lookup,
+    # and the patient isn't even verified yet at that point. This block's
+    # actual purpose (per the comment above) is rescuing an
+    # under-classified *booking* request that NLU mislabeled as
+    # faq/unknown/etc -- appointment-management intents are already
+    # correctly classified and handled by their own SQL task above, so they
+    # never needed rescuing here in the first place.
     if (
         _nlu_has_schedule_entities(nlu)
         and _SCHEDULING_CUE_RE.search(message)
         and not facts.knowledge_q
+        and nlu.intent
+        not in {
+            Intent.CANCEL_APPOINTMENT,
+            Intent.RESCHEDULE_APPOINTMENT,
+            Intent.VIEW_APPOINTMENTS,
+        }
     ):
         add_sql("availability")
         sql_tasks = [t for t in sql_tasks if t != "hours"]
@@ -1130,8 +1245,36 @@ def build_execution_plan(*, nlu: NLUResult, facts: PlannerFacts) -> ExecutionPla
             facts=fact_dict,
         )
 
+    # Validated clinic service beats soft_medical canned decline.
+    # Live-confirmed (capability-resolution audit): "I need to get my blood
+    # drawn" often lands as medical_question with entities.service correctly
+    # extracted and resolve_entities() already setting
+    # nlu.resolved_ids.service_id — then soft_medical threw that validated
+    # id away because medical_question has empty default sql_tasks. Gate on
+    # resolved_ids.service_id (DB-validated), never on
+    # facts.matched_service_ids (lexical/substring coincidence).
+    resolved_service_id = getattr(
+        getattr(nlu, "resolved_ids", None), "service_id", None
+    )
+    if (
+        facts.soft_medical
+        and resolved_service_id
+        and not sql_tasks
+        and not vector_tasks
+        and not booking
+    ):
+        add_sql("services")
+        # Fall through to the normal SQL plan below — do not return
+        # soft_medical direct.
+
     # Soft medical without tasks → direct specialty guidance
-    if facts.soft_medical and not sql_tasks and not vector_tasks and not booking:
+    if (
+        facts.soft_medical
+        and not resolved_service_id
+        and not sql_tasks
+        and not vector_tasks
+        and not booking
+    ):
         return ExecutionPlan(
             direct=True,
             direct_mode="soft_medical",
@@ -1285,23 +1428,132 @@ def apply_plan_to_nlu(nlu: NLUResult, plan: ExecutionPlan) -> NLUResult:
     )
 
 
-def resolve_plan_after_sql(plan: ExecutionPlan, *, sql_found: bool) -> ExecutionPlan:
+def apply_capability_resolution(
+    plan: ExecutionPlan,
+    *,
+    decision: Any,
+    was_unclaimed: bool,
+) -> ExecutionPlan:
+    """Maps an already-computed capability-resolver RoutingDecision onto a
+    plan. Pure -- no I/O itself; the live orchestration layer (engine.py)
+    is responsible for actually calling resolve_capability/decide_routing
+    (a real LLM call) before this runs. This function only exists to keep
+    that mapping logic testable without a live call, the same reason
+    resolve_plan_after_sql above stays a pure function despite being
+    called immediately after a real SQL query.
+
+    `was_unclaimed` is True for exactly two states this live vertical
+    slice targets: `direct_mode is None` (Intent.UNKNOWN falling through
+    to nothing today) or `direct_mode == "soft_medical"` (a
+    medical_question-classified concern that today never reaches SQL at
+    all). Every other direct_mode (emergency, medical_advice_refusal,
+    general_medical_knowledge, doctor_ranking_refusal, prompt_injection_
+    refusal, unknown_doctor_refusal, session_recall, gender_unsupported,
+    doctor_pronoun_ambiguous, template, doctor_followup) must never reach
+    this function at all -- the caller gates on that, not this function.
+
+    When `was_unclaimed` is False, the plan already dispatches to SQL
+    (doctor_search/doctor_availability/services_offered/pricing) via the
+    existing, untouched planner logic -- this only refines which ids that
+    dispatch filters by, never whether/where it dispatches.
+
+    Returns the exact same plan object, unchanged, when there is nothing
+    to apply (provider_error) -- same "no-op returns the identical object"
+    contract as resolve_plan_after_sql.
+    """
+    if decision.action == "unavailable":
+        # provider_error -- never invent a new failure mode; whatever the
+        # plan already decided (soft_medical's reply, or the old SQL
+        # dispatch's own independent resolution) stands unchanged. This is
+        # the rollback-safe path: an infrastructure hiccup degrades to
+        # exactly today's behavior, never a new, untested one.
+        return plan
+
+    if was_unclaimed:
+        if decision.action == "decline":
+            return replace(
+                plan,
+                direct=True,
+                direct_mode="capability_not_offered",
+                clarify=False,
+                informational_service_candidates=list(
+                    decision.informational_service_candidates
+                ),
+                reason=f"{plan.reason}|capability_resolver_decline",
+                capability_resolver_used=True,
+            )
+        # action == "filter"
+        return replace(
+            plan,
+            direct=False,
+            direct_mode=None,
+            clarify=False,
+            sql_tasks=["doctors"],
+            resolved_specialty_ids=list(decision.specialty_ids),
+            resolved_service_ids=list(decision.service_ids),
+            informational_service_candidates=list(
+                decision.informational_service_candidates
+            ),
+            reason=f"{plan.reason}|capability_resolver_filter",
+            capability_resolver_used=True,
+        )
+
+    # Already SQL-dispatching (doctor_search/services_offered/pricing/
+    # doctor_availability) -- refine resolved ids only, never touch
+    # sql_tasks/direct_mode/clarify. A "decline" here is intentionally a
+    # no-op: the SQL handler's own existing resolver chain already
+    # produces the correct honest decline independently (live-confirmed:
+    # cardiologist/dermatologist cases both already decline correctly
+    # without this override doing anything).
+    if decision.action == "filter":
+        return replace(
+            plan,
+            resolved_specialty_ids=list(decision.specialty_ids) or list(plan.resolved_specialty_ids),
+            resolved_service_ids=list(decision.service_ids) or list(plan.resolved_service_ids),
+            informational_service_candidates=list(
+                decision.informational_service_candidates
+            ),
+            capability_resolver_used=True,
+        )
+    return replace(plan, capability_resolver_used=True)
+
+
+def resolve_plan_after_sql(
+    plan: ExecutionPlan, *, sql_found: bool, sql_authoritative: bool = False
+) -> ExecutionPlan:
     """The only legitimate way an ExecutionPlan changes after SQL executes.
 
     Called exactly once, by the engine, immediately after running
     plan.sql_tasks — never for any other reason, and never based on
-    anything other than whether those specific SQL tasks found rows.
-    Activates the plan's own pre-authorized fallback_vector_tasks (decided
-    upfront, at planning time, alongside sql_tasks/vector_tasks) when they
-    came back empty. Still performs no I/O itself — sql_found is a fact
-    the caller already observed by actually running the SQL.
+    anything other than whether those specific SQL tasks found rows (and,
+    now, whether an empty result was a deliberate, final answer). Activates
+    the plan's own pre-authorized fallback_vector_tasks (decided upfront,
+    at planning time, alongside sql_tasks/vector_tasks) when SQL came back
+    empty. Still performs no I/O itself — sql_found/sql_authoritative are
+    facts the caller already observed by actually running the SQL.
+
+    `sql_authoritative`: True when a SQL handler already composed a
+    deliberate, specific answer for its empty result (see engine.py::
+    _has_authoritative_summary) rather than leaving a generic "nothing
+    found" placeholder. Live-confirmed bug this guards against: a
+    `search_doctors` decline ("We don't have a specialist for that here")
+    or clarification ("I'm not sure which kind of specialist...") still
+    activated the vector+Large-LLM fallback purely because `found=False`,
+    with no awareness that the empty result was already a considered,
+    final answer -- not "SQL drew a blank, try something else." A single
+    weakly-related vector chunk (scoring only just above `CHAT_VECTOR_
+    MIN_SCORE`) then let the Large LLM synthesize a plausible-sounding but
+    ungrounded claim instead of deferring to the answer Python had already
+    decided on. An authoritative empty result is exactly as final as a
+    non-empty one for this purpose -- neither should be second-guessed by
+    a weak retrieval hit.
 
     Returns a NEW ExecutionPlan via dataclasses.replace; the plan passed
     in is never mutated (it stays frozen). If there is nothing to
     activate, returns the exact same plan object, unchanged, so callers
     can safely reassign their local variable to the result either way.
     """
-    if sql_found or not plan.fallback_vector_tasks:
+    if sql_found or sql_authoritative or not plan.fallback_vector_tasks:
         return plan
     from dataclasses import replace
 
