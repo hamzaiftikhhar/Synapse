@@ -32,6 +32,7 @@ from apps.chatbot.services.otp_service import send_otp, verify_otp
 from apps.chatbot.services.visitor_service import (
     link_session_visitor_to_patient,
     link_visitor_to_patient,
+    list_other_verified_sessions,
 )
 from apps.clinics.models import Clinic
 from apps.doctors.models import Doctor, DoctorSchedule
@@ -278,3 +279,118 @@ class BookingConfirmLinksVisitorTests(TestCase):
         result = self._book(phone="+15559991111")
         self.assertTrue(Appointment.objects.filter(clinic=self.clinic).exists())
         self.assertEqual(result["step"], "confirmed")
+
+
+class ListOtherVerifiedSessionsTests(TestCase):
+    """Phase 2 (Patient Identity/Chat History plan) — the cross-device
+    "you have a previous conversation" affordance's underlying query.
+    `is_authenticated=True` is the hard security boundary: a session that
+    only got `patient` passively backfilled by link_visitor_to_patient
+    (never itself OTP-verified) must never show up here, exactly the same
+    boundary OTPVerificationLinksVisitorTests above locks in for
+    verify_otp itself."""
+
+    def setUp(self):
+        self.clinic = Clinic.objects.create(
+            slug="other-sessions-clinic", name="Other Sessions Clinic",
+            email="other-sessions@clinic.com", phone="+12125550230",
+            timezone="America/New_York",
+        )
+        self.patient = Patient.objects.create(
+            clinic=self.clinic, phone="+15550005555", first_name="River", last_name="Doe",
+        )
+        self.other_patient = Patient.objects.create(
+            clinic=self.clinic, phone="+15550006666", first_name="Sam", last_name="Roe",
+        )
+        self.current = ChatSession.objects.create(
+            clinic=self.clinic, session_token="tok-current", patient=self.patient,
+            is_authenticated=True, status=ChatSessionStatus.ACTIVE,
+        )
+
+    def _add_message(self, session, content, *, role=MessageRole.USER, seq=1, mtype=MessageType.TEXT):
+        ChatMessage.objects.create(
+            clinic=self.clinic, session=session, role=role, message_type=mtype,
+            content=content, sequence_number=seq, metadata={},
+        )
+
+    def test_empty_when_no_other_sessions_exist(self):
+        result = list_other_verified_sessions(self.clinic, self.patient, exclude=self.current)
+        self.assertEqual(result, [])
+
+    def test_excludes_the_current_session_itself(self):
+        # Only session for this patient besides `current` would be itself —
+        # excluding it must not accidentally include it under another guise.
+        result = list_other_verified_sessions(self.clinic, self.patient, exclude=self.current)
+        self.assertEqual(result, [])
+
+    def test_lists_another_verified_session_for_the_same_patient(self):
+        other = ChatSession.objects.create(
+            clinic=self.clinic, session_token="tok-other-device", patient=self.patient,
+            is_authenticated=True, status=ChatSessionStatus.ACTIVE,
+        )
+        self._add_message(other, "hi from the other device")
+        result = list_other_verified_sessions(self.clinic, self.patient, exclude=self.current)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["session_token"], "tok-other-device")
+        self.assertEqual(result[0]["message_count"], 1)
+        self.assertEqual(result[0]["preview"], "hi from the other device")
+
+    def test_never_includes_a_same_visitor_sibling_that_was_never_itself_verified(self):
+        """A sibling session that only got `patient` passively backfilled
+        by link_visitor_to_patient (is_authenticated still False) must not
+        leak into the cross-device history list — this is the exact
+        boundary visitor_service.py's own docstring describes."""
+        visitor = ChatVisitor.objects.create(
+            clinic=self.clinic, visitor_key="sibling-visitor", patient=self.patient,
+        )
+        unverified_sibling = ChatSession.objects.create(
+            clinic=self.clinic, visitor=visitor, session_token="tok-unverified-sibling",
+            patient=self.patient, is_authenticated=False, status=ChatSessionStatus.ACTIVE,
+        )
+        self._add_message(unverified_sibling, "never actually verified")
+        result = list_other_verified_sessions(self.clinic, self.patient, exclude=self.current)
+        self.assertEqual(result, [])
+
+    def test_never_includes_another_patients_verified_session(self):
+        ChatSession.objects.create(
+            clinic=self.clinic, session_token="tok-other-patient", patient=self.other_patient,
+            is_authenticated=True, status=ChatSessionStatus.ACTIVE,
+        )
+        result = list_other_verified_sessions(self.clinic, self.patient, exclude=self.current)
+        self.assertEqual(result, [])
+
+    def test_orders_most_recently_active_first(self):
+        older = ChatSession.objects.create(
+            clinic=self.clinic, session_token="tok-older", patient=self.patient,
+            is_authenticated=True, status=ChatSessionStatus.ACTIVE,
+        )
+        newer = ChatSession.objects.create(
+            clinic=self.clinic, session_token="tok-newer", patient=self.patient,
+            is_authenticated=True, status=ChatSessionStatus.ACTIVE,
+        )
+        ChatSession.objects.filter(id=older.id).update(
+            last_active_at=timezone.now() - timedelta(days=2)
+        )
+        ChatSession.objects.filter(id=newer.id).update(
+            last_active_at=timezone.now() - timedelta(hours=1)
+        )
+        result = list_other_verified_sessions(self.clinic, self.patient, exclude=self.current)
+        self.assertEqual([r["session_token"] for r in result], ["tok-newer", "tok-older"])
+
+    def test_preview_and_count_ignore_tool_and_system_rows(self):
+        other = ChatSession.objects.create(
+            clinic=self.clinic, session_token="tok-noise", patient=self.patient,
+            is_authenticated=True, status=ChatSessionStatus.ACTIVE,
+        )
+        self._add_message(other, "real question", role=MessageRole.USER, seq=1)
+        self._add_message(
+            other, '{"tool": "search"}', role=MessageRole.TOOL,
+            seq=2, mtype=MessageType.TOOL_CALL,
+        )
+        self._add_message(
+            other, "real answer", role=MessageRole.ASSISTANT, seq=3,
+        )
+        result = list_other_verified_sessions(self.clinic, self.patient, exclude=self.current)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["message_count"], 2)
+        self.assertEqual(result[0]["preview"], "real answer")

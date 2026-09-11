@@ -16,6 +16,7 @@ from apps.clinics.features import get_feature_flags, get_verification_mode
 from apps.clinics.models import Clinic
 from apps.notifications.service import NotificationService
 from apps.patients.models import Patient
+from apps.patients.phone import InvalidPhoneNumber, normalize_phone_e164
 from apps.patients.services import patient_service
 
 logger = logging.getLogger(__name__)
@@ -158,6 +159,11 @@ def send_otp(
     """
     phone = (phone or "").strip()
     email = (email or "").strip().lower()
+    if phone:
+        try:
+            phone = normalize_phone_e164(phone)
+        except InvalidPhoneNumber as exc:
+            raise OTPError(str(exc)) from exc
 
     if require_existing_patient:
         if not phone:
@@ -310,6 +316,17 @@ def verify_otp(
 
     phone = (phone or "").strip()
     email = (email or "").strip().lower()
+    if phone:
+        # Unlike send_otp, a malformed phone here fails soft (falls through
+        # to the generic "no match" -> OTPInvalidError below) rather than
+        # raising a distinct error — this function already deliberately
+        # never confirms *why* a lookup failed (see verify_date_of_birth's
+        # identical reasoning), and normalization succeeding or not is not
+        # something to leak either.
+        try:
+            phone = normalize_phone_e164(phone)
+        except InvalidPhoneNumber:
+            pass
 
     otp_qs = OTPVerification.objects.filter(
         clinic=clinic,
