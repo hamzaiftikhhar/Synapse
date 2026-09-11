@@ -366,6 +366,9 @@ export default function AppointmentsPage() {
                         <p className="font-medium text-foreground">
                           {row.patient_name}
                         </p>
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                          {[row.patient_phone, row.patient_email].filter(Boolean).join(" · ")}
+                        </p>
                         <p className="mt-0.5 font-mono text-[11px] tracking-wide text-muted-foreground">
                           {row.confirmation_code}
                           <span className="font-sans">

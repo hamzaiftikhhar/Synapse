@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useForm } from "react-hook-form";
+import { Controller, useForm } from "react-hook-form";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
@@ -11,6 +11,7 @@ import { DataTableShell, EmptyState } from "@/components/dashboard/shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PhoneInput } from "@/components/ui/phone-input";
 import { Label } from "@/components/ui/label";
 import {
   Dialog,
@@ -188,6 +189,7 @@ export default function PatientsPage() {
             <TableHeader>
               <TableRow>
                 <TableHead>Name</TableHead>
+                <TableHead>Phone</TableHead>
                 <TableHead>Email</TableHead>
                 <TableHead>Verified</TableHead>
                 <TableHead className="w-24" />
@@ -197,6 +199,7 @@ export default function PatientsPage() {
               {rows.map((p) => (
                 <TableRow key={p.id}>
                   <TableCell className="font-medium">{p.full_name}</TableCell>
+                  <TableCell className="text-muted-foreground">{p.phone || "—"}</TableCell>
                   <TableCell className="text-muted-foreground">{p.email || "—"}</TableCell>
                   <TableCell>
                     <Badge variant="secondary">
@@ -254,10 +257,16 @@ export default function PatientsPage() {
             </div>
             <div className="space-y-1.5">
               <Label>Phone</Label>
-              <Input
-                {...form.register("phone")}
-                placeholder="+1 415 555 0123"
-                aria-invalid={Boolean(form.formState.errors.phone)}
+              <Controller
+                control={form.control}
+                name="phone"
+                render={({ field }) => (
+                  <PhoneInput
+                    value={field.value}
+                    onChange={field.onChange}
+                    aria-invalid={Boolean(form.formState.errors.phone)}
+                  />
+                )}
               />
               {form.formState.errors.phone ? (
                 <p className="text-xs text-destructive">

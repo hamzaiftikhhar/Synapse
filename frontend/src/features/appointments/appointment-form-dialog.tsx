@@ -17,6 +17,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { PhoneInput } from "@/components/ui/phone-input";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -650,11 +651,9 @@ export function AppointmentFormDialog({
                       </div>
                       <div className="space-y-1">
                         <Label className="text-xs text-muted-foreground">Phone</Label>
-                        <Input
-                          className="h-9"
+                        <PhoneInput
                           value={newPatient.phone}
-                          onChange={(e) => {
-                            const next = e.target.value;
+                          onChange={(next) => {
                             setNewPatient((p) => ({ ...p, phone: next }));
                             if (newPatientErrors.phone) {
                               const issue = validatePhone(next, { required: true });
@@ -666,7 +665,6 @@ export function AppointmentFormDialog({
                               });
                             }
                           }}
-                          placeholder="+1 555 123 4567"
                           aria-invalid={Boolean(newPatientErrors.phone)}
                         />
                         {newPatientErrors.phone ? (
