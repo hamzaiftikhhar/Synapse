@@ -134,6 +134,7 @@ _CONCERN_MAP: list[ConcernEntry] = [
 ]
 
 _PHRASE_PATTERN_CACHE: dict[str, re.Pattern[str]] = {}
+_REFERRAL_BACKSTORY_CACHE: dict[str, re.Pattern[str]] = {}
 
 
 def _phrase_matches(phrase: str, text: str) -> bool:
@@ -149,8 +150,37 @@ def _phrase_matches(phrase: str, text: str) -> bool:
     return bool(pattern.search(text))
 
 
+def _is_referral_backstory(phrase: str, text: str) -> bool:
+    """True when `phrase` only appears as "my {phrase} (specialist|doctor)
+    (told|said|referred)..." -- naming *whose* referral this is, not the
+    current complaint. Needed once phrase-matching is applied to the raw
+    message text (not just an NLU-confirmed symptom entity, see
+    resolve_symptom_specialty_ids/resolve_symptom_service_ids): "My heart
+    specialist told me I need a root canal" must not resolve to Cardiology
+    just because "heart" appears as backstory about who made the referral.
+    A targeted exclusion for this demonstrated pattern, not a general
+    clause parser -- a genuine compound ask ("my heart hurts and I also
+    need a root canal") doesn't match this shape and is unaffected."""
+    pattern = _REFERRAL_BACKSTORY_CACHE.get(phrase)
+    if pattern is None:
+        pattern = re.compile(
+            rf"\bmy\s+{re.escape(phrase)}\s+(?:specialist|doctor)\b"
+            rf"[^.?!]{{0,30}}\b(?:told|said|referred)\b",
+            re.IGNORECASE,
+        )
+        _REFERRAL_BACKSTORY_CACHE[phrase] = pattern
+    return bool(pattern.search(text))
+
+
 def _matched_entries(text: str) -> list[ConcernEntry]:
-    return [e for e in _CONCERN_MAP if any(_phrase_matches(p, text) for p in e.phrases)]
+    return [
+        e
+        for e in _CONCERN_MAP
+        if any(
+            _phrase_matches(p, text) and not _is_referral_backstory(p, text)
+            for p in e.phrases
+        )
+    ]
 
 
 def _hint_names_and_categories(text: str) -> tuple[list[str], set[str]]:
@@ -355,6 +385,66 @@ def suggest_specialties(
     return rows, guidance
 
 
+def primary_care_fallback(
+    clinic: Any, *, category_hint: str = "", reason: str = ""
+) -> dict[str, Any] | None:
+    """A safe, honest "start here" suggestion for the soft_medical
+    care-navigation lane ONLY (engine.py::_soft_medical_reply) -- never
+    used by resolve_symptom_specialty_ids/suggest_specialties's own
+    return path, which stays a plain honest decline for capability
+    questions ("do you have a cardiologist?") and doctor_search/
+    doctor_availability SQL handlers. Live-confirmed gap: a personal
+    concern ("will hCG injections help me continue my pregnancy, given
+    my history of miscarriages") at a clinic with no OB-GYN specialty got
+    the same flat "I can't diagnose symptoms..." reply as a message with
+    no understood concern at all -- the same invariant this whole
+    discovery module already enforces for capability questions ("a
+    resolver's attempted-but-failed match must never be treated the same
+    as no constraint was ever expressed") applies here too, just pointed
+    at a softer outcome: this clinic can still offer a real, honest
+    starting point (its own Primary Care capability, if it has one)
+    instead of nothing at all.
+
+    Fires when EITHER `category_hint` or `reason` (the raw
+    entities.symptom value) is non-empty -- i.e. the concern was
+    understood as a real health concern at all, whether or not it mapped
+    to a specific category. Live-confirmed `specialty_category_hint` is
+    considerably less reliable than `entities.symptom` for this kind of
+    message (6 repeated identical calls for the hCG/miscarriage example
+    returned entities.symptom="history of miscarriages" every time, but
+    specialty_category_hint came back null in all 6) -- gating on
+    category_hint alone would make this fallback almost never fire in
+    practice. A message with NEITHER signal at all (no concern-map hit,
+    no category_hint, no symptom entity) still gets no fallback here --
+    that remains a genuine "not sure what you mean" case, not "understood
+    but not offered."
+
+    Never returned as a definitive answer to what specialty the patient
+    needs -- the guidance text calling this must make clear it's a
+    general starting point, not a match for the stated concern.
+    """
+    if not category_hint and not reason:
+        return None
+    from apps.specialties.models import Specialty
+
+    spec = (
+        Specialty.objects.filter(
+            clinic=clinic, is_deleted=False, is_active=True, category="Primary Care"
+        )
+        .order_by("name")
+        .first()
+    )
+    if spec is None:
+        return None
+    return {
+        "id": str(spec.id),
+        "name": spec.name,
+        "slug": spec.slug,
+        "description": (spec.description or "")[:200],
+        "plain_label": _plain_label(spec.name),
+    }
+
+
 @dataclass(frozen=True)
 class SymptomResolution:
     """Discriminated result of resolving a patient's symptom/concern to
@@ -477,20 +567,48 @@ def resolve_symptom_specialty_ids(
          deterministic table has nothing to say, and still matched by
          plain equality against `Specialty.category`, never trusted to
          mean the clinic actually offers it.
-      4. If neither step resolves any category at all, `understood=False`.
+      4. Only when steps 1-3 found nothing at all: the Phase 2
+         `nlu.catalog_match` tier -- an LLM semantic match against this
+         tenant's real, ID-tagged specialty/service catalog, already
+         validated (tenant/active/exists) by the time this function sees
+         it (see nlu/resolvers.py::resolve_catalog_match). Scoped to
+         `match_type == "specialty"` only, and only for explicit
+         capability/provider requests, never symptom/condition narratives
+         (see nlu/prompts.py's catalog_match instructions) -- this is what
+         catches a capability phrasing the deterministic concern map and
+         `suggest_specialties` genuinely have no vocabulary for at all
+         (e.g. a specialty this clinic has that isn't in `_CONCERN_MAP`).
+         See `_catalog_match_resolution`.
+      5. If nothing above resolves any category at all, `understood=False`.
 
-    Returns `None` when no symptom entity is present at all, OR when the
+    Returns `None` when there is genuinely nothing to go on at all (no
+    symptom entity, no concern-phrase hit anywhere in the raw message, no
+    LLM category guess, no applicable catalog_match either), OR when the
     clinic has zero `Specialty` rows configured (caller falls through to
     its existing behavior unchanged in both cases -- a clinic with no
     specialty data at all is no evidence it lacks the relevant one, so it
     must not be treated the same as a clinic that has specialties and
     genuinely doesn't have a matching one).
+
+    Phase 1 fix (live-confirmed bug): this used to return `None`
+    immediately whenever `entities.symptom` was empty, before ever
+    looking at `message` -- even though every step below already matches
+    against `message` directly. "Do you have any heart specialist?" is a
+    capability question, not a symptom complaint, so `entities.symptom`
+    is correctly left empty by entity extraction (it never claims a
+    symptom wasn't stated) -- but that meant this function exited before
+    the concern-phrase map ever got a chance to recognize "heart," and
+    the caller fell through to an unfiltered "every doctor" browse
+    instead of an honest answer. The gate now only fires *after* actually
+    attempting a match against the message text.
     """
     from apps.chatbot.sql_tool.utils import entity_list
     from apps.specialties.models import Specialty
 
     symptoms = entity_list(getattr(nlu.entities, "symptom", None))
-    if not symptoms:
+    reason = " ".join(symptoms)
+    text = f"{message} {reason}".lower().strip()
+    if not text:
         return None
     clinic_specs = list(
         Specialty.objects.filter(clinic=clinic, is_deleted=False, is_active=True)
@@ -498,8 +616,6 @@ def resolve_symptom_specialty_ids(
     if not clinic_specs:
         return None
 
-    reason = " ".join(symptoms)
-    text = f"{message} {reason}".lower().strip()
     category_hint = getattr(nlu.entities, "specialty_category_hint", None) or ""
 
     ambiguous = ambiguous_categories_for(clinic, text)
@@ -514,10 +630,93 @@ def resolve_symptom_specialty_ids(
             matched_ids=[s["id"] for s in suggested], understood=True
         )
 
+    catalog_result = _catalog_match_resolution(nlu, "specialty")
+    if catalog_result is not None:
+        return catalog_result
+
+    # Tier 5, consulted only after tiers 1-4 all found nothing: a real
+    # symptom/concern was expressed (reason/category_hint non-empty) that
+    # this clinic doesn't have a specific, differentiated specialty for --
+    # offer the clinic's own Primary Care capability as an honest starting
+    # point rather than a bare decline. Live-confirmed gap (ROADMAP.md):
+    # "My kid got sick" (category_hint="Pediatrics") and "I cut my hand
+    # badly, who should I see?" (category_hint="Surgery") both got a
+    # confident "we don't have a specialist for that" even though
+    # Family Medicine could reasonably see either -- while the *exact*
+    # same underlying need, reached via engine.py's soft_medical direct
+    # lane instead of a transactional doctor_search, already got this
+    # fallback (added last phase, directly in _soft_medical_reply). This
+    # tier consolidates that behavior into the one shared resolver every
+    # SQL handler already goes through, instead of leaving it as a second,
+    # parallel implementation only one call path benefited from.
+    #
+    # Never fires for an explicit, unsupported capability request ("Do
+    # you have a cardiologist?") -- live-confirmed that phrasing leaves
+    # BOTH entities.symptom and specialty_category_hint null (the NLU
+    # prompt only ever populates specialty_category_hint alongside a real
+    # symptom entity), so `reason`/`category_hint` are naturally empty
+    # for that shape of message and this tier is skipped, same as tiers
+    # 1-4 already are for it -- no extra branch-awareness needed to keep
+    # rule "explicit unsupported specialty request never falls back" true.
+    if reason or category_hint:
+        fallback = primary_care_fallback(clinic, category_hint=category_hint, reason=reason)
+        if fallback:
+            return SymptomResolution(matched_ids=[fallback["id"]], understood=True)
+
     _, lexical_categories = _hint_names_and_categories(text)
+    if not symptoms and not lexical_categories and not category_hint:
+        # Nothing at all to go on -- no symptom entity, no concern-phrase
+        # hit in the raw message, no LLM category guess, no applicable
+        # catalog_match either. Distinct from "attempted and found
+        # nothing" just below: callers rely on this exact None to mean
+        # "don't treat this as a resolution attempt at all," e.g.
+        # search_doctors's nothing_to_filter_on path.
+        return None
     return SymptomResolution(
         matched_ids=[], understood=bool(lexical_categories) or bool(category_hint)
     )
+
+
+def _catalog_match_resolution(nlu: Any, match_type: str) -> "SymptomResolution | None":
+    """Tier 4 of the resolution order (see resolve_symptom_specialty_ids/
+    resolve_symptom_service_ids docstrings): the Phase 2 LLM catalog match
+    (nlu.catalog_match), consulted only after tiers 1-3 above found
+    nothing -- strictly sequential short-circuit, never arbitrated against
+    the earlier tiers. By the time this runs, `nlu.catalog_match` has
+    already been through the real tenant+active+exists DB check in
+    nlu/resolvers.py::resolve_catalog_match; this function trusts that
+    validation and does not repeat it.
+
+    Returns `None` (meaning "tier 4 has nothing to add, fall through to
+    the caller's existing final logic") for `not_applicable` status, a
+    `match_type` mismatch (this resolver is for specialties; a
+    service-type catalog_match is the other resolver's tier 4, not this
+    one's), or when catalog_match wasn't populated at all (e.g. tests that
+    build an NLUResult directly without going through the real NLU call).
+    """
+    catalog = getattr(nlu, "catalog_match", None)
+    if catalog is None or catalog.match_type != match_type:
+        return None
+    if catalog.status == "matched" and catalog.catalog_id:
+        return SymptomResolution(matched_ids=[catalog.catalog_id], understood=True)
+    if catalog.status == "ambiguous" and catalog.candidates:
+        return SymptomResolution(
+            matched_ids=[],
+            understood=True,
+            ambiguous_categories=[c["name"] for c in catalog.candidates],
+        )
+    if catalog.status == "no_match":
+        # Understood exactly what was asked for -- match_type says which
+        # kind -- but nothing in the real catalog corresponds to it. An
+        # honest decline, same as tiers 1-3's understood=True/empty case.
+        return SymptomResolution(matched_ids=[], understood=True)
+    if catalog.status == "unresolved":
+        # A capability-shaped request tier 4 couldn't confidently resolve
+        # either -- the invariant's UNRESOLVED case: never treated as "no
+        # constraint existed" (which risks an unfiltered browse), always
+        # at least a targeted clarification.
+        return SymptomResolution(matched_ids=[], understood=False)
+    return None
 
 
 def resolve_symptom_service_ids(
@@ -545,26 +744,40 @@ def resolve_symptom_service_ids(
          -> exact match against `Service.category`.
       3. Only when step 2 found no keyword hint at all: fall back to
          `nlu.entities.specialty_category_hint`, same exact-match rule.
-      4. If neither resolves any category at all, `understood=False`.
+      4. Only when steps 1-3 found nothing at all: the Phase 2
+         `nlu.catalog_match` tier, scoped to `match_type == "service"` --
+         same mechanism, same validation guarantee, and same "explicit
+         capability requests only" scope as
+         resolve_symptom_specialty_ids's tier 4. See
+         `_catalog_match_resolution`.
+      5. If nothing above resolves any category at all, `understood=False`.
 
-    Returns `None` when no symptom entity is present, or when the clinic
-    has zero `Service` rows at all (no evidence services lack the relevant
-    category if there's no service data to check against).
+    Returns `None` when there is genuinely nothing to go on at all (no
+    symptom entity, no concern-phrase hit anywhere in the raw message, no
+    LLM category guess, no applicable catalog_match either), or when the
+    clinic has zero `Service` rows at all (no evidence services lack the
+    relevant category if there's no service data to check against).
+
+    Phase 1 fix: mirrors the same fix in resolve_symptom_specialty_ids --
+    this used to return `None` immediately whenever `entities.symptom` was
+    empty, before ever looking at `message`, even though every step below
+    already matches against `message` directly. A capability question
+    ("can you do a root canal?") never sets `entities.symptom` (it's not a
+    symptom complaint), so this function used to never even try.
     """
     from apps.chatbot.sql_tool.utils import entity_list
     from apps.services.models import Service
 
     symptoms = entity_list(getattr(nlu.entities, "symptom", None))
-    if not symptoms:
+    reason = " ".join(symptoms)
+    text = f"{message} {reason}".lower().strip()
+    if not text:
         return None
     clinic_services = list(
         Service.objects.filter(clinic=clinic, is_deleted=False, is_active=True)
     )
     if not clinic_services:
         return None
-
-    reason = " ".join(symptoms)
-    text = f"{message} {reason}".lower().strip()
 
     ambiguous = ambiguous_categories_for(clinic, text)
     if ambiguous:
@@ -584,6 +797,14 @@ def resolve_symptom_service_ids(
             matched_ids=[str(s.id) for s in matches], understood=True
         )
 
+    catalog_result = _catalog_match_resolution(nlu, "service")
+    if catalog_result is not None:
+        return catalog_result
+
+    if not symptoms and not lexical_categories and not category_hint:
+        # Nothing at all to go on -- see resolve_symptom_specialty_ids for
+        # why this stays a distinct None rather than understood=False.
+        return None
     return SymptomResolution(matched_ids=[], understood=False)
 
 

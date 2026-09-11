@@ -929,9 +929,9 @@ class BookingService:
         # that would normally have set them. Email-only patients store a
         # hashed placeholder in Patient.phone (`email:<digest>`); never
         # surface that internal stand-in as a real phone number.
-        phone = (patient.phone or "").strip()
-        if phone.startswith("email:"):
-            phone = ""
+        from apps.patients.phone import display_phone
+
+        phone = display_phone((patient.phone or "").strip())
         session.patient_first_name = patient.first_name
         session.patient_last_name = patient.last_name
         session.patient_phone = phone
