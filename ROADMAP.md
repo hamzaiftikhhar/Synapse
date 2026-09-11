@@ -10840,3 +10840,1567 @@ populated and `entities.service`/`resolved_ids.service_id` are not; (c)
 consider a targeted prompt clarification for `entities.service`
 extraction on doctor_search-shaped capability questions, mirroring the
 rule that already works for `services_offered` phrasing.
+
+## ✅ Phase 10: "Is there any doctor available Monday afternoon that can
+treat the stitches?" — two confirmed root causes fixed; a third,
+already-built mechanism found gated off, and left off on new evidence
+
+**Objective.** A user-supplied "GPT prompt" (external, not written against
+this codebase) reported that Horizon Family Medicine & Urgent Care's real
+"Simple Wound Laceration Repair (Sutures)" service could not be reached
+via wound/stitches phrasing, and proposed fixing it with a hand-written
+`cut/wound/laceration/stitches/stitch/sutures` keyword list. Instructed
+explicitly not to blindly implement that prompt but to trace the real
+architecture first. Two real, separate live traces were also supplied
+(same clinic, same query, both timestamped 2026-09-10) showing (1) a
+`rules_fallback`-sourced NLU result with `entities.doctor_name:
+"availabel"` — a typo of "available" misread as a doctor's name — and (2)
+a healthy, successful NLU call for the same query that classified
+`doctor_search` correctly but still produced `resolved_service_ids: []`
+and dispatched an unfiltered `sql_tasks: ['doctors']`.
+
+**What was already there, found before writing anything (per this
+session's own discipline).** The working tree already contains a
+substantial, uncommitted, well-engineered "Clinic Capability Resolver"
+(`apps/chatbot/booking/capability_resolver.py`,
+`capability_routing_policy.py`, `capability_shadow.py`, plus
+`core/management/commands/report_capability_shadow.py` and
+`run_capability_resolver_e2e_eval.py`) — a catalog-grounded, one-LLM-call
+mechanism that ranks a patient's expressed need against the *tenant's
+real* specialty/service rows, validates every id against the DB before
+trusting it, and is explicitly designed (per its own module docstrings) to
+replace exactly the kind of fragile lexical keyword list the supplied GPT
+prompt proposed rewriting from scratch. It is fully wired end-to-end
+(`engine.py` calls `live_resolver_context_for_nlu` ->
+`resolve_capability` -> `decide_routing` -> `planner.
+apply_capability_resolution`) but gated behind
+`settings.CAPABILITY_RESOLVER_LIVE_ENABLED`, **default `False`** — the
+settings comment states it is in "stabilization mode" pending "the
+baseline transactional regression pass" being clean. Writing a second,
+parallel keyword-list mechanism on top of this — as the supplied prompt
+proposed — would have been a real regression in engineering quality, not
+an improvement; this phase does not do that.
+
+**Root cause 1 (confirmed, fixed) — `apps/chatbot/sql_tool/handlers/
+doctors.py::doctor_availability` never consulted a service at all.**
+Grepped every line of the function for the word "service": zero matches.
+Its sibling `search_doctors` already had a three-tier service filter
+(`resolved_ids.service_id` -> literal `entities.service` text match ->
+`ctx.resolved_service_ids`, added in an earlier phase) — `doctor_availability`
+never got the equivalent. This is independent of the Capability Resolver
+flag: even the always-on deterministic per-turn service matcher
+(`ctx.resolved_service_ids`, already used elsewhere) had nothing to attach
+to for an availability-shaped query. **Fix:** added the identical
+three-tier block to `doctor_availability`, applied after its existing
+specialty chain, narrowing the already-computed `doctor_qs` rather than
+replacing any existing logic. Zero effect when nothing resolves a service
+(all three tiers stay empty), by construction.
+
+**Root cause 2 (confirmed, fixed) — `apps/chatbot/nlu/entity_extract.py::
+_extract_doctors`'s stopword check was exact-match only.** `_DOCTOR_RE`
+captures any word following "doctor"/"dr." as a name candidate;
+`_DOCTOR_NAME_STOPWORDS` already exact-matches "available" — but the live
+trace's actual text was "availabel" (a transposition typo), which is not
+in the set, so it survived as a fake doctor name in the fully-degraded
+`rules_fallback` path (`nlu/classifier.py`, fires after every real
+provider attempt fails). **Fix:** added `_edit_distance_le`, an
+optimal-string-alignment distance (Levenshtein plus an adjacent-
+transposition operation, since a plain Levenshtein check scores
+"availabel"/"available" as distance 2 — two substitutions — not the
+single real-world typo it is) and `_is_doctor_name_stopword`, which
+exact-matches or fuzzy-matches (distance <= 1) against stopwords **six
+characters or longer only** — a deliberate floor: fuzzy-matching against
+short stopwords ("a", "an", "is") would risk misreading a real short name
+("Ana" is one edit from "an") as noise. This is a small, local, bounded
+heuristic, not a spellchecker and not a new ontology.
+
+**Root cause 3 (already partially covered by prior work, confirmed via
+fresh live e2e trace) — `entities.service` doesn't always populate for a
+capability phrase, and the mechanism that would fix this generally
+(Capability Resolver) is knowingly still gated off.** Added 8 new live
+natural-language prompts to `run_capability_resolver_e2e_eval.py`'s corpus
+(all against the real `horizon-family-care` clinic — same clinic as the
+user's trace) and ran the full old-vs-new corpus (42 messages, live LLM
+calls both with the resolver off and on):
+
+| Message | Resolver OFF (default, with this phase's 2 fixes) | Resolver ON |
+|---|---|---|
+| "I need stitches" | "Pick a service below." (unresolved) | ✅ Correct service + price |
+| "Can you stitch a cut?" | "Pick a service below." (unresolved) | ✅ Correct service + price |
+| "I cut my hand and need stitches" | "Pick a service below." (unresolved) | "Pick a service below." (still unresolved) |
+| "I cut my hand which has caused a wound and need stitches" (original GPT-prompt phrasing) | ✅ Correct service + price | ✅ Correct service + price |
+| **"Is there any doctor available Monday afternoon that can treat the stitches?"** (the exact reported bug) | ✅ Earliest opening found, specific doctor+time | ✅ Earliest opening found (different doctor, same correctness) |
+| "Who can see me Monday afternoon for stitches?" | ✅ Found 2 doctors | Found 3 doctors (broader, not clearly wrong) |
+| "is there any doctor availabel on monday afternoon taht can treat the stitches" (exact raw typo'd trace) | ✅ Found 2 doctors | ⚠️ Found 5 doctors — **worse than OFF** |
+| "Do you have a plastic surgeon for a deep laceration?" | Generic off_topic decline (never reaches capability logic) | Same (unaffected either way) |
+| "Can anyone repair a laceration today?" | Found 5 doctors (partial filter, not service-level) | Same (unaffected either way) |
+
+**The headline result: the exact originally-reported bug — the
+Monday-afternoon-stitches-availability query — is already fixed today,
+with the resolver flag at its production default (off), by root causes 1
+and 2 alone.** No resolver activation was required for the primary
+reported failure.
+
+**Decision: `CAPABILITY_RESOLVER_LIVE_ENABLED` stays `False`.** Two
+pieces of fresh evidence both point the same direction as the existing
+gate's own stated caution: (a) on this phase's own new adversarial
+typo'd case, enabling the resolver made results *worse* (5 doctors vs. 2);
+(b) re-running the full corpus reproduced, on "What causes bleeding
+gums?" (apex-dental, `medical_info` category — explicitly "must stay
+unaffected"), the exact `medical_question`-personal-vs-definitional
+misclassification the resolver's own code comments already describe as a
+known, non-deterministic ("2 of 3 repeated live calls") risk they
+attempted to close. This is not a new bug found this phase — it's a
+live reproduction confirming the existing kill-switch's caution is still
+warranted. Flipping the flag was not requested to be part of this phase's
+minimal fix and is not done here.
+
+**Files changed:**
+- `apps/chatbot/sql_tool/handlers/doctors.py` — `doctor_availability`
+  gained the three-tier service-filter block (mirrors `search_doctors`'s
+  existing one).
+- `apps/chatbot/nlu/entity_extract.py` — `_extract_doctors`'s stopword
+  check replaced with `_is_doctor_name_stopword` (exact match, or
+  edit-distance-1 against a stopword >= 6 chars); new `_edit_distance_le`
+  helper (local, self-contained — not imported from `nlu/resolvers.py`'s
+  similar `_levenshtein`, since that module imports `routing/signals.py`,
+  which itself imports from `entity_extract.py`, so importing the other
+  direction would be a circular import).
+- `core/management/commands/run_capability_resolver_e2e_eval.py` — 8 new
+  corpus entries (see table above), kept permanently for future
+  regression runs of this tool.
+- `ROADMAP.md` — this entry.
+
+**Tests:**
+- New `apps.chatbot.tests.test_nlu.EntityExtractTests`:
+  `test_typo_of_a_stopword_after_doctor_is_not_read_as_a_name` (3 cases,
+  including the exact live-trace text) and
+  `test_real_short_name_survives_the_typo_stopword_check` (regression
+  guard against the length-floor design).
+- New `apps.chatbot.tests.test_sql_tool.DoctorAvailabilityResolvedServiceIdsTests`
+  (4 tests): resolved-service-ids narrows availability to doctors who
+  offer it; a resolved service with no matching doctor is an honest
+  decline (never a silent unfiltered fallback); no-resolved-ids is
+  unaffected (regression guard); explicit `resolved_ids.service_id` also
+  narrows availability.
+- `python manage.py test apps.chatbot.tests apps.knowledge.tests apps.api --keepdb`
+  → **1293/1293, zero failures** (the usual `test_temporal_authority.py`
+  date-arithmetic flake did not fire this run; unrelated to this phase
+  either way).
+- `python manage.py run_chat_eval --target 520` → **698/706 (98.9%)**,
+  identical to the last recorded baseline, no drift.
+- Live e2e: `run_capability_resolver_e2e_eval` against the real
+  `horizon-family-care` clinic, both resolver states — see table above.
+
+**Known limitations / found-but-not-fixed (explicitly out of this
+phase's scope, per "don't bundle in adjacent fixes"):**
+- "I cut my hand and need stitches" (a narrative-plus-request phrasing)
+  still doesn't resolve to the real service even with the resolver on —
+  plausibly `resolver_context_for_nlu`'s `SERVICES_OFFERED` branch's
+  `service_filter_mode == "none"` gate skipping the resolver call
+  entirely for this exact phrasing shape; not confirmed by tracing the
+  live NLU output for this specific message, only inferred from the
+  eval's before/after being identical.
+- "Do you have a plastic surgeon for a deep laceration?" classifies
+  `off_topic` and never reaches any capability/decline logic at all, so
+  it can never produce the "honestly state the clinic doesn't offer this,
+  here's how to navigate" response the original request asked for.
+- "Can anyone repair a laceration today?" (`doctor_search`) narrows to 5
+  of presumably 6 doctors, not service-level — the same category-vs-
+  procedure granularity ceiling documented in Phase 9.
+- The Capability Resolver's `medical_question`-personal-vs-definitional
+  boundary is confirmed still non-deterministic across calls (reproduced
+  live, matches the mechanism's own code comments) — a real, pre-existing,
+  now re-confirmed blocker to ever flipping
+  `CAPABILITY_RESOLVER_LIVE_ENABLED` on, not something this phase attempts
+  to fix.
+
+**Recommended next phase:** (a) trace why "I cut my hand and need
+stitches" doesn't reach the resolver as a `concern`/`explicit` context
+when structurally similar phrasings do; (b) investigate why "Do you have
+a plastic surgeon..." classifies `off_topic` instead of reaching
+capability-navigation logic; (c) if the Capability Resolver's
+`medical_question_mode` non-determinism is to be fixed, that is its own
+dedicated phase — do not fold it into a fix that was scoped to two
+narrower, already-confirmed bugs.
+
+---
+
+# Patient Identity, Chat History & Appointment Governance
+
+A separate, non-chatbot-NLU feature track (patients/appointments/staff/
+audit), approved via a 5-phase plan
+(`/Users/apple/.claude/plans/peppy-stirring-grove.md`). Recorded here per
+this repo's "phase started/finished → update ROADMAP.md" convention even
+though it sits outside the chatbot-routing work above. Phase numbering
+below is local to this track, not continuous with the chatbot phases
+above.
+
+## ✅ Phase 1 — Patient contact-info completeness & consistency
+
+**Objective:** phone mandatory + E.164-normalized with a real
+country-code selector (no more "assume +1 for 10 bare digits" guessing);
+email stays optional and separate; the internal `email:<hash>` placeholder
+phone (for email-only registrants) never leaks into a UI as if it were a
+real phone number; patient phone/email shown consistently on the
+dashboard Patients table, Appointments table, and booking/appointment
+records.
+
+**Root cause / findings (verified by reading source, not assumed):**
+- `Patient.phone`/`.email` were already correctly separate model fields
+  with no fallback between them — not a bug. The actual gaps: (1) no
+  backend E.164 validation anywhere (only a frontend heuristic,
+  `frontend/src/lib/phone.ts::normalizePhone()`, that guesses `+1` for
+  bare 10-digit input); (2) a dead, unused `COUNTRIES`/`DEFAULT_COUNTRY`
+  array already sitting in `frontend/src/lib/contact-validation.ts`
+  instead of being wired to an actual selector; (3) `AppointmentOut`
+  (`apps/api/appointments/schemas.py`) exposed `patient_name` only, no
+  phone/email at all.
+- **Real bug found while implementing:** `apps/api/patients/router.py`'s
+  `_serialize()` returned `patient.phone` raw to the dashboard API/UI —
+  meaning an email-only patient's internal `email:<sha1>` placeholder
+  (from `apps/patients/services/patient_service.py`'s
+  `email_placeholder_phone()`) would display in the Patients table/edit
+  dialog as if it were a real phone number. One existing guard for this
+  already existed in `apps/chatbot/booking/service.py` but was missing
+  here — exactly the class of cross-field leak this feature's spec warned
+  against, just found in the reverse direction (an email-derived
+  placeholder leaking into the phone slot).
+
+**What changed:**
+- New `apps/patients/phone.py`: `normalize_phone_e164()` (strict E.164
+  validator, raises `InvalidPhoneNumber` on ambiguous input rather than
+  guessing a country code — same philosophy as
+  `apps/verification/outcomes.py::normalize_recipient`'s existing
+  docstring), plus shared `is_placeholder_phone()`/`display_phone()`
+  helpers.
+- `apps/chatbot/services/otp_service.py`: `send_otp()` normalizes and
+  rejects invalid phone shape (`OTPError`); `verify_otp()` normalizes but
+  fails *soft* on a bad shape (falls through to the existing "no OTP
+  match" path) — deliberately not exposing a distinguishing error, per
+  this codebase's existing "never confirm which check failed" pattern.
+- `apps/api/patients/router.py`: `_serialize()` now uses `display_phone()`
+  (fixes the placeholder-leak bug above); `create_patient`/`update_patient`
+  normalize phone via `normalize_phone_e164()`, surfaced as a 400 on
+  failure.
+- `apps/api/appointments/schemas.py` / `router.py`: `AppointmentOut`
+  gained `patient_phone`/`patient_email`, populated via the same
+  `display_phone()` helper (placeholder-leak-proofed from day one, not
+  patched after the fact).
+- `apps/chatbot/booking/service.py`: the pre-existing inline placeholder
+  guard replaced with the shared `display_phone()` helper (no behavior
+  change, removes a duplicate implementation).
+- Frontend: new shared `frontend/src/components/ui/phone-input.tsx`
+  (country-code `<Select>` + national-number field, built on the
+  previously-dead `COUNTRIES`/`DEFAULT_COUNTRY` array), wired into the 3
+  duplicated bare `<Input type="tel">` sites — dashboard
+  `patients/page.tsx`, `appointment-form-dialog.tsx`'s new-patient
+  sub-form, and `booking-wizard.tsx`'s `DetailsStep`. Patients table
+  gained a Phone column. Appointments table now shows
+  `patient_phone`/`patient_email` under the patient name. `Appointment`
+  type (`frontend/src/types/api.ts`) extended to match.
+
+**Tests:**
+- `python manage.py test apps.patients apps.appointments apps.chatbot.tests apps.knowledge.tests apps.accounts --keepdb`
+  → **1257 tests, 11 failures — all pre-existing and unrelated**
+  (`apps.appointments.tests.test_overlap_and_slots`, GiST-exclusion/
+  overlap/timezone tests). Confirmed unrelated by running the identical
+  command against a clean `git stash` of all uncommitted work (this repo
+  currently has substantial unrelated concurrent work in-flight): same 11
+  failures, same names, with or without this phase's changes.
+- `cd frontend && npx tsc --noEmit` → clean (exit 0) after adding the new
+  `Appointment.patient_phone`/`patient_email` fields.
+
+**Known limitations / found-but-not-fixed:**
+- No backfill migration for existing `Patient.phone` rows written before
+  E.164 enforcement existed — out of scope, not requested; new/updated
+  rows are normalized going forward only.
+- The 11 pre-existing `test_overlap_and_slots.py` failures are real but
+  unrelated to this feature track (GiST exclusion constraint returning
+  409 where the test expects 400, and two slot-availability tests
+  expecting `"03:00 PM"` in results that come back empty) — not
+  investigated further here, flagged per "don't bundle in adjacent
+  fixes."
+
+**Recommended next phase:** Phase 2 — cross-device access to
+patient-owned conversation history (new `GET /widget/chat/conversations`
+endpoint, `visitor_service.py::list_other_verified_sessions()`, frontend
+opt-in "previous conversation" affordance), per the approved plan. Not
+started without being asked first, per phase discipline.
+
+## ✅ Phase 2 — Cross-device access to patient-owned conversation history
+
+**Objective:** after OTP verification on a *different* browser/device, a
+patient can see that they have other conversation(s) tied to their
+verified identity and open one to read it — without ever replacing,
+mutating, or merging into the live session they're currently typing in,
+and without any artificial "welcome back" message (both explicit,
+non-negotiable constraints from the approved plan, corrected after the
+first draft's design — see the plan file's Context section for what was
+rejected and why).
+
+**Root cause / findings (verified by reading source, not assumed):**
+- `verify_otp()` (`apps/chatbot/services/otp_service.py`) already
+  authenticates whichever session the verify request arrives on,
+  regardless of browser — so appointment access after verification already
+  worked cross-device. What was actually missing was chat *history*:
+  nothing resolved a patient's *other* sessions at all.
+- `apps/chatbot/services/visitor_service.py::link_visitor_to_patient()` is
+  deliberately scoped to one visitor's own sessions and never touches
+  `is_authenticated` on siblings — confirmed by re-reading its docstring
+  and the Phase-2-relevant tests in `test_visitor_patient_linking.py`.
+  `is_authenticated=True` is therefore the only safe boundary for "this
+  session itself completed a real verification," and is the filter this
+  phase's whole design rests on.
+- **A real, non-obvious gap found while implementing** (not in the
+  original plan text, found by tracing the actual code rather than
+  assuming "reuse the existing messages endpoint" would just work):
+  `apps/api/widget/router.py::chat_messages_page` requires the caller's
+  `X-Synapse-Visitor-Id` header to match the *target* session's own
+  visitor — which, by construction, a genuinely different browser/device
+  can never satisfy for someone else's session. Blindly "reusing" that
+  endpoint as originally planned would have 404'd every cross-device open.
+  Fixed by adding a second, independent ownership proof (see below) rather
+  than weakening the existing one.
+
+**What changed:**
+- `apps/chatbot/services/visitor_service.py`: new
+  `list_other_verified_sessions(clinic, patient, *, exclude)` —
+  `is_authenticated=True`, same clinic/patient, excludes the caller's own
+  session, ordered most-recently-active first, with a per-session message
+  count and preview computed only from `USER`/`ASSISTANT` `TEXT` rows
+  (tool/system noise excluded from what a patient sees previewed).
+- `apps/api/widget/router.py`: new `POST /widget/chat/conversations`
+  (`ChatConversationsIn` → `ChatConversationsOut`), authenticated via the
+  existing `_resolve_authenticated_session` pattern — 401 if the calling
+  session was never itself verified, same as the appointments endpoints.
+  Purely additive and read-only: it does not touch the calling session's
+  row at all (asserted directly in
+  `ChatConversationsEndpointTests.test_never_mutates_the_calling_session`).
+- `apps/api/widget/router.py::chat_messages_page`: new optional
+  `auth_session_token` query param plus a new `_owns_via_verified_patient`
+  helper — grants read access to a *different* session only when the
+  caller supplies their own `is_authenticated=True` session token for the
+  *same* patient, and the target session is *itself* `is_authenticated=
+  True` too (never a passively-backfilled sibling). The pre-existing
+  visitor-header path is completely unchanged when this param is omitted.
+- Frontend: `widgetService.listConversations()` and an extended
+  `widgetService.getMessages(..., { authSessionToken })` in
+  `frontend/src/services/index.ts`; new `ChatConversationSummary`/
+  `ChatConversationsOut` types in `frontend/src/types/api.ts`; new
+  `previous_conversations` `ChatMessageType`; new
+  `PreviousConversationsCard` component
+  (`frontend/src/features/chat/messages/previous-conversations-card.tsx`)
+  — a dismissible, quiet list ("You have a previous conversation from
+  {date}"), each row expandable in place to a read-only transcript via the
+  existing `hydrateHistoryMessages`/`MessageRenderer` pipeline (no
+  clinicSlug/onAction props passed through, so any historical
+  `verify_identity`/`booking_wizard` row renders inert — the same pattern
+  the dashboard's own staff conversation viewer already uses). Wired into
+  `chat-widget.tsx::handleIdentityVerified`, fired only after the existing
+  appointments fetch, silently no-op on failure since verification and
+  the appointments card already succeeded either way. No new chat turn,
+  no re-classification, no "welcome back" text anywhere.
+
+**Tests:**
+- `apps/chatbot/tests/test_visitor_patient_linking.py` — new
+  `ListOtherVerifiedSessionsTests` (7 tests): empty when no others exist;
+  excludes the caller's own session; lists another verified session with
+  correct count/preview; **never includes a same-visitor sibling that was
+  never itself verified** (the core security boundary); never includes
+  another patient's session; orders most-recently-active first; preview/
+  count ignore tool/system rows.
+- `apps/api/widget/tests.py` — new `CrossDeviceMessagesOwnershipTests` (6
+  tests) and `ChatConversationsEndpointTests` (7 tests): cross-device read
+  via a valid same-patient `auth_session_token`; rejected for a different
+  patient's token; rejected for an unverified token; rejected when the
+  *target* session itself was never verified even with a valid caller
+  token; still 404s with neither proof (regression); same-browser
+  visitor-header path unaffected (regression); conversations endpoint
+  requires authentication, 404s on an unknown token, lists correctly,
+  excludes itself, **never mutates the calling session's token or message
+  count**, and never leaks across clinics.
+- Fixed a self-inflicted bug caught before it shipped: an `Edit` on
+  `test_visitor_patient_linking.py` initially displaced
+  `test_session_with_no_visitor_still_books_normally`'s final assertion
+  (`result["step"] == "confirmed"`) down past the new test class instead
+  of leaving it in place — caught immediately by the new test's own
+  failure, fixed, re-run clean.
+- `python manage.py test apps.patients apps.appointments apps.chatbot.tests apps.knowledge.tests apps.accounts apps.api --keepdb`
+  → **1396 tests, 11 failures — the same pre-existing, unrelated
+  `test_overlap_and_slots.py` failures as Phase 1's baseline**, none new.
+- `cd frontend && npx tsc --noEmit` → clean (exit 0).
+- `python manage.py run_chat_eval --target 520` → **698/706 (98.9%)**,
+  same two pre-existing adversarial-family failures
+  (`adversarial_booking_slang_squeeze`, `adversarial_medical_slang_pediatric`)
+  as before this phase — expected, since this phase never touches
+  NLU/routing.
+
+**Known limitations / found-but-not-fixed:**
+- No UI test run in an actual browser this phase (no dev server
+  available in this environment) — verified via unit/integration tests
+  only. Recommend a manual/browser smoke test of the two-device flow
+  before considering this fully shipped.
+- The "other conversations" list is capped at 20 sessions
+  (`list_other_verified_sessions`'s `[:20]` slice) — reasonable for a
+  patient-facing affordance, not configurable; flagged in case a future
+  requirement needs more.
+
+**Recommended next phase:** Phase 3 — clinic-configurable cancellation/
+reschedule policy, enforced server-side at all four existing mutation
+sites (`apps/appointments/policy.py`, new `cancellation_lead_time_hours`/
+`reschedule_lead_time_hours` config keys), per the approved plan. Not
+started without being asked first, per phase discipline.
+
+## ✅ Capability resolution reliability — D / G1 / G2 + Horizon cleanup
+
+**Context.** Investigation-only audit (no prior code) of live Horizon
+pipeline-debug logs found: (A) a staff-created polluting specialty
+"Major and Minor cuts treat and stitches" (category=Surgery) surfacing
+verbatim in soft_medical guidance; (B) NLU intent coin-flip on "blood
+drawn" between medical_question and services_offered while
+entities.service stayed correct; (C) lexical match_services_in_message
+is the wrong tool for informal phrasing; (D) timeline/last_* leaking
+into NLU Ctx; (E) soft_medical booking tails never wrote
+pending_clarification. Implementation go-ahead: D → G1 → G2 → tests →
+data cleanup. Capability Resolver stays shadow-only.
+
+**What changed.**
+
+1. **Boundary D (already in working tree; regression locked).**
+   `build_user_prompt` excludes `timeline`, `last_doctor`,
+   `last_specialty`, `last_service`, `last_insurance`, `current_intent`
+   from the Ctx JSON blob (same bug class as the existing `booking`
+   exclusion). Test:
+   `test_user_prompt_omits_stale_timeline_state`.
+
+2. **G1 — validated service beats soft_medical.**
+   `planner.build_execution_plan`: when `facts.soft_medical` and
+   `nlu.resolved_ids.service_id` are set and no other lane claimed
+   tasks, dispatch `sql_tasks=["services"]` instead of
+   `direct_mode="soft_medical"`. Soft-medical + doc_match vector hybrid
+   is also suppressed when a validated service id is present.
+   **Does not** gate on `facts.matched_service_ids` (lexical).
+
+3. **G2 — soft_medical offer → existing `service_followup`.**
+   `pending_offer_from_turn` now accepts `response_text` and, when the
+   soft_medical booking-offer phrasing is present, records
+   `type=service_followup` (reuses `apply_pending_uptake` unchanged).
+   Engine passes `response_text=` into that call.
+
+4. **Horizon data cleanup (test-first).**
+   New `GarbageSurgerySpecialtyPollutionTests` prove category-hint
+   "Surgery" *does* surface a garbage specialty name today. Then
+   soft-deleted real Horizon row
+   `01a08b2c-5db5-7e9f-b8c1-0da29f765511` and removed its
+   DoctorSpecialty link to Omar Haddad.
+
+**Post-cleanup verification (Horizon live DB):**
+- `suggest_specialties(..., category_hint="Surgery")` → empty (no
+  more verbatim garbage recommendation).
+- `resolve_symptom_specialty_ids` for stitches-shaped text now falls
+  through to **Family Medicine Primary Care** (keyword map), not the
+  bogus Surgery row.
+- `resolve_symptom_service_ids` for "I need stitches for a cut" still
+  returns **empty** — does **not** auto-hit
+  `Simple Wound Laceration Repair (Sutures)` via DoctorService. That
+  is exactly the evidence the audit predicted: deleting bad specialty
+  data does not invent a working service-resolution path for informal
+  stitches phrasing. Leave for a later phase (resolver graduation or
+  symptom→service discovery), not synonym lists.
+
+**Files:** `apps/chatbot/nlu/prompts.py` (D), `planner.py` (G1),
+`conversation_state.py` + `engine.py` (G2), tests in
+`test_prompts.py`, `test_execution_plan.py`,
+`test_conversation_state.py`, `test_pending_uptake.py`,
+`test_discovery.py`.
+
+**Tests (focused):**
+`test_prompts` + SoftMedicalValidatedServiceBeatsDirectTests +
+MedicalQuestionModeRoutingTests + PendingUptakeTests +
+test_pending_uptake + GarbageSurgerySpecialtyPollutionTests
+→ **51/51 OK**.
+
+**Not done / deferred:** live Capability Resolver still shadow-only;
+stitches → Laceration service without NLU naming the service; specialty
+mutation AuditLog gap; no full chatbot suite / eval re-baseline this
+phase (deterministic planner/state changes only).
+
+**Recommended next:** either (1) full `apps.chatbot.tests` + eval
+baseline after these land, or (2) symptom→service discovery for
+stitches/laceration-shaped queries via DoctorService — still without
+enabling the live resolver.
+
+## ✅ Capability resolution reliability — `Recent:` transcript entity-leak fix
+
+**Context.** A rigorous validation pass of D/G1/G2 (see previous entry)
+proved the raw `Ctx:` JSON contamination (D) is fully closed, but found a
+*different*, previously-undocumented leak: the intentionally-included
+`Recent:` transcript (last up-to-6 turns, plain text, used for
+disambiguating bare replies like "yes") sometimes caused the model to
+copy a prior turn's entity value into the CURRENT turn's `entities`
+despite the system prompt forbidding it. Live-reproduced across 10 real
+two-turn runs (`"I cut my hand and need stitches"` → `"I need to get my
+blood drawn"`): `entities.symptom` leaked in 4/10, and derailed the
+response (wrong classification, no service resolved) in 2/10.
+
+**Root cause.** `apps/chatbot/nlu/prompts.py::_format_recent_turns`
+renders the last N raw `ChatMessage` rows as plain `U:`/`A:` lines under
+a `Recent:` header (by design, per `engine.py:158-160`'s
+`_load_history(session, limit=6)`). The system prompt tells the model
+"Never let recent turns override or supply an entity the current message
+doesn't itself state" — but nothing enforced that instruction; compliance
+was probabilistic, not structural. No downstream step validated that an
+extracted entity was actually grounded in the current message before it
+reached `resolve_entities()`/the planner.
+
+**Fix (smallest safe fix, no new LLM/router, no ontology).** Added
+`scrub_entities_leaked_from_recent_turns()` to
+`apps/chatbot/nlu/entity_extract.py`: a deterministic, Python-side
+backstop for the *same* invariant the prompt already states, called once
+per turn inside `IntentEntityService.analyze()`
+(`apps/chatbot/nlu/intent_entity.py`), after `parse_nlu_payload` /
+`_apply_confidence_threshold` and **before** `resolve_entities()` (so a
+leaked entity can never get DB-validated into a `resolved_id`). Scoped to
+exactly the fields the live regression implicated: `symptom`, `service`,
+`specialty`, `doctor_name`, `insurance_provider` — not `date`/`time`/
+`location`/`patient_name`/`language`, which are a different, unaudited
+concern.
+
+Rule: a value is dropped only when (a) it is **not** grounded (verbatim
+or via a shared ≥4-char token) in the current message's own text, **and**
+(b) it **is** grounded in the recent-turns transcript text — i.e. it's
+provably traceable to history, not some other, unrelated hallucination
+this function has no business policing. A value repeated for real in the
+current message is never touched. If `symptom` is dropped this way,
+`specialty_category_hint` (only ever a guess *derived from* symptom, per
+the system prompt) is nulled alongside it, since an orphaned category
+guess is exactly the same failure shape Section A's bogus-specialty bug
+was.
+
+`Recent:` itself is untouched — still rendered, still available for
+disambiguating bare replies. `apply_pending_uptake()`'s deterministic
+"yes"/"yes please"/"sure"/"okay"/"book it" binder is unaffected by
+construction: it rewrites `entities`/`resolved_ids`/`intent` from the
+*pending offer's own* stored fields (`pending.get("service_id")`, etc.),
+never from whatever the LLM happened to extract that turn.
+
+**Files changed:**
+- `apps/chatbot/nlu/entity_extract.py` — new
+  `scrub_entities_leaked_from_recent_turns()` + `_grounded_in()` /
+  `_leaked_from_history()` helpers.
+- `apps/chatbot/nlu/intent_entity.py` — calls the scrub in `analyze()`
+  between confidence-thresholding and `resolve_entities()`.
+- `apps/chatbot/tests/test_nlu.py` — new
+  `ScrubEntitiesLeakedFromRecentTurnsTests` (pure-function: previous
+  symptom/service/specialty/doctor/insurance don't leak; genuine
+  current-turn entities survive; unrelated/non-traceable values are left
+  alone; list-valued partial scrub; no-recent-turns no-op) and
+  `IntentEntityServiceRecentTurnLeakageIntegrationTests` (same, through
+  the real `analyze()` call, not just the pure function).
+- `apps/chatbot/tests/test_pending_uptake.py` — new
+  `RecentTurnScrubDoesNotBreakPendingUptakeTests`: real `analyze()` (not
+  mocked away) with a classifier stub that reproduces the leak shape,
+  proving all 5 affirmation phrasings still bind to the pending
+  `service_followup` offer via the deterministic binder regardless.
+
+**Tests:**
+- New tests: `apps.chatbot.tests.test_nlu.ScrubEntitiesLeakedFromRecentTurnsTests`
+  + `IntentEntityServiceRecentTurnLeakageIntegrationTests` +
+  `apps.chatbot.tests.test_pending_uptake.RecentTurnScrubDoesNotBreakPendingUptakeTests`
+  → **13/13 OK**.
+- Full suite: `apps.chatbot.tests --keepdb` → **1145/1145 OK** (1132
+  prior + 13 new; zero failures, zero regressions).
+- Eval: `run_chat_eval --target 520` → **698/706 (98.9%)**, identical to
+  the prior baseline and to the pre-fix number in this same session —
+  same two pre-existing families failing
+  (`adversarial_booking_slang_squeeze`, `adversarial_medical_slang_pediatric`),
+  nothing new.
+
+**Live validation (real 10-run regression, same messages as the
+original repro):** `"I cut my hand and need stitches"` →
+`"I need to get my blood drawn"`, fresh Horizon session each run.
+**0/10 stale `entities.symptom` leakage, 10/10 correct
+`resolved_ids.service_id` (Routine Blood Draw), 10/10 correct final
+response** ("Routine Blood Draw (Venipuncture) is $25.00, about 15
+minutes."). Turn-2 intent still varies between `services_offered` and
+`medical_question` run to run (the pre-existing, separate NLU coin-flip
+this phase was explicitly told not to touch) — but regardless of which
+one it lands on, `entities.service` and `resolved_ids.service_id` now
+resolve correctly every time, so G1's gate routes to the correct SQL
+answer in all 10 runs. The `Recent:` block itself is confirmed still
+present and unchanged in the turn-2 NLU prompt (previous turn's stitches
+message is still shown as context) — only the model's post-hoc entity
+output is scrubbed, not the prompt it was given.
+
+**Not done / deferred (unchanged from before, explicitly out of scope
+this phase):** stitches→Laceration service resolution gap; flu-test
+entity-extraction miss; live Capability Resolver still shadow-only.
+
+**Recommended next:** state it, don't start it — either (1) the
+stitches→Laceration-service discovery gap, or (2) the flu-test-style
+NLU-extraction miss (Section 3 of the validation report), both confirmed
+live and still open, or (3) enabling the live Capability Resolver, still
+not recommended until (1)/(2) are addressed.
+
+## ✅ Capability resolution reliability — flu-test/stitches informal
+language + live Capability Resolver enablement
+
+**Context.** Both gaps deferred at the end of the previous phase (above)
+in one phase: informal "flu test" language and "stitches"/laceration
+language must resolve to a real Horizon service (`Rapid Strep / Flu
+Combo Swab`, `Simple Wound Laceration Repair (Sutures)`), then doctor
+search/availability must use the real `DoctorService` relationship —
+never the deleted "Major and Minor cuts treat and stitches" specialty.
+
+**What was actually found (mandatory investigation before any change).**
+The Clinic Capability Resolver (`apps/chatbot/booking/capability_resolver.py`,
+`capability_routing_policy.py`, `capability_shadow.py`, plus a 431-row
+real shadow log and an e2e adversarial-corpus command already sitting in
+the tree, all pre-existing/untracked, never previously documented here)
+is a complete, already-wired, already-tenant/catalog-grounded solution
+for exactly this problem class: one real LLM call per turn ranks a
+clinic's real active `Specialty`/`Service` rows against the patient's
+expressed need, every returned id is re-validated against the DB before
+being trusted, and `capability_routing_policy.decide_routing()` already
+enforces the invariant this phase most needed preserved — a `concern`
+context's service candidates are *informational only*, never an
+authoritative filter, so a symptom mention can never silently become a
+booking. `planner.apply_capability_resolution()` maps its decision onto
+`ExecutionPlan.resolved_service_ids`/`resolved_specialty_ids`, and
+`sql_tool/handlers/services.py` + `handlers/doctors.py` already consume
+those two fields (with existing regression comments citing this exact
+bug class). The entire live vertical slice was already wired into
+`engine.py`, gated behind one settings flag,
+`CAPABILITY_RESOLVER_LIVE_ENABLED` (default `False`). Its own comment in
+`config/settings/base.py` recorded it was turned off after two specific
+issues — an NLU/response-LLM circuit-breaker coupling, and a degraded/
+`Intent.UNKNOWN` result feeding it a bad "concern" — both already fixed
+in the code (own `workload="capability"` circuit namespace;
+`live_resolver_context_for_nlu` explicitly excludes `UNKNOWN` and any
+degraded NLU result) but the flag was never flipped back. **No parallel
+resolver was built** — this phase improved and proved the existing one,
+per the explicit instruction to prefer the smallest existing
+architecture.
+
+**Root causes found and fixed (2 changes, both minimal):**
+1. `apps/chatbot/engine.py`'s live-resolver call site fired for *every*
+   message shaped like `services_offered`/`pricing`/`doctor_search`/
+   `doctor_availability`/`medical_question`(personal), even ones that had
+   already resolved a service/specialty deterministically — an
+   unnecessary LLM call on every already-working message, and a real
+   correctness risk (`apply_capability_resolution`'s already-dispatching
+   branch takes the resolver's decision first, falling back to the
+   plan's own ids only on decline, so calling it on an already-correct
+   message could silently overwrite a good answer). Fixed by adding
+   `and not exec_plan.resolved_service_ids and not exec_plan.resolved_specialty_ids`
+   to the gate — a no-op for the two `was_unclaimed` states (always empty
+   there by construction), and scopes the live call to exactly "nothing
+   else resolved," which is the flu-test/stitches gap.
+2. `capability_resolver.py::expressed_need_for_nlu()` unconditionally
+   preferred `entities.symptom` over the raw message, but its own
+   docstring said this was meant only for a *concern*. Live-reproduced
+   real bug: "I cut my hand and need stitches" extracted
+   `entities.symptom="hand"` (the NLU's own separate "any body-part word
+   sets symptom" rule) in 2 of 3 real repeated calls, feeding the
+   resolver a bare body-part token with no capability signal and
+   silently regressing a resolvable capability to the generic "Pick a
+   service below." Fixed by adding a `context` parameter: `context=
+   "explicit"` now always uses the full message (strictly more
+   informative than a truncated symptom token for an explicit ask);
+   `context="concern"` keeps the original symptom-preferring behavior
+   unchanged. `engine.py`'s call site now passes the `resolver_ctx` it
+   already computes. Confirmed by reproduction: ~33%→~83% success on 9
+   combined real repeated calls for this exact phrasing (residual
+   failures are pre-existing NLU `service_filter_mode` non-determinism —
+   the same message sometimes classifies as a filterless browse, out of
+   this phase's scope to fix without reopening the "genuine browse" false
+   positive `resolver_context_for_nlu` was built to prevent).
+
+**Enablement decision: live Capability Resolver turned ON**
+(`CAPABILITY_RESOLVER_LIVE_ENABLED` default flipped `False`→`True` in
+`config/settings/base.py`, still overridable per-environment via the env
+var). Justified by, in combination: the narrower gate above bounding the
+live LLM call to messages nothing else resolved; both previously-blocking
+issues already fixed; the full `apps.chatbot.tests` suite (1169 tests)
+passing identically with the flag forced on and at its new default;
+the offline eval battery (706 cases) scoring byte-for-byte identically
+(698/706, same two pre-existing families) in both configurations; and
+10/10 live-run correctness for both mandated repeated-validation
+messages with no bogus-capability or medical-information false positive
+observed. One existing test (`test_tiered_router.py`'s
+`EngineLaneIsolationTests`) had to move from `SimpleTestCase` to
+`TestCase` — a bare zero-entity `doctor_search` now legitimately reaches
+the resolver's own (trivial, zero-row, genuinely-empty-catalog) DB query
+before that test's mocked SQL layer runs, exactly the tradeoff already
+documented in `capability_resolver.py`'s own Phase-3-boundary comment.
+
+**Files changed:**
+- `apps/chatbot/engine.py` — narrowed the live-resolver gate (skip when
+  already resolved); passes `context=resolver_ctx` into
+  `expressed_need_for_nlu`.
+- `apps/chatbot/booking/capability_resolver.py` —
+  `expressed_need_for_nlu()` takes `context`, uses the full message for
+  `explicit`.
+- `config/settings/base.py` — `CAPABILITY_RESOLVER_LIVE_ENABLED` default
+  `True`.
+- `apps/chatbot/tests/test_tiered_router.py` — `EngineLaneIsolationTests`
+  now `TestCase` (DB access, with rationale in a class docstring).
+- `apps/chatbot/tests/test_capability_resolver.py` — new
+  `ExpressedNeedForNluTests` (5 tests: explicit always uses message even
+  with/without a symptom; concern still prefers symptom; concern falls
+  back to message with no symptom; no-context-given preserves old
+  default).
+- `apps/chatbot/tests/test_flu_capability_resolution.py` — new file, 9
+  tests: full chain (NLU → `resolve_capability` (mocked LLM boundary) →
+  `decide_routing` → `apply_capability_resolution` → real
+  `services_offered` handler → real fixture row/price) for all 5 required
+  flu phrasings, including the personal-concern variant staying
+  informational-only; 2 negative tests (definitional flu/blood-test
+  questions never reach the resolver) plus a concern-never-books-a-
+  service negative test.
+- `apps/chatbot/tests/test_stitches_capability_resolution.py` — new
+  file, 10 tests: full chain for all 6 required stitches phrasings
+  against a DB fixture with a real `DoctorService`/`DoctorSpecialty`-
+  linked doctor and an unrelated distractor doctor, asserting
+  `search_doctors` returns only the linked doctor; a dedicated regression
+  test for the `expressed_need_for_nlu` fix; an explicit assertion the
+  deleted bogus specialty id never appears in any candidate/decision; 3
+  negative tests (definitional laceration/bleeding-gums questions;
+  knee-pain concern never silently books the laceration service).
+
+**Tests:**
+- New/changed test files above: **24 new tests, all passing** (9 flu + 10
+  stitches + 5 `expressed_need_for_nlu`), plus the 65 pre-existing
+  `test_capability_resolver`/`test_capability_routing_policy`/
+  `test_capability_shadow` tests still passing unchanged.
+- Full suite, flag at its (now-default) value:
+  `apps.chatbot.tests --keepdb` → **1169/1169 OK** (1145 prior + 24 new).
+- Full suite, flag forced OFF (`CAPABILITY_RESOLVER_LIVE_ENABLED=False`):
+  **1169/1169 OK** — proves the narrower gate and `expressed_need_for_nlu`
+  change are both no-ops when disabled.
+- Full suite, flag forced ON before the `test_tiered_router.py` fix:
+  **1168/1169**, one failure (`EngineLaneIsolationTests.
+  test_sql_lane_never_calls_large_llm`, `DatabaseOperationForbidden`) —
+  root-caused to the documented, pre-existing "zero-entity browse becomes
+  explicit" tradeoff, not a new bug; fixed by the `TestCase` change
+  above, re-confirmed **1169/1169** after.
+- Eval: `run_chat_eval --target 520` → **698/706 (98.9%)**, byte-for-byte
+  identical failures (`adversarial_booking_slang_squeeze`,
+  `adversarial_medical_slang_pediatric`, both pre-existing/unrelated) in
+  both flag-off and flag-forced-on runs.
+
+**Live validation (real Horizon clinic, real LLM calls, flag at its new
+default — no override needed).**
+- `"How much does your flu test cost?"` × 10: **10/10** — every run
+  classified `pricing`, resolver context `explicit`, one candidate
+  (`Rapid Strep / Flu Combo Swab`, confidence 1.0), `resolved_service_ids`
+  = that id, `sql_tasks=["pricing"]`, final response "Rapid Strep / Flu
+  Combo Swab is $35.00, about 10 minutes." every time.
+- `"I need stitches for a cut"` × 10: **10/10** — every run classified
+  `services_offered`, resolver context `explicit`, one candidate
+  (`Simple Wound Laceration Repair (Sutures)`, confidence 1.0),
+  `resolved_service_ids` = that id, final response "Simple Wound
+  Laceration Repair (Sutures) is $240.00, about 45 minutes." every time.
+- Full 5+6+6 battery (flu/stitches/negative), one isolated process per
+  message: **5/5 flu, 6/6 stitches** correctly resolved the capability
+  (concern-classified variants — "I think I have the flu, can you test
+  me?", "Which doctors can handle a cut that needs stitches?" — correctly
+  stayed informational-only per the concern invariant, surfacing doctor
+  discovery + a mention, never a silent booking). **6/6 negative cases**
+  correct: the 4 definitional questions (flu/bleeding-gums/laceration/
+  blood-test) never reached the resolver at all (`direct_mode=
+  general_medical_knowledge`, pure educational answer); the 2 personal-
+  symptom concerns (headache/knee pain) legitimately reached the resolver
+  as concerns and surfaced specialty-level doctor discovery only — no
+  service ever got silently booked, and the bogus deleted specialty id
+  (`01a08b2c-5db5-7e9f-b8c1-0da29f765511`) never appeared in any
+  candidate or decision across the whole battery. Doctor-search results
+  for the stitches queries returned exactly the 5 real `DoctorService`-
+  linked doctors (Vance, Jenkins, Chandrasekaran, Whitaker, Haddad) —
+  confirmed by direct query of `res.meta["doctors"]`, not inferred from
+  response text.
+
+**Known limitation, reported honestly, not hidden.** "I cut my hand and
+need stitches" (one of the 6 required stitches phrasings, not one of the
+2 mandated 10-run messages) does not hit 10/10 in isolation — pre-existing
+NLU `service_filter_mode` non-determinism occasionally classifies this
+exact phrasing as a filterless browse (`service_filter_mode="none"`, no
+`entities.service`), which correctly excludes it from the resolver by
+`resolver_context_for_nlu`'s own "don't fire on a genuine browse" rule
+(the same rule that prevents "what services do you offer" from being
+mis-treated as a capability request). Loosening that rule to force this
+one phrasing through would risk reopening the exact false-positive bug it
+was built to prevent, for a class of NLU non-determinism outside this
+phase's scope. Reproduced: 5/6 correct across two batches of repeated
+calls after the `expressed_need_for_nlu` fix (up from ~1/3 before it).
+
+**Resolver status:** **enabled** (see "Enablement decision" above) — not
+shadow-only. Regression, eval, and live evidence above is the basis;
+`logs/capability_shadow/shadow.jsonl`'s pre-existing 431-row log (mostly
+from a different, dental tenant, `needs_review` on 109/431 cases) was
+inspected for context but is not the primary evidence for this specific
+enablement decision, which rests on the fresh flag-on regression/eval/
+live runs performed this phase. The dental-tenant `needs_review` bucket
+remains a genuine, not-yet-fully-understood area — see "Remaining gaps."
+
+**Remaining gaps (found, not fixed, written down instead):**
+- The residual `service_filter_mode` non-determinism above for one
+  stitches phrasing.
+- `logs/capability_shadow/shadow.jsonl`'s 109/431 `needs_review` bucket
+  (mostly Apex Dental, a different tenant, ambiguous concern phrasings
+  like "my gums are bleeding, who should I see?") has not been manually
+  triaged case-by-case; it predates this phase and wasn't generated by
+  this phase's own testing.
+- No broad, cross-tenant load/latency measurement of the live resolver
+  under real traffic volume exists yet — only per-message latency is
+  implicit in the live runs above (each real capability-resolver call
+  measured informally at low-single-digit seconds, consistent with
+  `capability_resolver.py`'s own `_DEFAULT_TIMEOUT_SECONDS = 15.0`
+  comment, but not benchmarked here as a dedicated measurement).
+
+**Recommended next:** monitor `capability_resolver_live` log lines (see
+`engine.py`) in whatever environment this ships to first, watching
+specifically for `outcome=provider_error` rate and for `action=decline`
+firing on messages that look like they should have matched something —
+that live signal is the next real evidence, not a guess. Triaging the
+pre-existing dental `needs_review` shadow-log bucket would be the next
+scoped phase if that tenant's capability coverage becomes a priority.
+
+## ✅ Capability-family reliability follow-up — 3 live-reproduced bugs
+found in production logs after live enablement
+
+**Context.** One day after the previous phase enabled the live Capability
+Resolver, three real production chat logs surfaced three distinct
+failures. Investigated from the actual saved JSON traces in `logs/chat/`
+and the real code paths (not from a third-party guess of root cause,
+though a long external "audit" prompt supplied the three symptom reports
+that prompted this investigation) before changing anything.
+
+**Case A — "do you treat the heart transplant" (the most severe: implied
+the clinic performs organ transplants).** `logs/chat/2026-09-11_08-20-
+47_042041.json`. NLU classified `medical_question`/personal (entities.
+symptom="heart transplant" is a lexical artifact of an existing, separate
+rule), reaching the Capability Resolver as a `concern`. Live-reproduced
+via direct repeated calls to `resolve_capability`: the concern-mode
+prompt let the model rank Internal Medicine (0.80) and Family Medicine
+(0.60) as "potentially relevant" via a "may be involved in ongoing
+management" rationale — a real but misleading answer, since a family
+medicine doctor cannot perform or meaningfully refer a heart transplant.
+`capability_routing_policy.decide_routing`'s concern branch (by design,
+no confidence cutoff) turned this into an authoritative doctor-search
+filter, returning 4 real doctors as "may be a good fit." Root cause: no
+`UNSUPPORTED`/`NO_MATCH` concept existed for a concern naming hospital-
+level/tertiary care this type of clinic structurally does not provide.
+
+Fixed at the prompt level only (`_CONCERN_INSTRUCTIONS`/`_SYSTEM_PROMPT`
+in `capability_resolver.py`) — deliberately did NOT add a confidence
+threshold to `decide_routing`, since that module's own docstring records
+an evidenced decision against using confidence as a threshold for an
+unrelated reason (linguistic certainty of the ask, not relevance-
+worthiness); re-litigating that would need its own evidence, which this
+phase doesn't have. The prompt now requires an empty candidates array
+whenever a concern names/implies organ transplant, chemotherapy/oncology,
+major surgery, dialysis, ICU care, or radiation therapy — reusing the
+*existing* `decide_routing`: `if not resolution.candidates: decline` path
+that was already there and already tested. Live-validated: "heart
+transplant"/"chemotherapy"/"I need dialysis" each returned empty
+candidates on 5/5 repeated real calls after the fix (vs. non-empty wrong
+candidates before); legitimate concerns ("I cut my hand", "my knee
+hurts", "I think I have the flu") unaffected, 5/5 correct each. Full
+chain re-verified end-to-end (not just the isolated LLM call): resolver
+-> `decide_routing` -> `apply_capability_resolution` ->
+`_capability_not_offered_reply` now produces "We don't have a specialist
+for that here..." with zero doctors, for both heart transplant and
+chemotherapy.
+
+**Case B — "Did you mean Dr. Priya Chandrasekaran?" on a message that
+named no doctor.** `logs/chat/2026-09-11_08-21-57_748279.json` — the
+actual validated SQL doctor list for that turn was Vance/Jenkins/
+Whitaker; Priya was never in it. Traced to `nlu/resolvers.py::
+resolve_doctor_candidates`/`_fuzzy_score`, unrelated to the Capability
+Resolver entirely. `mentions_doctor()` fires on the bare word "doctor"
+anywhere in a message; the fuzzy matcher then scored "hand" (from "I cut
+my HAND...") against "Chandrasekaran" at exactly 0.65 (medium/clarify
+band) via the substring branch, because "hand" is a literal, coincidental
+mid-string match inside "C-HAND-rasekaran" — nothing to do with any
+doctor's actual name. Root cause: the substring-match condition (`n in c
+or c in n`) matched a shared fragment *anywhere*, when every legitimate
+case this branch was built for (documented in its own comments: "priya"/
+"priyanka", "had"/"Haddad") is a genuine name *prefix*, never a fragment
+embedded mid-string. Fixed by restricting the condition to
+`c.startswith(n) or n.startswith(c)` (prefix-only). Live-confirmed via
+direct scoring: `_fuzzy_score('hand','chandrasekaran')` now falls through
+to Levenshtein (0.29, well below threshold) instead of the substring
+branch; `_fuzzy_score('priya','priyanka')` (the legitimate case) is
+unaffected (0.77, still clarify-band). A second, never-yet-live instance
+of the identical bug class was found and fixed pre-emptively while
+investigating this one: "take" is a coincidental mid-string match inside
+"whit**AKE**r" (James Whitaker) — confirmed via the same repro script,
+now also correctly excluded.
+
+**Case C — "I need a checkup" silently resolved to Adult Physical only.**
+`logs/chat/2026-09-11_09-46-15_788261.json` — NLU's own `reasoning_short`
+said "matches pediatric exam service" (proof that field is not tied to
+what actually executes — see CLAUDE.md's warning against trusting an
+LLM's own free-text reasoning), but the real resolved/returned service
+was Adult Physical. Root cause: the resolver's `_EXPLICIT_INSTRUCTIONS`
+said "be decisive... do not hedge on an obvious match" with no concept of
+genuine ambiguity, and `decide_routing`'s explicit branch took only the
+single top candidate per type by design (a decision from the prior
+phase, made for an unrelated reason — see that branch's own comment
+about cross-type discarding). "Checkup" alone is genuinely ambiguous
+between Adult Physical and Pediatric Well-Child Exam; nothing in the
+wording favors either. Fixed at both points: `_EXPLICIT_INSTRUCTIONS` now
+requires the model to return every equally-plausible candidate when
+nothing in the message favors one over another (with an explicit
+boundary example distinguishing "checkup" from "checkup for my son"), and
+`decide_routing`'s explicit branch now takes every candidate of a type,
+not just the first — mirroring the "concern" branch's existing "surface
+options, don't discard" philosophy. `services_offered`/`search_doctors`
+already accept multiple resolved ids via `id__in` and list every match;
+no handler changes were needed. Live-validated: bare "checkup" returned
+both services on 5/5 repeated real calls after the fix (0/5 before);
+"checkup for my son" (patient-type given) and "flu test cost"/"stitches"
+(only one real catalog item plausible) stayed decisive to exactly one
+candidate on 5/5 runs each — the fix targets genuine ambiguity, not
+every explicit ask.
+
+**Files changed:**
+- `apps/chatbot/booking/capability_resolver.py` — `_CONCERN_INSTRUCTIONS`
+  + `_SYSTEM_PROMPT` (Case A: tertiary/hospital-level-care exclusion
+  rule); `_EXPLICIT_INSTRUCTIONS` (Case C: genuine-ambiguity rule).
+- `apps/chatbot/booking/capability_routing_policy.py` — explicit
+  branch now takes every candidate per type, not just the first (Case
+  C); module docstring updated to match; no change to the concern branch
+  or to the "no confidence threshold" design decision.
+- `apps/chatbot/nlu/resolvers.py` — `_fuzzy_score`'s substring-match
+  condition restricted from "appears anywhere" to "is a prefix of"
+  (Case B).
+- `apps/chatbot/engine.py` / `apps/chatbot/pipeline_debug.py` —
+  `medical_question_mode`/`catalog_match` added to the debug pipeline's
+  captured NLU fields (found missing while investigating Case A; cost
+  real time confirming why a message reached "concern" context).
+- `apps/chatbot/tests/test_unsupported_capability_concern.py` (new) —
+  5 tests: heart transplant/chemotherapy full-chain decline, a
+  legitimate-concern regression guard, 2 prompt tripwires.
+- `apps/chatbot/tests/test_checkup_ambiguity_resolution.py` (new) — 2
+  tests: bare "checkup" surfaces both services with correct individual
+  prices; "checkup for my son" stays decisive to one.
+- `apps/chatbot/tests/test_doctor_resolution.py` — 2 new tests (the
+  exact Case B repro + the "take"/Whitaker latent case; a legitimate-
+  prefix regression guard for priya/priyanka).
+- `apps/chatbot/tests/test_capability_routing_policy.py` — one existing
+  test (`test_explicit_still_decisive_within_a_single_type`) renamed and
+  its assertion updated to the new, intentional behavior, with a
+  docstring explaining why the old assertion is superseded, not simply
+  wrong.
+
+**Tests:** all new/changed tests pass; full suite `apps.chatbot.tests
+--keepdb` -> **1178/1178 OK** (1169 prior + 9 net new). Eval:
+`run_chat_eval --target 520` -> **698/706 (98.9%)**, byte-for-byte
+identical failing families to the recorded baseline
+(`adversarial_booking_slang_squeeze`, `adversarial_medical_slang_
+pediatric`, both pre-existing/unrelated). `apps.knowledge.tests.
+test_upload_file_types` crashes the interpreter (SIGFPE, numpy/openpyxl
+import-time self-check) on this machine regardless of these changes —
+reproduced identically on a clean stash of this diff, confirming it's the
+same pre-existing, unrelated class of crash CLAUDE.md already documents
+for `apps.importer`.
+
+**Live validation:** every fix above was validated with 5x repeated real
+OpenAI calls against the real Horizon catalog both before (reproducing
+the bug) and after (confirming the fix), plus one full deterministic
+chain trace per case (resolver -> routing policy -> planner -> real SQL
+handler -> final response text) proving the actual execution path, not
+just the final response text.
+
+**Not done / deferred:** the much larger NLU model-benchmarking/prompt-
+responsibility-audit/100-200-case-dataset scope from the same external
+audit prompt that surfaced these three bugs was explicitly deferred by
+agreement — these three live, reproduced bugs were fixed first as their
+own scoped phase.
+
+**Recommended next:** the deferred model-benchmarking/dataset/prompt-
+audit phase, if still wanted; otherwise continue monitoring
+`capability_resolver_live` log lines as already recommended above.
+
+## ✅ NLU model benchmark + prompt-responsibility audit (deferred scope, scoped down)
+
+**Objective for this phase only:** the previous phase explicitly deferred
+the audit prompt's model-benchmarking / dataset / prompt-audit scope.
+This phase picks up exactly that, scoped down to what's real,
+measurable, and finishable in one sitting: a real (not fabricated)
+dataset run live against the current production model and two real
+candidates, plus a line-by-line audit of the current NLU system prompt.
+Explicitly NOT attempted this phase (see "Not done" below): the
+100-200-case dataset size, 10 repeats/case, a prompt-simplification
+variant, `service_filter_mode` semantics redesign, and the full A-G
+mandatory report shape from the original prompt — those remain future
+work, not silently dropped.
+
+**What was actually run — real, live, no fabricated numbers:**
+- A 67-case dataset (`core/management/commands/run_nlu_model_benchmark.py`,
+  `_CASES`), hand-labeled, grounded in the real Horizon catalog/doctors
+  already used elsewhere in this repo's evals. Covers all 17 categories
+  the audit prompt named (explicit services, generic ambiguity,
+  unsupported capabilities, medical definitions, personal symptoms,
+  treatment requests, doctor/specialty search, pricing, availability,
+  booking, multi-intent, negation, follow-ups, context-switching,
+  stale-context adversarial, typos/slang) at ~4 cases/category rather
+  than the requested 100-200 — a real time/cost tradeoff, stated plainly
+  rather than padded to look bigger.
+- Ran through `OpenAINLUProvider` directly (bypasses the primary/
+  secondary fallback chain so every call is attributable to exactly one
+  named model) with the **current, unchanged** system prompt —
+  isolating the model effect only. A prompt-variant comparison is a
+  separate, later experiment.
+- 3 models x 67 cases x 3 repeats = 603 live calls:
+  - `gpt-4.1-nano` — current production primary (`NLU_MODEL`).
+  - `gpt-4.1-mini` — current production secondary/fallback
+    (`NLU_FALLBACK_MODEL`), benchmarked here for the first time as a
+    *primary* candidate rather than just a failure-fallback.
+  - `gpt-5.4-nano` — real, currently available on this account (checked
+    live via `client.models.list()`, not assumed — the account also has
+    `gpt-5.4-mini`, `gpt-5.5`, `gpt-5.6-{luna,sol,terra}`; `gpt-5.4-nano`
+    was chosen as the closest same-tier "low-cost GPT-5.x" analog to the
+    audit prompt's request). Required a benchmark-only compatibility
+    shim (`_GPT5CompatProvider` in the same file) because this model
+    family rejects `max_tokens` (`max_completion_tokens` required) and
+    needed a larger completion budget (800 vs. 256) because part of its
+    visible completion budget is consumed by hidden reasoning tokens —
+    **this is itself a real finding**: adopting any GPT-5.x model in
+    production would need a small `openai_provider.py` change, not a
+    drop-in swap. Reps=3 (not the requested 10) — real live-call time/
+    cost tradeoff, stated plainly.
+
+**Results (603/603 calls completed; 3 provider-side errors — 1 timeout,
+2 rate-limit/JSON-truncation on gpt-5.4-nano — treated as errors, not
+silently retried into a pass):**
+
+| Model | Accuracy | Consistency (same intent all 3 reps) | Latency p50/p95 | Tokens out (avg) |
+|---|---|---|---|---|
+| gpt-4.1-nano (current primary) | 175/201 (87.1%) | 64/67 cases | 4191ms / 11869ms | 166 |
+| gpt-4.1-mini (current fallback) | 180/201 (89.6%) | 65/67 cases | 5364ms / 9127ms | 171 |
+| gpt-5.4-nano | 181/201 (90.0%) | 58/67 cases | 2787ms / 11123ms | 249 |
+
+**Real per-model behavior differences found (not just aggregate score):**
+- **`gpt-4.1-nano`'s worst category was `context_switch` (3/9, 33%)** —
+  after a recent-turn pricing answer, "never mind, can you tell me your
+  hours?" and "let's talk about something else — do you accept Aetna?"
+  both returned `intent=pricing` (the stale topic) in **6/6** reps
+  across both cases, not a flake. This is a live violation of the
+  prompt's own explicit rule ("never let recent turns override... an
+  entity/topic the current message doesn't itself state") by the
+  *current production model* — a genuine, reproducible robustness gap,
+  distinct from the entity-leak bugs the previous phase fixed (this is
+  an intent-level anchor, not an entity leak). Root-cause/fix not
+  attempted this phase — flagged for the recommended next phase below.
+- **`gpt-4.1-nano`'s `stale_context` was also its weakest non-
+  context_switch category (4/9)**, on the same axis: "I need to get my
+  blood drawn" after two unrelated prior turns (a doctor booking, then a
+  stitches quote) returned `medical_question` instead of
+  `services_offered`/`pricing` in 3/3 reps, and one rep also leaked
+  `entities.service="Simple Wound Laceration Repair (Sutures)"` from the
+  stale turn — the same entity-leak bug class the previous phase's
+  regression tests targeted for `doctor_name`, now confirmed to also
+  occur for `service`. `gpt-4.1-mini` and `gpt-5.4-nano` did not
+  reproduce the entity leak on this case, though `mini` leaked it once
+  on a different case (`P2`, "do you accept Cigna" — 1/3 reps).
+- **The "bare checkup is genuinely ambiguous" fix from the previous
+  phase generalizes correctly on `gpt-4.1-nano`** — `A5` ("My child
+  needs a yearly checkup", a *disambiguated* checkup) and `B1` (bare
+  "I need a checkup") both resolved the way the prior phase's fix
+  intended on nano. **`gpt-4.1-mini` and `gpt-5.4-nano` both regressed
+  on `A5`** (returning `doctor_search` instead of resolving the named
+  service), i.e. a same-shape bug in different models than the one
+  already fixed for nano — evidence this class of bug is prompt-
+  boundary-sensitive per model, not fixed once for all models by a
+  nano-tuned prompt.
+- **`gpt-4.1-mini` and `gpt-5.4-nano` both violated the prompt's
+  explicit compound-intent rule** ("keep the strongest as primary
+  intent... never silently answer only one half") by literally emitting
+  `intent="multi_intent"` as the top-level intent on `L2`/`L3` in most
+  reps — `multi_intent` is a valid enum value but the prompt explicitly
+  says never to use it as the primary answer this way. `gpt-4.1-nano`
+  did not make this mistake on the same cases. This is a concrete
+  argument for a Python-side contract check (reject/repair a bare
+  `intent="multi_intent"` rather than trusting every model reads that
+  paragraph the same way) rather than prompt wording alone — not
+  implemented this phase.
+- **One dataset labeling bug caught by its own results, not asserted
+  away:** case `D3` ("What is a blood test?") was hand-labeled expecting
+  `medical_question`, but the prompt's own existing rule ("a 'what is X'
+  question is services_offered... when X closely resembles one of this
+  clinic's own real catalog services") makes `services_offered` the
+  architecturally *correct* answer here (Horizon lists a "Routine Blood
+  Draw (Venipuncture)" service) — all three models answered
+  `services_offered` consistently, and it was the dataset's expected
+  label that was wrong, not the models. Left in the harness with this
+  note rather than quietly fixed, so the correction is visible.
+- Every model's `unsupported`-capability handling (heart transplant/
+  chemotherapy/dialysis/MRI/radiation/organ transplant) held up:
+  16-18 out of 18 across all three models, consistent with the previous
+  phase's Case A fix generalizing rather than being nano-specific.
+
+**Prompt-responsibility audit** (full read of `apps/chatbot/nlu/
+prompts.py::_SYSTEM_PROMPT`, ~30 discrete instructions):
+- **Confirmed genuinely needed** (a real semantic judgment call, not a
+  mechanical lookup): entity-extraction-vs-grounding-context rule,
+  service_filter_mode named/category/none semantics, the compound-intent
+  rule, book/reschedule-wins-over-doctor_search priority, emergency-vs-
+  urgency distinction, medical_question_mode's 3-way definitional/
+  personal/risk split, specialty_category_hint's closed-enum guess, and
+  the entire `catalog_match` status machine.
+- **Real duplication found:** the "does the clinic offer this
+  service/procedure" capability-naming rule is independently restated,
+  in full, three times — once for services, once for doctors/
+  specialties, once for the availability-question phrasing of the same
+  thing. Same underlying principle, three parallel paragraphs. A
+  candidate for consolidation into one paragraph with three short
+  examples, not three long ones — not attempted this phase (a prompt
+  edit is exactly the kind of change that needs its own live-tested
+  before/after per this repo's rules, not a drive-by rewrite bundled
+  into an audit).
+- **Real bolted-on special case found:** the "which doctor(s) can see
+  kids" instruction hardcodes an example phrase and its expected service
+  name directly into the prompt. This is the same shape of hardcoded-
+  mapping growth the original audit's constraint list explicitly warned
+  against ("no hardcoded doctor names or specialty mappings") — it
+  hasn't caused a bug, but every new phrase like it added over time is
+  exactly how prompts accumulate ontology debt. Flagged, not removed
+  (removing it without a replacement risks regressing the case it was
+  added for).
+- **Confirmed NOT a problem after checking, not assuming:** `catalog_match`
+  (produced by this same base-classifier prompt) and the separate
+  `capability_resolver.py` LLM call looked, from the file names alone,
+  like they might be two competing systems independently re-deciding
+  the same thing. Reading `capability_resolver.py`'s own module
+  docstring (line 9-13) confirms this is deliberate: `catalog_match` and
+  every downstream SQL-handler resolution chain built on it were
+  explicitly kept "fully intact for rollback" when the newer capability
+  resolver was added. Not a redundancy bug — recorded here so a future
+  session doesn't have to re-discover this.
+- **Confirmed load-bearing, not vestigial:** before writing the above,
+  grepped every consumer of `catalog_match` across the repo (18 files:
+  `routing/heuristics.py`, `routing/doc_catalog.py`,
+  `routing/confidence.py`, `sql_tool/handlers/doctors.py`,
+  `booking/discovery.py`, plus tests) — it is genuinely used everywhere,
+  not dead weight.
+- **Recommend removing:** the prompt still lists
+  `needs_sql,needs_vector,needs_llm,sql_tool,document_needed` as
+  "Deprecated (optional, ignored for routing)" — Python ignores them
+  entirely, so every single NLU call still spends prompt tokens telling
+  the model about five fields whose answer is thrown away. Pure token
+  cost with zero behavioral value. Not removed this phase (a prompt
+  edit, same reasoning as above) but this one has no plausible downside
+  to removing, unlike the consolidation candidates.
+
+**Files changed:**
+- `core/management/commands/run_nlu_model_benchmark.py` (new) — the
+  67-case dataset, live 3-model harness (with a benchmark-only GPT-5.x
+  compatibility shim), scoring, and reporting. Reusable for a future,
+  larger run (`--models`, `--repeats`, `--json-out` are all
+  parameterized) rather than a one-off script thrown away after use.
+- No production code changed this phase — this was a read/measure
+  phase. `ROADMAP.md` only.
+
+**Tests:** none added — no production behavior changed. Existing
+baseline (1178/1178 chatbot tests, 698/706 eval) is unaffected by
+construction; not re-run since nothing production changed.
+
+**Not done / deferred (again, explicitly, not silently dropped):**
+- Dataset size (67, not 100-200) and repeats (3, not 10) — real live-
+  call time/cost tradeoff.
+- No prompt-simplification variant was tested — every model above ran
+  the *same, current* prompt. Isolating the prompt's own effect (current
+  vs. a simplified version, same model) is a distinct experiment this
+  phase did not do.
+- `service_filter_mode` semantics redesign (`EXACT_NAMED`/
+  `CAPABILITY_MATCHED`/`CATEGORY`/`AMBIGUOUS`/`ALL`) — not attempted;
+  the current three-value enum was benchmarked as-is.
+- The three real, reproducible model-behavior gaps found above (nano's
+  context-switch pricing-anchor; mini/gpt-5.4-nano's `A5` checkup
+  regression; mini/gpt-5.4-nano's literal `multi_intent` violation) were
+  found, not fixed — each would need its own reproduction-first,
+  smallest-diff phase per this repo's rules, not a bundled fix here.
+- Tenant isolation tests, doctor/availability result-integrity audits,
+  and the capability-shadow `needs_review` bucket triage from the
+  original audit prompt were not touched this phase.
+
+**Recommendation:** do not switch `NLU_MODEL` off `gpt-4.1-nano` on this
+evidence alone. `gpt-5.4-nano` scored highest (90.0%) and had the best
+p50 latency, but needs a real (not shimmed) `openai_provider.py` code
+change to be production-viable, cost ~50% more completion tokens, hit a
+live rate limit at only 8 concurrent workers, and its consistency was
+the *worst* of the three (58/67 vs. nano's 64/67) — a materially noisier
+model despite the higher mean, which matters more than the headline
+accuracy number for a chat production path. `gpt-4.1-mini` is the
+lowest-risk upgrade path if one is wanted (already a first-class
+production dependency as the configured fallback, no code change
+needed, +2.5pp accuracy) but regressed on the `A5` checkup case nano
+already gets right, so it is not a strict improvement either. Best
+supported next step is fixing nano's own found context-switch bug
+directly (reproduce the pricing-anchor case, smallest diff, regression
+test) rather than a model swap that trades one set of gaps for another.
+
+**Recommended next:** reproduce and fix the nano context-switch pricing-
+anchor bug (`O2`/`O3` in the new harness) as its own scoped phase — it's
+a real, live-confirmed regression on the current production model, the
+same "reproduce first, smallest diff, regression test" shape as the
+three bugs fixed in the previous phase. After that, if a larger
+benchmark is still wanted: rerun this harness at the full 100-200-case
+size with 10 repeats once the dataset is grown, and add the prompt-
+simplification variant as a second independent axis.
+
+## ✅ Context-switch bug — Phase 1 of a 6-phase plan (fixed; root cause was NOT the NLU)
+
+**Objective for this phase only:** the recommended-next item above,
+reproduced against real, natural, cumulative multi-turn conversations
+(not the synthetic single-shot benchmark harness) through the actual
+`ChatEngine`/real DB-backed `ChatSession`/live OpenAI NLU — find the
+exact layer where the old topic survives, fix with the general
+principle "explicit topic change must reset irrelevant prior intent/
+entity state," add a reusable regression suite for the 7 named
+switch patterns. Phases 2-6 of the requested 6-phase plan (systematic
+entity-leakage rules, Python-side NLU contract validation, capability-
+resolver-vs-failure-classes benchmark, retiring old mechanisms via
+shadow eval, expanding the benchmark to 100-200 adversarial cases) were
+**not started** — reported and stopped here per this repo's "one phase,
+one focus" rule, to be picked up next only when asked.
+
+**Reproduction — real pipeline, not synthetic context:** built 7 natural,
+cumulative 2-4-turn conversations (pricing→hours, pricing→insurance,
+pricing→doctors, pricing→checkup, booking→information, doctor_search→
+pricing, service_search→hours), each run against a real `ChatSession` +
+real `horizon-family-care` clinic + live `ChatEngine.process()` calls
+(same call chain production uses — `_load_history`/`_save_messages`
+included, not a hand-built `conversation_context` dict), with
+`DEBUG_CHAT_PIPELINE` force-enabled so every turn's actual constructed
+NLU prompt, entities, and final response were captured to `logs/chat/`.
+
+**Root cause — confirmed by direct trace, not assumed:** the live trace
+showed something the benchmark phase's synthetic-context testing did not
+reveal: **the Small LLM (`gpt-4.1-nano`) was classifying the post-switch
+turn correctly in every failing case** (`clinic_hours`, `doctor_search`,
+`services_offered` — all correct, all high-confidence). The bug is not
+in "recent-turn construction," "NLU prompt," or "entity carry-over" — it
+is a **Python post-processing override** that discards an already-
+correct, already-computed answer:
+- `conversation_state.py::detect_recovery()` runs on the raw message
+  text *before* NLU even executes, and matches "never mind"/"forget
+  it"/"forget that"/"actually no" etc. (`_STRONG_CANCEL_RE`) as a
+  whole-thread cancellation.
+- Its own existing guard against over-firing (`is_real_question = "?"
+  in text`, added in an earlier phase for "I don't want a female
+  doctor, who's available besides Dr. Rostova?") only recognized a real
+  follow-up when the user typed a literal `?` — but casual chat
+  routinely doesn't: "forget it, what time do you open tomorrow",
+  "never mind, i think i just need a checkup", "ok never mind that, how
+  much is a physical" all have zero `?` and all matched the cancel
+  regex with no override-guard triggering.
+- `engine.py` (~line 986-995) computes the full, correct SQL-grounded
+  `response_text` first (real hours/price/doctor list), *then*
+  unconditionally discards it and substitutes `recovery_reply()`'s
+  generic "Sure — what would you like to do instead?" whenever
+  `detect_recovery` returned a strong cancel — regardless of whether a
+  real, correct, on-topic answer had already been found. Confirmed via
+  `should_apply_recovery_override()`: strong-cancel always returns
+  `True`, never consulting `sql_found` the way the weak-cancel path
+  already does (this asymmetry is itself informative — see "found but
+  not fixed" below).
+
+**Fix (smallest diff, one file):** `apps/chatbot/conversation_state.py`
+— new `_has_real_followup(text, cancel_match)`: `"?" in text` still
+counts (unchanged prior behavior), OR at least `_FOLLOWUP_MIN_WORDS=3`
+real words remain *after* the matched cancel phrase. Both
+`detect_recovery()`'s strong- and weak-cancel branches now call this
+instead of the old bare `"?" in text` check. Deliberately did NOT touch
+`should_apply_recovery_override()`/the strong-cancel-always-wins rule at
+the override site — `test_strong_cancel_still_recovers` already
+documents that a bare "nah, never mind" must win even when NLU/SQL
+produces a plausible-looking generic result (an unfiltered doctor
+browse), and changing that site risked exactly that regression;
+generalizing "is this a real follow-up" at the point the message is
+first read was the smaller, correct fix.
+
+**Verified live, before/after, through the real pipeline** (same 7
+scenarios, same `ChatEngine`, real Horizon clinic): all 4 previously-
+broken turns now return the real answer instead of the generic reply —
+"actually forget that, who are your doctors" → "Found 6 doctors who may
+be a good fit"; "never mind, i think i just need a checkup" → "Pick a
+service below."; "ok never mind that, how much is a physical" →
+"Establish Patient Adult Physical is $185.00, about 45 minutes.";
+"forget it, what time do you open tomorrow" → "We're open Monday–Friday
+07:30 AM–07 PM...". Re-ran the existing 8-case `context` category of the
+Phase 51 adversarial suite (`ctx-switch-1`/`ctx-switch-2` and all others)
+live — unaffected, all still correct.
+
+**Tests:** `apps/chatbot/tests/test_recovery_override.py` — 8 new tests:
+one `detect_recovery` unit test per switch pattern (asserting
+`kind == "none"`, i.e. the cancel no longer fires), one full-pipeline
+integration test (`test_unpunctuated_cancel_plus_followup_is_not_
+swallowed`, mocked NLU, asserts the real doctor-search answer reaches
+the user and the generic reply text does not), and one guard test
+(`test_bare_cancel_with_only_filler_after_it_still_recovers` — "never
+mind, thanks" must still be a bare cancel, proving the new word-count
+signal isn't "any trailing text counts"). `apps.chatbot.tests
+test_recovery_override --keepdb`: **26/26** (18 prior + 8 new). Full
+suite `apps.chatbot.tests --keepdb`: **1186/1186** (1178 + 8 new). Eval
+`run_chat_eval --target 520`: **698/706 (98.9%)**, byte-identical
+failing families to the recorded baseline (unaffected, as expected —
+this bug class isn't in the offline battery's fixed corpus).
+
+**Found but not fixed this phase (flagged, not silently dropped):**
+- **A second, unrelated bug in the same `booking_to_information`
+  scenario:** "actually wait, what's your address" (turn 2, after "can I
+  book an appointment with Dr. Vance") returned `intent=doctor_search`
+  → "Found 6 doctors who may be a good fit" instead of answering about
+  the clinic's location. `detect_recovery` is not involved here —
+  "actually wait" doesn't match `_STRONG_CANCEL_RE` at all, so this is a
+  genuine NLU/heuristics misclassification of an address question as a
+  doctor lookup, most likely residual doctor-context grounding from the
+  prior turn. Different root cause, different layer — not folded into
+  this fix. Recommended as its own reproduce-first phase.
+- **The strong-cancel-always-overrides asymmetry** in
+  `should_apply_recovery_override()` (noted above) is real and
+  deliberate per existing tests, but it means a *bare* cancel with no
+  real follow-up can still discard a coincidentally-good SQL result
+  (e.g. an unfiltered doctor browse) — this is correct today because a
+  topic-less "never mind" message shouldn't be answered by whatever
+  default query happened to run, but it's worth being aware this
+  override is still purely message-shape-driven, not "does the message
+  make semantic sense with what was found" — exactly the class of gap
+  Phase 3 of the requested plan (Python-side NLU contract validation)
+  is aimed at.
+- `_has_real_followup` only looks at words *after* the matched cancel
+  phrase — a real question stated *before* a trailing cancel-shaped
+  aside ("who are your doctors, actually never mind") is a rarer shape
+  this doesn't cover. Not reproduced live this phase; noted as a known
+  limitation of the fix's scope, not fixed speculatively.
+
+**Files changed:**
+- `apps/chatbot/conversation_state.py` — `_has_real_followup()` added;
+  `detect_recovery()`'s strong/weak-cancel branches use it instead of
+  the bare `"?" in text` check.
+- `apps/chatbot/tests/test_recovery_override.py` — 8 new tests (above).
+
+**Not done — Phases 2-6 of the requested plan, explicitly deferred, not
+attempted:** systematic turn-local-vs-persistent entity classification
+across all entity fields (Phase 2); a Python-side NLU output contract/
+validation layer rejecting invalid shapes like a bare `intent=
+"multi_intent"` (Phase 3); a focused capability-resolver-vs-failure-class
+benchmark (explicit/semantic/concern/ambiguous/impossible/medical-
+question/care-navigation/no-capability) (Phase 4); shadow/parallel
+evaluation of old lexical capability mechanisms vs. the resolver before
+retiring anything (Phase 5); expanding the benchmark to the full
+100-200-adversarial-case scope (Phase 6).
+
+**Recommended next:** Phase 2 (systematic stale-entity-leakage rule) —
+the previous phase's benchmark already found a live service-entity leak
+in the `stale_context` category (`P3`, distinct from this phase's
+intent-override bug), so there's already a real, reproduced case to
+anchor that phase's regression suite on, consistent with this repo's
+"reproduce first" discipline.
+
+## ✅ Multi-tenant regression sweep — two real bugs fixed, one high-severity bug found and deferred
+
+User pushback, verbatim: "i think you have over coupled the things and
+forget that this is a multitenant chatbot and now it makie blunders,"
+with two real production transcripts pasted in — one from a *different*
+tenant (Lumina Skin & Laser Dermatology) than every prior phase's test
+clinic (Horizon), one a longer real Horizon conversation. Explicit
+instruction: "just read the logs real quick and find hte issue" — read
+first, fix only what's clean, defer what isn't.
+
+### Bug 1 (fixed): soft_medical → capability-resolver "filter" gave a
+bare, unacknowledged doctor list for non-concern questions
+
+**Reproduced** via the real `logs/chat/2026-09-11_13-37-*.json` traces
+for the exact reported transcript: "CAN i use skinorene cream after a
+sunburn" and "whihc US based sunblock is best for a sensitive skin" (a
+narrow, single-specialty dermatology tenant) both returned the
+byte-identical "Found 2 doctors who may be a good fit" — no
+acknowledgment of either question, no differentiation between them.
+
+**Root cause (`apps/chatbot/planner.py`):** `compute_message_sensors`'s
+`soft_medical` flag fired from `medical_question_mode not in
+("definitional", "risk")` alone — no requirement the message describe an
+actual personal concern. The sunblock message had **no symptom entity**
+and **confidence 0.65** (classifier's own reasoning: "unclear if asking
+about product use or sun protection") yet still set `soft_medical=True`.
+Once true, `apply_capability_resolution`'s `was_unclaimed`+`"filter"`
+branch (`planner.py`) converts the plan straight to `sql_tasks=
+["doctors"]`, bypassing `_soft_medical_reply`/`_maybe_suggest_
+specialties` entirely — the final text is pure SQL-formatter boilerplate
+with zero framing. This is architecturally a multi-tenant exposure, not
+a one-off: it was built/tested almost entirely against Horizon (multi-
+specialty), where a matched specialty at least varies by message. Lumina
+is single-specialty, so *any* skin-adjacent utterance — including a pure
+product-recommendation question with no personal concern — trivially
+"matches" its one specialty and collapses to the same canned list.
+
+**Fix (two independent, both applied):**
+- `apps/chatbot/planner.py` — the mode-only `soft_medical` trigger is now
+  gated on `conf_policy.band not in (LOW, VERY_LOW)` (the confidence
+  band the pipeline already computes for other purposes). A real
+  symptom entity or `looks_like_symptom()` keyword match still fires
+  `soft_medical` regardless of confidence — only the mode-only branch is
+  gated.
+- `apps/chatbot/engine.py` (`_compose_from_plan`) — when `soft_medical`
+  *did* still convert into a real doctor search via the capability
+  resolver (`exec_plan.soft_medical and capability_resolver_used`, SQL
+  found real rows), prepend a short no-advice acknowledgment ("I can't
+  give medical or product advice directly, but here's who can help:")
+  instead of handing back the bare list. `exec_plan.soft_medical`
+  survives `apply_capability_resolution`'s `replace()` call untouched
+  (not in its override list), so this is a reliable, narrow signal —
+  confirmed it does **not** fire for an ordinary, non-soft-medical
+  doctor_search SQL dispatch.
+
+**Verified live** (5 repeated real runs of both messages through the
+real `ChatEngine`, real Lumina clinic, `DEBUG_CHAT_PIPELINE=True`):
+depending on NLU's own run-to-run variance, each message now either (a)
+gets a real informational LLM answer (sunburn-cream / mineral-sunscreen
+guidance) via the general-knowledge path, or (b) still shows the doctor
+list but with the new acknowledgment. **Never again the bare,
+unacknowledged, identical-for-both-questions list.**
+
+**Tests:** new file `apps/chatbot/tests/test_soft_medical_capability_
+filter.py` — 7 tests: confidence-gate computation (low-conf+no-symptom
+doesn't trigger; high-conf+symptom still does; symptom-entity/
+looks_like_symptom still overrides the gate regardless of confidence;
+mid-confidence-no-symptom still triggers, unaffected) + preamble
+composition (fires only when `soft_medical and capability_resolver_used`,
+not for an ordinary doctor search).
+
+### Bug 2 (fixed): a stale `entities.language` value from an earlier
+turn silently zeroed out an unrelated, later doctor search
+
+**Reproduced** via a real Horizon transcript (`logs/chat/2026-09-
+11_13-18-57*.json` through `..._13-20-41*.json`) and confirmed live
+end-to-end through a real multi-turn `ChatSession`: "please talk me in
+roman urdu" set `entities.language="Roman Urdu"` once (a
+response-language preference, not a doctor-search request). Two turns
+later, "whats the speciality of dr marcus" — a real doctor named
+plainly, nothing about language at all — still carried
+`entities.language="Roman Urdu"` and got **"I couldn't find matching
+doctors for that"** even though `Dr. Marcus Vance` is a real, active
+doctor at this clinic.
+
+**Root cause (`apps/chatbot/sql_tool/handlers/doctors.py`):**
+`search_doctors`'s language filter treats any non-empty
+`entities.language` as "find a doctor who speaks this," and — correctly,
+on its own terms, per its own comment — filters to **zero rows** rather
+than silently ignoring an unresolvable language name (`resolve_language_
+codes(["Roman Urdu"])` → `[]`; "Roman Urdu" is a transliteration
+convention, not a real spoken-language code). Verified via direct
+reproduction that `resolve_entities`/`_match_doctor("Marcus")` correctly
+resolves the real doctor id every time — the bug was never in name
+resolution, it was the language filter wiping out an otherwise-correct
+result. The actual defect: `apps/chatbot/nlu/entity_extract.py` already
+has exactly the right deterministic backstop for this class of bug —
+`scrub_entities_leaked_from_recent_turns()`/`_LEAK_PRONE_FIELDS` — built
+during the capability-resolution audit specifically because the model
+doesn't reliably comply with "never let recent turns supply an entity
+the current message doesn't itself state." `_LEAK_PRONE_FIELDS` covered
+`symptom`/`service`/`specialty`/`doctor_name`/`insurance_provider`
+already, but its own docstring explicitly said `language` was "a
+different, unaudited concern, deliberately left untouched" — a
+documented, deliberate scope decision at the time, now live-confirmed to
+actually matter.
+
+**Fix (one line, one file):** `apps/chatbot/nlu/entity_extract.py` —
+added `"language"` to `_LEAK_PRONE_FIELDS`. Uses the exact same
+leak-detection rule already proven for the other five fields: a value is
+dropped only when it's *not* grounded in the current message *and is*
+grounded in the recent-turns transcript — a genuine "is there a Spanish-
+speaking doctor" (the language word is right there in the current
+message) is completely unaffected.
+
+**Verified live** through the real multi-turn `ChatSession` reproducing
+the exact real conversation (5 turns, same order as the transcript):
+both previously-broken "dr marcus" turns now correctly return "Here's
+Dr. Marcus Vance — details below."
+
+**Tests:** `apps/chatbot/tests/test_nlu.py` —
+`test_previous_language_does_not_become_current_turn_entity` (the exact
+reproduced shape) and `test_genuine_current_turn_language_request_is_
+not_scrubbed` (guard: "is there a Spanish speaking doctor" must be
+untouched).
+
+### Found but NOT fixed this phase — flagged, not silently dropped
+
+- **High severity, recommended next phase — insurance hallucination via
+  faq/vector-vs-SQL conflict.** Live-confirmed in the same Horizon
+  transcript (`logs/chat/2026-09-11_13-26-58*.json`,
+  `..._13-27-27*.json`): "DO DR PROVIDE HERE INSUARNCE" and "IF I HAVE AN
+  INSURANCE DO YOU GIVE ME SOMEDISCOUNT" both classified `intent=faq`
+  (typo'd/informally-phrased, never reached `insurance_accepted`) and
+  answered from the clinic's own uploaded
+  `Horizon_Direct_Care_and_Urgent_Care_Master_Contract.pdf` via vector
+  RAG. That document's real clause — "The Practice DOES NOT participate
+  in, accept, or bill any health insurance plans for urgent care visits
+  or membership fees" (true, about DPC billing mechanics) — got
+  generalized into a blanket "Clinic does not accept insurance plans"
+  answer. Two messages later, "IS THIS CLICNC ACCPET INSURANCE" (cleaner
+  phrasing) correctly classified `insurance_accepted` and correctly hit
+  real SQL data: **Aetna PPO, Aetna HMO Plus, Blue Cross Blue Shield PPO
+  and Choice POS, Oscar Health Gold, UnitedHealthcare Choice — all
+  accepted.** Same clinic, same real data, directly contradictory
+  answers three turns apart. This is a real "Python decides execution"
+  violation (CLAUDE.md's core rule): the vector/FAQ path answered an
+  insurance question that should have deferred to the authoritative SQL
+  source, and produced patient-facing financial misinformation when it
+  did. Not fixed this phase because the correct fix isn't obvious/low-
+  risk: forcing every `faq`+insurance-adjacent message to SQL risks
+  regressing the `insurance`/`faq` eval categories (currently 45/45 and
+  55/55) for genuinely policy-shaped questions ("do you offer a discount
+  for X insurance") that legitimately are FAQ/document questions, not
+  "do you accept plan X" lookups — the fix needs its own reproduce-first
+  phase to find the right boundary, not a rushed one-line change.
+- **Roman Urdu / Hindi comprehension gaps (lower severity, NLU-quality,
+  not a Python bug):** "kya tum muje bata sakte ho k abhi kitne dr
+  available hai" ("how many doctors are available") got classified
+  `doctor_availability` (returns one doctor's next slot) instead of a
+  count/browse of all doctors — a real comprehension miss on informal
+  Roman Urdu phrasing. Separately, "please talk me in roman urdu" was
+  correctly detected as a language-preference request
+  (`entities.language` set) but the *response* was never actually
+  generated in Roman Urdu — SQL-formatted template text
+  (`format_sql_results`) has no i18n path today. Neither reproduced
+  against a controlled matrix this phase; noted from the one real
+  transcript only.
+- **Possible reasoning-text bleed between adjacent turns (unconfirmed,
+  observed once):** "whats this chatbot for" (its own turn, correctly
+  classified `off_topic`) had `reasoning_short`: "User asked about
+  environment file, unrelated to clinic" — referencing the *previous*
+  turn's topic ("can you please share the env file"), not this one. The
+  final intent/confidence for this turn were still correct; only the
+  internal reasoning string looked confused. Observed once, not
+  reproduced deliberately — flagged for awareness, not treated as a
+  confirmed systemic bug.
+
+**Files changed:**
+- `apps/chatbot/planner.py` — `soft_medical`'s mode-only branch gated on
+  confidence band.
+- `apps/chatbot/engine.py` — `_compose_from_plan` acknowledgment preamble
+  for the soft_medical→capability-resolver-filter conversion.
+- `apps/chatbot/nlu/entity_extract.py` — `language` added to
+  `_LEAK_PRONE_FIELDS`.
+- `apps/chatbot/tests/test_soft_medical_capability_filter.py` (new) — 7
+  tests.
+- `apps/chatbot/tests/test_nlu.py` — 2 new tests on
+  `ScrubEntitiesLeakedFromRecentTurnsTests`.
+
+**Tests:** `apps.chatbot.tests --keepdb`: **1195/1195** (1186 + 9 new).
+**Eval:** `run_chat_eval --target 520`: **698/706 (98.9%)**, same two
+pre-existing unrelated failure families as the recorded baseline
+(`adversarial_booking_slang_squeeze`, `adversarial_medical_slang_
+pediatric`) — unaffected.
+
+**Recommended next:** the insurance hallucination above — reproduce a
+small matrix of insurance-adjacent faq/medical_question/off_topic-shaped
+messages against a clinic with real SQL insurance data, find the actual
+boundary between "genuinely a policy/FAQ question" and "should defer to
+SQL," before changing any routing.
