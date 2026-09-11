@@ -13,6 +13,7 @@ from apps.api.common.schemas import MessageOut, PaginatedOut
 from apps.api.patients.schemas import PatientIn, PatientOut, PatientUpdateIn
 from apps.patients.dob import validate_date_of_birth
 from apps.patients.models import Patient
+from apps.patients.phone import InvalidPhoneNumber, display_phone, normalize_phone_e164
 
 router = Router(tags=["Patients"])
 
@@ -20,7 +21,7 @@ router = Router(tags=["Patients"])
 def _serialize(patient: Patient) -> PatientOut:
     return PatientOut(
         id=patient.id,
-        phone=patient.phone,
+        phone=display_phone(patient.phone),
         email=patient.email,
         first_name=patient.first_name,
         last_name=patient.last_name,
@@ -43,6 +44,13 @@ def _get_patient(clinic_id: UUID, patient_id: UUID) -> Patient:
 def _dob_http_error(exc: ValidationError) -> HttpError:
     msg = exc.messages[0] if getattr(exc, "messages", None) else str(exc)
     return HttpError(400, msg)
+
+
+def _normalized_phone(raw: str) -> str:
+    try:
+        return normalize_phone_e164(raw)
+    except InvalidPhoneNumber as exc:
+        raise HttpError(400, str(exc)) from exc
 
 
 @router.get("", response=PaginatedOut[PatientOut], auth=jwt_auth)
@@ -72,9 +80,11 @@ def list_patients(
 @router.post("", response={201: PatientOut}, auth=jwt_auth)
 def create_patient(request, payload: PatientIn):
     clinic = clinic_from(request)
+    data = payload.dict()
+    data["phone"] = _normalized_phone(data["phone"])
     try:
         validate_date_of_birth(payload.date_of_birth)
-        patient = Patient.objects.create(clinic=clinic, **payload.dict())
+        patient = Patient.objects.create(clinic=clinic, **data)
     except ValidationError as exc:
         raise _dob_http_error(exc) from exc
     except IntegrityError as exc:
@@ -92,6 +102,8 @@ def update_patient(request, patient_id: UUID, payload: PatientUpdateIn):
     clinic_id = clinic_from(request).id
     patient = _get_patient(clinic_id, patient_id)
     data = payload.dict(exclude_unset=True)
+    if data.get("phone"):
+        data["phone"] = _normalized_phone(data["phone"])
     if "date_of_birth" in data:
         try:
             validate_date_of_birth(data["date_of_birth"])
