@@ -328,6 +328,33 @@ CHAT_RESPONSE_MIN_REMAINING_SECONDS = env.float(
 # Circuit breaker for failing LLM providers
 LLM_CIRCUIT_FAILURE_THRESHOLD = env.int("LLM_CIRCUIT_FAILURE_THRESHOLD", default=5)
 LLM_CIRCUIT_COOLDOWN_SECONDS = env.float("LLM_CIRCUIT_COOLDOWN_SECONDS", default=600.0)
+# Clinic Capability Resolver -- live vertical slice kill switch.
+# Was OFF during stabilization after live testing surfaced two
+# independent issues: NLU/response-LLM circuit-breaker coupling (fixed --
+# the resolver now has its own "openai:capability"/"gemini:capability"
+# circuit namespace, see capability_resolver.py's _DEFAULT_TIMEOUT_SECONDS
+# comment) and a degraded/Intent.UNKNOWN NLU result feeding the resolver a
+# bad "concern" signal (fixed -- live_resolver_context_for_nlu explicitly
+# excludes Intent.UNKNOWN and any is_nlu_degraded result).
+#
+# Turned ON (capability-family reliability phase) after: (1) engine.py's
+# call site was additionally narrowed to skip the call outright whenever
+# the plan already carries a deterministically-resolved service/specialty
+# id, bounding the live LLM call to genuinely unresolved messages only
+# (see the comment at that call site); (2) the full apps.chatbot.tests
+# suite (1169 tests) passing identically with the flag forced on and with
+# it at this default; (3) the offline eval battery (706 cases) scoring
+# identically, 698/706, in both configurations; (4) 10/10 live runs each
+# for "How much does your flu test cost?" and "I need stitches for a cut"
+# resolving to the real tenant service with no bogus-capability or
+# false-positive-on-medical-information behavior. Shadow mode, the
+# resolver, and the routing policy all stay fully intact and testable
+# regardless of this flag -- only the live engine.py call site is gated
+# on it, and it can still be forced back off per-environment via the
+# CAPABILITY_RESOLVER_LIVE_ENABLED env var without a code change.
+CAPABILITY_RESOLVER_LIVE_ENABLED = env.bool(
+    "CAPABILITY_RESOLVER_LIVE_ENABLED", default=True
+)
 # Cache TTL for stable clinic SQL facts (hours/doctors/insurance/services)
 CLINIC_FACT_CACHE_TTL_SECONDS = env.int("CLINIC_FACT_CACHE_TTL_SECONDS", default=600)
 
