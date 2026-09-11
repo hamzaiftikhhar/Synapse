@@ -10,16 +10,19 @@ unrelated specialties framed as "may help."
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from django.test import TestCase
 
 from apps.chatbot.booking.discovery import (
     _plain_label,
+    primary_care_fallback,
     resolve_symptom_service_ids,
     resolve_symptom_specialty_ids,
     suggest_specialties,
 )
 from apps.chatbot.engine import ChatEngine
-from apps.chatbot.nlu.schemas import parse_nlu_payload
+from apps.chatbot.nlu.schemas import CatalogMatch, parse_nlu_payload
 from apps.clinics.models import Clinic
 from apps.services.models import Service
 from apps.specialties.models import Specialty
@@ -199,6 +202,92 @@ class SoftMedicalReplyHonestFallbackTests(TestCase):
         self.assertNotIn("these areas may help", reply)
         self.assertNotIn("Zzyzx", reply)
         self.assertIn("find a doctor", reply.lower())
+
+    def test_no_primary_care_specialty_still_gets_the_plain_generic_reply(self):
+        """Regression guard for primary_care_fallback: this clinic (no
+        Primary Care specialty at all) must keep the exact old behavior
+        -- confirms the new fallback doesn't fire just because a symptom/
+        category hint was passed, only when the clinic actually has
+        something to offer."""
+        reply = ChatEngine()._soft_medical_reply(
+            self.clinic, "I have knee pain", "knee pain", "Orthopedics"
+        )
+        self.assertIn("find a doctor", reply.lower())
+        self.assertNotIn("evaluate you and refer", reply)
+
+
+class PrimaryCareFallbackTests(TestCase):
+    """Live-confirmed bug (real production trace, Horizon Family Medicine
+    & Urgent Care): a personal medical concern ("will hCG injections help
+    me continue my pregnancy, given my history of miscarriages") that the
+    NLU understood as a real health concern -- entities.symptom reliably
+    set every time, live-confirmed across 6 repeated identical calls --
+    but that doesn't map to a specialty this clinic offers (no OB-GYN
+    here), got the exact same flat "I can't diagnose symptoms..." reply
+    as a message with no understood concern at all. `primary_care_
+    fallback` offers the clinic's own Primary Care capability as an
+    honest starting point instead, scoped strictly to the soft_medical
+    care-navigation lane -- never used by the shared resolve_symptom_
+    specialty_ids/suggest_specialties machinery capability questions
+    (doctor_search/doctor_availability) also depend on, which must keep
+    giving a plain honest decline."""
+
+    def setUp(self):
+        self.clinic = Clinic.objects.create(
+            slug="primary-care-fallback-clinic",
+            name="Primary Care Fallback Clinic",
+            email="pcfallback@clinic.com",
+            phone="+12125550041",
+            timezone="America/New_York",
+        )
+        self.family_medicine = Specialty.objects.create(
+            clinic=self.clinic,
+            name="Family Medicine",
+            slug="family-medicine",
+            category="Primary Care",
+        )
+
+    def test_returns_none_with_no_signal_at_all(self):
+        self.assertIsNone(primary_care_fallback(self.clinic))
+
+    def test_returns_none_without_a_primary_care_specialty(self):
+        other_clinic = Clinic.objects.create(
+            slug="no-primary-care-clinic",
+            name="No Primary Care Clinic",
+            email="noprimarycare@clinic.com",
+            phone="+12125550042",
+            timezone="America/New_York",
+        )
+        Specialty.objects.create(
+            clinic=other_clinic, name="Cardiology", slug="cardiology", category="Cardiology",
+        )
+        self.assertIsNone(
+            primary_care_fallback(other_clinic, reason="history of miscarriages")
+        )
+
+    def test_fires_on_reason_alone_even_when_category_hint_is_empty(self):
+        """The live-confirmed reliability gap: specialty_category_hint
+        came back null in 6/6 identical calls for this exact concern, so
+        the fallback must not require it."""
+        result = primary_care_fallback(self.clinic, reason="history of miscarriages")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["name"], "Family Medicine")
+
+    def test_fires_on_category_hint_alone(self):
+        result = primary_care_fallback(self.clinic, category_hint="OB-GYN")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["name"], "Family Medicine")
+
+    def test_soft_medical_reply_uses_the_fallback_end_to_end(self):
+        reply = ChatEngine()._soft_medical_reply(
+            self.clinic,
+            "will hCG injections help me continue my pregnancy given my history of miscarriages",
+            "history of miscarriages",
+            "",
+        )
+        self.assertIn("Family Medicine", reply)
+        self.assertIn("evaluate you and refer", reply)
+        self.assertNotIn("I can't diagnose symptoms", reply)
 
 
 class SoftMedicalAmbiguityBlockTests(TestCase):
@@ -645,6 +734,322 @@ class SymptomServiceResolutionChainTests(TestCase):
         self.assertIsNone(result)
 
 
+class DirectCapabilityQuestionResolutionTests(TestCase):
+    """Phase 1 fix (live-confirmed bug, root-caused against the real NLU
+    trace): "Do you have any heart specialist?" is a capability question,
+    not a symptom complaint -- entity extraction correctly leaves
+    entities.symptom empty for it, since the message never states a
+    symptom. Both resolve_symptom_specialty_ids/resolve_symptom_service_ids
+    used to return None immediately whenever entities.symptom was empty,
+    before ever looking at the message text -- even though every step
+    inside already matches against the message directly. That meant a
+    clean capability question fell through to an unfiltered "every doctor"
+    browse instead of an honest answer. These tests exercise the fixed
+    behavior with no symptom entity at all -- message text is the only
+    signal."""
+
+    def setUp(self):
+        self.clinic = Clinic.objects.create(
+            slug="capability-question-clinic",
+            name="Capability Question Clinic",
+            email="capabilityquestion@clinic.com",
+            phone="+12125550011",
+            address={"street": "12 Main St", "city": "Boston", "state": "MA", "zip": "02101"},
+            timezone="America/New_York",
+        )
+
+    def _no_symptom_nlu(self, intent="doctor_search"):
+        return parse_nlu_payload({"intent": intent, "entities": {}})
+
+    def test_capability_question_with_no_symptom_entity_resolves_specialty(self):
+        Specialty.objects.create(
+            clinic=self.clinic, name="Cardiology", slug="cardiology", category="Cardiology",
+        )
+        result = resolve_symptom_specialty_ids(
+            self.clinic, self._no_symptom_nlu(), "Do you have any heart specialist?"
+        )
+        self.assertIsNotNone(result)
+        self.assertTrue(result.understood)
+        self.assertTrue(result.matched_ids)
+
+    def test_capability_question_with_no_symptom_entity_honest_decline_when_unsupported(self):
+        """The exact live-reproduced case: horizon-family-care-shaped
+        clinic (Family/Internal Medicine only, no cardiology) must answer
+        honestly -- not fall through to an unfiltered doctor dump."""
+        Specialty.objects.create(
+            clinic=self.clinic, name="Family Medicine", slug="family-medicine",
+            category="Family Medicine",
+        )
+        result = resolve_symptom_specialty_ids(
+            self.clinic, self._no_symptom_nlu(), "Do you have any heart specialist?"
+        )
+        self.assertIsNotNone(result)
+        self.assertTrue(result.understood)
+        self.assertEqual(result.matched_ids, [])
+
+    def test_capability_question_with_no_symptom_entity_resolves_service(self):
+        Service.objects.create(clinic=self.clinic, name="Root Canal", category="Dentistry")
+        result = resolve_symptom_service_ids(
+            self.clinic,
+            self._no_symptom_nlu(intent="services_offered"),
+            "Can you do a root canal?",
+        )
+        self.assertIsNotNone(result)
+        self.assertTrue(result.understood)
+        self.assertTrue(result.matched_ids)
+
+    def test_genuinely_nothing_to_go_on_still_returns_none(self):
+        """Regression guard: a message with no concern-phrase and no
+        symptom entity must keep returning None -- callers (e.g.
+        search_doctors's nothing_to_filter_on) rely on this exact
+        distinction between "no constraint was ever expressed" and "a
+        resolver tried and found nothing.\""""
+        Specialty.objects.create(
+            clinic=self.clinic, name="Family Medicine", slug="family-medicine",
+            category="Family Medicine",
+        )
+        result = resolve_symptom_specialty_ids(
+            self.clinic, self._no_symptom_nlu(), "Who are your doctors?"
+        )
+        self.assertIsNone(result)
+
+
+class CatalogMatchTierResolutionTests(TestCase):
+    """Phase 2 of the catalog-matching plan (ROADMAP.md): tier 4
+    (nlu.catalog_match, an LLM semantic match against this tenant's real,
+    ID-tagged catalog) is consulted only after tiers 1-3 (concern map,
+    suggest_specialties, category hint) find nothing -- strict sequential
+    short-circuit, never arbitrated against the earlier tiers.
+
+    Builds `catalog_match` directly on the NLUResult (bypassing the real
+    LLM call and resolve_catalog_match's DB check) since these tests are
+    about discovery.py's own tier-4 consultation logic, not about
+    validation -- that's covered separately in
+    test_resolvers.py::ResolveCatalogMatchTests and
+    test_nlu.py::ParseCatalogMatchTests."""
+
+    def setUp(self):
+        self.clinic = Clinic.objects.create(
+            slug="catalog-tier-clinic",
+            name="Catalog Tier Clinic",
+            email="catalogtier@clinic.com",
+            phone="+12125550022",
+            timezone="America/New_York",
+        )
+        self.rheumatology = Specialty.objects.create(
+            clinic=self.clinic, name="Rheumatology", slug="rheumatology",
+        )
+        self.cardiology = Specialty.objects.create(
+            clinic=self.clinic, name="Cardiology", slug="cardiology",
+        )
+        # Deliberately not a dental/other _CONCERN_MAP-phrase service name
+        # (e.g. "teeth whitening" would word-boundary-match the dental
+        # entry's "teeth" phrase and resolve at the service resolver's
+        # own tier 2/3 equivalent before tier 4 is ever consulted) -- these
+        # tests are about tier 4 catching what tiers 1-3 have no
+        # vocabulary for at all.
+        self.laser_hair_removal = Service.objects.create(
+            clinic=self.clinic, name="Laser Hair Removal",
+        )
+
+    def _nlu_with_catalog_match(self, catalog_match: CatalogMatch, intent="doctor_search"):
+        nlu = parse_nlu_payload({"intent": intent, "entities": {}})
+        return replace(nlu, catalog_match=catalog_match)
+
+    def test_matched_specialty_fires_when_concern_map_has_no_entry_at_all(self):
+        """"Rheumatologist" is not in _CONCERN_MAP at all -- tiers 1-3
+        have no vocabulary for it. Tier 4 is what catches it."""
+        nlu = self._nlu_with_catalog_match(
+            CatalogMatch(
+                status="matched", match_type="specialty", catalog_id=str(self.rheumatology.id)
+            )
+        )
+        result = resolve_symptom_specialty_ids(
+            self.clinic, nlu, "Do you have a rheumatologist on staff?"
+        )
+        self.assertIsNotNone(result)
+        self.assertTrue(result.understood)
+        self.assertEqual(result.matched_ids, [str(self.rheumatology.id)])
+
+    def test_no_match_is_an_honest_decline_not_unfiltered_browse(self):
+        nlu = self._nlu_with_catalog_match(
+            CatalogMatch(status="no_match", match_type="specialty")
+        )
+        result = resolve_symptom_specialty_ids(
+            self.clinic, nlu, "Do you have a rheumatologist on staff?"
+        )
+        self.assertIsNotNone(result)
+        self.assertTrue(result.understood)
+        self.assertEqual(result.matched_ids, [])
+
+    def test_ambiguous_populates_ambiguous_categories_with_real_names(self):
+        nlu = self._nlu_with_catalog_match(
+            CatalogMatch(
+                status="ambiguous",
+                match_type="specialty",
+                candidates=[
+                    {"id": str(self.rheumatology.id), "name": "Rheumatology", "match_type": "specialty"},
+                    {"id": str(self.cardiology.id), "name": "Cardiology", "match_type": "specialty"},
+                ],
+            )
+        )
+        # "immunologist" has no _CONCERN_MAP entry either, and neither
+        # word here word-boundary-matches "Rheumatology"/"Cardiology" by
+        # name -- tiers 1-3 must find nothing so tier 4 is what produces
+        # the ambiguity, not an accidental earlier-tier name match.
+        result = resolve_symptom_specialty_ids(
+            self.clinic, nlu, "Do you have a rheumatologist or immunologist on staff?"
+        )
+        self.assertIsNotNone(result)
+        self.assertTrue(result.understood)
+        self.assertEqual(result.matched_ids, [])
+        self.assertEqual(set(result.ambiguous_categories), {"Rheumatology", "Cardiology"})
+
+    def test_unresolved_is_a_clarification_never_a_confident_decline_or_none(self):
+        """The invariant's UNRESOLVED case: never treated as "no
+        constraint existed" (which would let the caller fall through to
+        an unfiltered browse), and never a confident "we don't have that"
+        either -- a targeted clarification."""
+        nlu = self._nlu_with_catalog_match(
+            CatalogMatch(status="unresolved", match_type="specialty")
+        )
+        result = resolve_symptom_specialty_ids(
+            self.clinic, nlu, "Do you have a rheumatologist on staff?"
+        )
+        self.assertIsNotNone(result)
+        self.assertFalse(result.understood)
+        self.assertEqual(result.matched_ids, [])
+
+    def test_not_applicable_falls_through_to_existing_none_behavior(self):
+        nlu = self._nlu_with_catalog_match(CatalogMatch(status="not_applicable"))
+        result = resolve_symptom_specialty_ids(self.clinic, nlu, "Who are your doctors?")
+        self.assertIsNone(result)
+
+    def test_earlier_tier_wins_over_a_disagreeing_catalog_match(self):
+        """Strict sequential short-circuit, never a vote: "heart specialist"
+        already resolves at tier 2 (suggest_specialties: the concern map's
+        "cardiology"/"cardiologist" hint word-boundary-matches this
+        clinic's real "Cardiology" specialty by name) -- even a
+        confidently-populated, disagreeing tier-4 catalog_match (proposing
+        Rheumatology instead) must never override an earlier tier that
+        already found an answer."""
+        nlu = self._nlu_with_catalog_match(
+            CatalogMatch(
+                status="matched", match_type="specialty", catalog_id=str(self.rheumatology.id)
+            )
+        )
+        result = resolve_symptom_specialty_ids(
+            self.clinic, nlu, "Do you have a heart specialist?"
+        )
+        self.assertIsNotNone(result)
+        self.assertTrue(result.understood)
+        # Tier 2 (suggest_specialties) wins on its own real match --
+        # never the rheumatology id tier 4 (wrongly) proposed.
+        self.assertEqual(result.matched_ids, [str(self.cardiology.id)])
+
+    def test_mismatched_match_type_is_ignored_by_specialty_resolver(self):
+        """A service-type catalog_match must never leak into the
+        specialty resolver -- that's the other resolver's tier 4."""
+        nlu = self._nlu_with_catalog_match(
+            CatalogMatch(
+                status="matched", match_type="service", catalog_id=str(self.laser_hair_removal.id)
+            )
+        )
+        result = resolve_symptom_specialty_ids(self.clinic, nlu, "Who are your doctors?")
+        self.assertIsNone(result)
+
+    def test_matched_service_fires_for_the_service_resolver(self):
+        nlu = self._nlu_with_catalog_match(
+            CatalogMatch(
+                status="matched", match_type="service", catalog_id=str(self.laser_hair_removal.id)
+            ),
+            intent="services_offered",
+        )
+        result = resolve_symptom_service_ids(
+            self.clinic, nlu, "Do you offer laser hair removal?"
+        )
+        self.assertIsNotNone(result)
+        self.assertTrue(result.understood)
+        self.assertEqual(result.matched_ids, [str(self.laser_hair_removal.id)])
+
+    def test_service_no_match_is_an_honest_decline(self):
+        nlu = self._nlu_with_catalog_match(
+            CatalogMatch(status="no_match", match_type="service"),
+            intent="services_offered",
+        )
+        result = resolve_symptom_service_ids(
+            self.clinic, nlu, "Do you offer laser hair removal?"
+        )
+        self.assertIsNotNone(result)
+        self.assertTrue(result.understood)
+        self.assertEqual(result.matched_ids, [])
+
+
+class ReferralBackstoryFalsePositiveTests(TestCase):
+    """Caught in architecture review before implementation: widening
+    concern-phrase matching to the raw message (not just an NLU-confirmed
+    symptom entity) risks a new false positive -- a concern word mentioned
+    only as backstory ("my heart specialist told me...") is not the
+    current ask. A targeted exclusion regex (_is_referral_backstory)
+    guards exactly this pattern."""
+
+    def setUp(self):
+        self.clinic = Clinic.objects.create(
+            slug="referral-backstory-clinic",
+            name="Referral Backstory Clinic",
+            email="referralbackstory@clinic.com",
+            phone="+12125550012",
+            address={"street": "13 Main St", "city": "Boston", "state": "MA", "zip": "02101"},
+            timezone="America/New_York",
+        )
+        Specialty.objects.create(
+            clinic=self.clinic, name="Cardiology", slug="cardiology", category="Cardiology",
+        )
+        Specialty.objects.create(
+            clinic=self.clinic, name="General Dentistry", slug="general-dentistry",
+            category="Dentistry",
+        )
+
+    def _no_symptom_nlu(self):
+        return parse_nlu_payload({"intent": "doctor_search", "entities": {}})
+
+    def test_referral_backstory_does_not_falsely_resolve_cardiology(self):
+        result = resolve_symptom_specialty_ids(
+            self.clinic,
+            self._no_symptom_nlu(),
+            "My heart specialist told me I need a root canal",
+        )
+        if result is not None:
+            self.assertNotIn(
+                str(Specialty.objects.get(name="Cardiology").id), result.matched_ids
+            )
+
+    def test_referral_backstory_with_doctor_wording_also_excluded(self):
+        result = resolve_symptom_specialty_ids(
+            self.clinic,
+            self._no_symptom_nlu(),
+            "My heart doctor referred me here for a root canal",
+        )
+        if result is not None:
+            self.assertNotIn(
+                str(Specialty.objects.get(name="Cardiology").id), result.matched_ids
+            )
+
+    def test_genuine_compound_ask_is_not_forced_by_the_backstory_guard(self):
+        """Control: the exclusion is scoped to the "my X specialist told
+        me" shape specifically -- a genuine compound complaint isn't
+        expected to resolve confidently either way, but must not error."""
+        result = resolve_symptom_specialty_ids(
+            self.clinic,
+            self._no_symptom_nlu(),
+            "My heart hurts and I also need a root canal",
+        )
+        # No assertion on the exact outcome (ambiguous by nature) -- this
+        # is a smoke test that the guard doesn't raise or misbehave on a
+        # message that merely resembles, but doesn't match, its pattern.
+        self.assertTrue(result is None or isinstance(result.matched_ids, list))
+
+
 class ServicesOfferedSymptomMessagingTests(TestCase):
     """services_offered's category-mode fallback wires the same
     understood/not-understood distinction into its own decline/clarify
@@ -942,3 +1347,69 @@ class ConcernCategoryAmbiguityTests(TestCase):
         self.assertTrue(result.understood)
         self.assertEqual(result.ambiguous_categories, [])
         self.assertEqual(result.matched_ids, [str(dentistry.id)])
+
+
+class GarbageSurgerySpecialtyPollutionTests(TestCase):
+    """Capability audit Section A: a staff-authored specialty whose *name*
+    is a free-text procedure description but whose *category* is a real
+    CareCategory ("Surgery") hijacks suggest_specialties / category-hint
+    resolution — live Horizon row 'Major and Minor cuts treat and stitches'
+    was presented verbatim as a care recommendation. This test locks in
+    that today's category-exact path *does* surface such a row (proving
+    the accidental dependency), so deleting the real Horizon polluter
+    cannot silently paper over a missing DoctorService resolution path
+    without this suite noticing.
+    """
+
+    def setUp(self):
+        self.clinic = Clinic.objects.create(
+            slug="garbage-surgery-clinic",
+            name="Garbage Surgery Clinic",
+            email="garbage@clinic.com",
+            phone="+12125550099",
+            timezone="America/Los_Angeles",
+        )
+        self.bogus = Specialty.objects.create(
+            clinic=self.clinic,
+            name="Major and Minor cuts treat and stitches",
+            slug="major-minor-cuts-stitches",
+            category="Surgery",
+            is_active=True,
+        )
+        # Real capability — the correct table for stitches is Service +
+        # DoctorService, not this specialty.
+        self.laceration = Service.objects.create(
+            clinic=self.clinic,
+            name="Simple Wound Laceration Repair (Sutures)",
+            is_active=True,
+            duration_min=30,
+            price_cents=15000,
+        )
+
+    def test_category_hint_surgery_surfaces_garbage_specialty_name(self):
+        suggested, guidance = suggest_specialties(
+            self.clinic,
+            message="I need stitches for a cut",
+            reason="cut that needs stitches",
+            category_hint="Surgery",
+        )
+        names = [s.get("name") for s in suggested]
+        self.assertIn(self.bogus.name, names)
+        self.assertIn("Major and Minor cuts treat and stitches", guidance)
+
+    def test_resolve_symptom_specialty_ids_via_surgery_category_hint(self):
+        nlu = parse_nlu_payload(
+            {
+                "intent": "doctor_search",
+                "confidence": 0.9,
+                "entities": {
+                    "symptom": "cut that needs stitches",
+                    "specialty_category_hint": "Surgery",
+                },
+            }
+        )
+        result = resolve_symptom_specialty_ids(
+            self.clinic, nlu, "Which doctors here can handle a cut that needs stitches?"
+        )
+        self.assertTrue(result.understood)
+        self.assertIn(str(self.bogus.id), result.matched_ids)
